@@ -1250,6 +1250,11 @@ pub extern "C" fn zcashlc_vec_string_free(v: *mut *mut c_char, len: usize, capac
     };
 }
 
+
+/// TEST TEST 123 TEST 
+/// 
+/// 
+
 /// Derives a transparent private key from seed
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_derive_transparent_private_key_from_seed(

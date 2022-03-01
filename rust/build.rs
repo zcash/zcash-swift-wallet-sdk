@@ -9,7 +9,6 @@ fn main() {
         .with_crate(crate_dir)
         .with_language(cbindgen::Language::C)
         .generate() {
-        b.write_to_file("ZcashLightClientKit/zcashlc/zcashlc.h");
-    }
-        
+        b.write_to_file("target/Headers/zcashlc.h");
+    }     
 }
