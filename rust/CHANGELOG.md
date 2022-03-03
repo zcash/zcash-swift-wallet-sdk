@@ -17,6 +17,14 @@
   instead inferred from the script).
 - `zcashlc_shield_funds` now takes the transparent account private key as an
   argument instead of the transparent spending key for a single P2PKH address.
+- `zcashlc_get_verified_balance` now takes the minimum number of confirmations
+  used to filter received notes as an argument.
+- `zcashlc_get_verified_transparent_balance` now takes the minimum number of
+  confirmations used to filter received notes as an argument.
+- `zcashlc_get_total_transparent_balance` now returns a balance that includes
+  all UTXOs up to those in the latest block (i.e. those with 0 confirmations.)
+- `zcashlc_create_to_address` now takes the minimum number of confirmations
+  used to filter notes to spend as an argument.
 
 ## Removed
 - `zcashlc_derive_shielded_address_from_seed`
@@ -25,6 +33,6 @@
 - `zcashlc_derive_transparent_private_key_from_seed`
 - `zcashlc_derive_unified_viewing_keys_from_seed`
 
-# 0.0.3 
--  [#13] Migrate to `zcash/librustzcash` revision with NU5 awareness (#20)
-This enables mobile wallets to send transactions after NU5 activation.
+# 0.0.3
+- [#13] Migrate to `zcash/librustzcash` revision with NU5 awareness (#20)
+  This enables mobile wallets to send transactions after NU5 activation.
