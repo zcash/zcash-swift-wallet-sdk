@@ -7,22 +7,17 @@ MAKEFLAGS += --no-builtin-rules
 
 PLATFORMS = ios-device macos ios-simulator
 IOS_DEVICE_ARCHS = aarch64-apple-ios
-IOS_SIM_ARCHS_STABLE = x86_64-apple-ios
-IOS_SIM_ARCHS_NIGHTLY = aarch64-apple-ios-sim
+IOS_SIM_ARCHS_STABLE = x86_64-apple-ios  aarch64-apple-ios-sim
 MACOS_ARCHS = x86_64-apple-darwin aarch64-apple-darwin
-IOS_SIM_ARCHS = $(IOS_SIM_ARCHS_STABLE) $(IOS_SIM_ARCHS_NIGHTLY)
+IOS_SIM_ARCHS = $(IOS_SIM_ARCHS_STABLE)
 
 RUST_SRCS = $(shell find ../rust -name "*.rs") ../Cargo.toml
 STATIC_LIBS = $(shell find ../target -name "libzcashlc.a")
 
 install:
 	rustup toolchain add stable
-	rustup +stable target add aarch64-apple-ios x86_64-apple-ios x86_64-apple-darwin aarch64-apple-darwin
-	rustup toolchain add nightly-2021-09-24
-	rustup +nightly-2021-09-24 target add aarch64-apple-ios-sim
-
-	rustup target add aarch64-apple-ios x86_64-apple-ios aarch64-apple-ios-sim x86_64-apple-darwin aarch64-apple-darwin 
-	RUSTUP_TOOLCHAIN=nightly-x86_64-apple-darwin rustup target add aarch64-apple-ios-sim
+	rustup +stable target add aarch64-apple-ios x86_64-apple-ios x86_64-apple-darwin aarch64-apple-darwin aarch64-apple-ios-sim
+	
 .PHONY: install
 
 release: clean xcframework
@@ -84,14 +79,6 @@ $(IOS_SIM_ARCHS_STABLE): %: stable-%
 	mkdir -p products/ios-simulator/static-libraries/$*
 	cp ../target/$*/release/libzcashlc.a products/ios-simulator/static-libraries/$*
 .PHONY: $(IOS_SIM_ARCHS_STABLE)
-
-$(IOS_SIM_ARCHS_NIGHTLY): %: nightly-%
-	mkdir -p products/ios-simulator/static-libraries/$*
-	cp rust/target/$*/release/libzcashlc.a products/ios-simulator/static-libraries/$*
-.PHONY: $(IOS_SIM_ARCHS_NIGHTLY)
-
-nightly-%:
-	sh -c "RUSTUP_TOOLCHAIN=nightly-2021-09-24 cargo build --manifest-path rust/Cargo.toml --target $* --release"
 
 stable-%: # target/%/release/libzcashlc.a:
 	sh -c "RUSTUP_TOOLCHAIN=stable cargo build --manifest-path ../Cargo.toml --target $* --release"
