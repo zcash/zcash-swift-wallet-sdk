@@ -21,9 +21,8 @@ zcash_proofs = "0.5"
 base58 = "0.1.0"
 #sha2 = "0.9"
 #bs58 = { version = "0.3", features = ["check"] }
-#hdwallet = "0.3.0"
+hdwallet = "=0.3.0"
 #ripemd160 = "0.9"
-hdwallet = { git = "https://github.com/nuttycom/hdwallet", rev = "72f1f7a56c114eed484cefd6d402b7ef28158712"}
 secp256k1 = "0.19"
 time = "0.2"
 num-bigint = "0.3.3"
@@ -45,11 +44,15 @@ crate-type = ["staticlib"]
 [profile.release]
 lto = true
 
+# Revision corresponds to the partially-complete auto-shielding version, with the NU5
+# consensus branch ID and activation heights, and v5 transaction parsing, backported.
+# https://github.com/zcash/librustzcash/pull/555
+# https://github.com/zcash/librustzcash/pull/558
 [patch.crates-io]
-zcash_client_backend = {git = "https://github.com/zcash/librustzcash", branch = "autoshielding-poc-sdk-dnm"}
-zcash_client_sqlite = {git = "https://github.com/zcash/librustzcash", branch = "autoshielding-poc-sdk-dnm"}
-zcash_primitives = {git = "https://github.com/zcash/librustzcash", branch = "autoshielding-poc-sdk-dnm"}
-zcash_proofs = {git = "https://github.com/zcash/librustzcash", branch = "autoshielding-poc-sdk-dnm"}
+zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='0a1ed9b8acf336bdc20ba49083c66f114ecf6877' }
+zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='0a1ed9b8acf336bdc20ba49083c66f114ecf6877' }
+zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='0a1ed9b8acf336bdc20ba49083c66f114ecf6877' }
+zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='0a1ed9b8acf336bdc20ba49083c66f114ecf6877' }
 
 [features]
 mainnet = ["zcash_client_sqlite/mainnet"]

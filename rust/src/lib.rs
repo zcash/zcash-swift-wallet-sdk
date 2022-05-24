@@ -1111,7 +1111,7 @@ pub extern "C" fn zcashlc_decrypt_and_store_transaction(
         let tx_bytes = unsafe { slice::from_raw_parts(tx, tx_len) };
         let tx = Transaction::read(&tx_bytes[..])?;
 
-        match decrypt_and_store_transaction(&network, &mut db_data, &tx) {
+        match decrypt_and_store_transaction(&network, &mut db_data, tx_bytes, &tx) {
             Ok(()) => Ok(1),
             Err(e) => Err(format_err!("Error while decrypting transaction: {}", e)),
         }
