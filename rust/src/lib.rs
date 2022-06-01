@@ -1162,6 +1162,43 @@ pub extern "C" fn zcashlc_get_received_memo_as_utf8(
     unwrap_exc_or_null(res)
 }
 
+/// Returns the memo for a received note by copying the corresponding bytes to the received
+/// pointer in `memo_bytes_ret`.
+///
+/// The note is identified by its row index in the `received_notes` table within the data
+/// database.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `memo_bytes_ret` must be non-null and must point to an allocated 512-byte region of memory.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_received_memo(
+    db_data: *const u8,
+    db_data_len: usize,
+    id_note: i64,
+    memo_bytes_ret: *mut [u8; 512],
+    network_id: u32,
+) -> bool {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let memo_bytes = (&db_data)
+            .get_memo(NoteId::ReceivedNoteId(id_note))
+            .map_err(|e| format_err!("An error occurred retrieving the memo, {}", e))
+            .map(|memo| memo.encode())?;
+
+        unsafe { memo_bytes_ret.copy_from(memo_bytes.as_array(), 512) };
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
+}
+
 /// Returns the memo for a sent note, if it is known and a valid UTF-8 string.
 ///
 /// The note is identified by its row index in the `sent_notes` table within the data
@@ -1199,6 +1236,43 @@ pub extern "C" fn zcashlc_get_sent_memo_as_utf8(
         Ok(CString::new(memo).unwrap().into_raw())
     });
     unwrap_exc_or_null(res)
+}
+
+/// Returns the memo for a sent note, by copying the corresponding bytes to the received
+/// pointer in `memo_bytes_ret`.
+///
+/// The note is identified by its row index in the `sent_notes` table within the data
+/// database.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `memo_bytes_ret` must be non-null and must point to an allocated 512-byte region of memory.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_sent_memo(
+    db_data: *const u8,
+    db_data_len: usize,
+    id_note: i64,
+    memo_bytes_ret: *mut [u8; 512],
+    network_id: u32,
+) -> bool {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let memo_bytes = (&db_data)
+            .get_memo(NoteId::SentNoteId(id_note))
+            .map_err(|e| format_err!("An error occurred retrieving the memo, {}", e))
+            .map(|memo| memo.encode())?;
+
+        unsafe { memo_bytes_ret.copy_from(memo_bytes.as_array(), 512) }
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
 }
 
 /// Checks that the scanned blocks in the data database, when combined with the recent
@@ -1562,7 +1636,7 @@ pub extern "C" fn zcashlc_decrypt_and_store_transaction(
 /// - `extsk` must be non-null and must point to a null-terminated UTF-8 string representing
 ///   a Bech32-encoded Sapling extended spending key for the given network.
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
-/// - `memo` must be non-null and must point to a null-terminated UTF-8 string.
+/// - `memo` must be non-null and must point to a 512-byte array.
 /// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
 /// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
@@ -1581,7 +1655,7 @@ pub extern "C" fn zcashlc_create_to_address(
     extsk: *const c_char,
     to: *const c_char,
     value: i64,
-    memo: *const c_char,
+    memo: *const [u8; 512],
     spend_params: *const u8,
     spend_params_len: usize,
     output_params: *const u8,
@@ -1605,7 +1679,6 @@ pub extern "C" fn zcashlc_create_to_address(
         if value.is_negative() {
             return Err(format_err!("Amount is negative"));
         }
-        let memo = unsafe { CStr::from_ptr(memo) }.to_str()?;
         let spend_params = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(spend_params, spend_params_len)
         }));
@@ -1620,11 +1693,14 @@ pub extern "C" fn zcashlc_create_to_address(
         let to = RecipientAddress::decode(&network, to)
             .ok_or_else(|| format_err!("PaymentAddress is for the wrong network"))?;
 
-        // TODO: consider warning in this case somehow, rather than swallowing this error
         let memo = match to {
             RecipientAddress::Shielded(_) | RecipientAddress::Unified(_) => {
-                let memo_value = Memo::from_str(memo).map_err(|_| format_err!("Invalid memo"))?;
-                Some(MemoBytes::from(&memo_value))
+                unsafe { memo.as_ref() }
+                    .map(|b| {
+                        MemoBytes::from_bytes(&b[..])
+                            .map_err(|e| format_err!("Invalid MemoBytes {}", e))
+                    })
+                    .transpose()?
             }
             RecipientAddress::Transparent(_) => None,
         };
@@ -1849,7 +1925,7 @@ pub extern "C" fn zcashlc_shield_funds(
     db_data_len: usize,
     account: i32,
     xprv: *const c_char,
-    memo: *const c_char,
+    memo: *const [u8; 512],
     spend_params: *const u8,
     spend_params_len: usize,
     output_params: *const u8,
@@ -1868,8 +1944,15 @@ pub extern "C" fn zcashlc_shield_funds(
         } else {
             return Err(format_err!("account argument must be positive"));
         };
+
         let xprv_str = unsafe { CStr::from_ptr(xprv) }.to_str()?;
-        let memo = unsafe { CStr::from_ptr(memo) }.to_str()?;
+        let memo_bytes = unsafe { memo.as_ref() }
+            .map(|b| {
+                MemoBytes::from_bytes(&b[..]).map_err(|e| format_err!("Invalid MemoBytes {}", e))
+            })
+            .transpose()?
+            .unwrap_or_else(MemoBytes::empty);
+
         let spend_params = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(spend_params, spend_params_len)
         }));
@@ -1884,8 +1967,6 @@ pub extern "C" fn zcashlc_shield_funds(
         };
         let sk = legacy::keys::AccountPrivKey::from_extended_privkey(xprv.extended_key);
 
-        let memo = Memo::from_str(memo).map_err(|_| format_err!("Invalid memo"))?;
-        let memo_bytes = MemoBytes::from(memo);
         shield_transparent_funds(
             &mut update_ops,
             &network,
