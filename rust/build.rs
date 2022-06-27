@@ -8,7 +8,8 @@ fn main() {
     if let Ok(b) = cbindgen::Builder::new()
         .with_crate(crate_dir)
         .with_language(cbindgen::Language::C)
-        .generate() {
+        .generate()
+    {
         b.write_to_file("target/Headers/zcashlc.h");
-    }     
+    }
 }
