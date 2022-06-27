@@ -1,6 +1,6 @@
 [package]
 name = "libzcashlc"
-version = "0.0.8"
+version = "0.1.0"
 authors = ["Jack Grigg <jack@z.cash>",
             "Francisco Gindre <francisco@z.cash>",
 ]
@@ -10,28 +10,15 @@ build = "rust/build.rs"
 [dependencies]
 failure = "0.1"
 ffi_helpers = "0.2"
+hdwallet = "0.3.1"
+hdwallet-bitcoin = "0.3"
 hex = "0.4"
-zcash_client_backend = "0.5"
-zcash_client_sqlite = "0.3"
-zcash_primitives = "0.5"
-zcash_proofs = "0.5"
+secp256k1 = "0.21"
 
-#### Temporary additions: ####################################
-#bitvec = "0.22"
-base58 = "0.1.0"
-#sha2 = "0.9"
-#bs58 = { version = "0.3", features = ["check"] }
-hdwallet = "=0.3.0"
-#ripemd160 = "0.9"
-secp256k1 = "0.19"
-time = "0.2"
-num-bigint = "0.3.3"
-##############################################################
-
-#[dependencies.zcash_proofs]
-#version = "0.5"
-#default-features = false
-#features = ["local-prover"]
+zcash_client_backend = { version = "0.5", features = ["transparent-inputs"] }
+zcash_client_sqlite = { version = "0.3", features = ["transparent-inputs"] }
+zcash_primitives = "0.7"
+zcash_proofs = "0.7"
 
 [build-dependencies]
 cbindgen = "0.14"
@@ -44,15 +31,14 @@ crate-type = ["staticlib"]
 [profile.release]
 lto = true
 
-# Revision corresponds to the partially-complete auto-shielding version, with the NU5
-# consensus branch ID and activation heights, and v5 transaction parsing, backported.
-# https://github.com/zcash/librustzcash/pull/555
-# https://github.com/zcash/librustzcash/pull/558
+# Revision corresponds to zcash_primitives 0.6.0 plus the NU5 mainnet activation height.
+# We also need zcash_client_backend and zcash_client_sqlite, which haven't been published
+# with NU5 updates yet.
 [patch.crates-io]
-zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='0a1ed9b8acf336bdc20ba49083c66f114ecf6877' }
-zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='0a1ed9b8acf336bdc20ba49083c66f114ecf6877' }
-zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='0a1ed9b8acf336bdc20ba49083c66f114ecf6877' }
-zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='0a1ed9b8acf336bdc20ba49083c66f114ecf6877' }
+zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='37fc28634e811fdf8db9274a0080cff17c6b6a09' }
+zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='37fc28634e811fdf8db9274a0080cff17c6b6a09' }
+zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='37fc28634e811fdf8db9274a0080cff17c6b6a09' }
+zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='37fc28634e811fdf8db9274a0080cff17c6b6a09' }
 
 [features]
 mainnet = ["zcash_client_sqlite/mainnet"]
