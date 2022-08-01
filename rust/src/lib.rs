@@ -253,19 +253,21 @@ pub unsafe extern "C" fn zcashlc_derive_extended_spending_keys(
             return Err(format_err!("accounts argument must be greater than zero"));
         };
 
-        let extsks: Vec<_> = (0..accounts)
+        let usks: Vec<_> = (0..accounts)
             .map(|account| {
-                sapling::spending_key(&seed, network.coin_type(), AccountId::from(account))
+                UnifiedSpendingKey::from_seed(&network, &seed, AccountId::from(account)).map_err(
+                    |e| format_err!("error generating unified spending key from seed: {:?}", e),
+                )
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
 
         // Return the Sapling ExtendedSpendingKeys for the created accounts.
-        let mut v: Vec<_> = extsks
+        let mut v: Vec<_> = usks
             .iter()
-            .map(|extsk| {
+            .map(|usk| {
                 let encoded = encode_extended_spending_key(
                     network.hrp_sapling_extended_spending_key(),
-                    extsk,
+                    usk.sapling(),
                 );
                 CString::new(encoded).unwrap().into_raw()
             })
