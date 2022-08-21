@@ -1809,8 +1809,6 @@ pub extern "C" fn zcashlc_derive_transparent_address_from_account_private_key(
 ///   documentation of pointer::offset.
 /// - `xprv` must be non-null and must point to a null-terminated UTF-8 string representing
 ///   a Base58-encoded transparent spending key.
-/// - `extsk` must be non-null and must point to a null-terminated UTF-8 string representing
-///   a Bech32-encoded Sapling extended spending key for the given network.
 /// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
 /// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
@@ -1827,7 +1825,6 @@ pub extern "C" fn zcashlc_shield_funds(
     db_data_len: usize,
     account: i32,
     xprv: *const c_char,
-    extsk: *const c_char,
     memo: *const c_char,
     spend_params: *const u8,
     spend_params_len: usize,
@@ -1848,7 +1845,6 @@ pub extern "C" fn zcashlc_shield_funds(
             return Err(format_err!("account argument must be positive"));
         };
         let xprv_str = unsafe { CStr::from_ptr(xprv) }.to_str()?;
-        let extsk = unsafe { CStr::from_ptr(extsk) }.to_str()?;
         let memo = unsafe { CStr::from_ptr(memo) }.to_str()?;
         let spend_params = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(spend_params, spend_params_len)
@@ -1864,11 +1860,6 @@ pub extern "C" fn zcashlc_shield_funds(
         };
         let sk = legacy::keys::AccountPrivKey::from_extended_privkey(xprv.extended_key);
 
-        let extfvk =
-            decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), extsk)
-                .map(|extsk| ExtendedFullViewingKey::from(&extsk))
-                .map_err(|e| format_err!("Invalid ExtendedSpendingKey: {}", e))?;
-
         let memo = Memo::from_str(memo).map_err(|_| format_err!("Invalid memo"))?;
         let memo_bytes = MemoBytes::from(memo);
         shield_transparent_funds(
@@ -1876,7 +1867,6 @@ pub extern "C" fn zcashlc_shield_funds(
             &network,
             LocalTxProver::new(spend_params, output_params),
             &sk,
-            &extfvk,
             AccountId::from(account),
             &memo_bytes,
             ANCHOR_OFFSET,
