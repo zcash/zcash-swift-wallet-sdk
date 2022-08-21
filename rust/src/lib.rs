@@ -843,6 +843,30 @@ fn is_valid_transparent_address(address: &str, network: &Network) -> bool {
     }
 }
 
+/// Returns true when the provided key decodes to a valid Sapling extended spending key for the
+/// specified network, false in any other case.
+///
+/// # Safety
+///
+/// - `extsk` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `extsk` must not be mutated for the duration of the function call.
+#[no_mangle]
+pub extern "C" fn zcashlc_is_valid_sapling_extended_spending_key(
+    extsk: *const c_char,
+    network_id: u32,
+) -> bool {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let extsk = unsafe { CStr::from_ptr(extsk).to_str()? };
+
+        Ok(
+            decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), extsk)
+                .is_ok(),
+        )
+    });
+    unwrap_exc_or(res, false)
+}
+
 /// Returns true when the provided key decodes to a valid Sapling extended full viewing key for the
 /// specified network, false in any other case.
 ///
