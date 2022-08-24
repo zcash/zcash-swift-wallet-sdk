@@ -4,7 +4,9 @@ use hdwallet::{
     traits::{Deserialize, Serialize},
     ExtendedPrivKey, KeyChain,
 };
+use schemer::MigratorError;
 use secp256k1::PublicKey;
+use secrecy::Secret;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::ffi::{CStr, CString, OsStr};
@@ -36,7 +38,7 @@ use zcash_client_backend::{
 use zcash_client_sqlite::wallet::{delete_utxos_above, get_rewind_height};
 use zcash_client_sqlite::{
     error::SqliteClientError,
-    wallet::init::{init_accounts_table, init_blocks_table, init_wallet_db},
+    wallet::init::{init_accounts_table, init_blocks_table, init_wallet_db, WalletMigrationError},
     BlockDb, NoteId, WalletDb,
 };
 use zcash_primitives::consensus::Network::{MainNetwork, TestNetwork};
@@ -110,25 +112,39 @@ pub extern "C" fn zcashlc_clear_last_error() {
     ffi_helpers::error_handling::clear_last_error()
 }
 
-/// Sets up the internal structure of the data database.
+/// Sets up the internal structure of the data database.  The value for `seed` may be provided as a
+/// null pointer if the caller wishes to attempt migrations without providing the wallet's seed
+/// value.
+///
+/// Returns 0 if successful, 1 if the seed must be provided in order to execute the requested
+/// migrations, or -1 otherwise.
 #[no_mangle]
 pub extern "C" fn zcashlc_init_data_database(
     db_data: *const u8,
     db_data_len: usize,
+    seed: *const u8,
+    seed_len: usize,
     network_id: u32,
 ) -> i32 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(db_data, db_data_len)
-        }));
+        let mut db_data = wallet_db(db_data, db_data_len, network)?;
 
-        WalletDb::for_path(db_data, network)
-            .map(|db| init_wallet_db(&db))
-            .map(|_| 1)
-            .map_err(|e| format_err!("Error while initializing data DB: {}", e))
+        let seed = if seed.is_null() {
+            None
+        } else {
+            Some(Secret::new(
+                (unsafe { slice::from_raw_parts(seed, seed_len) }).to_vec(),
+            ))
+        };
+
+        match init_wallet_db(&mut db_data, seed) {
+            Ok(_) => Ok(0),
+            Err(MigratorError::Adapter(WalletMigrationError::SeedRequired)) => Ok(1),
+            Err(e) => Err(format_err!("Error while initializing data DB: {}", e)),
+        }
     });
-    unwrap_exc_or_null(res)
+    unwrap_exc_or(res, -1)
 }
 
 /// Initialises the data database with the given number of accounts using the given seed.
@@ -501,21 +517,17 @@ pub unsafe extern "C" fn zcashlc_derive_extended_full_viewing_key(
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let extsk = CStr::from_ptr(extsk).to_str()?;
-        let extfvk = match decode_extended_spending_key(
-            network.hrp_sapling_extended_spending_key(),
-            &extsk,
-        ) {
-            Ok(Some(extsk)) => ExtendedFullViewingKey::from(&extsk),
-            Ok(None) => {
-                return Err(format_err!("Deriving viewing key from spending key returned no results. Encoding was valid but type was incorrect."));
-            }
-            Err(e) => {
-                return Err(format_err!(
-                    "Error while deriving viewing key from spending key: {}",
-                    e
-                ));
-            }
-        };
+        let extfvk =
+            match decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), &extsk)
+            {
+                Ok(extsk) => ExtendedFullViewingKey::from(&extsk),
+                Err(e) => {
+                    return Err(format_err!(
+                        "Error while deriving viewing key from spending key: {}",
+                        e
+                    ));
+                }
+            };
 
         let encoded = encode_extended_full_viewing_key(
             network.hrp_sapling_extended_full_viewing_key(),
@@ -650,16 +662,11 @@ pub unsafe extern "C" fn zcashlc_is_valid_viewing_key(key: *const c_char, networ
         let network = parse_network(network_id)?;
         let vkstr = CStr::from_ptr(key).to_str()?;
 
-        match decode_extended_full_viewing_key(
+        Ok(decode_extended_full_viewing_key(
             &network.hrp_sapling_extended_full_viewing_key(),
             &vkstr,
-        ) {
-            Ok(s) => match s {
-                None => Ok(false),
-                _ => Ok(true),
-            },
-            Err(_) => Ok(false),
-        }
+        )
+        .is_ok())
     });
     unwrap_exc_or(res, false)
 }
@@ -1225,10 +1232,7 @@ pub extern "C" fn zcashlc_create_to_address(
         let extsk =
             match decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), &extsk)
             {
-                Ok(Some(extsk)) => extsk,
-                Ok(None) => {
-                    return Err(format_err!("ExtendedSpendingKey is for the wrong network"));
-                }
+                Ok(extsk) => extsk,
                 Err(e) => {
                     return Err(format_err!("Invalid ExtendedSpendingKey: {}", e));
                 }
@@ -1480,16 +1484,9 @@ pub extern "C" fn zcashlc_shield_funds(
         let sk = legacy::keys::AccountPrivKey::from_extended_privkey(xprv.extended_key);
 
         let extfvk =
-            match decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), &extsk)
-            {
-                Ok(Some(extsk)) => ExtendedFullViewingKey::from(&extsk),
-                Ok(None) => {
-                    return Err(format_err!("ExtendedSpendingKey is for the wrong network"));
-                }
-                Err(e) => {
-                    return Err(format_err!("Invalid ExtendedSpendingKey: {}", e));
-                }
-            };
+            decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), &extsk)
+                .map(|extsk| ExtendedFullViewingKey::from(&extsk))
+                .map_err(|e| format_err!("Invalid ExtendedSpendingKey: {}", e))?;
 
         let memo = Memo::from_str(&memo).map_err(|_| format_err!("Invalid memo"))?;
         let memo_bytes = MemoBytes::from(memo);
