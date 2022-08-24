@@ -74,22 +74,42 @@ where
     }
 }
 
-fn wallet_db(
+/// Helper method for construcing a WalletDb value from path data provided over the FFI.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+unsafe fn wallet_db(
     db_data: *const u8,
     db_data_len: usize,
     network: Network,
 ) -> Result<WalletDb<Network>, failure::Error> {
-    let db_data = Path::new(OsStr::from_bytes(unsafe {
-        slice::from_raw_parts(db_data, db_data_len)
-    }));
+    let db_data = Path::new(OsStr::from_bytes(slice::from_raw_parts(
+        db_data,
+        db_data_len,
+    )));
     WalletDb::for_path(db_data, network)
         .map_err(|e| format_err!("Error opening wallet database connection: {}", e))
 }
 
-fn block_db(cache_db: *const u8, cache_db_len: usize) -> Result<BlockDb, failure::Error> {
-    let cache_db = Path::new(OsStr::from_bytes(unsafe {
-        slice::from_raw_parts(cache_db, cache_db_len)
-    }));
+/// Helper method for construcing a BlockDb value from path data provided over the FFI.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+unsafe fn block_db(cache_db: *const u8, cache_db_len: usize) -> Result<BlockDb, failure::Error> {
+    let cache_db = Path::new(OsStr::from_bytes(slice::from_raw_parts(
+        cache_db,
+        cache_db_len,
+    )));
     BlockDb::for_path(cache_db)
         .map_err(|e| format_err!("Error opening block source database connection: {}", e))
 }
@@ -101,6 +121,14 @@ pub extern "C" fn zcashlc_last_error_length() -> i32 {
 }
 
 /// Copies the last error message into the provided allocated buffer.
+///
+/// # Safety
+///
+/// - `buf` must be non-null and valid for reads for `length` bytes, and it must have an alignment
+///   of `1`.
+/// - The memory referenced by `buf` must not be mutated for the duration of the function call.
+/// - The total size `length` must be no larger than `isize::MAX`. See the safety documentation of
+///   pointer::offset.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_error_message_utf8(buf: *mut c_char, length: i32) -> i32 {
     ffi_helpers::error_handling::error_message_utf8(buf, length)
@@ -118,6 +146,19 @@ pub extern "C" fn zcashlc_clear_last_error() {
 ///
 /// Returns 0 if successful, 1 if the seed must be provided in order to execute the requested
 /// migrations, or -1 otherwise.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_init_data_database(
     db_data: *const u8,
@@ -128,7 +169,7 @@ pub extern "C" fn zcashlc_init_data_database(
 ) -> i32 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let mut db_data = wallet_db(db_data, db_data_len, network)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let seed = if seed.is_null() {
             None
@@ -148,11 +189,28 @@ pub extern "C" fn zcashlc_init_data_database(
 }
 
 /// Initialises the data database with the given number of accounts using the given seed.
+/// Accounts will be sequentially numbered starting from `0`.
 ///
-/// Returns the ExtendedSpendingKeys for the accounts. The caller should store these
-/// securely for use while spending.
+/// Returns the Bech32-encoded string representation of the ExtendedSpendingKey for each account,
+/// in order of account identifier, encoded as null-terminated UTF-8 strings. The caller should
+/// store these securely for use while spending.
 ///
-/// Call `zcashlc_vec_string_free` on the returned pointer when you are finished with it.
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
+/// - `capacity_ret` must point to a variable capable of holding a single `usize` value, which will
+///   be used to store the number of strings in the returned vector.
+/// - Call [`zcashlc_vec_string_free`] to free the memory associated with the returned pointer when
+///   you are finished using it.
 #[no_mangle]
 pub extern "C" fn zcashlc_init_accounts_table(
     db_data: *const u8,
@@ -165,7 +223,7 @@ pub extern "C" fn zcashlc_init_accounts_table(
 ) -> *mut *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
         let accounts = if accounts >= 0 {
             accounts as u32
@@ -176,7 +234,7 @@ pub extern "C" fn zcashlc_init_accounts_table(
         let usks: Vec<_> = (0..accounts)
             .map(|account| {
                 let account_id = AccountId::from(account);
-                UnifiedSpendingKey::from_seed(&network, &seed, account_id)
+                UnifiedSpendingKey::from_seed(&network, seed, account_id)
                     .map(|usk| (account_id, usk))
                     .map_err(|e| {
                         format_err!("error generating unified spending key from seed: {:?}", e)
@@ -206,15 +264,25 @@ pub extern "C" fn zcashlc_init_accounts_table(
                 unsafe { *capacity_ret.as_mut().unwrap() = v.capacity() };
                 let p = v.as_mut_ptr();
                 std::mem::forget(v);
-                return p;
+                p
             })
             .map_err(|e| format_err!("Error while initializing accounts: {}", e))
     });
     unwrap_exc_or_null(res)
 }
 
-/// Initialises the data database with the given unified full viewing keys
-/// Call `zcashlc_vec_string_free` on the returned pointer when you are finished with it.
+/// Initialises the data database with the given set of unified full viewing keys.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `uvks` must be non-null and must point to a struct having the layout of [`FFIUVKBoxedSlice`]
+///   with alignment corresponding to the size of a pointer. See the safety documentation of
+///   [`FFIUVKBoxedSlice`].
 #[no_mangle]
 pub extern "C" fn zcashlc_init_accounts_table_with_keys(
     db_data: *const u8,
@@ -224,16 +292,16 @@ pub extern "C" fn zcashlc_init_accounts_table_with_keys(
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let s: Box<FFIUVKBoxedSlice> = unsafe { Box::from_raw(uvks) };
         let slice: &mut [FFIUnifiedViewingKey] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
 
         let ufvks: HashMap<AccountId, UnifiedFullViewingKey> = slice
-            .into_iter()
+            .iter_mut()
             .map(|u| {
                 let ufvkstr = unsafe { CStr::from_ptr(u.encoding).to_str().unwrap() };
-                UnifiedFullViewingKey::decode(&network, &ufvkstr)
+                UnifiedFullViewingKey::decode(&network, ufvkstr)
                     .map(|ufvk| (AccountId::from(u.account_id), ufvk))
             })
             .collect::<Result<HashMap<_, _>, _>>()
@@ -251,7 +319,15 @@ pub extern "C" fn zcashlc_init_accounts_table_with_keys(
 /// Returns the ExtendedSpendingKeys for the accounts. The caller should store these
 /// securely for use while spending.
 ///
-/// Call `zcashlc_vec_string_free` on the returned pointer when you are finished with it.
+/// # Safety
+///
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
+/// - Call `zcashlc_vec_string_free` to free the memory associated with the returned pointer when
+///   you are finished using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_derive_extended_spending_keys(
     seed: *const u8,
@@ -271,7 +347,7 @@ pub unsafe extern "C" fn zcashlc_derive_extended_spending_keys(
 
         let usks: Vec<_> = (0..accounts)
             .map(|account| {
-                UnifiedSpendingKey::from_seed(&network, &seed, AccountId::from(account)).map_err(
+                UnifiedSpendingKey::from_seed(&network, seed, AccountId::from(account)).map_err(
                     |e| format_err!("error generating unified spending key from seed: {:?}", e),
                 )
             })
@@ -297,12 +373,34 @@ pub unsafe extern "C" fn zcashlc_derive_extended_spending_keys(
     unwrap_exc_or_null(res)
 }
 
+/// A struct that contains an account identifier along with a pointer to the string encoding
+/// of a [`UnifiedFullViewingKey`] value.
+///
+/// # Safety
+///
+/// - `encoding` must be non-null and must point to a null-terminated UTF-8 string.
+///   and it must be aligned to the size of a u32.
 #[repr(C)]
 pub struct FFIUnifiedViewingKey {
     account_id: u32,
     encoding: *const c_char,
 }
 
+/// A struct that contains a pointer to, and length information for, a heap-allocated
+/// slice of [`FFIUnifiedViewingKey`] values.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FFIUnifiedViewingKey>()`
+///   many bytes, and it must be properly aligned. This means in particular:
+///   - The entire memory range pointed to by `ptr` must be contained within a single allocated
+///     object. Slices can never span across multiple allocated objects.
+///   - `ptr` must be non-null and aligned even for zero-length slices.
+///   - `ptr` must point to `len` consecutive properly initialized values of type
+///     [`FFIUnifiedViewingKey`].
+/// - The total size `len * mem::size_of::<FFIUnifiedViewingKey>()` of the slice pointed to
+///   by `ptr` must be no larger than isize::MAX. See the safety documentation of pointer::offset.
+/// - See the safety documentation of [`FFIUnifiedViewingKey`]
 #[repr(C)]
 pub struct FFIUVKBoxedSlice {
     ptr: *mut FFIUnifiedViewingKey,
@@ -331,20 +429,38 @@ fn ufvk_vec_to_ffi(v: Vec<FFIUnifiedViewingKey>) -> *mut FFIUVKBoxedSlice {
     Box::into_raw(Box::new(FFIUVKBoxedSlice { ptr: slim_ptr, len }))
 }
 
+/// Frees an array of FFIUVKBoxedSlice values as allocated by `zcashlc_derive_unified_viewing_keys_from_seed`
+///
+/// # Safety
+///
+/// - `uvks` must be non-null and must point to a struct having the layout of [`FFIUVKBoxedSlice`]
+///   with alignment corresponding to the size of a pointer. See the safety documentation of
+///   [`FFIUVKBoxedSlice`].
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_free_uvk_array(uvks: *mut FFIUVKBoxedSlice) {
-    if uvks.is_null() {
-        return;
-    }
-    let s: Box<FFIUVKBoxedSlice> = Box::from_raw(uvks);
+    if !uvks.is_null() {
+        let s: Box<FFIUVKBoxedSlice> = Box::from_raw(uvks);
 
-    let slice: &mut [FFIUnifiedViewingKey] = slice::from_raw_parts_mut(s.ptr, s.len);
-    drop(Box::from_raw(slice));
-    drop(s);
+        let slice: &mut [FFIUnifiedViewingKey] = slice::from_raw_parts_mut(s.ptr, s.len);
+        drop(Box::from_raw(slice));
+        drop(s);
+    }
 }
 
+/// Derives a new unified full viewing key from the specified seed data and return the
+/// resulting value as a pointer to a [`FFIUVKBoxedSlice`].
+///
+/// # Safety
+///
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
+/// - Call [`zcashlc_free_uvk_array`] to free the memory associated with the returned pointer
+///   when you are done using it.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_unified_full_viewing_keys_from_seed(
+pub extern "C" fn zcashlc_derive_unified_full_viewing_keys_from_seed(
     seed: *const u8,
     seed_len: usize,
     accounts: i32,
@@ -352,7 +468,7 @@ pub unsafe extern "C" fn zcashlc_derive_unified_full_viewing_keys_from_seed(
 ) -> *mut FFIUVKBoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let seed = slice::from_raw_parts(seed, seed_len);
+        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
         let accounts = if accounts > 0 {
             accounts as u32
         } else {
@@ -362,7 +478,7 @@ pub unsafe extern "C" fn zcashlc_derive_unified_full_viewing_keys_from_seed(
         let uvks = (0..accounts)
             .map(|account| {
                 let account_id = AccountId::from(account);
-                UnifiedSpendingKey::from_seed(&network, &seed, account_id)
+                UnifiedSpendingKey::from_seed(&network, seed, account_id)
                     .map_err(|e| {
                         format_err!("error generating unified spending key from seed: {:?}", e)
                     })
@@ -377,13 +493,27 @@ pub unsafe extern "C" fn zcashlc_derive_unified_full_viewing_keys_from_seed(
     unwrap_exc_or_null(res)
 }
 
-/// Derives Extended Full Viewing Keys from the given seed into 'accounts' number of accounts.
-/// Returns the Extended Full Viewing Keys for the accounts. The caller should store these
-/// securely
+/// Derives Extended Full Viewing Keys from the given seed for a number of accounts
+/// specified by the `accounts` parameter. Accounts will be sequentially numbered
+/// starting from `0`.
 ///
-/// Call `zcashlc_vec_string_free` on the returned pointer when you are finished with it.
+/// Returns the Bech32-encoded string representation of the ExtendedFullViewingKey for each
+/// account, in order of account identifier, encoded as null-terminated UTF-8 strings. The caller
+/// should store these securely.
+///
+/// # Safety
+///
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
+/// - `capacity_ret` must point to a variable capable of holding a single `usize` value, which will
+///   be used to store the number of strings in the returned vector.
+/// - Call [`zcashlc_vec_string_free`] to free the memory associated with the returned pointer when
+///   you are finished using it.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_extended_full_viewing_keys(
+pub extern "C" fn zcashlc_derive_extended_full_viewing_keys(
     seed: *const u8,
     seed_len: usize,
     accounts: i32,
@@ -392,7 +522,7 @@ pub unsafe extern "C" fn zcashlc_derive_extended_full_viewing_keys(
 ) -> *mut *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let seed = slice::from_raw_parts(seed, seed_len);
+        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
         let accounts = if accounts > 0 {
             accounts as u32
         } else {
@@ -402,7 +532,7 @@ pub unsafe extern "C" fn zcashlc_derive_extended_full_viewing_keys(
         let extsks: Vec<_> = (0..accounts)
             .map(|account| {
                 ExtendedFullViewingKey::from(&sapling::spending_key(
-                    &seed,
+                    seed,
                     network.coin_type(),
                     AccountId::from(account),
                 ))
@@ -421,7 +551,7 @@ pub unsafe extern "C" fn zcashlc_derive_extended_full_viewing_keys(
             })
             .collect();
         assert!(v.len() == accounts as usize);
-        *capacity_ret.as_mut().unwrap() = v.capacity();
+        unsafe { *capacity_ret.as_mut().unwrap() = v.capacity() };
         let p = v.as_mut_ptr();
         std::mem::forget(v);
         Ok(p)
@@ -429,10 +559,21 @@ pub unsafe extern "C" fn zcashlc_derive_extended_full_viewing_keys(
     unwrap_exc_or_null(res)
 }
 
-/// derives a unified address from the given seed.
-/// call zcashlc_string_free with the returned pointer when done using it
+/// Derives a unified address from the given seed and account index.
+///
+/// Returns the Bech32-encoded string representation of the derived address.
+///
+/// # Safety
+///
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
+/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+///   when done using it.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_unified_address_from_seed(
+pub extern "C" fn zcashlc_derive_unified_address_from_seed(
     seed: *const u8,
     seed_len: usize,
     account_index: i32,
@@ -440,14 +581,14 @@ pub unsafe extern "C" fn zcashlc_derive_unified_address_from_seed(
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let seed = slice::from_raw_parts(seed, seed_len);
+        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
         let account_index = if account_index >= 0 {
             account_index as u32
         } else {
             return Err(format_err!("accounts argument must be greater than zero"));
         };
         let account_id = AccountId::from(account_index);
-        let ufvk = UnifiedSpendingKey::from_seed(&network, &seed, account_id)
+        let ufvk = UnifiedSpendingKey::from_seed(&network, seed, account_id)
             .map_err(|e| format_err!("error generating unified spending key from seed: {:?}", e))
             .map(|usk| usk.to_unified_full_viewing_key())?;
 
@@ -460,18 +601,28 @@ pub unsafe extern "C" fn zcashlc_derive_unified_address_from_seed(
     unwrap_exc_or_null(res)
 }
 
-/// derives a shielded address from the given viewing key.
-/// call zcashlc_string_free with the returned pointer when done using it
+/// Derives a transparent address from the given public key.
+///
+/// Returns a pointer to Base58-encoded UTF-8 string corresponding to the
+/// generated address.
+///
+/// # Safety
+///
+/// - `pubkey` must be non-null and must point to a null-terminated UTF-8 string representing
+///   a base58-encoded BIP 32 public key.
+/// - The memory referenced by `pubkey` must not be mutated for the duration of the function call.
+/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+///   when done using it.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_transparent_address_from_public_key(
+pub extern "C" fn zcashlc_derive_transparent_address_from_public_key(
     pubkey: *const c_char,
     network_id: u32,
 ) -> *mut c_char {
     #[allow(deprecated)]
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let public_key_str = CStr::from_ptr(pubkey).to_str()?;
-        let pk = PublicKey::from_str(&public_key_str)?;
+        let public_key_str = unsafe { CStr::from_ptr(pubkey).to_str()? };
+        let pk = PublicKey::from_str(public_key_str)?;
         let taddr = legacy::keys::pubkey_to_address(&pk).encode(&network);
 
         Ok(CString::new(taddr).unwrap().into_raw())
@@ -479,17 +630,27 @@ pub unsafe extern "C" fn zcashlc_derive_transparent_address_from_public_key(
     unwrap_exc_or_null(res)
 }
 
-/// derives a unified address from the given viewing key.
-/// call zcashlc_string_free with the returned pointer when done using it
+/// Derives a unified address from the given unified full viewing key.
+///
+/// Returns the Bech32-encoded string representation of the unified address,
+/// encoded as a null-terminated UTF-8 string.
+///
+/// # Safety
+///
+/// - `ufvk` must be non-null and must point to a null-terminated UTF-8 string representing
+///   a Bech32-encoded unified full viewing key for the given network.
+/// - The memory referenced by `ufvk` must not be mutated for the duration of the function call.
+/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+///   when done using it.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_unified_address_from_viewing_key(
+pub extern "C" fn zcashlc_derive_unified_address_from_viewing_key(
     ufvk: *const c_char,
     network_id: u32,
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let ufvk_string = CStr::from_ptr(ufvk).to_str()?;
-        let ufvk = match UnifiedFullViewingKey::decode(&network, &ufvk_string) {
+        let ufvk_string = unsafe { CStr::from_ptr(ufvk).to_str()? };
+        let ufvk = match UnifiedFullViewingKey::decode(&network, ufvk_string) {
             Ok(ufvk) => ufvk,
             Err(e) => {
                 return Err(format_err!(
@@ -507,27 +668,39 @@ pub unsafe extern "C" fn zcashlc_derive_unified_address_from_viewing_key(
     unwrap_exc_or_null(res)
 }
 
-/// derives a shielded address from the given extended full viewing key.
-/// call zcashlc_string_free with the returned pointer when done using it
+/// Derives a Sapling extended full viewing key from address from the given extended
+/// spending key.
+///
+/// Returns the Bech32-encoded string representation of the ExtendedFullViewingKey,
+/// encoded as a null-terminated UTF-8 string.
+///
+/// # Safety
+///
+/// - `extsk` must be non-null and must point to a null-terminated UTF-8 string representing
+///   a Bech32-encoded Sapling extended spending key for the given network.
+/// - The memory referenced by `extsk` must not be mutated for the duration of the function call.
+/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+///   when done using it.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_extended_full_viewing_key(
+pub extern "C" fn zcashlc_derive_extended_full_viewing_key(
     extsk: *const c_char,
     network_id: u32,
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let extsk = CStr::from_ptr(extsk).to_str()?;
-        let extfvk =
-            match decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), &extsk)
-            {
-                Ok(extsk) => ExtendedFullViewingKey::from(&extsk),
-                Err(e) => {
-                    return Err(format_err!(
-                        "Error while deriving viewing key from spending key: {}",
-                        e
-                    ));
-                }
-            };
+        let extsk = unsafe { CStr::from_ptr(extsk).to_str()? };
+        let extfvk = match decode_extended_spending_key(
+            network.hrp_sapling_extended_spending_key(),
+            extsk,
+        ) {
+            Ok(extsk) => ExtendedFullViewingKey::from(&extsk),
+            Err(e) => {
+                return Err(format_err!(
+                    "Error while deriving viewing key from spending key: {}",
+                    e
+                ));
+            }
+        };
 
         let encoded = encode_extended_full_viewing_key(
             network.hrp_sapling_extended_full_viewing_key(),
@@ -539,10 +712,24 @@ pub unsafe extern "C" fn zcashlc_derive_extended_full_viewing_key(
     unwrap_exc_or_null(res)
 }
 
-/// Initialises the data database with the given block.
+/// Initialises the data database with the given block metadata.
 ///
 /// This enables a newly-created database to be immediately-usable, without needing to
 /// synchronise historic blocks.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `hash_hex` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `hash_hex` must not be mutated for the duration of the function call.
+/// - `sapling_tree_hex` must be non-null and must point to a null-terminated UTF-8 string
+///   containing the encoded byte representation of a Sapling commitment tree.
+/// - The memory referenced by `sapling_tree_hex` must not be mutated for the duration of the
+///   function call.
 #[no_mangle]
 pub extern "C" fn zcashlc_init_blocks_table(
     db_data: *const u8,
@@ -555,7 +742,7 @@ pub extern "C" fn zcashlc_init_blocks_table(
 ) -> i32 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let hash = {
             let mut hash = hex::decode(unsafe { CStr::from_ptr(hash_hex) }.to_str()?).unwrap();
             hash.reverse();
@@ -578,9 +765,17 @@ pub extern "C" fn zcashlc_init_blocks_table(
     unwrap_exc_or_null(res)
 }
 
-/// Returns the address for the account.
+/// Returns the default Sapling payment address for the specified account.
 ///
-/// Call `zcashlc_string_free` on the returned pointer when you are finished with it.
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+///   when done using it.
 #[no_mangle]
 pub extern "C" fn zcashlc_get_address(
     db_data: *const u8,
@@ -590,7 +785,7 @@ pub extern "C" fn zcashlc_get_address(
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account = if account >= 0 {
             account as u32
         } else {
@@ -615,24 +810,28 @@ pub extern "C" fn zcashlc_get_address(
     unwrap_exc_or_null(res)
 }
 
-/// Returns true when the address is valid and shielded.
-/// Returns false in any other case
-/// Errors when the provided address belongs to another network
+/// Returns true when the provided address decodes to a valid Sapling payment address for the
+/// specified network, false in any other case.
+///
+/// # Safety
+///
+/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `address` must not be mutated for the duration of the function call.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_shielded_address(
+pub extern "C" fn zcashlc_is_valid_shielded_address(
     address: *const c_char,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let addr = CStr::from_ptr(address).to_str()?;
-        Ok(is_valid_shielded_address(&addr, &network))
+        let addr = unsafe { CStr::from_ptr(address).to_str()? };
+        Ok(is_valid_shielded_address(addr, &network))
     });
     unwrap_exc_or(res, false)
 }
 
 fn is_valid_shielded_address(address: &str, network: &Network) -> bool {
-    match RecipientAddress::decode(network, &address) {
+    match RecipientAddress::decode(network, address) {
         Some(addr) => match addr {
             RecipientAddress::Shielded(_) => true,
             RecipientAddress::Transparent(_) | RecipientAddress::Unified(_) => false,
@@ -641,56 +840,28 @@ fn is_valid_shielded_address(address: &str, network: &Network) -> bool {
     }
 }
 
-/// Returns true when the address is valid and transparent.
-/// Returns false in any other case
+/// Returns true when the address is a valid transparent payment address for the specified network,
+/// false in any other case.
+///
+/// # Safety
+///
+/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `address` must not be mutated for the duration of the function call.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_transparent_address(
+pub extern "C" fn zcashlc_is_valid_transparent_address(
     address: *const c_char,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let addr = CStr::from_ptr(address).to_str()?;
-        Ok(is_valid_transparent_address(&addr, &network))
-    });
-    unwrap_exc_or(res, false)
-}
-/// returns whether the given viewing key is valid or not
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_viewing_key(key: *const c_char, network_id: u32) -> bool {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let vkstr = CStr::from_ptr(key).to_str()?;
-
-        Ok(decode_extended_full_viewing_key(
-            &network.hrp_sapling_extended_full_viewing_key(),
-            &vkstr,
-        )
-        .is_ok())
-    });
-    unwrap_exc_or(res, false)
-}
-
-/// returns whether the given unified full viewing key is valid or not
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_unified_full_viewing_key(
-    ufvk: *const c_char,
-    network_id: u32,
-) -> bool {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let ufvkstr = CStr::from_ptr(ufvk).to_str()?;
-
-        match UnifiedFullViewingKey::decode(&network, &ufvkstr) {
-            Ok(_) => Ok(true),
-            Err(_) => Ok(false),
-        }
+        let addr = unsafe { CStr::from_ptr(address).to_str()? };
+        Ok(is_valid_transparent_address(addr, &network))
     });
     unwrap_exc_or(res, false)
 }
 
 fn is_valid_transparent_address(address: &str, network: &Network) -> bool {
-    match RecipientAddress::decode(network, &address) {
+    match RecipientAddress::decode(network, address) {
         Some(addr) => match addr {
             RecipientAddress::Shielded(_) | RecipientAddress::Unified(_) => false,
             RecipientAddress::Transparent(_) => true,
@@ -699,24 +870,72 @@ fn is_valid_transparent_address(address: &str, network: &Network) -> bool {
     }
 }
 
-/// Returns true when the address is a valid ZIP 316 Unified Address.
-/// Returns false in any other case
-/// Errors when the provided address belongs to another network
+/// Returns true when the provided key decodes to a valid Sapling extended full viewing key for the
+/// specified network, false in any other case.
+///
+/// # Safety
+///
+/// - `key` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `key` must not be mutated for the duration of the function call.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_unified_address(
+pub extern "C" fn zcashlc_is_valid_viewing_key(key: *const c_char, network_id: u32) -> bool {
+    let res =
+        catch_panic(|| {
+            let network = parse_network(network_id)?;
+            let vkstr = unsafe { CStr::from_ptr(key).to_str()? };
+
+            Ok(decode_extended_full_viewing_key(
+                network.hrp_sapling_extended_full_viewing_key(),
+                vkstr,
+            )
+            .is_ok())
+        });
+    unwrap_exc_or(res, false)
+}
+
+/// Returns true when the provided key decodes to a valid unified full viewing key for the
+/// specified network, false in any other case.
+///
+/// # Safety
+///
+/// - `ufvk` must be non-null and must point to a null-terminated UTF-8 string.  - The memory
+/// referenced by `ufvk` must not be mutated for the duration of the function call.
+#[no_mangle]
+pub extern "C" fn zcashlc_is_valid_unified_full_viewing_key(
+    ufvk: *const c_char,
+    network_id: u32,
+) -> bool {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let ufvkstr = unsafe { CStr::from_ptr(ufvk).to_str()? };
+
+        Ok(UnifiedFullViewingKey::decode(&network, ufvkstr).is_ok())
+    });
+    unwrap_exc_or(res, false)
+}
+
+/// Returns true when the provided key decodes to a valid unified address for the
+/// specified network, false in any other case.
+///
+/// # Safety
+///
+/// - `address` must be non-null and must point to a null-terminated UTF-8 string.  - The memory
+/// referenced by `address` must not be mutated for the duration of the function call.
+#[no_mangle]
+pub extern "C" fn zcashlc_is_valid_unified_address(
     address: *const c_char,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let addr = CStr::from_ptr(address).to_str()?;
-        Ok(is_valid_unified_address(&addr, &network))
+        let addr = unsafe { CStr::from_ptr(address).to_str()? };
+        Ok(is_valid_unified_address(addr, &network))
     });
     unwrap_exc_or(res, false)
 }
 
 fn is_valid_unified_address(address: &str, network: &Network) -> bool {
-    match RecipientAddress::decode(network, &address) {
+    match RecipientAddress::decode(network, address) {
         Some(addr) => match addr {
             RecipientAddress::Unified(_) => true,
             RecipientAddress::Shielded(_) | RecipientAddress::Transparent(_) => false,
@@ -725,7 +944,15 @@ fn is_valid_unified_address(address: &str, network: &Network) -> bool {
     }
 }
 
-/// Returns the balance for the account, including all unspent notes that we know about.
+/// Returns the balance for the specified account, including all unspent notes that we know about.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_get_balance(
     db_data: *const u8,
@@ -735,16 +962,16 @@ pub extern "C" fn zcashlc_get_balance(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         if account >= 0 {
             let (_, max_height) = (&db_data)
                 .block_height_extrema()
                 .map_err(|e| format_err!("Error while fetching max block height: {}", e))
                 .and_then(|opt| {
-                    opt.ok_or(format_err!(
-                        "No blockchain information available; scan required."
-                    ))
+                    opt.ok_or_else(|| {
+                        format_err!("No blockchain information available; scan required.")
+                    })
                 })?;
 
             (&db_data)
@@ -759,7 +986,15 @@ pub extern "C" fn zcashlc_get_balance(
 }
 
 /// Returns the verified balance for the account, which ignores notes that have been
-/// received too recently and are not yet deemed spendable.
+/// received too recently and are not yet deemed spendable according to `min_confirmations`.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_get_verified_balance(
     db_data: *const u8,
@@ -770,7 +1005,7 @@ pub extern "C" fn zcashlc_get_verified_balance(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         if account >= 0 {
             (&db_data)
                 .get_target_and_anchor_heights(min_confirmations)
@@ -778,7 +1013,7 @@ pub extern "C" fn zcashlc_get_verified_balance(
                 .and_then(|opt_anchor| {
                     opt_anchor
                         .map(|(_, a)| a)
-                        .ok_or(format_err!("Anchor height not available; scan required."))
+                        .ok_or_else(|| format_err!("Anchor height not available; scan required."))
                 })
                 .and_then(|anchor| {
                     (&db_data)
@@ -793,8 +1028,18 @@ pub extern "C" fn zcashlc_get_verified_balance(
     unwrap_exc_or(res, -1)
 }
 
-/// Returns the verified transparent balance for the address, which ignores utxos that have been
-/// received too recently and are not yet deemed spendable.
+/// Returns the verified transparent balance for `address`, which ignores utxos that have been
+/// received too recently and are not yet deemed spendable according to `min_confirmations`.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `address` must not be mutated for the duration of the function call.
 #[no_mangle]
 pub extern "C" fn zcashlc_get_verified_transparent_balance(
     db_data: *const u8,
@@ -805,16 +1050,16 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        let taddr = TransparentAddress::decode(&network, &addr).unwrap();
+        let taddr = TransparentAddress::decode(&network, addr).unwrap();
         let amount = (&db_data)
             .get_target_and_anchor_heights(min_confirmations)
             .map_err(|e| format_err!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
                 opt_anchor
                     .map(|(h, _)| h)
-                    .ok_or(format_err!("height not available; scan required."))
+                    .ok_or_else(|| format_err!("height not available; scan required."))
             })
             .and_then(|anchor| {
                 (&db_data)
@@ -833,8 +1078,17 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance(
     unwrap_exc_or(res, -1)
 }
 
-/// Returns the verified transparent balance for the address, which ignores utxos that have been
-/// received too recently and are not yet deemed spendable.
+/// Returns the balance for `address`, including all UTXOs that we know about.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `address` must not be mutated for the duration of the function call.
 #[no_mangle]
 pub extern "C" fn zcashlc_get_total_transparent_balance(
     db_data: *const u8,
@@ -844,16 +1098,16 @@ pub extern "C" fn zcashlc_get_total_transparent_balance(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        let taddr = TransparentAddress::decode(&network, &addr).unwrap();
+        let taddr = TransparentAddress::decode(&network, addr).unwrap();
         let amount = (&db_data)
             .get_target_and_anchor_heights(0u32)
             .map_err(|e| format_err!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
                 opt_anchor
                     .map(|(h, _)| h)
-                    .ok_or(format_err!("height not available; scan required."))
+                    .ok_or_else(|| format_err!("height not available; scan required."))
             })
             .and_then(|anchor| {
                 (&db_data)
@@ -877,7 +1131,15 @@ pub extern "C" fn zcashlc_get_total_transparent_balance(
 /// The note is identified by its row index in the `received_notes` table within the data
 /// database.
 ///
-/// Call `zcashlc_string_free` on the returned pointer when you are finished with it.
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+///   when done using it.
 #[no_mangle]
 pub extern "C" fn zcashlc_get_received_memo_as_utf8(
     db_data: *const u8,
@@ -887,7 +1149,7 @@ pub extern "C" fn zcashlc_get_received_memo_as_utf8(
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let memo = (&db_data)
             .get_memo(NoteId::ReceivedNoteId(id_note))
@@ -908,7 +1170,15 @@ pub extern "C" fn zcashlc_get_received_memo_as_utf8(
 /// The note is identified by its row index in the `sent_notes` table within the data
 /// database.
 ///
-/// Call `zcashlc_string_free` on the returned pointer when you are finished with it.
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+///   when done using it.
 #[no_mangle]
 pub extern "C" fn zcashlc_get_sent_memo_as_utf8(
     db_data: *const u8,
@@ -918,7 +1188,7 @@ pub extern "C" fn zcashlc_get_sent_memo_as_utf8(
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let memo = (&db_data)
             .get_memo(NoteId::SentNoteId(id_note))
@@ -950,6 +1220,19 @@ pub extern "C" fn zcashlc_get_sent_memo_as_utf8(
 /// - `0` if there was an error during validation unrelated to chain validity.
 ///
 /// This function does not mutate either of the databases.
+///
+/// # Safety
+///
+/// - `db_cache` must be non-null and valid for reads for `db_cache_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_cache` must not be mutated for the duration of the function call.
+/// - The total size `db_cache_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_validate_combined_chain(
     db_cache: *const u8,
@@ -960,8 +1243,8 @@ pub extern "C" fn zcashlc_validate_combined_chain(
 ) -> i32 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let block_db = block_db(db_cache, db_cache_len)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let block_db = unsafe { block_db(db_cache, db_cache_len)? };
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let validate_from = (&db_data)
             .get_max_height_hash()
@@ -984,6 +1267,17 @@ pub extern "C" fn zcashlc_validate_combined_chain(
     });
     unwrap_exc_or_null(res)
 }
+
+/// Returns the most recent block height to which it is possible to reset the state
+/// of the data database.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_get_nearest_rewind_height(
     db_data: *const u8,
@@ -997,7 +1291,7 @@ pub extern "C" fn zcashlc_get_nearest_rewind_height(
             Ok(height)
         } else {
             let network = parse_network(network_id)?;
-            let db_data = wallet_db(db_data, db_data_len, network)?;
+            let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
             let height = BlockHeight::try_from(height)?;
             match get_rewind_height(&db_data) {
                 Ok(Some(best_height)) => {
@@ -1022,10 +1316,19 @@ pub extern "C" fn zcashlc_get_nearest_rewind_height(
     });
     unwrap_exc_or(res, -1)
 }
+
 /// Rewinds the data database to the given height.
 ///
 /// If the requested height is greater than or equal to the height of the last scanned
 /// block, this function does nothing.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_rewind_to_height(
     db_data: *const u8,
@@ -1035,7 +1338,7 @@ pub extern "C" fn zcashlc_rewind_to_height(
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let mut db_data = db_data.get_update_ops()?;
 
         let height = BlockHeight::try_from(height)?;
@@ -1061,6 +1364,19 @@ pub extern "C" fn zcashlc_rewind_to_height(
 ///
 /// Scanned blocks are required to be height-sequential. If a block is missing from the
 /// cache, an error will be signalled.
+///
+/// # Safety
+///
+/// - `db_cache` must be non-null and valid for reads for `db_cache_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_cache` must not be mutated for the duration of the function call.
+/// - The total size `db_cache_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_scan_blocks(
     db_cache: *const u8,
@@ -1072,10 +1388,10 @@ pub extern "C" fn zcashlc_scan_blocks(
 ) -> i32 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let block_db = block_db(db_cache, db_cache_len)?;
-        let db_read = wallet_db(db_data, db_data_len, network)?;
+        let block_db = unsafe { block_db(db_cache, db_cache_len)? };
+        let db_read = unsafe { wallet_db(db_data, db_data_len, network)? };
         let mut db_data = db_read.get_update_ops()?;
-        let limit = if scan_limit <= 0 {
+        let limit = if scan_limit == 0 {
             None
         } else {
             Some(scan_limit)
@@ -1088,6 +1404,25 @@ pub extern "C" fn zcashlc_scan_blocks(
     unwrap_exc_or_null(res)
 }
 
+/// Inserts a UTXO into the wallet database.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `txid_bytes` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `txid_bytes_len` must not be mutated for the duration of the function call.
+/// - The total size `txid_bytes_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `script_bytes` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `script_bytes_len` must not be mutated for the duration of the function call.
+/// - The total size `script_bytes_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_put_utxo(
     db_data: *const u8,
@@ -1103,12 +1438,12 @@ pub extern "C" fn zcashlc_put_utxo(
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let mut db_data = db_data.get_update_ops()?;
 
         let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, txid_bytes_len) };
         let mut txid = [0u8; 32];
-        txid.copy_from_slice(&txid_bytes);
+        txid.copy_from_slice(txid_bytes);
 
         let script_bytes = unsafe { slice::from_raw_parts(script_bytes, script_bytes_len) };
         let script_pubkey = legacy::Script(script_bytes.to_vec());
@@ -1129,8 +1464,20 @@ pub extern "C" fn zcashlc_put_utxo(
     unwrap_exc_or(res, false)
 }
 
+/// Deletes the transparent UTXO data associated with the given transparent address for UTXOs
+/// received at block heights above the specified height.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `taddress` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `taddress` must not be mutated for the duration of the function call.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_clear_utxos(
+pub extern "C" fn zcashlc_clear_utxos(
     db_data: *const u8,
     db_data_len: usize,
     taddress: *const c_char,
@@ -1140,10 +1487,10 @@ pub unsafe extern "C" fn zcashlc_clear_utxos(
     #[allow(deprecated)]
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let mut db_data = db_data.get_update_ops()?;
-        let addr = CStr::from_ptr(taddress).to_str()?;
-        let taddress = TransparentAddress::decode(&network, &addr).unwrap();
+        let addr = unsafe { CStr::from_ptr(taddress).to_str()? };
+        let taddress = TransparentAddress::decode(&network, addr).unwrap();
         let height = BlockHeight::from(above_height as u32);
         match delete_utxos_above(&mut db_data, &taddress, height) {
             Ok(rows) => Ok(rows as i32),
@@ -1153,6 +1500,21 @@ pub unsafe extern "C" fn zcashlc_clear_utxos(
     unwrap_exc_or(res, -1)
 }
 
+/// Attempts to decrypt the specified transaction from its network byte representation
+/// and store its
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `tx` must be non-null and valid for reads for `tx_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `tx` must not be mutated for the duration of the function call.
+/// - The total size `tx_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_decrypt_and_store_transaction(
     db_data: *const u8,
@@ -1164,7 +1526,7 @@ pub extern "C" fn zcashlc_decrypt_and_store_transaction(
 ) -> i32 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_read = wallet_db(db_data, db_data_len, network)?;
+        let db_read = unsafe { wallet_db(db_data, db_data_len, network)? };
         let mut db_data = db_read.get_update_ops()?;
         let tx_bytes = unsafe { slice::from_raw_parts(tx, tx_len) };
 
@@ -1174,7 +1536,7 @@ pub extern "C" fn zcashlc_decrypt_and_store_transaction(
         //   consensus branch ID.
         // - v5 and above transactions ignore the argument, and parse the correct value
         //   from their encoding.
-        let tx = Transaction::read(&tx_bytes[..], BranchId::Sapling)?;
+        let tx = Transaction::read(tx_bytes, BranchId::Sapling)?;
 
         match decrypt_and_store_transaction(&network, &mut db_data, &tx) {
             Ok(()) => Ok(1),
@@ -1192,6 +1554,28 @@ pub extern "C" fn zcashlc_decrypt_and_store_transaction(
 ///
 /// Do not call this multiple times in parallel, or you will generate transactions that
 /// double-spend the same notes.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `extsk` must be non-null and must point to a null-terminated UTF-8 string representing
+///   a Bech32-encoded Sapling extended spending key for the given network.
+/// - `to` must be non-null and must point to a null-terminated UTF-8 string.
+/// - `memo` must be non-null and must point to a null-terminated UTF-8 string.
+/// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
+/// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
+/// - The total size `spend_params_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `output_params` must be non-null and valid for reads for `output_params_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be the Sapling output proving parameters.
+/// - The memory referenced by `output_params` must not be mutated for the duration of the function call.
+/// - The total size `output_params_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_create_to_address(
     db_data: *const u8,
@@ -1210,7 +1594,7 @@ pub extern "C" fn zcashlc_create_to_address(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_read = wallet_db(db_data, db_data_len, network)?;
+        let db_read = unsafe { wallet_db(db_data, db_data_len, network)? };
         let mut db_data = db_read.get_update_ops()?;
         let account = if account >= 0 {
             account as u32
@@ -1233,25 +1617,16 @@ pub extern "C" fn zcashlc_create_to_address(
         }));
 
         let extsk =
-            match decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), &extsk)
-            {
-                Ok(extsk) => extsk,
-                Err(e) => {
-                    return Err(format_err!("Invalid ExtendedSpendingKey: {}", e));
-                }
-            };
+            decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), extsk)
+                .map_err(|e| format_err!("Invalid ExtendedSpendingKey: {}", e))?;
 
-        let to = match RecipientAddress::decode(&network, &to) {
-            Some(to) => to,
-            None => {
-                return Err(format_err!("PaymentAddress is for the wrong network"));
-            }
-        };
+        let to = RecipientAddress::decode(&network, to)
+            .ok_or_else(|| format_err!("PaymentAddress is for the wrong network"))?;
 
         // TODO: consider warning in this case somehow, rather than swallowing this error
         let memo = match to {
             RecipientAddress::Shielded(_) | RecipientAddress::Unified(_) => {
-                let memo_value = Memo::from_str(&memo).map_err(|_| format_err!("Invalid memo"))?;
+                let memo_value = Memo::from_str(memo).map_err(|_| format_err!("Invalid memo"))?;
                 Some(MemoBytes::from(&memo_value))
             }
             RecipientAddress::Transparent(_) => None,
@@ -1288,32 +1663,49 @@ pub extern "C" fn zcashlc_branch_id_for_height(height: i32, network_id: u32) -> 
 }
 
 /// Frees strings returned by other zcashlc functions.
+///
+/// # Safety
+///
+/// - `s` should not be a null pointer.
 #[no_mangle]
-pub extern "C" fn zcashlc_string_free(s: *mut c_char) {
-    unsafe {
-        if s.is_null() {
-            return;
-        }
-        CString::from_raw(s)
-    };
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
+    if !s.is_null() {
+        let s = CString::from_raw(s);
+        drop(s);
+    }
 }
 
 /// Frees vectors of strings returned by other zcashlc functions.
+///
+/// # Safety
+///
+/// - `v` should not be a null pointer.
+/// - The memory referenced by `v` must not be mutated for the duration of the function call.
+/// - `len` must be <= `capacity`
+/// - `len` must be no larger than `isize::MAX`.
+/// - `capacity` must be no larger than `isize::MAX`.
+/// - the contents of `v` must not be null pointers.
+/// - each element of `v` must be a null-terminated UTF-8 string.
 #[no_mangle]
-pub extern "C" fn zcashlc_vec_string_free(v: *mut *mut c_char, len: usize, capacity: usize) {
-    unsafe {
-        if v.is_null() {
-            return;
-        }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub unsafe extern "C" fn zcashlc_vec_string_free(v: *mut *mut c_char, len: usize, capacity: usize) {
+    if !v.is_null() {
         assert!(len <= capacity);
         let v = Vec::from_raw_parts(v, len, capacity);
         v.into_iter().map(|s| CString::from_raw(s)).for_each(drop);
-    };
+    }
 }
 
 /// Derives a transparent account private key from seed
+///
+/// # Safety
+///
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of this function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation of pointer::offset.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_transparent_account_private_key_from_seed(
+pub extern "C" fn zcashlc_derive_transparent_account_private_key_from_seed(
     seed: *const u8,
     seed_len: usize,
     account: i32,
@@ -1321,7 +1713,7 @@ pub unsafe extern "C" fn zcashlc_derive_transparent_account_private_key_from_see
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let seed = slice::from_raw_parts(seed, seed_len);
+        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
         let account = if account >= 0 {
             AccountId::from(account as u32)
         } else {
@@ -1329,11 +1721,11 @@ pub unsafe extern "C" fn zcashlc_derive_transparent_account_private_key_from_see
         };
 
         // Derive the USK to ensure it exists, and fetch its transparent component.
-        let usk = UnifiedSpendingKey::from_seed(&network, &seed, account)
+        let usk = UnifiedSpendingKey::from_seed(&network, seed, account)
             .map_err(|e| format_err!("error generating unified spending key from seed: {:?}", e))?;
         // Derive the corresponding BIP 32 extended privkey.
         let xprv =
-            p2pkh_xprv(&network, &seed, account).expect("USK derivation should ensure this exists");
+            p2pkh_xprv(&network, seed, account).expect("USK derivation should ensure this exists");
         // Verify that we did derive the same privkey.
         assert_eq!(
             usk.transparent().to_account_pubkey().serialize(),
@@ -1354,7 +1746,7 @@ fn p2pkh_xprv<P: Parameters>(
     seed: &[u8],
     account: AccountId,
 ) -> Result<hdwallet_bitcoin::PrivKey, hdwallet::error::Error> {
-    let master_key = ExtendedPrivKey::with_seed(&seed)?;
+    let master_key = ExtendedPrivKey::with_seed(seed)?;
     let key_chain = hdwallet::DefaultKeyChain::new(master_key);
     let chain_path = format!("m/44H/{}H/{}H", params.coin_type(), u32::from(account)).into();
     let (extended_key, derivation) = key_chain.derive_private_key(chain_path)?;
@@ -1374,8 +1766,14 @@ fn p2pkh_addr(
 }
 
 /// Derives a transparent address from the given seed
+///
+/// # Safety
+///
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of this function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation of pointer::offset.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_transparent_address_from_seed(
+pub extern "C" fn zcashlc_derive_transparent_address_from_seed(
     seed: *const u8,
     seed_len: usize,
     account: i32,
@@ -1383,7 +1781,7 @@ pub unsafe extern "C" fn zcashlc_derive_transparent_address_from_seed(
     network_id: u32,
 ) -> *mut c_char {
     let res = catch_panic(|| {
-        let seed = slice::from_raw_parts(seed, seed_len);
+        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
         let network = parse_network(network_id)?;
         let account = if account >= 0 {
             account as u32
@@ -1396,7 +1794,7 @@ pub unsafe extern "C" fn zcashlc_derive_transparent_address_from_seed(
         } else {
             return Err(format_err!("index argument must be positive"));
         };
-        let tfvk = UnifiedSpendingKey::from_seed(&network, &seed, AccountId::from(account))
+        let tfvk = UnifiedSpendingKey::from_seed(&network, seed, AccountId::from(account))
             .map_err(|e| format_err!("error generating unified spending key from seed: {:?}", e))
             .map(|usk| usk.transparent().to_account_pubkey())?;
         let taddr = match p2pkh_addr(tfvk, index) {
@@ -1411,8 +1809,12 @@ pub unsafe extern "C" fn zcashlc_derive_transparent_address_from_seed(
 }
 
 /// Derives a transparent address from the given account private key.
+///
+/// # Safety
+///
+/// - `xprv` must be non-null and must point to a null-terminated UTF-8 string.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_transparent_address_from_account_private_key(
+pub extern "C" fn zcashlc_derive_transparent_address_from_account_private_key(
     xprv: *const c_char,
     index: i32,
     network_id: u32,
@@ -1424,7 +1826,7 @@ pub unsafe extern "C" fn zcashlc_derive_transparent_address_from_account_private
         } else {
             return Err(format_err!("index argument must be positive"));
         };
-        let xprv_str = CStr::from_ptr(xprv).to_str()?;
+        let xprv_str = unsafe { CStr::from_ptr(xprv).to_str()? };
 
         let xprv = match hdwallet_bitcoin::PrivKey::deserialize(xprv_str.to_owned()) {
             Ok(xprv) => xprv,
@@ -1443,6 +1845,30 @@ pub unsafe extern "C" fn zcashlc_derive_transparent_address_from_account_private
     unwrap_exc_or_null(res)
 }
 
+/// Shield transparent UTXOs by sending them to an address associated with the specified Sapling
+/// spending key.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `xprv` must be non-null and must point to a null-terminated UTF-8 string representing
+///   a Base58-encoded transparent spending key.
+/// - `extsk` must be non-null and must point to a null-terminated UTF-8 string representing
+///   a Bech32-encoded Sapling extended spending key for the given network.
+/// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
+/// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
+/// - The total size `spend_params_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `output_params` must be non-null and valid for reads for `output_params_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be the Sapling output proving parameters.
+/// - The memory referenced by `output_params` must not be mutated for the duration of the function call.
+/// - The total size `output_params_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_shield_funds(
     db_data: *const u8,
@@ -1459,7 +1885,7 @@ pub extern "C" fn zcashlc_shield_funds(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let db_data = wallet_db(db_data, db_data_len, network)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let mut update_ops = (&db_data)
             .get_update_ops()
             .map_err(|e| format_err!("Could not obtain a writable database connection: {}", e))?;
@@ -1487,11 +1913,11 @@ pub extern "C" fn zcashlc_shield_funds(
         let sk = legacy::keys::AccountPrivKey::from_extended_privkey(xprv.extended_key);
 
         let extfvk =
-            decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), &extsk)
+            decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), extsk)
                 .map(|extsk| ExtendedFullViewingKey::from(&extsk))
                 .map_err(|e| format_err!("Invalid ExtendedSpendingKey: {}", e))?;
 
-        let memo = Memo::from_str(&memo).map_err(|_| format_err!("Invalid memo"))?;
+        let memo = Memo::from_str(memo).map_err(|_| format_err!("Invalid memo"))?;
         let memo_bytes = MemoBytes::from(memo);
         shield_transparent_funds(
             &mut update_ops,
