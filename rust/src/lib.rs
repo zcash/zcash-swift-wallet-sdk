@@ -274,9 +274,8 @@ pub extern "C" fn zcashlc_init_accounts_table(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `uvks` must be non-null and must point to a struct having the layout of
-///   [`FFIEncodedKeys`] with alignment corresponding to the size of a pointer. See the
-///   safety documentation of [`FFIEncodedKeys`].
+/// - `uvks` must be non-null and must point to a struct having the layout of [`FFIEncodedKeys`].
+///   See the safety documentation of [`FFIEncodedKeys`].
 #[no_mangle]
 pub extern "C" fn zcashlc_init_accounts_table_with_keys(
     db_data: *const u8,
@@ -369,7 +368,6 @@ pub unsafe extern "C" fn zcashlc_derive_extended_spending_keys(
 /// # Safety
 ///
 /// - `encoding` must be non-null and must point to a null-terminated UTF-8 string.
-///   and it must be aligned to the size of a u32.
 #[repr(C)]
 pub struct FFIEncodedKey {
     account_id: u32,
@@ -412,6 +410,10 @@ impl FFIEncodedKeys {
         let boxed_slice: Box<[FFIEncodedKey]> = v.into_boxed_slice();
         let len = boxed_slice.len();
         let fat_ptr: *mut [FFIEncodedKey] = Box::into_raw(boxed_slice);
+        // It is guaranteed to be possible to obtain a raw pointer to the start
+        // of a slice by casting the pointer-to-slice, as documented e.g. at
+        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
+        // TODO: replace with `as_mut_ptr()` when that is stable.
         let slim_ptr: *mut FFIEncodedKey = fat_ptr as _;
         Box::into_raw(Box::new(FFIEncodedKeys { ptr: slim_ptr, len }))
     }
@@ -421,9 +423,8 @@ impl FFIEncodedKeys {
 ///
 /// # Safety
 ///
-/// - `ptr` must be non-null and must point to a struct having the layout of
-///   [`FFIEncodedKeys`] with alignment corresponding to the size of a pointer. See the
-///   safety documentation of [`FFIEncodedKeys`].
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FFIEncodedKeys`].
+///   See the safety documentation of [`FFIEncodedKeys`].
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
     if !ptr.is_null() {
