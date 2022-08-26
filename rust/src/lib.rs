@@ -193,7 +193,7 @@ pub extern "C" fn zcashlc_init_data_database(
 ///
 /// Returns the Bech32-encoded string representation of the ExtendedSpendingKey for each account,
 /// in order of account identifier, encoded as null-terminated UTF-8 strings. The caller should
-/// store these securely for use while spending.
+/// manage the memory of (and store) the returned spending keys in a secure fashion.
 ///
 /// # Safety
 ///
@@ -207,9 +207,7 @@ pub extern "C" fn zcashlc_init_data_database(
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
-/// - `capacity_ret` must point to a variable capable of holding a single `usize` value, which will
-///   be used to store the number of strings in the returned vector.
-/// - Call [`zcashlc_vec_string_free`] to free the memory associated with the returned pointer when
+/// - Call [`zcashlc_free_keys`] to free the memory associated with the returned pointer when
 ///   you are finished using it.
 #[no_mangle]
 pub extern "C" fn zcashlc_init_accounts_table(
@@ -218,9 +216,8 @@ pub extern "C" fn zcashlc_init_accounts_table(
     seed: *const u8,
     seed_len: usize,
     accounts: i32,
-    capacity_ret: *mut usize,
     network_id: u32,
-) -> *mut *mut c_char {
+) -> *mut FFIEncodedKeys {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -250,21 +247,18 @@ pub extern "C" fn zcashlc_init_accounts_table(
         init_accounts_table(&db_data, &ufvks)
             .map(|_| {
                 // Return the Sapling ExtendedSpendingKeys for the created accounts.
-                let mut v: Vec<_> = usks
+                let v: Vec<_> = usks
                     .iter()
-                    .map(|(_, usk)| {
+                    .map(|(account, usk)| {
                         let encoded = encode_extended_spending_key(
                             network.hrp_sapling_extended_spending_key(),
                             usk.sapling(),
                         );
-                        CString::new(encoded).unwrap().into_raw()
+                        FFIEncodedKey::new(*account, encoded)
                     })
                     .collect();
-                assert!(v.len() == accounts as usize);
-                unsafe { *capacity_ret.as_mut().unwrap() = v.capacity() };
-                let p = v.as_mut_ptr();
-                std::mem::forget(v);
-                p
+
+                FFIEncodedKeys::ptr_from_vec(v)
             })
             .map_err(|e| format_err!("Error while initializing accounts: {}", e))
     });
@@ -280,22 +274,21 @@ pub extern "C" fn zcashlc_init_accounts_table(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `uvks` must be non-null and must point to a struct having the layout of [`FFIUVKBoxedSlice`]
-///   with alignment corresponding to the size of a pointer. See the safety documentation of
-///   [`FFIUVKBoxedSlice`].
+/// - `uvks` must be non-null and must point to a struct having the layout of [`FFIEncodedKeys`].
+///   See the safety documentation of [`FFIEncodedKeys`].
 #[no_mangle]
 pub extern "C" fn zcashlc_init_accounts_table_with_keys(
     db_data: *const u8,
     db_data_len: usize,
-    uvks: *mut FFIUVKBoxedSlice,
+    uvks: *mut FFIEncodedKeys,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let s: Box<FFIUVKBoxedSlice> = unsafe { Box::from_raw(uvks) };
-        let slice: &mut [FFIUnifiedViewingKey] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
+        let s: Box<FFIEncodedKeys> = unsafe { Box::from_raw(uvks) };
+        let slice: &mut [FFIEncodedKey] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
 
         let ufvks: HashMap<AccountId, UnifiedFullViewingKey> = slice
             .iter_mut()
@@ -315,9 +308,12 @@ pub extern "C" fn zcashlc_init_accounts_table_with_keys(
     unwrap_exc_or(res, false)
 }
 
-/// Derives Extended Spending Keys from the given seed into 'accounts' number of accounts.
-/// Returns the ExtendedSpendingKeys for the accounts. The caller should store these
-/// securely for use while spending.
+/// Derives and returns Sapling extended spending keys from the given seed for the given number of
+/// accounts. Accounts will be sequentially numbered starting at `0`.
+///
+/// Returns the Bech32-encoded string representation of the ExtendedSpendingKey for each
+/// account, in order of account identifier, encoded as null-terminated UTF-8 strings. The caller
+/// should manage the memory of (and store) the returned spending keys in a secure fashion.
 ///
 /// # Safety
 ///
@@ -326,16 +322,15 @@ pub extern "C" fn zcashlc_init_accounts_table_with_keys(
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
-/// - Call `zcashlc_vec_string_free` to free the memory associated with the returned pointer when
+/// - Call `zcashlc_free_keys` to free the memory associated with the returned pointer when
 ///   you are finished using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_derive_extended_spending_keys(
     seed: *const u8,
     seed_len: usize,
     accounts: i32,
-    capacity_ret: *mut usize,
     network_id: u32,
-) -> *mut *mut c_char {
+) -> *mut FFIEncodedKeys {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let seed = slice::from_raw_parts(seed, seed_len);
@@ -345,30 +340,24 @@ pub unsafe extern "C" fn zcashlc_derive_extended_spending_keys(
             return Err(format_err!("accounts argument must be greater than zero"));
         };
 
-        let usks: Vec<_> = (0..accounts)
-            .map(|account| {
-                UnifiedSpendingKey::from_seed(&network, seed, AccountId::from(account)).map_err(
-                    |e| format_err!("error generating unified spending key from seed: {:?}", e),
-                )
-            })
-            .collect::<Result<_, _>>()?;
-
-        // Return the Sapling ExtendedSpendingKeys for the created accounts.
-        let mut v: Vec<_> = usks
-            .iter()
-            .map(|usk| {
-                let encoded = encode_extended_spending_key(
-                    network.hrp_sapling_extended_spending_key(),
-                    usk.sapling(),
-                );
-                CString::new(encoded).unwrap().into_raw()
-            })
-            .collect();
-        assert!(v.len() == accounts as usize);
-        *capacity_ret.as_mut().unwrap() = v.capacity();
-        let p = v.as_mut_ptr();
-        std::mem::forget(v);
-        Ok(p)
+        Ok(FFIEncodedKeys::ptr_from_vec(
+            (0..accounts)
+                .map(|account| {
+                    let account = AccountId::from(account);
+                    UnifiedSpendingKey::from_seed(&network, seed, account)
+                        .map_err(|e| {
+                            format_err!("error generating unified spending key from seed: {:?}", e)
+                        })
+                        .map(move |usk| {
+                            let encoded = encode_extended_spending_key(
+                                network.hrp_sapling_extended_spending_key(),
+                                usk.sapling(),
+                            );
+                            FFIEncodedKey::new(account, encoded)
+                        })
+                })
+                .collect::<Result<_, _>>()?,
+        ))
     });
     unwrap_exc_or_null(res)
 }
@@ -379,76 +368,76 @@ pub unsafe extern "C" fn zcashlc_derive_extended_spending_keys(
 /// # Safety
 ///
 /// - `encoding` must be non-null and must point to a null-terminated UTF-8 string.
-///   and it must be aligned to the size of a u32.
 #[repr(C)]
-pub struct FFIUnifiedViewingKey {
+pub struct FFIEncodedKey {
     account_id: u32,
     encoding: *const c_char,
 }
 
+impl FFIEncodedKey {
+    fn new(account_id: AccountId, encoded: String) -> Self {
+        FFIEncodedKey {
+            account_id: account_id.into(),
+            encoding: CString::new(encoded).unwrap().into_raw(),
+        }
+    }
+}
+
 /// A struct that contains a pointer to, and length information for, a heap-allocated
-/// slice of [`FFIUnifiedViewingKey`] values.
+/// slice of [`FFIEncodedKey`] values.
 ///
 /// # Safety
 ///
-/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FFIUnifiedViewingKey>()`
+/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FFIEncodedKey>()`
 ///   many bytes, and it must be properly aligned. This means in particular:
 ///   - The entire memory range pointed to by `ptr` must be contained within a single allocated
 ///     object. Slices can never span across multiple allocated objects.
 ///   - `ptr` must be non-null and aligned even for zero-length slices.
 ///   - `ptr` must point to `len` consecutive properly initialized values of type
-///     [`FFIUnifiedViewingKey`].
-/// - The total size `len * mem::size_of::<FFIUnifiedViewingKey>()` of the slice pointed to
+///     [`FFIEncodedKey`].
+/// - The total size `len * mem::size_of::<FFIEncodedKey>()` of the slice pointed to
 ///   by `ptr` must be no larger than isize::MAX. See the safety documentation of pointer::offset.
-/// - See the safety documentation of [`FFIUnifiedViewingKey`]
+/// - See the safety documentation of [`FFIEncodedKey`]
 #[repr(C)]
-pub struct FFIUVKBoxedSlice {
-    ptr: *mut FFIUnifiedViewingKey,
+pub struct FFIEncodedKeys {
+    ptr: *mut FFIEncodedKey,
     len: usize, // number of elems
 }
 
-fn ufvk_to_ffi(
-    account_id: AccountId,
-    ufvk: &UnifiedFullViewingKey,
-    network: Network,
-) -> FFIUnifiedViewingKey {
-    let encoded_ufvk = ufvk.encode(&network);
-
-    FFIUnifiedViewingKey {
-        account_id: account_id.into(),
-        encoding: CString::new(encoded_ufvk).unwrap().into_raw(),
+impl FFIEncodedKeys {
+    pub fn ptr_from_vec(v: Vec<FFIEncodedKey>) -> *mut Self {
+        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
+        let boxed_slice: Box<[FFIEncodedKey]> = v.into_boxed_slice();
+        let len = boxed_slice.len();
+        let fat_ptr: *mut [FFIEncodedKey] = Box::into_raw(boxed_slice);
+        // It is guaranteed to be possible to obtain a raw pointer to the start
+        // of a slice by casting the pointer-to-slice, as documented e.g. at
+        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
+        // TODO: replace with `as_mut_ptr()` when that is stable.
+        let slim_ptr: *mut FFIEncodedKey = fat_ptr as _;
+        Box::into_raw(Box::new(FFIEncodedKeys { ptr: slim_ptr, len }))
     }
 }
 
-fn ufvk_vec_to_ffi(v: Vec<FFIUnifiedViewingKey>) -> *mut FFIUVKBoxedSlice {
-    // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-    let boxed_slice: Box<[FFIUnifiedViewingKey]> = v.into_boxed_slice();
-    let len = boxed_slice.len();
-    let fat_ptr: *mut [FFIUnifiedViewingKey] = Box::into_raw(boxed_slice);
-    let slim_ptr: *mut FFIUnifiedViewingKey = fat_ptr as _;
-    Box::into_raw(Box::new(FFIUVKBoxedSlice { ptr: slim_ptr, len }))
-}
-
-/// Frees an array of FFIUVKBoxedSlice values as allocated by `zcashlc_derive_unified_viewing_keys_from_seed`
+/// Frees an array of FFIEncodedKeys values as allocated by `zcashlc_derive_unified_viewing_keys_from_seed`
 ///
 /// # Safety
 ///
-/// - `uvks` must be non-null and must point to a struct having the layout of [`FFIUVKBoxedSlice`]
-///   with alignment corresponding to the size of a pointer. See the safety documentation of
-///   [`FFIUVKBoxedSlice`].
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FFIEncodedKeys`].
+///   See the safety documentation of [`FFIEncodedKeys`].
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_uvk_array(uvks: *mut FFIUVKBoxedSlice) {
-    if !uvks.is_null() {
-        let s: Box<FFIUVKBoxedSlice> = Box::from_raw(uvks);
+pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
+    if !ptr.is_null() {
+        let s: Box<FFIEncodedKeys> = Box::from_raw(ptr);
 
-        let slice: &mut [FFIUnifiedViewingKey] = slice::from_raw_parts_mut(s.ptr, s.len);
+        let slice: &mut [FFIEncodedKey] = slice::from_raw_parts_mut(s.ptr, s.len);
         drop(Box::from_raw(slice));
         drop(s);
     }
 }
 
-/// Derives a new unified full viewing key from the specified seed data and return the
-/// resulting value as a pointer to a [`FFIUVKBoxedSlice`].
+/// Derives a new unified full viewing key from the specified seed data for each account id in the
+/// range `0..accounts` and returns the resulting encoded values in a [`FFIEncodedKeys`].
 ///
 /// # Safety
 ///
@@ -457,7 +446,7 @@ pub unsafe extern "C" fn zcashlc_free_uvk_array(uvks: *mut FFIUVKBoxedSlice) {
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
-/// - Call [`zcashlc_free_uvk_array`] to free the memory associated with the returned pointer
+/// - Call [`zcashlc_free_keys`] to free the memory associated with the returned pointer
 ///   when you are done using it.
 #[no_mangle]
 pub extern "C" fn zcashlc_derive_unified_full_viewing_keys_from_seed(
@@ -465,7 +454,7 @@ pub extern "C" fn zcashlc_derive_unified_full_viewing_keys_from_seed(
     seed_len: usize,
     accounts: i32,
     network_id: u32,
-) -> *mut FFIUVKBoxedSlice {
+) -> *mut FFIEncodedKeys {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
@@ -484,22 +473,18 @@ pub extern "C" fn zcashlc_derive_unified_full_viewing_keys_from_seed(
                     })
                     .map(|usk| {
                         let ufvk = usk.to_unified_full_viewing_key();
-                        ufvk_to_ffi(account_id, &ufvk, network)
+                        FFIEncodedKey::new(account_id, ufvk.encode(&network))
                     })
             })
             .collect::<Result<_, _>>()?;
-        Ok(ufvk_vec_to_ffi(uvks))
+        Ok(FFIEncodedKeys::ptr_from_vec(uvks))
     });
     unwrap_exc_or_null(res)
 }
 
-/// Derives Extended Full Viewing Keys from the given seed for a number of accounts
-/// specified by the `accounts` parameter. Accounts will be sequentially numbered
-/// starting from `0`.
-///
-/// Returns the Bech32-encoded string representation of the ExtendedFullViewingKey for each
-/// account, in order of account identifier, encoded as null-terminated UTF-8 strings. The caller
-/// should store these securely.
+/// Derives a new Sapling extended full viewing key from the specified seed data for each account
+/// id in the range `0..accounts` and returns the resulting encoded values in a
+/// [`FFIEncodedKeys`].
 ///
 /// # Safety
 ///
@@ -508,18 +493,15 @@ pub extern "C" fn zcashlc_derive_unified_full_viewing_keys_from_seed(
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
-/// - `capacity_ret` must point to a variable capable of holding a single `usize` value, which will
-///   be used to store the number of strings in the returned vector.
-/// - Call [`zcashlc_vec_string_free`] to free the memory associated with the returned pointer when
-///   you are finished using it.
+/// - Call [`zcashlc_free_keys`] to free the memory associated with the returned pointer
+///   when you are done using it.
 #[no_mangle]
 pub extern "C" fn zcashlc_derive_extended_full_viewing_keys(
     seed: *const u8,
     seed_len: usize,
     accounts: i32,
-    capacity_ret: *mut usize,
     network_id: u32,
-) -> *mut *mut c_char {
+) -> *mut FFIEncodedKeys {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
@@ -529,32 +511,23 @@ pub extern "C" fn zcashlc_derive_extended_full_viewing_keys(
             return Err(format_err!("accounts argument must be greater than zero"));
         };
 
-        let extsks: Vec<_> = (0..accounts)
-            .map(|account| {
-                ExtendedFullViewingKey::from(&sapling::spending_key(
-                    seed,
-                    network.coin_type(),
-                    AccountId::from(account),
-                ))
-            })
-            .collect();
-
-        // Return the ExtendedSpendingKeys for the created accounts.
-        let mut v: Vec<_> = extsks
-            .iter()
-            .map(|extsk| {
-                let encoded = encode_extended_full_viewing_key(
-                    network.hrp_sapling_extended_full_viewing_key(),
-                    extsk,
-                );
-                CString::new(encoded).unwrap().into_raw()
-            })
-            .collect();
-        assert!(v.len() == accounts as usize);
-        unsafe { *capacity_ret.as_mut().unwrap() = v.capacity() };
-        let p = v.as_mut_ptr();
-        std::mem::forget(v);
-        Ok(p)
+        Ok(FFIEncodedKeys::ptr_from_vec(
+            (0..accounts)
+                .map(|account| {
+                    let account = AccountId::from(account);
+                    let extfvk = ExtendedFullViewingKey::from(&sapling::spending_key(
+                        seed,
+                        network.coin_type(),
+                        account,
+                    ));
+                    let encoded = encode_extended_full_viewing_key(
+                        network.hrp_sapling_extended_full_viewing_key(),
+                        &extfvk,
+                    );
+                    FFIEncodedKey::new(account, encoded)
+                })
+                .collect(),
+        ))
     });
     unwrap_exc_or_null(res)
 }
@@ -1673,27 +1646,6 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
     if !s.is_null() {
         let s = CString::from_raw(s);
         drop(s);
-    }
-}
-
-/// Frees vectors of strings returned by other zcashlc functions.
-///
-/// # Safety
-///
-/// - `v` should not be a null pointer.
-/// - The memory referenced by `v` must not be mutated for the duration of the function call.
-/// - `len` must be <= `capacity`
-/// - `len` must be no larger than `isize::MAX`.
-/// - `capacity` must be no larger than `isize::MAX`.
-/// - the contents of `v` must not be null pointers.
-/// - each element of `v` must be a null-terminated UTF-8 string.
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub unsafe extern "C" fn zcashlc_vec_string_free(v: *mut *mut c_char, len: usize, capacity: usize) {
-    if !v.is_null() {
-        assert!(len <= capacity);
-        let v = Vec::from_raw_parts(v, len, capacity);
-        v.into_iter().map(|s| CString::from_raw(s)).for_each(drop);
     }
 }
 
