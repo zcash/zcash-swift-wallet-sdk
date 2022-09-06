@@ -7,6 +7,8 @@
 - `zcashlc_derive_unified_address_from_seed`
 - `zcashlc_derive_unified_address_from_viewing_key`
 - `zcashlc_derive_unified_full_viewing_keys_from_seed`
+- `zcashlc_get_received_memo`
+- `zcashlc_get_sent_memo`
 
 ## Changed
 - Various changes have been made to correctly implement ZIP 316:
@@ -24,7 +26,9 @@
 - `zcashlc_get_total_transparent_balance` now returns a balance that includes
   all UTXOs up to those in the latest block (i.e. those with 0 confirmations.)
 - `zcashlc_create_to_address` now takes the minimum number of confirmations
-  used to filter notes to spend as an argument.
+  used to filter notes to spend as an argument. Also, the memo argument is
+  now passed as a potentially-null pointer to an `[u8; 512]` instead of a
+  C string.
 
 ## Removed
 - `zcashlc_derive_shielded_address_from_seed`

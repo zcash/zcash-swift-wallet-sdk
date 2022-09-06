@@ -1171,7 +1171,8 @@ pub extern "C" fn zcashlc_get_received_memo_as_utf8(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1184,12 +1185,22 @@ pub extern "C" fn zcashlc_get_received_memo(
     memo_bytes_ret: *mut [u8; 512],
     network_id: u32,
 ) -> bool {
+    zcashlc_get_memo(db_data, db_data_len, NoteId::ReceivedNoteId(id_note), memo_bytes_ret, network_id)
+}
+
+fn zcashlc_get_memo(
+    db_data: *const u8,
+    db_data_len: usize,
+    note_id: NoteId,
+    memo_bytes_ret: *mut [u8; 512],
+    network_id: u32,
+) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let memo_bytes = (&db_data)
-            .get_memo(NoteId::ReceivedNoteId(id_note))
+            .get_memo(note_id)
             .map_err(|e| format_err!("An error occurred retrieving the memo, {}", e))
             .map(|memo| memo.encode())?;
 
@@ -1260,19 +1271,7 @@ pub extern "C" fn zcashlc_get_sent_memo(
     memo_bytes_ret: *mut [u8; 512],
     network_id: u32,
 ) -> bool {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-
-        let memo_bytes = (&db_data)
-            .get_memo(NoteId::SentNoteId(id_note))
-            .map_err(|e| format_err!("An error occurred retrieving the memo, {}", e))
-            .map(|memo| memo.encode())?;
-
-        unsafe { memo_bytes_ret.copy_from(memo_bytes.as_array(), 512) }
-        Ok(true)
-    });
-    unwrap_exc_or(res, false)
+    zcashlc_get_memo(db_data, db_data_len, NoteId::SentNoteId(id_note), memo_bytes_ret, network_id)
 }
 
 /// Checks that the scanned blocks in the data database, when combined with the recent
@@ -1636,7 +1635,8 @@ pub extern "C" fn zcashlc_decrypt_and_store_transaction(
 /// - `extsk` must be non-null and must point to a null-terminated UTF-8 string representing
 ///   a Bech32-encoded Sapling extended spending key for the given network.
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
-/// - `memo` must be non-null and must point to a 512-byte array.
+/// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
+///    512-byte array.
 /// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
 /// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
@@ -1700,10 +1700,12 @@ pub extern "C" fn zcashlc_create_to_address(
                         MemoBytes::from_bytes(&b[..])
                             .map_err(|e| format_err!("Invalid MemoBytes {}", e))
                     })
-                    .transpose()?
+                    .transpose()
             }
-            RecipientAddress::Transparent(_) => None,
-        };
+            RecipientAddress::Transparent(_) => Err(format_err!(
+                "Memos are not permitted when sending to transparent recipients."
+            )),
+        }?;
 
         let prover = LocalTxProver::new(spend_params, output_params);
 
@@ -1909,6 +1911,7 @@ pub extern "C" fn zcashlc_derive_transparent_address_from_account_private_key(
 ///   documentation of pointer::offset.
 /// - `xprv` must be non-null and must point to a null-terminated UTF-8 string representing
 ///   a Base58-encoded transparent spending key.
+/// - `memo` must either be null (indicating an empty memo) or point to a 512-byte array.
 /// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
 /// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
