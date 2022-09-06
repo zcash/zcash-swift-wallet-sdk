@@ -79,7 +79,8 @@ where
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -101,7 +102,8 @@ unsafe fn wallet_db(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -150,7 +152,8 @@ pub extern "C" fn zcashlc_clear_last_error() {
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -198,7 +201,8 @@ pub extern "C" fn zcashlc_init_data_database(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -270,7 +274,8 @@ pub extern "C" fn zcashlc_init_accounts_table(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -693,7 +698,8 @@ pub extern "C" fn zcashlc_derive_extended_full_viewing_key(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -743,7 +749,8 @@ pub extern "C" fn zcashlc_init_blocks_table(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -946,7 +953,8 @@ fn is_valid_unified_address(address: &str, network: &Network) -> bool {
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -988,7 +996,8 @@ pub extern "C" fn zcashlc_get_balance(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1031,7 +1040,8 @@ pub extern "C" fn zcashlc_get_verified_balance(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1080,7 +1090,8 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1131,7 +1142,8 @@ pub extern "C" fn zcashlc_get_total_transparent_balance(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1162,6 +1174,54 @@ pub extern "C" fn zcashlc_get_received_memo_as_utf8(
     unwrap_exc_or_null(res)
 }
 
+/// Returns the memo for a received note by copying the corresponding bytes to the received
+/// pointer in `memo_bytes_ret`.
+///
+/// The note is identified by its row index in the `received_notes` table within the data
+/// database.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `memo_bytes_ret` must be non-null and must point to an allocated 512-byte region of memory.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_received_memo(
+    db_data: *const u8,
+    db_data_len: usize,
+    id_note: i64,
+    memo_bytes_ret: *mut [u8; 512],
+    network_id: u32,
+) -> bool {
+    zcashlc_get_memo(db_data, db_data_len, NoteId::ReceivedNoteId(id_note), memo_bytes_ret, network_id)
+}
+
+fn zcashlc_get_memo(
+    db_data: *const u8,
+    db_data_len: usize,
+    note_id: NoteId,
+    memo_bytes_ret: *mut [u8; 512],
+    network_id: u32,
+) -> bool {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let memo_bytes = (&db_data)
+            .get_memo(note_id)
+            .map_err(|e| format_err!("An error occurred retrieving the memo, {}", e))
+            .map(|memo| memo.encode())?;
+
+        unsafe { memo_bytes_ret.copy_from(memo_bytes.as_array(), 512) };
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
+}
+
 /// Returns the memo for a sent note, if it is known and a valid UTF-8 string.
 ///
 /// The note is identified by its row index in the `sent_notes` table within the data
@@ -1170,7 +1230,8 @@ pub extern "C" fn zcashlc_get_received_memo_as_utf8(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1201,6 +1262,32 @@ pub extern "C" fn zcashlc_get_sent_memo_as_utf8(
     unwrap_exc_or_null(res)
 }
 
+/// Returns the memo for a sent note, by copying the corresponding bytes to the received
+/// pointer in `memo_bytes_ret`.
+///
+/// The note is identified by its row index in the `sent_notes` table within the data
+/// database.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `memo_bytes_ret` must be non-null and must point to an allocated 512-byte region of memory.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_sent_memo(
+    db_data: *const u8,
+    db_data_len: usize,
+    id_note: i64,
+    memo_bytes_ret: *mut [u8; 512],
+    network_id: u32,
+) -> bool {
+    zcashlc_get_memo(db_data, db_data_len, NoteId::SentNoteId(id_note), memo_bytes_ret, network_id)
+}
+
 /// Checks that the scanned blocks in the data database, when combined with the recent
 /// `CompactBlock`s in the cache database, form a valid chain.
 ///
@@ -1221,12 +1308,14 @@ pub extern "C" fn zcashlc_get_sent_memo_as_utf8(
 /// # Safety
 ///
 /// - `db_cache` must be non-null and valid for reads for `db_cache_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_cache` must not be mutated for the duration of the function call.
 /// - The total size `db_cache_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1271,7 +1360,8 @@ pub extern "C" fn zcashlc_validate_combined_chain(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1322,7 +1412,8 @@ pub extern "C" fn zcashlc_get_nearest_rewind_height(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1365,12 +1456,14 @@ pub extern "C" fn zcashlc_rewind_to_height(
 /// # Safety
 ///
 /// - `db_cache` must be non-null and valid for reads for `db_cache_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_cache` must not be mutated for the duration of the function call.
 /// - The total size `db_cache_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1406,7 +1499,8 @@ pub extern "C" fn zcashlc_scan_blocks(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1467,7 +1561,8 @@ pub extern "C" fn zcashlc_put_utxo(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1503,7 +1598,8 @@ pub extern "C" fn zcashlc_clear_utxos(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -1555,14 +1651,16 @@ pub extern "C" fn zcashlc_decrypt_and_store_transaction(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `extsk` must be non-null and must point to a null-terminated UTF-8 string representing
 ///   a Bech32-encoded Sapling extended spending key for the given network.
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
-/// - `memo` must be non-null and must point to a null-terminated UTF-8 string.
+/// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
+///    512-byte array.
 /// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
 /// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
@@ -1581,7 +1679,7 @@ pub extern "C" fn zcashlc_create_to_address(
     extsk: *const c_char,
     to: *const c_char,
     value: i64,
-    memo: *const c_char,
+    memo: *const [u8; 512],
     spend_params: *const u8,
     spend_params_len: usize,
     output_params: *const u8,
@@ -1605,7 +1703,6 @@ pub extern "C" fn zcashlc_create_to_address(
         if value.is_negative() {
             return Err(format_err!("Amount is negative"));
         }
-        let memo = unsafe { CStr::from_ptr(memo) }.to_str()?;
         let spend_params = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(spend_params, spend_params_len)
         }));
@@ -1620,14 +1717,19 @@ pub extern "C" fn zcashlc_create_to_address(
         let to = RecipientAddress::decode(&network, to)
             .ok_or_else(|| format_err!("PaymentAddress is for the wrong network"))?;
 
-        // TODO: consider warning in this case somehow, rather than swallowing this error
         let memo = match to {
             RecipientAddress::Shielded(_) | RecipientAddress::Unified(_) => {
-                let memo_value = Memo::from_str(memo).map_err(|_| format_err!("Invalid memo"))?;
-                Some(MemoBytes::from(&memo_value))
+                unsafe { memo.as_ref() }
+                    .map(|b| {
+                        MemoBytes::from_bytes(&b[..])
+                            .map_err(|e| format_err!("Invalid MemoBytes {}", e))
+                    })
+                    .transpose()
             }
-            RecipientAddress::Transparent(_) => None,
-        };
+            RecipientAddress::Transparent(_) => Err(format_err!(
+                "Memos are not permitted when sending to transparent recipients."
+            )),
+        }?;
 
         let prover = LocalTxProver::new(spend_params, output_params);
 
@@ -1827,12 +1929,14 @@ pub extern "C" fn zcashlc_derive_transparent_address_from_account_private_key(
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a utf-8 string representing a valid system path.
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `xprv` must be non-null and must point to a null-terminated UTF-8 string representing
 ///   a Base58-encoded transparent spending key.
+/// - `memo` must either be null (indicating an empty memo) or point to a 512-byte array.
 /// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
 /// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
@@ -1849,7 +1953,7 @@ pub extern "C" fn zcashlc_shield_funds(
     db_data_len: usize,
     account: i32,
     xprv: *const c_char,
-    memo: *const c_char,
+    memo: *const [u8; 512],
     spend_params: *const u8,
     spend_params_len: usize,
     output_params: *const u8,
@@ -1868,8 +1972,15 @@ pub extern "C" fn zcashlc_shield_funds(
         } else {
             return Err(format_err!("account argument must be positive"));
         };
+
         let xprv_str = unsafe { CStr::from_ptr(xprv) }.to_str()?;
-        let memo = unsafe { CStr::from_ptr(memo) }.to_str()?;
+        let memo_bytes = unsafe { memo.as_ref() }
+            .map(|b| {
+                MemoBytes::from_bytes(&b[..]).map_err(|e| format_err!("Invalid MemoBytes {}", e))
+            })
+            .transpose()?
+            .unwrap_or_else(MemoBytes::empty);
+
         let spend_params = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(spend_params, spend_params_len)
         }));
@@ -1884,8 +1995,6 @@ pub extern "C" fn zcashlc_shield_funds(
         };
         let sk = legacy::keys::AccountPrivKey::from_extended_privkey(xprv.extended_key);
 
-        let memo = Memo::from_str(memo).map_err(|_| format_err!("Invalid memo"))?;
-        let memo_bytes = MemoBytes::from(memo);
         shield_transparent_funds(
             &mut update_ops,
             &network,
