@@ -1197,7 +1197,13 @@ pub extern "C" fn zcashlc_get_received_memo(
     memo_bytes_ret: *mut [u8; 512],
     network_id: u32,
 ) -> bool {
-    zcashlc_get_memo(db_data, db_data_len, NoteId::ReceivedNoteId(id_note), memo_bytes_ret, network_id)
+    zcashlc_get_memo(
+        db_data,
+        db_data_len,
+        NoteId::ReceivedNoteId(id_note),
+        memo_bytes_ret,
+        network_id,
+    )
 }
 
 fn zcashlc_get_memo(
@@ -1285,7 +1291,13 @@ pub extern "C" fn zcashlc_get_sent_memo(
     memo_bytes_ret: *mut [u8; 512],
     network_id: u32,
 ) -> bool {
-    zcashlc_get_memo(db_data, db_data_len, NoteId::SentNoteId(id_note), memo_bytes_ret, network_id)
+    zcashlc_get_memo(
+        db_data,
+        db_data_len,
+        NoteId::SentNoteId(id_note),
+        memo_bytes_ret,
+        network_id,
+    )
 }
 
 /// Checks that the scanned blocks in the data database, when combined with the recent
@@ -1679,7 +1691,7 @@ pub extern "C" fn zcashlc_create_to_address(
     extsk: *const c_char,
     to: *const c_char,
     value: i64,
-    memo: *const [u8; 512],
+    memo: *const u8,
     spend_params: *const u8,
     spend_params_len: usize,
     output_params: *const u8,
@@ -1719,12 +1731,13 @@ pub extern "C" fn zcashlc_create_to_address(
 
         let memo = match to {
             RecipientAddress::Shielded(_) | RecipientAddress::Unified(_) => {
-                unsafe { memo.as_ref() }
-                    .map(|b| {
-                        MemoBytes::from_bytes(&b[..])
-                            .map_err(|e| format_err!("Invalid MemoBytes {}", e))
-                    })
-                    .transpose()
+                if memo.is_null() {
+                    Ok(None)
+                } else {
+                    MemoBytes::from_bytes(unsafe { slice::from_raw_parts(memo, 512) })
+                        .map(Some)
+                        .map_err(|e| format_err!("Invalid MemoBytes {}", e))
+                }
             }
             RecipientAddress::Transparent(_) => Err(format_err!(
                 "Memos are not permitted when sending to transparent recipients."
@@ -1953,7 +1966,7 @@ pub extern "C" fn zcashlc_shield_funds(
     db_data_len: usize,
     account: i32,
     xprv: *const c_char,
-    memo: *const [u8; 512],
+    memo: *const u8,
     spend_params: *const u8,
     spend_params_len: usize,
     output_params: *const u8,
@@ -1974,12 +1987,12 @@ pub extern "C" fn zcashlc_shield_funds(
         };
 
         let xprv_str = unsafe { CStr::from_ptr(xprv) }.to_str()?;
-        let memo_bytes = unsafe { memo.as_ref() }
-            .map(|b| {
-                MemoBytes::from_bytes(&b[..]).map_err(|e| format_err!("Invalid MemoBytes {}", e))
-            })
-            .transpose()?
-            .unwrap_or_else(MemoBytes::empty);
+        let memo_bytes = if memo.is_null() {
+            MemoBytes::empty()
+        } else {
+            MemoBytes::from_bytes(unsafe { slice::from_raw_parts(memo, 512) })
+                .map_err(|e| format_err!("Invalid MemoBytes {}", e))?
+        };
 
         let spend_params = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(spend_params, spend_params_len)
