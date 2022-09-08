@@ -1194,7 +1194,7 @@ pub extern "C" fn zcashlc_get_received_memo(
     db_data: *const u8,
     db_data_len: usize,
     id_note: i64,
-    memo_bytes_ret: *mut [u8; 512],
+    memo_bytes_ret: *mut u8,
     network_id: u32,
 ) -> bool {
     zcashlc_get_memo(
@@ -1210,7 +1210,7 @@ fn zcashlc_get_memo(
     db_data: *const u8,
     db_data_len: usize,
     note_id: NoteId,
-    memo_bytes_ret: *mut [u8; 512],
+    memo_bytes_ret: *mut u8,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
@@ -1222,7 +1222,7 @@ fn zcashlc_get_memo(
             .map_err(|e| format_err!("An error occurred retrieving the memo, {}", e))
             .map(|memo| memo.encode())?;
 
-        unsafe { memo_bytes_ret.copy_from(memo_bytes.as_array(), 512) };
+        unsafe { memo_bytes_ret.copy_from(memo_bytes.as_slice().as_ptr(), 512) };
         Ok(true)
     });
     unwrap_exc_or(res, false)
@@ -1288,7 +1288,7 @@ pub extern "C" fn zcashlc_get_sent_memo(
     db_data: *const u8,
     db_data_len: usize,
     id_note: i64,
-    memo_bytes_ret: *mut [u8; 512],
+    memo_bytes_ret: *mut u8,
     network_id: u32,
 ) -> bool {
     zcashlc_get_memo(
