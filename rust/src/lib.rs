@@ -1,21 +1,16 @@
 use failure::format_err;
 use ffi_helpers::panic::catch_panic;
-use hdwallet::{
-    traits::{Deserialize, Serialize},
-    ExtendedPrivKey, KeyChain,
-};
 use schemer::MigratorError;
-use secp256k1::PublicKey;
 use secrecy::Secret;
 
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr};
+use std::mem::ManuallyDrop;
 use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::slice;
-use std::str::FromStr;
 
 use zcash_address::{ToAddress, ZcashAddress};
 use zcash_client_backend::{
@@ -28,12 +23,8 @@ use zcash_client_backend::{
         },
         WalletRead, WalletReadTransparent, WalletWrite, WalletWriteTransparent,
     },
-    encoding::{
-        decode_extended_full_viewing_key, decode_extended_spending_key,
-        encode_extended_full_viewing_key, encode_extended_spending_key, encode_payment_address,
-        AddressCodec,
-    },
-    keys::{sapling, UnifiedFullViewingKey, UnifiedSpendingKey},
+    encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
+    keys::{DecodingError, Era, UnifiedFullViewingKey, UnifiedSpendingKey},
     wallet::{OvkPolicy, WalletTransparentOutput},
 };
 #[allow(deprecated)]
@@ -47,13 +38,13 @@ use zcash_primitives::consensus::Network::{MainNetwork, TestNetwork};
 use zcash_primitives::{
     block::BlockHash,
     consensus::{BlockHeight, BranchId, Network, Parameters},
-    legacy::{self, keys::IncomingViewingKey, TransparentAddress},
+    legacy::{self, TransparentAddress},
     memo::{Memo, MemoBytes},
     transaction::{
         components::{Amount, OutPoint, TxOut},
         Transaction,
     },
-    zip32::{AccountId, ExtendedFullViewingKey},
+    zip32::AccountId,
 };
 use zcash_proofs::prover::LocalTxProver;
 
@@ -193,12 +184,59 @@ pub extern "C" fn zcashlc_init_data_database(
     unwrap_exc_or(res, -1)
 }
 
-/// Initialises the data database with the given number of accounts using the given seed.
-/// Accounts will be sequentially numbered starting from `0`.
+/// A struct that contains an account identifier along with a pointer to the binary encoding
+/// of an associated key.
 ///
-/// Returns the Bech32-encoded string representation of the ExtendedSpendingKey for each account,
-/// in order of account identifier, encoded as null-terminated UTF-8 strings. The caller should
-/// manage the memory of (and store) the returned spending keys in a secure fashion.
+/// # Safety
+///
+/// - `encoding` must be non-null and must point to an array of `encoding_len` bytes.
+#[repr(C)]
+pub struct FFIBinaryKey {
+    account_id: u32,
+    encoding: *mut u8,
+    encoding_len: usize,
+}
+
+impl FFIBinaryKey {
+    fn new(account_id: AccountId, key_bytes: Vec<u8>) -> Self {
+        let mut raw_key_bytes = ManuallyDrop::new(key_bytes.into_boxed_slice());
+        FFIBinaryKey {
+            account_id: account_id.into(),
+            encoding: raw_key_bytes.as_mut_ptr(),
+            encoding_len: raw_key_bytes.len(),
+        }
+    }
+}
+
+/// Frees a FFIBinaryKey value
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FFIBinaryKey`].
+///   See the safety documentation of [`FFIBinaryKey`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_binary_key(ptr: *mut FFIBinaryKey) {
+    if !ptr.is_null() {
+        let key: Box<FFIBinaryKey> = Box::from_raw(ptr);
+        let key_slice: &mut [u8] = slice::from_raw_parts_mut(key.encoding, key.encoding_len);
+        drop(Box::from_raw(key_slice));
+    }
+}
+
+/// Adds the next available account-level spend authority, given the current set of [ZIP 316]
+/// account identifiers known, to the wallet database.
+///
+/// Returns the newly created [ZIP 316] account identifier, along with the binary encoding of the
+/// [`UnifiedSpendingKey`] for the newly created account.  The caller should manage the memory of
+/// (and store) the returned spending keys in a secure fashion.
+///
+/// If `seed` was imported from a backup and this method is being used to restore a
+/// previous wallet state, you should use this method to add all of the desired
+/// accounts before scanning the chain from the seed's birthday height.
+///
+/// By convention, wallets should only allow a new account to be generated after funds
+/// have been received by the currently-available account (in order to enable
+/// automated account recovery).
 ///
 /// # Safety
 ///
@@ -213,65 +251,50 @@ pub extern "C" fn zcashlc_init_data_database(
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
-/// - Call [`zcashlc_free_keys`] to free the memory associated with the returned pointer when
+/// - Call [`zcashlc_free_binary_key`] to free the memory associated with the returned pointer when
 ///   you are finished using it.
+///
+/// [ZIP 316]: https://zips.z.cash/zip-0316
 #[no_mangle]
-pub extern "C" fn zcashlc_init_accounts_table(
+pub extern "C" fn zcashlc_create_account(
     db_data: *const u8,
     db_data_len: usize,
     seed: *const u8,
     seed_len: usize,
-    accounts: i32,
     network_id: u32,
-) -> *mut FFIEncodedKeys {
+) -> *mut FFIBinaryKey {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
-        let accounts = if accounts >= 0 {
-            accounts as u32
-        } else {
-            return Err(format_err!("accounts argument must be positive"));
-        };
+        let seed = Secret::new((unsafe { slice::from_raw_parts(seed, seed_len) }).to_vec());
 
-        let usks: Vec<_> = (0..accounts)
-            .map(|account| {
-                let account_id = AccountId::from(account);
-                UnifiedSpendingKey::from_seed(&network, seed, account_id)
-                    .map(|usk| (account_id, usk))
-                    .map_err(|e| {
-                        format_err!("error generating unified spending key from seed: {:?}", e)
-                    })
-            })
-            .collect::<Result<_, _>>()?;
-
-        let ufvks: HashMap<AccountId, UnifiedFullViewingKey> = usks
-            .iter()
-            .map(|(account, usk)| (*account, usk.to_unified_full_viewing_key()))
-            .collect();
-
-        init_accounts_table(&db_data, &ufvks)
-            .map(|_| {
-                // Return the Sapling ExtendedSpendingKeys for the created accounts.
-                let v: Vec<_> = usks
-                    .iter()
-                    .map(|(account, usk)| {
-                        let encoded = encode_extended_spending_key(
-                            network.hrp_sapling_extended_spending_key(),
-                            usk.sapling(),
-                        );
-                        FFIEncodedKey::new(*account, encoded)
-                    })
-                    .collect();
-
-                FFIEncodedKeys::ptr_from_vec(v)
+        let mut db_ops = db_data.get_update_ops()?;
+        db_ops
+            .create_account(&seed)
+            .map(|(account, usk)| {
+                let encoded = usk.to_bytes(Era::Orchard);
+                Box::into_raw(Box::new(FFIBinaryKey::new(account, encoded)))
             })
             .map_err(|e| format_err!("Error while initializing accounts: {}", e))
     });
     unwrap_exc_or_null(res)
 }
 
-/// Initialises the data database with the given set of unified full viewing keys.
+/// A struct that contains an account identifier along with a pointer to the string encoding
+/// of an associated key.
+///
+/// # Safety
+///
+/// - `encoding` must be non-null and must point to a null-terminated UTF-8 string.
+#[repr(C)]
+pub struct FFIEncodedKey {
+    account_id: u32,
+    encoding: *mut c_char,
+}
+
+/// Initialises the data database with the given set of unified full viewing keys. This
+/// should only be used in special cases for implementing wallet recovery; prefer
+/// `zcashlc_create_account` for normal account creation purposes.
 ///
 /// # Safety
 ///
@@ -281,23 +304,26 @@ pub extern "C" fn zcashlc_init_accounts_table(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `uvks` must be non-null and must point to a struct having the layout of [`FFIEncodedKeys`].
-///   See the safety documentation of [`FFIEncodedKeys`].
+/// - `ufvks` must be non-null and valid for reads for `ufvks_len * sizeof(FFIEncodedKey)` bytes.
+///   It must point to an array of `FFIEncodedKey` values
+/// - The memory referenced by `ufvks` must not be mutated for the duration of the function call.
+/// - The total size `ufvks_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[no_mangle]
 pub extern "C" fn zcashlc_init_accounts_table_with_keys(
     db_data: *const u8,
     db_data_len: usize,
-    uvks: *mut FFIEncodedKeys,
+    ufvks_ptr: *mut FFIEncodedKey,
+    ufvks_len: usize,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let s: Box<FFIEncodedKeys> = unsafe { Box::from_raw(uvks) };
-        let slice: &mut [FFIEncodedKey] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
-
-        let ufvks: HashMap<AccountId, UnifiedFullViewingKey> = slice
+        let encoded_keys: &mut [FFIEncodedKey] =
+            unsafe { slice::from_raw_parts_mut(ufvks_ptr, ufvks_len) };
+        let ufvks: HashMap<AccountId, UnifiedFullViewingKey> = encoded_keys
             .iter_mut()
             .map(|u| {
                 let ufvkstr = unsafe { CStr::from_ptr(u.encoding).to_str().unwrap() };
@@ -315,12 +341,10 @@ pub extern "C" fn zcashlc_init_accounts_table_with_keys(
     unwrap_exc_or(res, false)
 }
 
-/// Derives and returns Sapling extended spending keys from the given seed for the given number of
-/// accounts. Accounts will be sequentially numbered starting at `0`.
+/// Derives and returns a unified spending key from the given seed for the given account ID.
 ///
-/// Returns the Bech32-encoded string representation of the ExtendedSpendingKey for each
-/// account, in order of account identifier, encoded as null-terminated UTF-8 strings. The caller
-/// should manage the memory of (and store) the returned spending keys in a secure fashion.
+/// Returns the binary encoding of the spending key. The caller should manage the memory of (and
+/// store, if necessary) the returned spending key in a secure fashion.
 ///
 /// # Safety
 ///
@@ -329,365 +353,91 @@ pub extern "C" fn zcashlc_init_accounts_table_with_keys(
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
-/// - Call `zcashlc_free_keys` to free the memory associated with the returned pointer when
+/// - Call `zcashlc_free_binary_key` to free the memory associated with the returned pointer when
 ///   you are finished using it.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_extended_spending_keys(
+pub unsafe extern "C" fn zcashlc_derive_spending_key(
     seed: *const u8,
     seed_len: usize,
-    accounts: i32,
+    account: i32,
     network_id: u32,
-) -> *mut FFIEncodedKeys {
+) -> *mut FFIBinaryKey {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let seed = slice::from_raw_parts(seed, seed_len);
-        let accounts = if accounts > 0 {
-            accounts as u32
+        let account = if account >= 0 {
+            account as u32
         } else {
-            return Err(format_err!("accounts argument must be greater than zero"));
+            return Err(format_err!("account ID argument must be nonnegative"));
         };
 
-        Ok(FFIEncodedKeys::ptr_from_vec(
-            (0..accounts)
-                .map(|account| {
-                    let account = AccountId::from(account);
-                    UnifiedSpendingKey::from_seed(&network, seed, account)
-                        .map_err(|e| {
-                            format_err!("error generating unified spending key from seed: {:?}", e)
-                        })
-                        .map(move |usk| {
-                            let encoded = encode_extended_spending_key(
-                                network.hrp_sapling_extended_spending_key(),
-                                usk.sapling(),
-                            );
-                            FFIEncodedKey::new(account, encoded)
-                        })
-                })
-                .collect::<Result<_, _>>()?,
-        ))
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// A struct that contains an account identifier along with a pointer to the string encoding
-/// of a [`UnifiedFullViewingKey`] value.
-///
-/// # Safety
-///
-/// - `encoding` must be non-null and must point to a null-terminated UTF-8 string.
-#[repr(C)]
-pub struct FFIEncodedKey {
-    account_id: u32,
-    encoding: *const c_char,
-}
-
-impl FFIEncodedKey {
-    fn new(account_id: AccountId, encoded: String) -> Self {
-        FFIEncodedKey {
-            account_id: account_id.into(),
-            encoding: CString::new(encoded).unwrap().into_raw(),
-        }
-    }
-}
-
-/// A struct that contains a pointer to, and length information for, a heap-allocated
-/// slice of [`FFIEncodedKey`] values.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FFIEncodedKey>()`
-///   many bytes, and it must be properly aligned. This means in particular:
-///   - The entire memory range pointed to by `ptr` must be contained within a single allocated
-///     object. Slices can never span across multiple allocated objects.
-///   - `ptr` must be non-null and aligned even for zero-length slices.
-///   - `ptr` must point to `len` consecutive properly initialized values of type
-///     [`FFIEncodedKey`].
-/// - The total size `len * mem::size_of::<FFIEncodedKey>()` of the slice pointed to
-///   by `ptr` must be no larger than isize::MAX. See the safety documentation of pointer::offset.
-/// - See the safety documentation of [`FFIEncodedKey`]
-#[repr(C)]
-pub struct FFIEncodedKeys {
-    ptr: *mut FFIEncodedKey,
-    len: usize, // number of elems
-}
-
-impl FFIEncodedKeys {
-    pub fn ptr_from_vec(v: Vec<FFIEncodedKey>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[FFIEncodedKey]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [FFIEncodedKey] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut FFIEncodedKey = fat_ptr as _;
-        Box::into_raw(Box::new(FFIEncodedKeys { ptr: slim_ptr, len }))
-    }
-}
-
-/// Frees an array of FFIEncodedKeys values as allocated by `zcashlc_derive_unified_viewing_keys_from_seed`
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FFIEncodedKeys`].
-///   See the safety documentation of [`FFIEncodedKeys`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
-    if !ptr.is_null() {
-        let s: Box<FFIEncodedKeys> = Box::from_raw(ptr);
-
-        let slice: &mut [FFIEncodedKey] = slice::from_raw_parts_mut(s.ptr, s.len);
-        drop(Box::from_raw(slice));
-        drop(s);
-    }
-}
-
-/// Derives a new unified full viewing key from the specified seed data for each account id in the
-/// range `0..accounts` and returns the resulting encoded values in a [`FFIEncodedKeys`].
-///
-/// # Safety
-///
-/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
-///   alignment of `1`.
-/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
-/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
-///   of pointer::offset.
-/// - Call [`zcashlc_free_keys`] to free the memory associated with the returned pointer
-///   when you are done using it.
-#[no_mangle]
-pub extern "C" fn zcashlc_derive_unified_full_viewing_keys_from_seed(
-    seed: *const u8,
-    seed_len: usize,
-    accounts: i32,
-    network_id: u32,
-) -> *mut FFIEncodedKeys {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
-        let accounts = if accounts > 0 {
-            accounts as u32
-        } else {
-            return Err(format_err!("accounts argument must be greater than zero"));
-        };
-
-        let uvks = (0..accounts)
-            .map(|account| {
-                let account_id = AccountId::from(account);
-                UnifiedSpendingKey::from_seed(&network, seed, account_id)
-                    .map_err(|e| {
-                        format_err!("error generating unified spending key from seed: {:?}", e)
-                    })
-                    .map(|usk| {
-                        let ufvk = usk.to_unified_full_viewing_key();
-                        FFIEncodedKey::new(account_id, ufvk.encode(&network))
-                    })
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(FFIEncodedKeys::ptr_from_vec(uvks))
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// Derives a new Sapling extended full viewing key from the specified seed data for each account
-/// id in the range `0..accounts` and returns the resulting encoded values in a
-/// [`FFIEncodedKeys`].
-///
-/// # Safety
-///
-/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
-///   alignment of `1`.
-/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
-/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
-///   of pointer::offset.
-/// - Call [`zcashlc_free_keys`] to free the memory associated with the returned pointer
-///   when you are done using it.
-#[no_mangle]
-pub extern "C" fn zcashlc_derive_extended_full_viewing_keys(
-    seed: *const u8,
-    seed_len: usize,
-    accounts: i32,
-    network_id: u32,
-) -> *mut FFIEncodedKeys {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
-        let accounts = if accounts > 0 {
-            accounts as u32
-        } else {
-            return Err(format_err!("accounts argument must be greater than zero"));
-        };
-
-        Ok(FFIEncodedKeys::ptr_from_vec(
-            (0..accounts)
-                .map(|account| {
-                    let account = AccountId::from(account);
-                    let extfvk = ExtendedFullViewingKey::from(&sapling::spending_key(
-                        seed,
-                        network.coin_type(),
-                        account,
-                    ));
-                    let encoded = encode_extended_full_viewing_key(
-                        network.hrp_sapling_extended_full_viewing_key(),
-                        &extfvk,
-                    );
-                    FFIEncodedKey::new(account, encoded)
-                })
-                .collect(),
-        ))
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// Derives a unified address from the given seed and account index.
-///
-/// Returns the Bech32-encoded string representation of the derived address.
-///
-/// # Safety
-///
-/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
-///   alignment of `1`.
-/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
-/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
-///   of pointer::offset.
-/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
-///   when done using it.
-#[no_mangle]
-pub extern "C" fn zcashlc_derive_unified_address_from_seed(
-    seed: *const u8,
-    seed_len: usize,
-    account_index: i32,
-    network_id: u32,
-) -> *mut c_char {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
-        let account_index = if account_index >= 0 {
-            account_index as u32
-        } else {
-            return Err(format_err!("accounts argument must be greater than zero"));
-        };
-        let account_id = AccountId::from(account_index);
-        let ufvk = UnifiedSpendingKey::from_seed(&network, seed, account_id)
+        let account = AccountId::from(account);
+        UnifiedSpendingKey::from_seed(&network, seed, account)
             .map_err(|e| format_err!("error generating unified spending key from seed: {:?}", e))
-            .map(|usk| usk.to_unified_full_viewing_key())?;
-
-        // Derive the default Unified Address (containing the default Sapling payment
-        // address that older SDKs used).
-        let (ua, _) = ufvk.default_address();
-        let address_str = ua.encode(&network);
-        Ok(CString::new(address_str).unwrap().into_raw())
+            .map(move |usk| {
+                let encoded = usk.to_bytes(Era::Orchard);
+                Box::into_raw(Box::new(FFIBinaryKey::new(account, encoded)))
+            })
     });
     unwrap_exc_or_null(res)
 }
 
-/// Derives a transparent address from the given public key.
-///
-/// Returns a pointer to Base58-encoded UTF-8 string corresponding to the
-/// generated address.
+/// A private utility function to reduce duplication across functions that take an USK
+/// across the FFI. Callers should reproduce the following safety documentation.
 ///
 /// # Safety
 ///
-/// - `pubkey` must be non-null and must point to a null-terminated UTF-8 string representing
-///   a base58-encoded BIP 32 public key.
-/// - The memory referenced by `pubkey` must not be mutated for the duration of the function call.
-/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
-///   when done using it.
-#[no_mangle]
-pub extern "C" fn zcashlc_derive_transparent_address_from_public_key(
-    pubkey: *const c_char,
-    network_id: u32,
-) -> *mut c_char {
-    #[allow(deprecated)]
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let public_key_str = unsafe { CStr::from_ptr(pubkey).to_str()? };
-        let pk = PublicKey::from_str(public_key_str)?;
-        let taddr = legacy::keys::pubkey_to_address(&pk).encode(&network);
+/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes containing a unified
+///   spending key encoded as returned from the `zcashlc_create_account` or
+///   `zcashlc_derive_spending_key` functions.
+/// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
+/// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
+unsafe fn decode_usk(
+    usk_ptr: *const u8,
+    usk_len: usize,
+) -> Result<UnifiedSpendingKey, failure::Error> {
+    let usk_bytes = slice::from_raw_parts(usk_ptr, usk_len); //unsafe
 
-        Ok(CString::new(taddr).unwrap().into_raw())
-    });
-    unwrap_exc_or_null(res)
+    // The remainder of the function is safe.
+    UnifiedSpendingKey::from_bytes(Era::Orchard, usk_bytes).map_err(|e| match e {
+        DecodingError::EraMismatch(era) => format_err!(
+            "Spending key was from era {:?}, but {:?} was expected.",
+            era,
+            Era::Orchard
+        ),
+        e => format_err!(
+            "An error occurred decoding the provided unified spending key: {:?}",
+            e
+        ),
+    })
 }
 
-/// Derives a unified address from the given unified full viewing key.
-///
-/// Returns the Bech32-encoded string representation of the unified address,
-/// encoded as a null-terminated UTF-8 string.
+/// Obtains the unified full viewing key for the given binary-encoded unified spending key
+/// and returns the resulting encoded UFVK string.
 ///
 /// # Safety
 ///
-/// - `ufvk` must be non-null and must point to a null-terminated UTF-8 string representing
-///   a Bech32-encoded unified full viewing key for the given network.
-/// - The memory referenced by `ufvk` must not be mutated for the duration of the function call.
+/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes containing a unified
+///   spending key encoded as returned from the `zcashlc_create_account` or
+///   `zcashlc_derive_spending_key` functions.
+/// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
+/// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
-///   when done using it.
+///   when you are done using it.
 #[no_mangle]
-pub extern "C" fn zcashlc_derive_unified_address_from_viewing_key(
-    ufvk: *const c_char,
+pub extern "C" fn zcashlc_spending_key_to_full_viewing_key(
+    usk_ptr: *const u8,
+    usk_len: usize,
     network_id: u32,
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let ufvk_string = unsafe { CStr::from_ptr(ufvk).to_str()? };
-        let ufvk = match UnifiedFullViewingKey::decode(&network, ufvk_string) {
-            Ok(ufvk) => ufvk,
-            Err(e) => {
-                return Err(format_err!(
-                    "Error while deriving viewing key from string input: {}",
-                    e
-                ));
-            }
-        };
-        // Derive the default Unified Address (containing the default Sapling payment
-        // address that older SDKs used).
-        let (ua, _) = ufvk.default_address();
-        let address_str = ua.encode(&network);
-        Ok(CString::new(address_str).unwrap().into_raw())
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// Derives a Sapling extended full viewing key from address from the given extended
-/// spending key.
-///
-/// Returns the Bech32-encoded string representation of the ExtendedFullViewingKey,
-/// encoded as a null-terminated UTF-8 string.
-///
-/// # Safety
-///
-/// - `extsk` must be non-null and must point to a null-terminated UTF-8 string representing
-///   a Bech32-encoded Sapling extended spending key for the given network.
-/// - The memory referenced by `extsk` must not be mutated for the duration of the function call.
-/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
-///   when done using it.
-#[no_mangle]
-pub extern "C" fn zcashlc_derive_extended_full_viewing_key(
-    extsk: *const c_char,
-    network_id: u32,
-) -> *mut c_char {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let extsk = unsafe { CStr::from_ptr(extsk).to_str()? };
-        let extfvk = match decode_extended_spending_key(
-            network.hrp_sapling_extended_spending_key(),
-            extsk,
-        ) {
-            Ok(extsk) => ExtendedFullViewingKey::from(&extsk),
-            Err(e) => {
-                return Err(format_err!(
-                    "Error while deriving viewing key from spending key: {}",
-                    e
-                ));
-            }
-        };
-
-        let encoded = encode_extended_full_viewing_key(
-            network.hrp_sapling_extended_full_viewing_key(),
-            &extfvk,
-        );
-
-        Ok(CString::new(encoded).unwrap().into_raw())
+        unsafe { decode_usk(usk_ptr, usk_len) }.map(|usk| {
+            let ufvk = usk.to_unified_full_viewing_key();
+            CString::new(ufvk.encode(&network)).unwrap().into_raw()
+        })
     });
     unwrap_exc_or_null(res)
 }
@@ -746,7 +496,7 @@ pub extern "C" fn zcashlc_init_blocks_table(
     unwrap_exc_or_null(res)
 }
 
-/// Returns the default Sapling payment address for the specified account.
+/// Returns the most-recently-generated unified payment address for the specified account.
 ///
 /// # Safety
 ///
@@ -759,7 +509,7 @@ pub extern "C" fn zcashlc_init_blocks_table(
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
-pub extern "C" fn zcashlc_get_address(
+pub extern "C" fn zcashlc_get_current_address(
     db_data: *const u8,
     db_data_len: usize,
     account: i32,
@@ -776,11 +526,57 @@ pub extern "C" fn zcashlc_get_address(
 
         let account = AccountId::from(account);
 
-        match (&db_data).get_address(account) {
-            Ok(Some(addr)) => {
-                let addr_str = encode_payment_address(network.hrp_sapling_payment_address(), &addr);
-                let c_str_addr = CString::new(addr_str).unwrap();
-                Ok(c_str_addr.into_raw())
+        match db_data.get_current_address(account) {
+            Ok(Some(ua)) => {
+                let address_str = ua.encode(&network);
+                Ok(CString::new(address_str).unwrap().into_raw())
+            }
+            Ok(None) => Err(format_err!(
+                "No payment address was available for account {:?}",
+                account
+            )),
+            Err(e) => Err(format_err!("Error while fetching address: {}", e)),
+        }
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Returns a newly-generated unified payment address for the specified account, with the next
+/// available diversifier.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+///   when done using it.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_next_available_address(
+    db_data: *const u8,
+    db_data_len: usize,
+    account: i32,
+    network_id: u32,
+) -> *mut c_char {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let mut db_ops = db_data.get_update_ops()?;
+        let account = if account >= 0 {
+            account as u32
+        } else {
+            return Err(format_err!("Account id must be nonnegative."));
+        };
+
+        let account = AccountId::from(account);
+
+        match db_ops.get_next_available_address(account) {
+            Ok(Some(ua)) => {
+                let address_str = ua.encode(&network);
+                Ok(CString::new(address_str).unwrap().into_raw())
             }
             Ok(None) => Err(format_err!(
                 "No payment address was available for account {:?}",
@@ -838,10 +634,46 @@ pub extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
                 }
             };
 
-            Ok(CString::new(taddr.encode()).unwrap().into_raw())
+            Ok(CString::new(taddr.encode())?.into_raw())
         } else {
             Err(format_err!(
                 "Unified Address doesn't contain a transparent receiver"
+            ))
+        }
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Returns the Sapling receiver within the given Unified Address, if any.
+///
+/// # Safety
+///
+/// - `ua` must be non-null and must point to a null-terminated UTF-8 string containing an
+///   encoded Unified Address.
+/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+///   when done using it.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_sapling_receiver_for_unified_address(
+    ua: *const c_char,
+) -> *mut c_char {
+    let res = catch_panic(|| {
+        let ua_str = unsafe { CStr::from_ptr(ua).to_str()? };
+
+        let (network, ua) = match ZcashAddress::try_from_encoded(ua_str) {
+            Ok(addr) => addr
+                .convert::<(_, UnifiedAddressParser)>()
+                .map_err(|e| format_err!("Not a Unified Address: {}", e)),
+            Err(e) => return Err(format_err!("Invalid Zcash address: {}", e)),
+        }?;
+
+        if let Some(addr) = ua.0.sapling() {
+            Ok(
+                CString::new(ZcashAddress::from_sapling(network, addr.to_bytes()).encode())?
+                    .into_raw(),
+            )
+        } else {
+            Err(format_err!(
+                "Unified Address doesn't contain a Sapling receiver"
             ))
         }
     });
@@ -1726,8 +1558,12 @@ pub extern "C" fn zcashlc_decrypt_and_store_transaction(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `extsk` must be non-null and must point to a null-terminated UTF-8 string representing
-///   a Bech32-encoded Sapling extended spending key for the given network.
+/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes containing a unified
+///   spending key encoded as returned from the `zcashlc_create_account` or
+///   `zcashlc_derive_spending_key` functions.
+/// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
+/// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
 ///    512-byte array.
@@ -1746,7 +1582,8 @@ pub extern "C" fn zcashlc_create_to_address(
     db_data: *const u8,
     db_data_len: usize,
     account: i32,
-    extsk: *const c_char,
+    usk_ptr: *const u8,
+    usk_len: usize,
     to: *const c_char,
     value: i64,
     memo: *const u8,
@@ -1766,7 +1603,8 @@ pub extern "C" fn zcashlc_create_to_address(
         } else {
             return Err(format_err!("account argument must be positive"));
         };
-        let extsk = unsafe { CStr::from_ptr(extsk) }.to_str()?;
+
+        let usk = unsafe { decode_usk(usk_ptr, usk_len) }?;
         let to = unsafe { CStr::from_ptr(to) }.to_str()?;
         let value =
             Amount::from_i64(value).map_err(|()| format_err!("Invalid amount, out of range"))?;
@@ -1779,10 +1617,6 @@ pub extern "C" fn zcashlc_create_to_address(
         let output_params = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(output_params, output_params_len)
         }));
-
-        let extsk =
-            decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), extsk)
-                .map_err(|e| format_err!("Invalid ExtendedSpendingKey: {}", e))?;
 
         let to = RecipientAddress::decode(&network, to)
             .ok_or_else(|| format_err!("PaymentAddress is for the wrong network"))?;
@@ -1809,7 +1643,7 @@ pub extern "C" fn zcashlc_create_to_address(
             &network,
             prover,
             AccountId::from(account),
-            &extsk,
+            usk.sapling(),
             &to,
             value,
             memo,
@@ -1846,154 +1680,6 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
     }
 }
 
-/// Derives a transparent account private key from seed
-///
-/// # Safety
-///
-/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an alignment of `1`.
-/// - The memory referenced by `seed` must not be mutated for the duration of this function call.
-/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation of pointer::offset.
-#[no_mangle]
-pub extern "C" fn zcashlc_derive_transparent_account_private_key_from_seed(
-    seed: *const u8,
-    seed_len: usize,
-    account: i32,
-    network_id: u32,
-) -> *mut c_char {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
-        let account = if account >= 0 {
-            AccountId::from(account as u32)
-        } else {
-            return Err(format_err!("account argument must be positive"));
-        };
-
-        // Derive the USK to ensure it exists, and fetch its transparent component.
-        let usk = UnifiedSpendingKey::from_seed(&network, seed, account)
-            .map_err(|e| format_err!("error generating unified spending key from seed: {:?}", e))?;
-        // Derive the corresponding BIP 32 extended privkey.
-        let xprv =
-            p2pkh_xprv(&network, seed, account).expect("USK derivation should ensure this exists");
-        // Verify that we did derive the same privkey.
-        assert_eq!(
-            usk.transparent().to_account_pubkey().serialize(),
-            legacy::keys::AccountPrivKey::from_extended_privkey(xprv.extended_key.clone())
-                .to_account_pubkey()
-                .serialize(),
-        );
-        // Encode using the BIP 32 xprv serialization format.
-        let xprv_str: String = xprv.serialize();
-
-        Ok(CString::new(xprv_str).unwrap().into_raw())
-    });
-    unwrap_exc_or_null(res)
-}
-
-fn p2pkh_xprv<P: Parameters>(
-    params: &P,
-    seed: &[u8],
-    account: AccountId,
-) -> Result<hdwallet_bitcoin::PrivKey, hdwallet::error::Error> {
-    let master_key = ExtendedPrivKey::with_seed(seed)?;
-    let key_chain = hdwallet::DefaultKeyChain::new(master_key);
-    let chain_path = format!("m/44H/{}H/{}H", params.coin_type(), u32::from(account)).into();
-    let (extended_key, derivation) = key_chain.derive_private_key(chain_path)?;
-    Ok(hdwallet_bitcoin::PrivKey {
-        network: hdwallet_bitcoin::Network::MainNet,
-        derivation,
-        extended_key,
-    })
-}
-
-fn p2pkh_addr(
-    tfvk: legacy::keys::AccountPubKey,
-    index: u32,
-) -> Result<TransparentAddress, hdwallet::error::Error> {
-    tfvk.derive_external_ivk()
-        .and_then(|tivk| tivk.derive_address(index))
-}
-
-/// Derives a transparent address from the given seed
-///
-/// # Safety
-///
-/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an alignment of `1`.
-/// - The memory referenced by `seed` must not be mutated for the duration of this function call.
-/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation of pointer::offset.
-#[no_mangle]
-pub extern "C" fn zcashlc_derive_transparent_address_from_seed(
-    seed: *const u8,
-    seed_len: usize,
-    account: i32,
-    index: i32,
-    network_id: u32,
-) -> *mut c_char {
-    let res = catch_panic(|| {
-        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
-        let network = parse_network(network_id)?;
-        let account = if account >= 0 {
-            account as u32
-        } else {
-            return Err(format_err!("account argument must be positive"));
-        };
-
-        let index = if index >= 0 {
-            index as u32
-        } else {
-            return Err(format_err!("index argument must be positive"));
-        };
-        let tfvk = UnifiedSpendingKey::from_seed(&network, seed, AccountId::from(account))
-            .map_err(|e| format_err!("error generating unified spending key from seed: {:?}", e))
-            .map(|usk| usk.transparent().to_account_pubkey())?;
-        let taddr = match p2pkh_addr(tfvk, index) {
-            Ok(taddr) => taddr,
-            Err(e) => return Err(format_err!("Couldn't derive transparent address: {:?}", e)),
-        };
-        let taddr = taddr.encode(&network);
-
-        Ok(CString::new(taddr).unwrap().into_raw())
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// Derives a transparent address from the given account private key.
-///
-/// # Safety
-///
-/// - `xprv` must be non-null and must point to a null-terminated UTF-8 string.
-#[no_mangle]
-pub extern "C" fn zcashlc_derive_transparent_address_from_account_private_key(
-    xprv: *const c_char,
-    index: i32,
-    network_id: u32,
-) -> *mut c_char {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let index = if index >= 0 {
-            index as u32
-        } else {
-            return Err(format_err!("index argument must be positive"));
-        };
-        let xprv_str = unsafe { CStr::from_ptr(xprv).to_str()? };
-
-        let xprv = match hdwallet_bitcoin::PrivKey::deserialize(xprv_str.to_owned()) {
-            Ok(xprv) => xprv,
-            Err(e) => return Err(format_err!("Invalid transparent extended privkey: {:?}", e)),
-        };
-
-        let tfvk = legacy::keys::AccountPrivKey::from_extended_privkey(xprv.extended_key)
-            .to_account_pubkey();
-        let taddr = match p2pkh_addr(tfvk, index) {
-            Ok(taddr) => taddr,
-            Err(e) => return Err(format_err!("Couldn't derive transparent address: {:?}", e)),
-        };
-        let taddr = taddr.encode(&network);
-        Ok(CString::new(taddr).unwrap().into_raw())
-    });
-    unwrap_exc_or_null(res)
-}
-
 /// Shield transparent UTXOs by sending them to an address associated with the specified Sapling
 /// spending key.
 ///
@@ -2005,8 +1691,11 @@ pub extern "C" fn zcashlc_derive_transparent_address_from_account_private_key(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `xprv` must be non-null and must point to a null-terminated UTF-8 string representing
-///   a Base58-encoded transparent spending key.
+/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes containing a unified
+///   spending key encoded as returned from the `zcashlc_create_account` or
+///   `zcashlc_derive_spending_key` functions.
+/// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
+/// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
 /// - `memo` must either be null (indicating an empty memo) or point to a 512-byte array.
 /// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
@@ -2023,7 +1712,8 @@ pub extern "C" fn zcashlc_shield_funds(
     db_data: *const u8,
     db_data_len: usize,
     account: i32,
-    xprv: *const c_char,
+    usk_ptr: *const u8,
+    usk_len: usize,
     memo: *const u8,
     spend_params: *const u8,
     spend_params_len: usize,
@@ -2044,7 +1734,8 @@ pub extern "C" fn zcashlc_shield_funds(
             return Err(format_err!("account argument must be positive"));
         };
 
-        let xprv_str = unsafe { CStr::from_ptr(xprv) }.to_str()?;
+        let usk = unsafe { decode_usk(usk_ptr, usk_len) }?;
+
         let memo_bytes = if memo.is_null() {
             MemoBytes::empty()
         } else {
@@ -2059,18 +1750,11 @@ pub extern "C" fn zcashlc_shield_funds(
             slice::from_raw_parts(output_params, output_params_len)
         }));
 
-        //grab secret private key for t-funds
-        let xprv = match hdwallet_bitcoin::PrivKey::deserialize(xprv_str.to_owned()) {
-            Ok(xprv) => xprv,
-            Err(e) => return Err(format_err!("Invalid transparent extended privkey: {:?}", e)),
-        };
-        let sk = legacy::keys::AccountPrivKey::from_extended_privkey(xprv.extended_key);
-
         shield_transparent_funds(
             &mut update_ops,
             &network,
             LocalTxProver::new(spend_params, output_params),
-            &sk,
+            usk.transparent(),
             AccountId::from(account),
             &memo_bytes,
             ANCHOR_OFFSET,

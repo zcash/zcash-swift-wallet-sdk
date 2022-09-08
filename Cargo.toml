@@ -10,16 +10,14 @@ build = "rust/build.rs"
 [dependencies]
 failure = "0.1"
 ffi_helpers = "0.2"
-hdwallet = "0.3.1"
-hdwallet-bitcoin = "0.3"
 hex = "0.4"
 schemer = "0.2"
 secp256k1 = "0.21"
 secrecy = "0.8"
 
 zcash_address = { version = "0.1" }
-zcash_client_backend = { version = "0.5", features = ["transparent-inputs"] }
-zcash_client_sqlite = { version = "0.3", features = ["transparent-inputs"] }
+zcash_client_backend = { version = "0.5", features = ["transparent-inputs", "unstable"] }
+zcash_client_sqlite = { version = "0.3", features = ["transparent-inputs", "unstable"] }
 zcash_primitives = "0.7"
 zcash_proofs = "0.7"
 
@@ -38,11 +36,11 @@ lto = true
 # We also need zcash_client_backend and zcash_client_sqlite, which haven't been published
 # with NU5 updates yet.
 [patch.crates-io]
-zcash_address = { git = 'https://github.com/zcash/librustzcash.git', rev='8c00ca3b88d0fea880ccd731544ad312caa0e6af' }
-zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='8c00ca3b88d0fea880ccd731544ad312caa0e6af' }
-zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='8c00ca3b88d0fea880ccd731544ad312caa0e6af' }
-zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='8c00ca3b88d0fea880ccd731544ad312caa0e6af' }
-zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='8c00ca3b88d0fea880ccd731544ad312caa0e6af' }
+zcash_address = { git = 'https://github.com/zcash/librustzcash.git', rev='3bc8627e2b15cae0fe0bcccf327c517f573c8a89' }
+zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='3bc8627e2b15cae0fe0bcccf327c517f573c8a89' }
+zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='3bc8627e2b15cae0fe0bcccf327c517f573c8a89' }
+zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='3bc8627e2b15cae0fe0bcccf327c517f573c8a89' }
+zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='3bc8627e2b15cae0fe0bcccf327c517f573c8a89' }
 
 [features]
 mainnet = ["zcash_client_sqlite/mainnet"]
