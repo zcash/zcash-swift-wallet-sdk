@@ -7,8 +7,9 @@ use hdwallet::{
 use schemer::MigratorError;
 use secp256k1::PublicKey;
 use secrecy::Secret;
+
 use std::collections::HashMap;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr};
 use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
@@ -16,8 +17,9 @@ use std::path::Path;
 use std::slice;
 use std::str::FromStr;
 
+use zcash_address::{ToAddress, ZcashAddress};
 use zcash_client_backend::{
-    address::RecipientAddress,
+    address::{RecipientAddress, UnifiedAddress},
     data_api::{
         chain::{scan_cached_blocks, validate_chain},
         error::Error,
@@ -785,6 +787,62 @@ pub extern "C" fn zcashlc_get_address(
                 account
             )),
             Err(e) => Err(format_err!("Error while fetching address: {}", e)),
+        }
+    });
+    unwrap_exc_or_null(res)
+}
+
+struct UnifiedAddressParser(UnifiedAddress);
+
+impl zcash_address::TryFromRawAddress for UnifiedAddressParser {
+    type Error = failure::Error;
+
+    fn try_from_raw_unified(
+        data: zcash_address::unified::Address,
+    ) -> Result<Self, zcash_address::ConversionError<Self::Error>> {
+        data.try_into()
+            .map(UnifiedAddressParser)
+            .map_err(|e| format_err!("Invalid Unified Address: {}", e).into())
+    }
+}
+
+/// Returns the transparent receiver within the given Unified Address, if any.
+///
+/// # Safety
+///
+/// - `ua` must be non-null and must point to a null-terminated UTF-8 string containing an
+///   encoded Unified Address.
+/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+///   when done using it.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
+    ua: *const c_char,
+) -> *mut c_char {
+    let res = catch_panic(|| {
+        let ua_str = unsafe { CStr::from_ptr(ua).to_str()? };
+
+        let (network, ua) = match ZcashAddress::try_from_encoded(ua_str) {
+            Ok(addr) => addr
+                .convert::<(_, UnifiedAddressParser)>()
+                .map_err(|e| format_err!("Not a Unified Address: {}", e)),
+            Err(e) => return Err(format_err!("Invalid Zcash address: {}", e)),
+        }?;
+
+        if let Some(taddr) = ua.0.transparent() {
+            let taddr = match taddr {
+                TransparentAddress::PublicKey(data) => {
+                    ZcashAddress::from_transparent_p2pkh(network, *data)
+                }
+                TransparentAddress::Script(data) => {
+                    ZcashAddress::from_transparent_p2sh(network, *data)
+                }
+            };
+
+            Ok(CString::new(taddr.encode()).unwrap().into_raw())
+        } else {
+            Err(format_err!(
+                "Unified Address doesn't contain a transparent receiver"
+            ))
         }
     });
     unwrap_exc_or_null(res)
