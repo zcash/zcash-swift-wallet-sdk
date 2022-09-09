@@ -891,6 +891,7 @@ dependencies = [
  "schemer",
  "secp256k1",
  "secrecy",
+ "zcash_address",
  "zcash_client_backend",
  "zcash_client_sqlite",
  "zcash_primitives",
