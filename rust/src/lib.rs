@@ -801,6 +801,11 @@ pub extern "C" fn zcashlc_get_address(
 /// Returns a pointer to a slice of typecodes. `len_ret` is set to the length of the
 /// slice.
 ///
+/// See the following sections of ZIP 316 for details on how to interpret typecodes:
+/// - [List of known typecodes](https://zips.z.cash/zip-0316#encoding-of-unified-addresses)
+/// - [Adding new types](https://zips.z.cash/zip-0316#adding-new-types)
+/// - [Metadata Items](https://zips.z.cash/zip-0316#metadata-items)
+///
 /// # Safety
 ///
 /// - `ua` must be non-null and must point to a null-terminated UTF-8 string containing an
