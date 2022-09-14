@@ -11,13 +11,17 @@ use secrecy::Secret;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr};
+use std::mem::ManuallyDrop;
 use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::slice;
 use std::str::FromStr;
 
-use zcash_address::{ToAddress, ZcashAddress};
+use zcash_address::{
+    unified::{self, Container, Encoding},
+    ToAddress, ZcashAddress,
+};
 use zcash_client_backend::{
     address::{RecipientAddress, UnifiedAddress},
     data_api::{
@@ -790,6 +794,69 @@ pub extern "C" fn zcashlc_get_address(
         }
     });
     unwrap_exc_or_null(res)
+}
+
+/// Extracts the typecodes of the receivers within the given Unified Address.
+///
+/// Returns a pointer to a slice of typecodes. `len_ret` is set to the length of the
+/// slice.
+///
+/// See the following sections of ZIP 316 for details on how to interpret typecodes:
+/// - [List of known typecodes](https://zips.z.cash/zip-0316#encoding-of-unified-addresses)
+/// - [Adding new types](https://zips.z.cash/zip-0316#adding-new-types)
+/// - [Metadata Items](https://zips.z.cash/zip-0316#metadata-items)
+///
+/// # Safety
+///
+/// - `ua` must be non-null and must point to a null-terminated UTF-8 string containing an
+///   encoded Unified Address.
+/// - Call [`zcashlc_free_typecodes`] to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_typecodes_for_unified_address_receivers(
+    ua: *const c_char,
+    len_ret: *mut usize,
+) -> *mut u32 {
+    let res = catch_panic(|| {
+        let ua_str = unsafe { CStr::from_ptr(ua).to_str()? };
+
+        let (_, ua) = unified::Address::decode(ua_str)
+            .map_err(|e| format_err!("Invalid Unified Address: {}", e))?;
+
+        let typecodes = ua
+            .items()
+            .into_iter()
+            .map(|receiver| match receiver {
+                unified::Receiver::P2pkh(_) => unified::Typecode::P2pkh,
+                unified::Receiver::P2sh(_) => unified::Typecode::P2sh,
+                unified::Receiver::Sapling(_) => unified::Typecode::Sapling,
+                unified::Receiver::Orchard(_) => unified::Typecode::Orchard,
+                unified::Receiver::Unknown { typecode, .. } => unified::Typecode::Unknown(typecode),
+            })
+            .map(u32::from)
+            .collect::<Vec<_>>();
+
+        let mut typecodes = ManuallyDrop::new(typecodes.into_boxed_slice());
+        let (ptr, len) = (typecodes.as_mut_ptr(), typecodes.len());
+
+        unsafe { *len_ret = len };
+        Ok(ptr)
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Frees a list of typecodes previously obtained from the FFI.
+///
+/// # Safety
+///
+/// - `data` and `len` must have been obtained from
+///   [`zcashlc_get_typecodes_for_unified_address_receivers`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_typecodes(data: *mut u32, len: usize) {
+    if !data.is_null() {
+        let s = Box::from_raw(slice::from_raw_parts_mut(data, len));
+        drop(s);
+    }
 }
 
 struct UnifiedAddressParser(UnifiedAddress);
