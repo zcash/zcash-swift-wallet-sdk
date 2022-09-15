@@ -10,9 +10,10 @@ IMPORTANT NOTE: the binary representation of a unified spending key may be
 cached, but may become invalid and require re-derivation from seed to use as
 input to any of the relevant APIs in the future, in the case that the
 representation of the spending key changes or new types of spending authority
-are recognized.  The binary representation of unified spending keys should be
-handled with the same level of care and be treated as requiring the same level
-of secure storage as the wallet seed itself.
+are recognized.  Spending keys give irrevocable spend authority over
+a specific account.  Clients that choose to store the binary representation
+of unified spending keys locally on device, should handle them with the 
+same level of care and secure storage policies as the wallet seed itself. 
 
 ## Added
 - `zcashlc_create_account` provides new account creation functionality.
