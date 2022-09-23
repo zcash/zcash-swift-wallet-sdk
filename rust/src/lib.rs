@@ -1147,6 +1147,80 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance(
     unwrap_exc_or(res, -1)
 }
 
+/// Returns the verified transparent balance for `account`, which ignores utxos that have been
+/// received too recently and are not yet deemed spendable according to `min_confirmations`.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `address` must not be mutated for the duration of the function call.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    account: i32,
+    min_confirmations: u32,
+) -> i64 {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let account = if account >= 0 {
+            AccountId::from(account as u32)
+        } else {
+            return Err(format_err!("account argument must be positive"));
+        };
+        let amount = (&db_data)
+            .get_target_and_anchor_heights(min_confirmations)
+            .map_err(|e| format_err!("Error while fetching anchor height: {}", e))
+            .and_then(|opt_anchor| {
+                opt_anchor
+                    .map(|(h, _)| h)
+                    .ok_or_else(|| format_err!("height not available; scan required."))
+            })
+            .and_then(|anchor| {
+                db_data
+                    .get_transparent_receivers(account)
+                    .map_err(|e| {
+                        format_err!(
+                            "Error while fetching transparent receivers for {:?}: {}",
+                            account,
+                            e
+                        )
+                    })
+                    .and_then(|receivers| {
+                        receivers
+                            .iter()
+                            .map(|taddr| {
+                                db_data
+                                    .get_unspent_transparent_outputs(&taddr, anchor)
+                                    .map_err(|e| {
+                                        format_err!(
+                                            "Error while fetching verified transparent balance: {}",
+                                            e
+                                        )
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+            })?
+            .iter()
+            .flatten()
+            .map(|utxo| utxo.txout.value)
+            .sum::<Option<Amount>>()
+            .ok_or_else(|| format_err!("Balance overflowed MAX_MONEY."))?;
+
+        Ok(amount.into())
+    });
+    unwrap_exc_or(res, -1)
+}
+
 /// Returns the balance for `address`, including all UTXOs that we know about.
 ///
 /// # Safety
@@ -1187,6 +1261,78 @@ pub extern "C" fn zcashlc_get_total_transparent_balance(
                     })
             })?
             .iter()
+            .map(|utxo| utxo.txout.value)
+            .sum::<Option<Amount>>()
+            .ok_or_else(|| format_err!("Balance overflowed MAX_MONEY."))?;
+
+        Ok(amount.into())
+    });
+    unwrap_exc_or(res, -1)
+}
+
+/// Returns the balance for `account`, including all UTXOs that we know about.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `address` must not be mutated for the duration of the function call.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_total_transparent_balance_for_account(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    account: i32,
+) -> i64 {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let account = if account >= 0 {
+            AccountId::from(account as u32)
+        } else {
+            return Err(format_err!("account argument must be positive"));
+        };
+        let amount = (&db_data)
+            .get_target_and_anchor_heights(0u32)
+            .map_err(|e| format_err!("Error while fetching anchor height: {}", e))
+            .and_then(|opt_anchor| {
+                opt_anchor
+                    .map(|(h, _)| h)
+                    .ok_or_else(|| format_err!("height not available; scan required."))
+            })
+            .and_then(|anchor| {
+                db_data
+                    .get_transparent_receivers(account)
+                    .map_err(|e| {
+                        format_err!(
+                            "Error while fetching transparent receivers for {:?}: {}",
+                            account,
+                            e
+                        )
+                    })
+                    .and_then(|receivers| {
+                        receivers
+                            .iter()
+                            .map(|taddr| {
+                                db_data
+                                    .get_unspent_transparent_outputs(&taddr, anchor)
+                                    .map_err(|e| {
+                                        format_err!(
+                                            "Error while fetching verified transparent balance: {}",
+                                            e
+                                        )
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+            })?
+            .iter()
+            .flatten()
             .map(|utxo| utxo.txout.value)
             .sum::<Option<Amount>>()
             .ok_or_else(|| format_err!("Balance overflowed MAX_MONEY."))?;
