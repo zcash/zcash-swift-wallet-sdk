@@ -295,6 +295,61 @@ pub struct FFIEncodedKey {
     encoding: *mut c_char,
 }
 
+/// A struct that contains a pointer to, and length information for, a heap-allocated
+/// slice of [`FFIEncodedKey`] values.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FFIEncodedKey>()`
+///   many bytes, and it must be properly aligned. This means in particular:
+///   - The entire memory range pointed to by `ptr` must be contained within a single allocated
+///     object. Slices can never span across multiple allocated objects.
+///   - `ptr` must be non-null and aligned even for zero-length slices.
+///   - `ptr` must point to `len` consecutive properly initialized values of type
+///     [`FFIEncodedKey`].
+/// - The total size `len * mem::size_of::<FFIEncodedKey>()` of the slice pointed to
+///   by `ptr` must be no larger than isize::MAX. See the safety documentation of pointer::offset.
+/// - See the safety documentation of [`FFIEncodedKey`]
+#[repr(C)]
+pub struct FFIEncodedKeys {
+    ptr: *mut FFIEncodedKey,
+    len: usize, // number of elems
+}
+
+impl FFIEncodedKeys {
+    pub fn ptr_from_vec(v: Vec<FFIEncodedKey>) -> *mut Self {
+        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
+        let boxed_slice: Box<[FFIEncodedKey]> = v.into_boxed_slice();
+        let len = boxed_slice.len();
+        let fat_ptr: *mut [FFIEncodedKey] = Box::into_raw(boxed_slice);
+        // It is guaranteed to be possible to obtain a raw pointer to the start
+        // of a slice by casting the pointer-to-slice, as documented e.g. at
+        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
+        // TODO: replace with `as_mut_ptr()` when that is stable.
+        let slim_ptr: *mut FFIEncodedKey = fat_ptr as _;
+        Box::into_raw(Box::new(FFIEncodedKeys { ptr: slim_ptr, len }))
+    }
+}
+
+/// Frees an array of FFIEncodedKeys values as allocated by `zcashlc_derive_unified_viewing_keys_from_seed`
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FFIEncodedKeys`].
+///   See the safety documentation of [`FFIEncodedKeys`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
+    if !ptr.is_null() {
+        let s: Box<FFIEncodedKeys> = Box::from_raw(ptr);
+
+        let slice: &mut [FFIEncodedKey] = slice::from_raw_parts_mut(s.ptr, s.len);
+        for k in slice.into_iter() {
+            zcashlc_string_free(k.encoding)
+        }
+        drop(s);
+    }
+}
+
 /// Initialises the data database with the given set of unified full viewing keys. This
 /// should only be used in special cases for implementing wallet recovery; prefer
 /// `zcashlc_create_account` for normal account creation purposes.
@@ -585,6 +640,57 @@ pub extern "C" fn zcashlc_get_next_available_address(
                 "No payment address was available for account {:?}",
                 account
             )),
+            Err(e) => Err(format_err!("Error while fetching address: {}", e)),
+        }
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Returns a list of the transparent receivers for the diversified unified addresses that have
+/// been allocated for the provided account.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_keys`] to free the memory associated with the returned pointer
+///   when done using it.
+#[no_mangle]
+pub extern "C" fn zcashlc_list_transparent_receivers(
+    db_data: *const u8,
+    db_data_len: usize,
+    account_id: i32,
+    network_id: u32,
+) -> *mut FFIEncodedKeys {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let account_id = if account_id >= 0 {
+            account_id as u32
+        } else {
+            return Err(format_err!("Account id must be nonnegative."));
+        };
+
+        let account = AccountId::from(account_id);
+        match db_data.get_transparent_receivers(account) {
+            Ok(receivers) => {
+                let keys = receivers
+                    .iter()
+                    .map(|receiver| {
+                        let address_str = receiver.encode(&network);
+                        FFIEncodedKey {
+                            account_id,
+                            encoding: CString::new(address_str).unwrap().into_raw(),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                Ok(FFIEncodedKeys::ptr_from_vec(keys))
+            }
             Err(e) => Err(format_err!("Error while fetching address: {}", e)),
         }
     });
