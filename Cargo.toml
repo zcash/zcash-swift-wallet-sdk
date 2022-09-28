@@ -11,6 +11,7 @@ build = "rust/build.rs"
 failure = "0.1"
 ffi_helpers = "0.2"
 hex = "0.4"
+memuse = "0.2.1"
 schemer = "0.2"
 secp256k1 = "0.21"
 secrecy = "0.8"
@@ -36,12 +37,12 @@ lto = true
 # We also need zcash_client_backend and zcash_client_sqlite, which haven't been published
 # with NU5 updates yet.
 [patch.crates-io]
-zcash_address = { git = 'https://github.com/zcash/librustzcash.git', rev='774ffadf5a0120a74d70d281974d079ccd58c600' }
-zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='774ffadf5a0120a74d70d281974d079ccd58c600' }
-zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='774ffadf5a0120a74d70d281974d079ccd58c600' }
-zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='774ffadf5a0120a74d70d281974d079ccd58c600' }
-zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='774ffadf5a0120a74d70d281974d079ccd58c600' }
-group = { git = "https://github.com/zkcrypto/group.git", rev = "a7f3ceb2373e9fe536996f7b4d55c797f3e667f0" }
+zcash_address = { git = 'https://github.com/zcash/librustzcash.git', rev='4e631697c4d9bb55c66c4730c1c7479d9cd71706' }
+zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='4e631697c4d9bb55c66c4730c1c7479d9cd71706' }
+zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='4e631697c4d9bb55c66c4730c1c7479d9cd71706' }
+zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='4e631697c4d9bb55c66c4730c1c7479d9cd71706' }
+zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='4e631697c4d9bb55c66c4730c1c7479d9cd71706' }
+group = { git = "https://github.com/zkcrypto/group.git", rev = "f61e3e420ed1220c8f1f80988f8c6c5e202d8715" }
 
 [features]
 mainnet = ["zcash_client_sqlite/mainnet"]
