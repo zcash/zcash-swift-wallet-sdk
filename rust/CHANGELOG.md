@@ -35,6 +35,10 @@ Address retrieval, derivation, and verification API:
 - `zcashlc_is_valid_unified_address`
 - `zcashlc_is_valid_unified_full_viewing_key`
 
+Balance API:
+- `zcashlc_get_verified_transparent_balance_for_account`
+- `zcashlc_get_total_transparent_balance_for_account`
+
 New memo access API:
 - `zcashlc_get_received_memo`
 - `zcashlc_get_sent_memo`
