@@ -37,12 +37,13 @@ lto = true
 # We also need zcash_client_backend and zcash_client_sqlite, which haven't been published
 # with NU5 updates yet.
 [patch.crates-io]
-zcash_address = { git = 'https://github.com/zcash/librustzcash.git', rev='4e631697c4d9bb55c66c4730c1c7479d9cd71706' }
-zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='4e631697c4d9bb55c66c4730c1c7479d9cd71706' }
-zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='4e631697c4d9bb55c66c4730c1c7479d9cd71706' }
-zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='4e631697c4d9bb55c66c4730c1c7479d9cd71706' }
-zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='4e631697c4d9bb55c66c4730c1c7479d9cd71706' }
-group = { git = "https://github.com/zkcrypto/group.git", rev = "f61e3e420ed1220c8f1f80988f8c6c5e202d8715" }
+zcash_address = { git = 'https://github.com/zcash/librustzcash.git', rev='022964056fbe6dac8fe3adbf89f29c046cdc4cec' }
+zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='022964056fbe6dac8fe3adbf89f29c046cdc4cec' }
+zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='022964056fbe6dac8fe3adbf89f29c046cdc4cec' }
+zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='022964056fbe6dac8fe3adbf89f29c046cdc4cec' }
+zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='022964056fbe6dac8fe3adbf89f29c046cdc4cec' }
+schemer = { git = "https://github.com/aschampion/schemer.git", rev = "6726b60f43f72c6e24a18d31be0ec7d42829e5e1" }
+schemer-rusqlite = { git = "https://github.com/aschampion/schemer.git", rev = "6726b60f43f72c6e24a18d31be0ec7d42829e5e1" }
 
 [features]
 mainnet = ["zcash_client_sqlite/mainnet"]

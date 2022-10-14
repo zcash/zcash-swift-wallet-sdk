@@ -24,14 +24,14 @@ use zcash_client_backend::{
         wallet::{
             create_spend_to_address, decrypt_and_store_transaction, shield_transparent_funds,
         },
-        WalletRead, WalletReadTransparent, WalletWrite, WalletWriteTransparent,
+        WalletRead, WalletWrite, 
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
     keys::{DecodingError, Era, UnifiedFullViewingKey, UnifiedSpendingKey},
     wallet::{OvkPolicy, WalletTransparentOutput},
 };
 #[allow(deprecated)]
-use zcash_client_sqlite::wallet::{delete_utxos_above, get_rewind_height};
+use zcash_client_sqlite::wallet::{get_rewind_height};
 use zcash_client_sqlite::{
     error::SqliteClientError,
     wallet::init::{init_accounts_table, init_blocks_table, init_wallet_db, WalletMigrationError},
@@ -1138,7 +1138,7 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance(
                     })
             })?
             .iter()
-            .map(|utxo| utxo.txout.value)
+            .map(|utxo| utxo.txout().value)
             .sum::<Option<Amount>>()
             .ok_or_else(|| format_err!("Balance overflowed MAX_MONEY."))?;
 
@@ -1212,7 +1212,7 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
             })?
             .iter()
             .flatten()
-            .map(|utxo| utxo.txout.value)
+            .map(|utxo| utxo.txout().value)
             .sum::<Option<Amount>>()
             .ok_or_else(|| format_err!("Balance overflowed MAX_MONEY."))?;
 
@@ -1261,7 +1261,7 @@ pub extern "C" fn zcashlc_get_total_transparent_balance(
                     })
             })?
             .iter()
-            .map(|utxo| utxo.txout.value)
+            .map(|utxo| utxo.txout().value)
             .sum::<Option<Amount>>()
             .ok_or_else(|| format_err!("Balance overflowed MAX_MONEY."))?;
 
@@ -1333,7 +1333,7 @@ pub extern "C" fn zcashlc_get_total_transparent_balance_for_account(
             })?
             .iter()
             .flatten()
-            .map(|utxo| utxo.txout.value)
+            .map(|utxo| utxo.txout().value)
             .sum::<Option<Amount>>()
             .ok_or_else(|| format_err!("Balance overflowed MAX_MONEY."))?;
 
@@ -1759,57 +1759,22 @@ pub extern "C" fn zcashlc_put_utxo(
         let script_bytes = unsafe { slice::from_raw_parts(script_bytes, script_bytes_len) };
         let script_pubkey = legacy::Script(script_bytes.to_vec());
 
-        let output = WalletTransparentOutput {
-            outpoint: OutPoint::new(txid, index as u32),
-            txout: TxOut {
+        let output = WalletTransparentOutput::from_parts(
+            OutPoint::new(txid, index as u32),
+            TxOut {
                 value: Amount::from_i64(value).unwrap(),
                 script_pubkey,
             },
-            height: BlockHeight::from(height as u32),
-        };
+            BlockHeight::from(height as u32),
+        ).ok_or_else(||
+            format_err!("{:?} is not a valid P2PKH or P2SH script_pubkey", script_bytes)
+        )?;
         match db_data.put_received_transparent_utxo(&output) {
             Ok(_) => Ok(true),
             Err(e) => Err(format_err!("Error while inserting UTXO: {}", e)),
         }
     });
     unwrap_exc_or(res, false)
-}
-
-/// Deletes the transparent UTXO data associated with the given transparent address for UTXOs
-/// received at block heights above the specified height.
-///
-/// # Safety
-///
-/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a string representing a valid system path in the
-///   operating system's preferred representation.
-/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
-/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-/// - `taddress` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `taddress` must not be mutated for the duration of the function call.
-#[no_mangle]
-pub extern "C" fn zcashlc_clear_utxos(
-    db_data: *const u8,
-    db_data_len: usize,
-    taddress: *const c_char,
-    above_height: i32,
-    network_id: u32,
-) -> i32 {
-    #[allow(deprecated)]
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let mut db_data = db_data.get_update_ops()?;
-        let addr = unsafe { CStr::from_ptr(taddress).to_str()? };
-        let taddress = TransparentAddress::decode(&network, addr).unwrap();
-        let height = BlockHeight::from(above_height as u32);
-        match delete_utxos_above(&mut db_data, &taddress, height) {
-            Ok(rows) => Ok(rows as i32),
-            Err(e) => Err(format_err!("Error while clearing UTXOs: {}", e)),
-        }
-    });
-    unwrap_exc_or(res, -1)
 }
 
 /// Attempts to decrypt the specified transaction from its network byte representation
@@ -1899,7 +1864,6 @@ pub extern "C" fn zcashlc_decrypt_and_store_transaction(
 pub extern "C" fn zcashlc_create_to_address(
     db_data: *const u8,
     db_data_len: usize,
-    account: i32,
     usk_ptr: *const u8,
     usk_len: usize,
     to: *const c_char,
@@ -1916,11 +1880,6 @@ pub extern "C" fn zcashlc_create_to_address(
         let network = parse_network(network_id)?;
         let db_read = unsafe { wallet_db(db_data, db_data_len, network)? };
         let mut db_data = db_read.get_update_ops()?;
-        let account = if account >= 0 {
-            account as u32
-        } else {
-            return Err(format_err!("account argument must be positive"));
-        };
 
         let usk = unsafe { decode_usk(usk_ptr, usk_len) }?;
         let to = unsafe { CStr::from_ptr(to) }.to_str()?;
@@ -1960,8 +1919,7 @@ pub extern "C" fn zcashlc_create_to_address(
             &mut db_data,
             &network,
             prover,
-            AccountId::from(account),
-            usk.sapling(),
+            &usk,
             &to,
             value,
             memo,
@@ -2029,7 +1987,6 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 pub extern "C" fn zcashlc_shield_funds(
     db_data: *const u8,
     db_data_len: usize,
-    account: i32,
     usk_ptr: *const u8,
     usk_len: usize,
     memo: *const u8,
@@ -2045,12 +2002,6 @@ pub extern "C" fn zcashlc_shield_funds(
         let mut update_ops = (&db_data)
             .get_update_ops()
             .map_err(|e| format_err!("Could not obtain a writable database connection: {}", e))?;
-
-        let account = if account >= 0 {
-            account as u32
-        } else {
-            return Err(format_err!("account argument must be positive"));
-        };
 
         let usk = unsafe { decode_usk(usk_ptr, usk_len) }?;
 
@@ -2072,8 +2023,7 @@ pub extern "C" fn zcashlc_shield_funds(
             &mut update_ops,
             &network,
             LocalTxProver::new(spend_params, output_params),
-            usk.transparent(),
-            AccountId::from(account),
+            &usk,
             &memo_bytes,
             ANCHOR_OFFSET,
         )
