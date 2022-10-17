@@ -13,8 +13,9 @@ use std::path::Path;
 use std::slice;
 
 use zcash_address::{
+    self,
     unified::{self, Container, Encoding},
-    ToAddress, ZcashAddress,
+    ConversionError, ToAddress, TryFromAddress, ZcashAddress,
 };
 use zcash_client_backend::{
     address::{RecipientAddress, UnifiedAddress},
@@ -24,14 +25,14 @@ use zcash_client_backend::{
         wallet::{
             create_spend_to_address, decrypt_and_store_transaction, shield_transparent_funds,
         },
-        WalletRead, WalletWrite, 
+        WalletRead, WalletWrite,
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
     keys::{DecodingError, Era, UnifiedFullViewingKey, UnifiedSpendingKey},
     wallet::{OvkPolicy, WalletTransparentOutput},
 };
 #[allow(deprecated)]
-use zcash_client_sqlite::wallet::{get_rewind_height};
+use zcash_client_sqlite::wallet::get_rewind_height;
 use zcash_client_sqlite::{
     error::SqliteClientError,
     wallet::init::{init_accounts_table, init_blocks_table, init_wallet_db, WalletMigrationError},
@@ -880,6 +881,129 @@ fn is_valid_shielded_address(address: &str, network: &Network) -> bool {
         },
         None => false,
     }
+}
+
+enum AddressType {
+    Sprout,
+    P2pkh,
+    P2sh,
+    Sapling,
+    Unified,
+}
+
+struct AddressMetadata {
+    network: zcash_address::Network,
+    addr_type: AddressType,
+}
+
+#[derive(Debug)]
+enum Void {}
+
+impl TryFromAddress for AddressMetadata {
+    /// This instance produces no errors; ideally this would be the void
+    /// (uninhabitable) type but I'm not sure how to do that in Rust.
+    type Error = Void;
+
+    fn try_from_sprout(
+        network: zcash_address::Network,
+        _data: [u8; 64],
+    ) -> Result<Self, ConversionError<Self::Error>> {
+        Ok(AddressMetadata {
+            network,
+            addr_type: AddressType::Sprout,
+        })
+    }
+
+    fn try_from_sapling(
+        network: zcash_address::Network,
+        _data: [u8; 43],
+    ) -> Result<Self, ConversionError<Self::Error>> {
+        Ok(AddressMetadata {
+            network,
+            addr_type: AddressType::Sapling,
+        })
+    }
+
+    fn try_from_unified(
+        network: zcash_address::Network,
+        _data: unified::Address,
+    ) -> Result<Self, ConversionError<Self::Error>> {
+        Ok(AddressMetadata {
+            network,
+            addr_type: AddressType::Unified,
+        })
+    }
+
+    fn try_from_transparent_p2pkh(
+        network: zcash_address::Network,
+        _data: [u8; 20],
+    ) -> Result<Self, ConversionError<Self::Error>> {
+        Ok(AddressMetadata {
+            network,
+            addr_type: AddressType::P2pkh,
+        })
+    }
+
+    fn try_from_transparent_p2sh(
+        network: zcash_address::Network,
+        _data: [u8; 20],
+    ) -> Result<Self, ConversionError<Self::Error>> {
+        Ok(AddressMetadata {
+            network,
+            addr_type: AddressType::P2sh,
+        })
+    }
+}
+
+/// Returns the network type and address kind for the given address string,
+/// if the address is a valid Zcash address.
+///
+/// Address kind codes are as follows:
+/// * p2pkh: 0
+/// * p2sh: 1
+/// * sapling: 2
+/// * unified: 3
+///
+/// # Safety
+///
+/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `address` must not be mutated for the duration of the function call.
+#[no_mangle]
+pub extern "C" fn zcashlc_get_address_metadata(
+    address: *const c_char,
+    network_id_ret: *mut u32,
+    addr_kind_ret: *mut u32,
+) -> bool {
+    let res = catch_panic(|| {
+        let addr = unsafe { CStr::from_ptr(address).to_str()? };
+        let zaddr = ZcashAddress::try_from_encoded(addr)?;
+
+        // The following .unwrap is safe because address type detection
+        // cannot fail for valid ZcashAddress values.
+        let addr_meta: AddressMetadata = zaddr.convert().unwrap();
+        unsafe {
+            *network_id_ret = match addr_meta.network {
+                zcash_address::Network::Main => 1,
+                zcash_address::Network::Test => 0,
+                zcash_address::Network::Regtest => {
+                    return Err(format_err!("Regtest addresses are not supported."));
+                }
+            };
+
+            *addr_kind_ret = match addr_meta.addr_type {
+                AddressType::P2pkh => 0,
+                AddressType::P2sh => 1,
+                AddressType::Sapling => 2,
+                AddressType::Unified => 3,
+                AddressType::Sprout => {
+                    return Err(format_err!("Sprout addresses are not supported."));
+                }
+            };
+        }
+
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
 }
 
 /// Returns true when the address is a valid transparent payment address for the specified network,
@@ -1766,9 +1890,13 @@ pub extern "C" fn zcashlc_put_utxo(
                 script_pubkey,
             },
             BlockHeight::from(height as u32),
-        ).ok_or_else(||
-            format_err!("{:?} is not a valid P2PKH or P2SH script_pubkey", script_bytes)
-        )?;
+        )
+        .ok_or_else(|| {
+            format_err!(
+                "{:?} is not a valid P2PKH or P2SH script_pubkey",
+                script_bytes
+            )
+        })?;
         match db_data.put_received_transparent_utxo(&output) {
             Ok(_) => Ok(true),
             Err(e) => Err(format_err!("Error while inserting UTXO: {}", e)),
