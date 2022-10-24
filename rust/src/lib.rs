@@ -2036,9 +2036,15 @@ pub extern "C" fn zcashlc_create_to_address(
                         .map_err(|e| format_err!("Invalid MemoBytes {}", e))
                 }
             }
-            RecipientAddress::Transparent(_) => Err(format_err!(
-                "Memos are not permitted when sending to transparent recipients."
-            )),
+            RecipientAddress::Transparent(_) => {
+                if memo.is_null() {
+                    Ok(None)
+                } else {
+                    Err(format_err!(
+                        "Memos are not permitted when sending to transparent recipients."
+                    ))
+                }
+            }
         }?;
 
         let prover = LocalTxProver::new(spend_params, output_params);
