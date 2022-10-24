@@ -16,11 +16,11 @@ schemer = "0.2"
 secp256k1 = "0.21"
 secrecy = "0.8"
 
-zcash_address = { version = "0.1" }
+zcash_address = { version = "0.2" }
 zcash_client_backend = { version = "0.5", features = ["transparent-inputs", "unstable"] }
 zcash_client_sqlite = { version = "0.3", features = ["transparent-inputs", "unstable"] }
-zcash_primitives = "0.7"
-zcash_proofs = "0.7"
+zcash_primitives = "0.8.1"
+zcash_proofs = "0.8"
 
 [build-dependencies]
 cbindgen = "0.14"
@@ -37,14 +37,13 @@ lto = true
 # We also need zcash_client_backend and zcash_client_sqlite, which haven't been published
 # with NU5 updates yet.
 [patch.crates-io]
-zcash_address = { git = 'https://github.com/zcash/librustzcash.git', rev='022964056fbe6dac8fe3adbf89f29c046cdc4cec' }
-zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='022964056fbe6dac8fe3adbf89f29c046cdc4cec' }
-zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='022964056fbe6dac8fe3adbf89f29c046cdc4cec' }
-zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='022964056fbe6dac8fe3adbf89f29c046cdc4cec' }
-zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='022964056fbe6dac8fe3adbf89f29c046cdc4cec' }
+zcash_address = { git = 'https://github.com/zcash/librustzcash.git', rev='277d07c79c7a08907b05a6b29730b74cdb238b97' }
+zcash_client_backend = { git = 'https://github.com/zcash/librustzcash.git', rev='277d07c79c7a08907b05a6b29730b74cdb238b97' }
+zcash_client_sqlite = { git = 'https://github.com/zcash/librustzcash.git', rev='277d07c79c7a08907b05a6b29730b74cdb238b97' }
+zcash_primitives = { git = 'https://github.com/zcash/librustzcash.git', rev='277d07c79c7a08907b05a6b29730b74cdb238b97' }
+zcash_proofs = { git = 'https://github.com/zcash/librustzcash.git', rev='277d07c79c7a08907b05a6b29730b74cdb238b97' }
 schemer = { git = "https://github.com/aschampion/schemer.git", rev = "6726b60f43f72c6e24a18d31be0ec7d42829e5e1" }
 schemer-rusqlite = { git = "https://github.com/aschampion/schemer.git", rev = "6726b60f43f72c6e24a18d31be0ec7d42829e5e1" }
-orchard = { git = "https://github.com/zcash/orchard.git", rev = "4035a97d178f99bb889f4d7ed26c59378fa88961" }
 
 [features]
 mainnet = ["zcash_client_sqlite/mainnet"]
