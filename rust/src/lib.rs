@@ -681,7 +681,7 @@ pub extern "C" fn zcashlc_list_transparent_receivers(
             Ok(receivers) => {
                 let keys = receivers
                     .iter()
-                    .map(|receiver| {
+                    .map(|(receiver, _)| {
                         let address_str = receiver.encode(&network);
                         FFIEncodedKey {
                             account_id,
@@ -1321,7 +1321,7 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
                     .and_then(|receivers| {
                         receivers
                             .iter()
-                            .map(|taddr| {
+                            .map(|(taddr, _)| {
                                 db_data
                                     .get_unspent_transparent_outputs(&taddr, anchor)
                                     .map_err(|e| {
@@ -1431,33 +1431,17 @@ pub extern "C" fn zcashlc_get_total_transparent_balance_for_account(
             })
             .and_then(|anchor| {
                 db_data
-                    .get_transparent_receivers(account)
+                    .get_transparent_balances(account, anchor)
                     .map_err(|e| {
                         format_err!(
-                            "Error while fetching transparent receivers for {:?}: {}",
+                            "Error while fetching transparent balances for {:?}: {}",
                             account,
                             e
                         )
                     })
-                    .and_then(|receivers| {
-                        receivers
-                            .iter()
-                            .map(|taddr| {
-                                db_data
-                                    .get_unspent_transparent_outputs(&taddr, anchor)
-                                    .map_err(|e| {
-                                        format_err!(
-                                            "Error while fetching verified transparent balance: {}",
-                                            e
-                                        )
-                                    })
-                            })
-                            .collect::<Result<Vec<_>, _>>()
-                    })
             })?
             .iter()
-            .flatten()
-            .map(|utxo| utxo.txout().value)
+            .map(|(_, value)| value)
             .sum::<Option<Amount>>()
             .ok_or_else(|| format_err!("Balance overflowed MAX_MONEY."))?;
 
@@ -2153,11 +2137,39 @@ pub extern "C" fn zcashlc_shield_funds(
             slice::from_raw_parts(output_params, output_params_len)
         }));
 
+        let account = db_data
+            .get_account_for_ufvk(&usk.to_unified_full_viewing_key())?
+            .ok_or_else(|| format_err!("Spending key not recognized."))?;
+
+        let taddrs: Vec<TransparentAddress> = db_data
+            .get_target_and_anchor_heights(0u32)
+            .map_err(|e| format_err!("Error while fetching anchor height: {}", e))
+            .and_then(|opt_anchor| {
+                opt_anchor
+                    .map(|(h, _)| h)
+                    .ok_or_else(|| format_err!("height not available; scan required."))
+            })
+            .and_then(|anchor| {
+                db_data
+                    .get_transparent_balances(account, anchor)
+                    .map_err(|e| {
+                        format_err!(
+                            "Error while fetching transparent balances for {:?}: {}",
+                            account,
+                            e
+                        )
+                    })
+            })?
+            .keys()
+            .cloned()
+            .collect();
+
         shield_transparent_funds(
             &mut update_ops,
             &network,
             LocalTxProver::new(spend_params, output_params),
             &usk,
+            &taddrs,
             &memo_bytes,
             ANCHOR_OFFSET,
         )
