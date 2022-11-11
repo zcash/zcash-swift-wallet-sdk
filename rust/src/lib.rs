@@ -20,21 +20,22 @@ use zcash_address::{
 use zcash_client_backend::{
     address::{RecipientAddress, UnifiedAddress},
     data_api::{
-        chain::{scan_cached_blocks, validate_chain},
-        error::Error,
+        chain::{self, scan_cached_blocks, validate_chain},
         wallet::{
-            create_spend_to_address, decrypt_and_store_transaction, shield_transparent_funds,
+            spend, decrypt_and_store_transaction,
+            input_selection::GreedyInputSelector, shield_transparent_funds,
         },
         WalletRead, WalletWrite,
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
+    fees::{zip317, DustOutputPolicy},
     keys::{DecodingError, Era, UnifiedFullViewingKey, UnifiedSpendingKey},
     wallet::{OvkPolicy, WalletTransparentOutput},
+    zip321::{Payment, TransactionRequest},
 };
 #[allow(deprecated)]
 use zcash_client_sqlite::wallet::get_rewind_height;
 use zcash_client_sqlite::{
-    error::SqliteClientError,
     wallet::init::{init_accounts_table, init_blocks_table, init_wallet_db, WalletMigrationError},
     BlockDb, NoteId, WalletDb,
 };
@@ -46,6 +47,7 @@ use zcash_primitives::{
     memo::{Memo, MemoBytes},
     transaction::{
         components::{Amount, OutPoint, TxOut},
+        fees::zip317::FeeRule as Zip317FeeRule,
         Transaction,
     },
     zip32::AccountId,
@@ -1256,7 +1258,7 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance(
             })
             .and_then(|anchor| {
                 (&db_data)
-                    .get_unspent_transparent_outputs(&taddr, anchor)
+                    .get_unspent_transparent_outputs(&taddr, anchor, &[])
                     .map_err(|e| {
                         format_err!("Error while fetching verified transparent balance: {}", e)
                     })
@@ -1323,7 +1325,7 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
                             .iter()
                             .map(|(taddr, _)| {
                                 db_data
-                                    .get_unspent_transparent_outputs(&taddr, anchor)
+                                    .get_unspent_transparent_outputs(&taddr, anchor, &[])
                                     .map_err(|e| {
                                         format_err!(
                                             "Error while fetching verified transparent balance: {}",
@@ -1379,7 +1381,7 @@ pub extern "C" fn zcashlc_get_total_transparent_balance(
             })
             .and_then(|anchor| {
                 (&db_data)
-                    .get_unspent_transparent_outputs(&taddr, anchor)
+                    .get_unspent_transparent_outputs(&taddr, anchor, &[])
                     .map_err(|e| {
                         format_err!("Error while fetching total transparent balance: {}", e)
                     })
@@ -1668,9 +1670,9 @@ pub extern "C" fn zcashlc_validate_combined_chain(
 
         if let Err(e) = val_res {
             match e {
-                SqliteClientError::BackendError(Error::InvalidChain(upper_bound, _)) => {
-                    let upper_bound_u32 = u32::from(upper_bound);
-                    Ok(upper_bound_u32 as i32)
+                chain::error::Error::Chain(chain_error) => {
+                    let height_u32 = u32::from(chain_error.at_height());
+                    Ok(height_u32 as i32)
                 }
                 _ => Err(format_err!("Error while validating chain: {}", e)),
             }
@@ -2033,14 +2035,28 @@ pub extern "C" fn zcashlc_create_to_address(
 
         let prover = LocalTxProver::new(spend_params, output_params);
 
-        create_spend_to_address(
+        let req = TransactionRequest::new(vec![Payment {
+            recipient_address: to,
+            amount: value,
+            memo: memo,
+            label: None,
+            message: None,
+            other_params: vec![],
+        }])
+        .map_err(|e| format_err!("Error creating transaction request: {:?}", e))?;
+
+        let input_selector = GreedyInputSelector::new(
+            zip317::SingleOutputChangeStrategy::new(Zip317FeeRule::standard()),
+            DustOutputPolicy::default(),
+        );
+
+        spend(
             &mut db_data,
             &network,
             prover,
+            &input_selector,
             &usk,
-            &to,
-            value,
-            memo,
+            req,
             OvkPolicy::Sender,
             min_confirmations,
         )
@@ -2164,10 +2180,16 @@ pub extern "C" fn zcashlc_shield_funds(
             .cloned()
             .collect();
 
+        let input_selector = GreedyInputSelector::new(
+            zip317::SingleOutputChangeStrategy::new(Zip317FeeRule::standard()),
+            DustOutputPolicy::default(),
+        );
+
         shield_transparent_funds(
             &mut update_ops,
             &network,
             LocalTxProver::new(spend_params, output_params),
+            &input_selector,
             &usk,
             &taddrs,
             &memo_bytes,
