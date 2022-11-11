@@ -22,13 +22,13 @@ use zcash_client_backend::{
     data_api::{
         chain::{self, scan_cached_blocks, validate_chain},
         wallet::{
-            spend, decrypt_and_store_transaction,
-            input_selection::GreedyInputSelector, shield_transparent_funds,
+            decrypt_and_store_transaction, input_selection::GreedyInputSelector,
+            shield_transparent_funds, spend,
         },
         WalletRead, WalletWrite,
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
-    fees::{zip317, DustOutputPolicy},
+    fees::{fixed, zip317, DustOutputPolicy},
     keys::{DecodingError, Era, UnifiedFullViewingKey, UnifiedSpendingKey},
     wallet::{OvkPolicy, WalletTransparentOutput},
     zip321::{Payment, TransactionRequest},
@@ -47,6 +47,7 @@ use zcash_primitives::{
     memo::{Memo, MemoBytes},
     transaction::{
         components::{Amount, OutPoint, TxOut},
+        fees::fixed::FeeRule as FixedFeeRule,
         fees::zip317::FeeRule as Zip317FeeRule,
         Transaction,
     },
@@ -1989,6 +1990,7 @@ pub extern "C" fn zcashlc_create_to_address(
     output_params_len: usize,
     network_id: u32,
     min_confirmations: u32,
+    use_zip317_fees: bool,
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2045,22 +2047,41 @@ pub extern "C" fn zcashlc_create_to_address(
         }])
         .map_err(|e| format_err!("Error creating transaction request: {:?}", e))?;
 
-        let input_selector = GreedyInputSelector::new(
-            zip317::SingleOutputChangeStrategy::new(Zip317FeeRule::standard()),
-            DustOutputPolicy::default(),
-        );
+        if use_zip317_fees {
+            let input_selector = GreedyInputSelector::new(
+                zip317::SingleOutputChangeStrategy::new(Zip317FeeRule::standard()),
+                DustOutputPolicy::default(),
+            );
 
-        spend(
-            &mut db_data,
-            &network,
-            prover,
-            &input_selector,
-            &usk,
-            req,
-            OvkPolicy::Sender,
-            min_confirmations,
-        )
-        .map_err(|e| format_err!("Error while sending funds: {}", e))
+            spend(
+                &mut db_data,
+                &network,
+                prover,
+                &input_selector,
+                &usk,
+                req,
+                OvkPolicy::Sender,
+                min_confirmations,
+            )
+            .map_err(|e| format_err!("Error while sending funds: {}", e))
+        } else {
+            let input_selector = GreedyInputSelector::new(
+                fixed::SingleOutputChangeStrategy::new(FixedFeeRule::standard()),
+                DustOutputPolicy::default(),
+            );
+
+            spend(
+                &mut db_data,
+                &network,
+                prover,
+                &input_selector,
+                &usk,
+                req,
+                OvkPolicy::Sender,
+                min_confirmations,
+            )
+            .map_err(|e| format_err!("Error while sending funds: {}", e))
+        }
     });
     unwrap_exc_or(res, -1)
 }
@@ -2129,6 +2150,7 @@ pub extern "C" fn zcashlc_shield_funds(
     output_params: *const u8,
     output_params_len: usize,
     network_id: u32,
+    use_zip317_fees: bool,
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2180,22 +2202,41 @@ pub extern "C" fn zcashlc_shield_funds(
             .cloned()
             .collect();
 
-        let input_selector = GreedyInputSelector::new(
-            zip317::SingleOutputChangeStrategy::new(Zip317FeeRule::standard()),
-            DustOutputPolicy::default(),
-        );
+        if use_zip317_fees {
+            let input_selector = GreedyInputSelector::new(
+                zip317::SingleOutputChangeStrategy::new(Zip317FeeRule::standard()),
+                DustOutputPolicy::default(),
+            );
 
-        shield_transparent_funds(
-            &mut update_ops,
-            &network,
-            LocalTxProver::new(spend_params, output_params),
-            &input_selector,
-            &usk,
-            &taddrs,
-            &memo_bytes,
-            ANCHOR_OFFSET,
-        )
-        .map_err(|e| format_err!("Error while shielding transaction: {}", e))
+            shield_transparent_funds(
+                &mut update_ops,
+                &network,
+                LocalTxProver::new(spend_params, output_params),
+                &input_selector,
+                &usk,
+                &taddrs,
+                &memo_bytes,
+                ANCHOR_OFFSET,
+            )
+            .map_err(|e| format_err!("Error while shielding transaction: {}", e))
+        } else {
+            let input_selector = GreedyInputSelector::new(
+                fixed::SingleOutputChangeStrategy::new(FixedFeeRule::standard()),
+                DustOutputPolicy::default(),
+            );
+
+            shield_transparent_funds(
+                &mut update_ops,
+                &network,
+                LocalTxProver::new(spend_params, output_params),
+                &input_selector,
+                &usk,
+                &taddrs,
+                &memo_bytes,
+                ANCHOR_OFFSET,
+            )
+            .map_err(|e| format_err!("Error while shielding transaction: {}", e))
+        }
     });
     unwrap_exc_or(res, -1)
 }
