@@ -34,7 +34,10 @@ Address retrieval, derivation, and verification API:
 - `zcashlc_get_transparent_receiver_for_unified_address`
 - `zcashlc_is_valid_unified_address`
 - `zcashlc_is_valid_unified_full_viewing_key`
-
+- `zcashlc_list_transparent_receivers`
+- `zcashlc_get_typecodes_for_unified_address_receivers`
+- `zcashlc_free_typecodes`
+- `zcashlc_get_address_metadata`
 Balance API:
 - `zcashlc_get_verified_transparent_balance_for_account`
 - `zcashlc_get_total_transparent_balance_for_account`
