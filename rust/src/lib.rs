@@ -239,7 +239,7 @@ pub unsafe extern "C" fn zcashlc_free_binary_key(ptr: *mut FFIBinaryKey) {
 /// accounts before scanning the chain from the seed's birthday height.
 ///
 /// By convention, wallets should only allow a new account to be generated after funds
-/// have been received by the currently-available account (in order to enable
+/// have been received by the currently available account (in order to enable
 /// automated account recovery).
 ///
 /// # Safety
@@ -364,7 +364,7 @@ pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `ufvks` must be non-null and valid for reads for `ufvks_len * sizeof(FFIEncodedKey)` bytes.
-///   It must point to an array of `FFIEncodedKey` values
+///   It must point to an array of `FFIEncodedKey` values.
 /// - The memory referenced by `ufvks` must not be mutated for the duration of the function call.
 /// - The total size `ufvks_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
@@ -442,13 +442,14 @@ pub unsafe extern "C" fn zcashlc_derive_spending_key(
 }
 
 /// A private utility function to reduce duplication across functions that take an USK
-/// across the FFI. Callers should reproduce the following safety documentation.
+/// across the FFI. `usk_ptr` should point to an array of `usk_len` bytes containing
+/// a unified spending key encoded as returned from the `zcashlc_create_account` or
+/// `zcashlc_derive_spending_key` functions. Callers should reproduce the following
+/// safety documentation.
 ///
 /// # Safety
 ///
-/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes containing a unified
-///   spending key encoded as returned from the `zcashlc_create_account` or
-///   `zcashlc_derive_spending_key` functions.
+/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes.
 /// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
 /// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
@@ -456,7 +457,7 @@ unsafe fn decode_usk(
     usk_ptr: *const u8,
     usk_len: usize,
 ) -> Result<UnifiedSpendingKey, failure::Error> {
-    let usk_bytes = slice::from_raw_parts(usk_ptr, usk_len); //unsafe
+    let usk_bytes = unsafe { slice::from_raw_parts(usk_ptr, usk_len) };
 
     // The remainder of the function is safe.
     UnifiedSpendingKey::from_bytes(Era::Orchard, usk_bytes).map_err(|e| match e {
@@ -473,13 +474,13 @@ unsafe fn decode_usk(
 }
 
 /// Obtains the unified full viewing key for the given binary-encoded unified spending key
-/// and returns the resulting encoded UFVK string.
+/// and returns the resulting encoded UFVK string. `usk_ptr` should point to an array of `usk_len`
+/// bytes containing a unified spending key encoded as returned from the `zcashlc_create_account`
+/// or `zcashlc_derive_spending_key` functions.
 ///
 /// # Safety
 ///
-/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes containing a unified
-///   spending key encoded as returned from the `zcashlc_create_account` or
-///   `zcashlc_derive_spending_key` functions.
+/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes.
 /// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
 /// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
@@ -506,6 +507,9 @@ pub extern "C" fn zcashlc_spending_key_to_full_viewing_key(
 /// This enables a newly-created database to be immediately-usable, without needing to
 /// synchronise historic blocks.
 ///
+/// The string represented by `sapling_tree_hex` should contain the encoded byte representation
+/// of a Sapling commitment tree.
+///
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
@@ -516,8 +520,7 @@ pub extern "C" fn zcashlc_spending_key_to_full_viewing_key(
 ///   documentation of pointer::offset.
 /// - `hash_hex` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `hash_hex` must not be mutated for the duration of the function call.
-/// - `sapling_tree_hex` must be non-null and must point to a null-terminated UTF-8 string
-///   containing the encoded byte representation of a Sapling commitment tree.
+/// - `sapling_tree_hex` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `sapling_tree_hex` must not be mutated for the duration of the
 ///   function call.
 #[no_mangle]
