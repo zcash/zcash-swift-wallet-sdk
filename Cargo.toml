@@ -1,8 +1,9 @@
 [package]
 name = "libzcashlc"
 version = "0.1.0-beta.3"
-authors = ["Jack Grigg <jack@z.cash>",
-            "Francisco Gindre <francisco@z.cash>",
+authors = [
+    "Jack Grigg <jack@z.cash>",
+    "Francisco Gindre <francisco@z.cash>",
 ]
 license = "MIT"
 edition = "2018"
