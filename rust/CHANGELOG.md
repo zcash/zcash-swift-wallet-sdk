@@ -76,7 +76,8 @@ New memo access API:
 - `zcashlc_get_verified_transparent_balance` now takes the minimum number of
   confirmations used to filter received notes as an argument.
 - `zcashlc_get_total_transparent_balance` now returns a balance that includes
-  all UTXOs up to those in the latest block (i.e. those with 0 confirmations.)
+  all UTXOs including those only in the mempool (i.e. those with 0
+  confirmations).
 
 ## Removed
 
