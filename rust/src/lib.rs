@@ -1254,7 +1254,7 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance(
             .map_err(|e| format_err!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
                 opt_anchor
-                    .map(|(h, _)| h)
+                    .map(|(_, a)| a)
                     .ok_or_else(|| format_err!("height not available; scan required."))
             })
             .and_then(|anchor| {
@@ -1308,7 +1308,7 @@ pub extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
             .map_err(|e| format_err!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
                 opt_anchor
-                    .map(|(h, _)| h)
+                    .map(|(_, a)| a)
                     .ok_or_else(|| format_err!("height not available; scan required."))
             })
             .and_then(|anchor| {
@@ -1377,7 +1377,7 @@ pub extern "C" fn zcashlc_get_total_transparent_balance(
             .map_err(|e| format_err!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
                 opt_anchor
-                    .map(|(h, _)| h)
+                    .map(|(_, a)| a)
                     .ok_or_else(|| format_err!("height not available; scan required."))
             })
             .and_then(|anchor| {
@@ -1429,7 +1429,7 @@ pub extern "C" fn zcashlc_get_total_transparent_balance_for_account(
             .map_err(|e| format_err!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
                 opt_anchor
-                    .map(|(h, _)| h)
+                    .map(|(_, a)| a)
                     .ok_or_else(|| format_err!("height not available; scan required."))
             })
             .and_then(|anchor| {
