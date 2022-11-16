@@ -1,4 +1,4 @@
-# Unreleased
+# 0.1.0
 
 Unified spending keys are now used in all places where spending authority
 is required, both for performing spends of shielded funds and for shielding
