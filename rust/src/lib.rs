@@ -1,3 +1,5 @@
+#![deny(unsafe_op_in_unsafe_fn)]
+
 use failure::format_err;
 use ffi_helpers::panic::catch_panic;
 use schemer::MigratorError;
@@ -89,10 +91,9 @@ unsafe fn wallet_db(
     db_data_len: usize,
     network: Network,
 ) -> Result<WalletDb<Network>, failure::Error> {
-    let db_data = Path::new(OsStr::from_bytes(slice::from_raw_parts(
-        db_data,
-        db_data_len,
-    )));
+    let db_data = Path::new(OsStr::from_bytes(unsafe {
+        slice::from_raw_parts(db_data, db_data_len)
+    }));
     WalletDb::for_path(db_data, network)
         .map_err(|e| format_err!("Error opening wallet database connection: {}", e))
 }
@@ -108,10 +109,9 @@ unsafe fn wallet_db(
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 unsafe fn block_db(cache_db: *const u8, cache_db_len: usize) -> Result<BlockDb, failure::Error> {
-    let cache_db = Path::new(OsStr::from_bytes(slice::from_raw_parts(
-        cache_db,
-        cache_db_len,
-    )));
+    let cache_db = Path::new(OsStr::from_bytes(unsafe {
+        slice::from_raw_parts(cache_db, cache_db_len)
+    }));
     BlockDb::for_path(cache_db)
         .map_err(|e| format_err!("Error opening block source database connection: {}", e))
 }
@@ -133,7 +133,7 @@ pub extern "C" fn zcashlc_last_error_length() -> i32 {
 ///   pointer::offset.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_error_message_utf8(buf: *mut c_char, length: i32) -> i32 {
-    ffi_helpers::error_handling::error_message_utf8(buf, length)
+    unsafe { ffi_helpers::error_handling::error_message_utf8(buf, length) }
 }
 
 /// Clears the record of the last error message.
@@ -224,9 +224,10 @@ impl FFIBinaryKey {
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_free_binary_key(ptr: *mut FFIBinaryKey) {
     if !ptr.is_null() {
-        let key: Box<FFIBinaryKey> = Box::from_raw(ptr);
-        let key_slice: &mut [u8] = slice::from_raw_parts_mut(key.encoding, key.encoding_len);
-        drop(Box::from_raw(key_slice));
+        let key: Box<FFIBinaryKey> = unsafe { Box::from_raw(ptr) };
+        let key_slice: &mut [u8] =
+            unsafe { slice::from_raw_parts_mut(key.encoding, key.encoding_len) };
+        drop(unsafe { Box::from_raw(key_slice) });
     }
 }
 
@@ -344,11 +345,11 @@ impl FFIEncodedKeys {
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
     if !ptr.is_null() {
-        let s: Box<FFIEncodedKeys> = Box::from_raw(ptr);
+        let s: Box<FFIEncodedKeys> = unsafe { Box::from_raw(ptr) };
 
-        let slice: &mut [FFIEncodedKey] = slice::from_raw_parts_mut(s.ptr, s.len);
+        let slice: &mut [FFIEncodedKey] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
         for k in slice.into_iter() {
-            zcashlc_string_free(k.encoding)
+            unsafe { zcashlc_string_free(k.encoding) }
         }
         drop(s);
     }
@@ -426,7 +427,7 @@ pub unsafe extern "C" fn zcashlc_derive_spending_key(
 ) -> *mut FFIBinaryKey {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let seed = slice::from_raw_parts(seed, seed_len);
+        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
         let account = if account >= 0 {
             account as u32
         } else {
@@ -762,7 +763,7 @@ pub extern "C" fn zcashlc_get_typecodes_for_unified_address_receivers(
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_free_typecodes(data: *mut u32, len: usize) {
     if !data.is_null() {
-        let s = Box::from_raw(slice::from_raw_parts_mut(data, len));
+        let s = unsafe { Box::from_raw(slice::from_raw_parts_mut(data, len)) };
         drop(s);
     }
 }
@@ -2119,7 +2120,7 @@ pub extern "C" fn zcashlc_branch_id_for_height(height: i32, network_id: u32) -> 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
     if !s.is_null() {
-        let s = CString::from_raw(s);
+        let s = unsafe { CString::from_raw(s) };
         drop(s);
     }
 }
