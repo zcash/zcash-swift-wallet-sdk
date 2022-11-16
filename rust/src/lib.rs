@@ -782,8 +782,7 @@ impl zcash_address::TryFromRawAddress for UnifiedAddressParser {
 ///
 /// # Safety
 ///
-/// - `ua` must be non-null and must point to a null-terminated UTF-8 string containing an
-///   encoded Unified Address.
+/// - `ua` must be non-null and must point to a null-terminated UTF-8 string.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
@@ -824,8 +823,7 @@ pub extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
 ///
 /// # Safety
 ///
-/// - `ua` must be non-null and must point to a null-terminated UTF-8 string containing an
-///   encoded Unified Address.
+/// - `ua` must be non-null and must point to a null-terminated UTF-8 string.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
@@ -903,8 +901,7 @@ struct AddressMetadata {
 enum Void {}
 
 impl TryFromAddress for AddressMetadata {
-    /// This instance produces no errors; ideally this would be the void
-    /// (uninhabitable) type but I'm not sure how to do that in Rust.
+    /// This instance produces no errors.
     type Error = Void;
 
     fn try_from_sprout(
@@ -1091,8 +1088,9 @@ pub extern "C" fn zcashlc_is_valid_viewing_key(key: *const c_char, network_id: u
 ///
 /// # Safety
 ///
-/// - `ufvk` must be non-null and must point to a null-terminated UTF-8 string.  - The memory
-/// referenced by `ufvk` must not be mutated for the duration of the function call.
+/// - `ufvk` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `ufvk` must not be mutated for the duration of the
+///   function call.
 #[no_mangle]
 pub extern "C" fn zcashlc_is_valid_unified_full_viewing_key(
     ufvk: *const c_char,
@@ -1112,8 +1110,9 @@ pub extern "C" fn zcashlc_is_valid_unified_full_viewing_key(
 ///
 /// # Safety
 ///
-/// - `address` must be non-null and must point to a null-terminated UTF-8 string.  - The memory
-/// referenced by `address` must not be mutated for the duration of the function call.
+/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `address` must not be mutated for the duration of the
+///   function call.
 #[no_mangle]
 pub extern "C" fn zcashlc_is_valid_unified_address(
     address: *const c_char,
@@ -2067,7 +2066,7 @@ pub extern "C" fn zcashlc_branch_id_for_height(height: i32, network_id: u32) -> 
 ///
 /// # Safety
 ///
-/// - `s` should not be a null pointer.
+/// - `s` should be a non-null pointer returned as a string by another zcashlc function.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
