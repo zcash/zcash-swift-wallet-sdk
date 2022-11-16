@@ -1524,6 +1524,18 @@ pub extern "C" fn zcashlc_get_received_memo(
     )
 }
 
+/// Returns the memo for a note by copying the corresponding bytes to the received
+/// pointer in `memo_bytes_ret`.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `memo_bytes_ret` must be non-null and must point to an allocated 512-byte region of memory.
 fn zcashlc_get_memo(
     db_data: *const u8,
     db_data_len: usize,
