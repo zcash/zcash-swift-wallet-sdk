@@ -1903,8 +1903,7 @@ pub extern "C" fn zcashlc_put_utxo(
     unwrap_exc_or(res, false)
 }
 
-/// Attempts to decrypt the specified transaction from its network byte representation
-/// and store its
+/// Decrypts whatever parts of the specified transaction it can and stores them in db_data.
 ///
 /// # Safety
 ///
