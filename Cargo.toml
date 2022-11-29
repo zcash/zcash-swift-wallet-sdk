@@ -14,7 +14,7 @@ failure = "0.1"
 ffi_helpers = "0.2"
 hex = "0.4"
 memuse = "0.2.1"
-schemer = "0.2"
+schemer = "0.2.1"
 secp256k1 = "0.21"
 secrecy = "0.8"
 
