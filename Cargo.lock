@@ -2051,9 +2051,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_backend"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee7748e874300bf574bdb524108b8967d3e58685aa1705dd2efbcfabb21b89d7"
+checksum = "e90362fd61a41f694c072d8db0f8dd59a1fdc902cab3602c42e755d1b9882831"
 dependencies = [
  "base64",
  "bech32",
@@ -2083,9 +2083,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_sqlite"
-version = "0.4.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9625b097932fc26f4b549042eafff922b57bcd421edba408abf6334a97298636"
+checksum = "f2b1bfd170ee7e73b390dac2799ffbc8bb83724aa3e3cb24f5e83089c97afefd"
 dependencies = [
  "bs58",
  "group",
@@ -2097,6 +2097,7 @@ dependencies = [
  "schemer-rusqlite",
  "secrecy",
  "time",
+ "tracing",
  "uuid",
  "zcash_client_backend",
  "zcash_primitives",
@@ -2127,9 +2128,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_primitives"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7e33ec9068388e8de106a78268f90487d6975b171ee197aef16cc64c093486d"
+checksum = "0f9a45953c4ddd81d68f45920955707f45c8926800671f354dd13b97507edf28"
 dependencies = [
  "aes",
  "bip0039",

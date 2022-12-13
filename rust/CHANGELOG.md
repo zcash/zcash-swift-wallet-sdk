@@ -1,3 +1,13 @@
+# unreleased
+
+Updating:
+````
+ - zcash_client_backend v0.6.0 -> v0.6.1
+ - zcash_client_sqlite v0.4.0 -> v0.4.2
+````
+This fixes the following issue
+- [#72] fixes get_transparent_balance() fails when no UTXOs
+
 # 0.1.0
 
 Unified spending keys are now used in all places where spending authority
