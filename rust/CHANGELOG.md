@@ -1,3 +1,6 @@
+# unreleased
+
+- [#78] removing cocoapods support
 # 0.1.1
 
 Updating:
