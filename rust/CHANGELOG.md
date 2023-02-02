@@ -1,4 +1,4 @@
-# unreleased [version 0.1.2]
+# 0.2.0
 - [#34] Fix SwiftPackageManager deprecation Warning
 We had to change the name of the package to make it match the name 
 of the github repository due to Swift Package Manager conventions.
