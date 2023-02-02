@@ -1,6 +1,12 @@
-# unreleased 
+# unreleased [version 0.1.2]
+- [#34] Fix SwiftPackageManager deprecation Warning
+We had to change the name of the package to make it match the name 
+of the github repository due to Swift Package Manager conventions.
 
-FsBlock Db implementation and removal of BlockBb cache.
+please see README.md for more information on how to import this package
+going forward.
+
+# FsBlock Db implementation and removal of BlockBb cache.
 
 Implement `zcashlc_init_block_metadata_db`, `zcashlc_write_block_metadata`, `zcashlc_free_block_meta, `zcashlc_free_blocks_meta`
 
