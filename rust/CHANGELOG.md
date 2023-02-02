@@ -1,5 +1,21 @@
-# unreleased
+# unreleased 
 
+FsBlock Db implementation and removal of BlockBb cache.
+
+Implement `zcashlc_init_block_metadata_db`, `zcashlc_write_block_metadata`, `zcashlc_free_block_meta, `zcashlc_free_blocks_meta`
+
+Declare `repr(C)` structs for FFI:
+ - `FFIBlockMeta`: a block metadata row
+ - `FFIBlocksMeta`: a structure that holds an array of `FFIBlockMeta`
+
+
+expose shielding threshold for `shield_funds`
+
+- [#81] Adopt latest crate versions
+Bumped dependencies to `zcash_primitives 0.10`, `zcash_client_backend 0.7`,
+`zcash_proofs 0.10`, `zcash_client_sqlite 0.5.0`
+
+this adds support for `min_confirmations` on `shield_funds` and `shielding_threshold`.
 - [#78] removing cocoapods support
 # 0.1.1
 

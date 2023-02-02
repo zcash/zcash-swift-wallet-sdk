@@ -4,7 +4,6 @@ use failure::format_err;
 use ffi_helpers::panic::catch_panic;
 use schemer::MigratorError;
 use secrecy::Secret;
-
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr};
@@ -13,6 +12,7 @@ use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::slice;
+use zcash_primitives::transaction::components::amount::NonNegativeAmount;
 
 use zcash_address::{
     self,
@@ -38,8 +38,9 @@ use zcash_client_backend::{
 #[allow(deprecated)]
 use zcash_client_sqlite::wallet::get_rewind_height;
 use zcash_client_sqlite::{
+    chain::{init::init_blockmeta_db, BlockMeta},
     wallet::init::{init_accounts_table, init_blocks_table, init_wallet_db, WalletMigrationError},
-    BlockDb, NoteId, WalletDb,
+    FsBlockDb, NoteId, WalletDb,
 };
 use zcash_primitives::consensus::Network::{MainNetwork, TestNetwork};
 use zcash_primitives::{
@@ -56,8 +57,6 @@ use zcash_primitives::{
     zip32::AccountId,
 };
 use zcash_proofs::prover::LocalTxProver;
-
-const ANCHOR_OFFSET: u32 = 10;
 
 fn unwrap_exc_or<T>(exc: Result<T, ()>, def: T) -> T {
     match exc {
@@ -98,21 +97,21 @@ unsafe fn wallet_db(
         .map_err(|e| format_err!("Error opening wallet database connection: {}", e))
 }
 
-/// Helper method for construcing a BlockDb value from path data provided over the FFI.
+/// Helper method for construcing a FsBlockDb value from path data provided over the FFI.
 ///
 /// # Safety
 ///
-/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+/// - `fsblock_db` must be non-null and valid for reads for `fsblock_db_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be a string representing a valid system path in the
 ///   operating system's preferred representation.
-/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
-/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+/// - The memory referenced by `fsblock_db` must not be mutated for the duration of the function call.
+/// - The total size `fsblock_db_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-unsafe fn block_db(cache_db: *const u8, cache_db_len: usize) -> Result<BlockDb, failure::Error> {
+fn block_db(fsblock_db: *const u8, fsblock_db_len: usize) -> Result<FsBlockDb, failure::Error> {
     let cache_db = Path::new(OsStr::from_bytes(unsafe {
-        slice::from_raw_parts(cache_db, cache_db_len)
+        slice::from_raw_parts(fsblock_db, fsblock_db_len)
     }));
-    BlockDb::for_path(cache_db)
+    FsBlockDb::for_path(cache_db)
         .map_err(|e| format_err!("Error opening block source database connection: {}", e))
 }
 
@@ -1639,10 +1638,10 @@ pub unsafe extern "C" fn zcashlc_get_sent_memo(
 }
 
 /// Checks that the scanned blocks in the data database, when combined with the recent
-/// `CompactBlock`s in the cache database, form a valid chain.
+/// `CompactBlock`s in the block cache, form a valid chain.
 ///
 /// This function is built on the core assumption that the information provided in the
-/// cache database is more likely to be accurate than the previously-scanned information.
+/// block cache is more likely to be accurate than the previously-scanned information.
 /// This follows from the design (and trust) assumption that the `lightwalletd` server
 /// provides accurate block information as of the time it was requested.
 ///
@@ -1650,18 +1649,18 @@ pub unsafe extern "C" fn zcashlc_get_sent_memo(
 /// - `-1` if the combined chain is valid.
 /// - `upper_bound` if the combined chain is invalid.
 ///   `upper_bound` is the height of the highest invalid block (on the assumption that the
-///   highest block in the cache database is correct).
+///   highest block in the block cache is correct).
 /// - `0` if there was an error during validation unrelated to chain validity.
 ///
 /// This function does not mutate either of the databases.
 ///
 /// # Safety
 ///
-/// - `db_cache` must be non-null and valid for reads for `db_cache_len` bytes, and it must have an
+/// - `fs_block_db_root` must be non-null and valid for reads for `fs_block_db_root_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be a string representing a valid system path in the
 ///   operating system's preferred representation.
-/// - The memory referenced by `db_cache` must not be mutated for the duration of the function call.
-/// - The total size `db_cache_len` must be no larger than `isize::MAX`. See the safety
+/// - The memory referenced by `fs_block_db_root` must not be mutated for the duration of the function call.
+/// - The total size `fs_block_db_root_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be a string representing a valid system path in the
@@ -1671,22 +1670,29 @@ pub unsafe extern "C" fn zcashlc_get_sent_memo(
 ///   documentation of pointer::offset.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_validate_combined_chain(
-    db_cache: *const u8,
-    db_cache_len: usize,
+    fs_block_db_root: *const u8,
+    fs_block_db_root_len: usize,
     db_data: *const u8,
     db_data_len: usize,
+    validate_limit: u32,
     network_id: u32,
 ) -> i32 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let block_db = unsafe { block_db(db_cache, db_cache_len)? };
+        let block_db = block_db(fs_block_db_root, fs_block_db_root_len)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let validate_from = (&db_data)
             .get_max_height_hash()
             .map_err(|e| format_err!("Error while validating chain: {}", e))?;
 
-        let val_res = validate_chain(&network, &block_db, validate_from);
+        let limit = if validate_limit == 0 {
+            None
+        } else {
+            Some(validate_limit)
+        };
+
+        let val_res = validate_chain(&block_db, validate_from, limit);
 
         if let Err(e) = val_res {
             match e {
@@ -1805,11 +1811,11 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
 ///
 /// # Safety
 ///
-/// - `db_cache` must be non-null and valid for reads for `db_cache_len` bytes, and it must have an
+/// - `fs_block_db_root` must be non-null and valid for reads for `fs_block_db_root_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be a string representing a valid system path in the
 ///   operating system's preferred representation.
-/// - The memory referenced by `db_cache` must not be mutated for the duration of the function call.
-/// - The total size `db_cache_len` must be no larger than `isize::MAX`. See the safety
+/// - The memory referenced by `fs_block_db_root` must not be mutated for the duration of the function call.
+/// - The total size `fs_block_db_root_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be a string representing a valid system path in the
@@ -1819,8 +1825,8 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
 ///   documentation of pointer::offset.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_scan_blocks(
-    db_cache: *const u8,
-    db_cache_len: usize,
+    fs_block_cache_root: *const u8,
+    fs_block_cache_root_len: usize,
     db_data: *const u8,
     db_data_len: usize,
     scan_limit: u32,
@@ -1828,7 +1834,7 @@ pub unsafe extern "C" fn zcashlc_scan_blocks(
 ) -> i32 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let block_db = unsafe { block_db(db_cache, db_cache_len)? };
+        let block_db = block_db(fs_block_cache_root, fs_block_cache_root_len)?;
         let db_read = unsafe { wallet_db(db_data, db_data_len, network)? };
         let mut db_data = db_read.get_update_ops()?;
         let limit = if scan_limit == 0 {
@@ -1909,6 +1915,199 @@ pub unsafe extern "C" fn zcashlc_put_utxo(
         }
     });
     unwrap_exc_or(res, false)
+}
+
+//
+// FsBlock Interfaces
+//
+
+#[repr(C)]
+pub struct FFIBlocksMeta {
+    ptr: *mut FFIBlockMeta,
+    len: usize, // number of elems
+}
+
+impl FFIBlocksMeta {
+    pub fn ptr_from_vec(v: Vec<FFIBlockMeta>) -> *mut Self {
+        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
+        let boxed_slice: Box<[FFIBlockMeta]> = v.into_boxed_slice();
+        let len = boxed_slice.len();
+        let fat_ptr: *mut [FFIBlockMeta] = Box::into_raw(boxed_slice);
+        // It is guaranteed to be possible to obtain a raw pointer to the start
+        // of a slice by casting the pointer-to-slice, as documented e.g. at
+        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
+        // TODO: replace with `as_mut_ptr()` when that is stable.
+        let slim_ptr: *mut FFIBlockMeta = fat_ptr as _;
+        Box::into_raw(Box::new(FFIBlocksMeta { ptr: slim_ptr, len }))
+    }
+}
+
+#[repr(C)]
+pub struct FFIBlockMeta {
+    height: u32,
+    block_hash_ptr: *mut u8,
+    block_hash_ptr_len: usize,
+    block_time: u32,
+    sapling_outputs_count: u32,
+    orchard_actions_count: u32,
+}
+
+/// # Safety
+/// Initializes the `FsBlockDb` sqlite database. Does nothing if already created
+///
+/// Returns true when successful, false otherwise. When false is returned caller
+/// should check for errors.
+/// - `fs_block_db_root` must be non-null and valid for reads for `fs_block_db_root_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `fs_block_db_root` must not be mutated for the duration of the function call.
+/// - The total size `fs_block_db_root_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_init_block_metadata_db(
+    fs_block_db_root: *const u8,
+    fs_block_db_root_len: usize,
+) -> bool {
+    let res = catch_panic(|| {
+        let mut block_db = block_db(fs_block_db_root, fs_block_db_root_len)?;
+
+        match init_blockmeta_db(&mut block_db) {
+            Ok(()) => Ok(true),
+            Err(e) => Err(format_err!(
+                "Error while initializing block metadata DB: {}",
+                e
+            )),
+        }
+    });
+    unwrap_exc_or(res, false)
+}
+
+/// Writes the blocks provided in `blocks_meta` into the `BlockMeta` database
+///
+/// Returns true if the `blocks_meta` could be stored into the `FsBlockDb`. False
+/// otherwise.
+///
+/// When false is returned caller should check for errors.
+///
+/// # Safety
+///
+/// - `fs_block_db_root` must be non-null and valid for reads for `fs_block_db_root_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `fs_block_db_root` must not be mutated for the duration of the function call.
+/// - The total size `fs_block_db_root_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Block metadata represented in `blocks_meta` must be non-null. Caller must guarantee that the
+/// memory reference by this pointer is not freed up, dereferenced or invalidated while this function
+/// is invoked.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_write_block_metadata(
+    fs_block_db_root: *const u8,
+    fs_block_db_root_len: usize,
+    blocks_meta: *mut FFIBlocksMeta,
+) -> bool {
+    let res = catch_panic(|| {
+        let block_db = block_db(fs_block_db_root, fs_block_db_root_len)?;
+
+        let blocks_meta: Box<FFIBlocksMeta> = unsafe { Box::from_raw(blocks_meta) };
+
+        let blocks_metadata_slice: &mut [FFIBlockMeta] =
+            unsafe { slice::from_raw_parts_mut(blocks_meta.ptr, blocks_meta.len) };
+
+        let mut blocks = Vec::with_capacity(blocks_metadata_slice.len());
+
+        for b in blocks_metadata_slice {
+            let block_hash_bytes =
+                unsafe { slice::from_raw_parts(b.block_hash_ptr, b.block_hash_ptr_len) };
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(block_hash_bytes);
+
+            blocks.push(BlockMeta {
+                height: BlockHeight::from_u32(b.height),
+                block_hash: BlockHash(hash),
+                block_time: b.block_time,
+                sapling_outputs_count: b.sapling_outputs_count,
+                orchard_actions_count: b.orchard_actions_count,
+            });
+        }
+
+        match block_db.write_block_metadata(&blocks) {
+            Ok(()) => Ok(true),
+            Err(e) => Err(format_err!(
+                "Failed to write block metadata to FsBlockDb: {:?}",
+                e
+            )),
+        }
+    });
+    unwrap_exc_or(res, false)
+}
+
+/// Rewinds the data database to the given height.
+///
+/// If the requested height is greater than or equal to the height of the last scanned
+/// block, this function does nothing.
+///
+/// # Safety
+///
+/// - `fs_block_db_root` must be non-null and valid for reads for `fs_block_db_root_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `fs_block_db_root` must not be mutated for the duration of the function call.
+/// - The total size `fs_block_db_root_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_rewind_fs_block_cache_to_height(
+    fs_block_db_root: *const u8,
+    fs_block_db_root_len: usize,
+    height: i32,
+) -> bool {
+    let res = catch_panic(|| {
+        let block_db = block_db(fs_block_db_root, fs_block_db_root_len)?;
+        let height = BlockHeight::try_from(height)?;
+        block_db
+            .rewind_to_height(height)
+            .map(|_| true)
+            .map_err(|e| format_err!("Error while rewinding data DB to height {}: {}", height, e))
+    });
+    unwrap_exc_or(res, false)
+}
+
+/// Get the latest cached block height in the filesystem block cache
+///
+/// Returns a positive blockheight or -1 if empty or an error occurred.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `tx` must be non-null and valid for reads for `tx_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `tx` must not be mutated for the duration of the function call.
+/// - The total size `tx_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_latest_cached_block_height(
+    fs_block_db_root: *const u8,
+    fs_block_db_root_len: usize,
+) -> i32 {
+    let res = catch_panic(|| {
+        let block_db = block_db(fs_block_db_root, fs_block_db_root_len)?;
+
+        match block_db.get_max_cached_height() {
+            Ok(Some(block_height)) => Ok(u32::from(block_height) as i32),
+            Ok(None) => Ok(-1),
+            Err(e) => Err(format_err!(
+                "Failed to read block metadata from FsBlockDb: {:?}",
+                e
+            )),
+        }
+    });
+
+    unwrap_exc_or(res, -1)
 }
 
 /// Decrypts whatever parts of the specified transaction it can and stores them in db_data.
@@ -2146,6 +2345,7 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
 /// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
 /// - `memo` must either be null (indicating an empty memo) or point to a 512-byte array.
+/// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
 /// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
 /// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
@@ -2163,11 +2363,13 @@ pub unsafe extern "C" fn zcashlc_shield_funds(
     usk_ptr: *const u8,
     usk_len: usize,
     memo: *const u8,
+    shielding_threshold: u64,
     spend_params: *const u8,
     spend_params_len: usize,
     output_params: *const u8,
     output_params_len: usize,
     network_id: u32,
+    min_confirmations: u32,
     use_zip317_fees: bool,
 ) -> i64 {
     let res = catch_panic(|| {
@@ -2185,6 +2387,9 @@ pub unsafe extern "C" fn zcashlc_shield_funds(
             MemoBytes::from_bytes(unsafe { slice::from_raw_parts(memo, 512) })
                 .map_err(|e| format_err!("Invalid MemoBytes {}", e))?
         };
+
+        let shielding_threshold = NonNegativeAmount::from_u64(shielding_threshold)
+            .map_err(|()| format_err!("Invalid amount, out of range"))?;
 
         let spend_params = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(spend_params, spend_params_len)
@@ -2231,10 +2436,11 @@ pub unsafe extern "C" fn zcashlc_shield_funds(
                 &network,
                 LocalTxProver::new(spend_params, output_params),
                 &input_selector,
+                shielding_threshold,
                 &usk,
                 &taddrs,
                 &memo_bytes,
-                ANCHOR_OFFSET,
+                min_confirmations,
             )
             .map_err(|e| format_err!("Error while shielding transaction: {}", e))
         } else {
@@ -2248,10 +2454,11 @@ pub unsafe extern "C" fn zcashlc_shield_funds(
                 &network,
                 LocalTxProver::new(spend_params, output_params),
                 &input_selector,
+                shielding_threshold,
                 &usk,
                 &taddrs,
                 &memo_bytes,
-                ANCHOR_OFFSET,
+                min_confirmations,
             )
             .map_err(|e| format_err!("Error while shielding transaction: {}", e))
         }
