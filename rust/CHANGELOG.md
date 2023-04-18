@@ -1,3 +1,17 @@
+# 0.3.0
+- [#87] Outbound transactions show the wrong amount on v_transactions
+
+removes `v_tx_received` and `v_tx_sent`. 
+
+`v_transactions` now shows the `account_balance_delta` column where the clients can 
+query the effect of a given transaction in the account balance. If fee was paid from
+the account that's being queried, the delta will include it. Transactions where funds
+are received into the queried account, will show the amount that the acount is receiving
+and won't include the transaction fee since it does not change the balance of the account.
+
+Creates `v_tx_outputs` that allows clients to know the outputs involved in a transaction.
+
+
 # 0.2.0
 - [#34] Fix SwiftPackageManager deprecation Warning
 We had to change the name of the package to make it match the name 

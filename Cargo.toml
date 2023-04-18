@@ -1,6 +1,6 @@
 [package]
 name = "libzcashlc"
-version = "0.2.0"
+version = "0.3.0"
 authors = [
     "Jack Grigg <jack@z.cash>",
     "Francisco Gindre <francisco@z.cash>",
@@ -17,12 +17,12 @@ memuse = "0.2.1"
 schemer = "0.2.1"
 secp256k1 = "0.21"
 secrecy = "0.8"
-
+orchard = { version = "0.4", default-features = false }
 zcash_address = { version = "0.2" }
-zcash_client_backend = { version = "0.7.0", features = ["transparent-inputs", "unstable"] }
-zcash_client_sqlite = { version = "0.5.0", features = ["transparent-inputs", "unstable"] }
-zcash_primitives = "0.10.0"
-zcash_proofs = "0.10.0"
+zcash_client_backend = { version = "0.8.0", features = ["transparent-inputs", "unstable"] }
+zcash_client_sqlite = { version = "0.6.0", features = ["transparent-inputs", "unstable"] }
+zcash_primitives = "0.11.0"
+zcash_proofs = "0.11.0"
 
 [build-dependencies]
 cbindgen = "0.14"
@@ -36,5 +36,6 @@ crate-type = ["staticlib"]
 lto = true
 
 [features]
+
 mainnet = ["zcash_client_sqlite/mainnet"]
 testnet = []
