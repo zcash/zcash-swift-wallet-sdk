@@ -54,6 +54,7 @@ use zcash_primitives::{
         fees::zip317::FeeRule as Zip317FeeRule,
         Transaction,
     },
+    zip32::fingerprint::SeedFingerprint,
     zip32::AccountId,
 };
 use zcash_proofs::prover::LocalTxProver;
@@ -1635,6 +1636,42 @@ pub unsafe extern "C" fn zcashlc_get_sent_memo(
             network_id,
         )
     }
+}
+
+#[no_mangle]
+// Returns a ZIP-32 signature of the given seed bytes.
+// # Safety
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be at least 32 no larger than `252`. See the safety documentation
+///   of pointer::offset.
+// - `signature_bytes_ret` must be non-null and must point to an allocated 32-byte region of memory.
+pub unsafe extern "C" fn zcashlc_seed_fingerprint(
+    seed: *const u8,
+    seed_len: usize,
+    signature_bytes_ret: *mut u8,
+) -> bool {
+    let res = catch_panic(|| {
+        if !(32..=252).contains(&seed_len) {
+            return Err(format_err!("Seed must be between 32 and 252 bytes long"));
+        }
+
+        let seed = Secret::new((unsafe { slice::from_raw_parts(seed, seed_len) }).to_vec());
+
+        use secrecy::ExposeSecret;
+
+        let signature = match SeedFingerprint::from_seed(&seed.expose_secret()) {
+            Some(fp) => fp,
+
+            None => return Err(format_err!("Could not create fingerprint")),
+        };
+
+        unsafe { signature_bytes_ret.copy_from(signature.to_bytes().as_ptr(), 32) }
+
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
 }
 
 /// Checks that the scanned blocks in the data database, when combined with the recent
