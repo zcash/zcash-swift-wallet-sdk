@@ -1,3 +1,9 @@
+# 0.3.1
+- [#88] unmined transaction shows note value spent instead of tx value
+
+Fixes an issue where a sent transaction would show the whole note spent value
+instead of the value of that the user meant to transfer until it was mined.
+
 # 0.3.0
 - [#87] Outbound transactions show the wrong amount on v_transactions
 
