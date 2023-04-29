@@ -35,8 +35,7 @@ use zcash_client_backend::{
     wallet::{OvkPolicy, WalletTransparentOutput},
     zip321::{Payment, TransactionRequest},
 };
-#[allow(deprecated)]
-use zcash_client_sqlite::wallet::get_rewind_height;
+
 use zcash_client_sqlite::{
     chain::{init::init_blockmeta_db, BlockMeta},
     wallet::init::{init_accounts_table, init_blocks_table, init_wallet_db, WalletMigrationError},
@@ -1773,7 +1772,8 @@ pub unsafe extern "C" fn zcashlc_get_nearest_rewind_height(
             let network = parse_network(network_id)?;
             let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
             let height = BlockHeight::try_from(height)?;
-            match get_rewind_height(&db_data) {
+
+            match (&db_data).get_min_unspent_height() {
                 Ok(Some(best_height)) => {
                     let first_unspent_note_height = u32::from(best_height);
                     let rewind_height = u32::from(height);
@@ -1824,7 +1824,7 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
 
         let height = BlockHeight::try_from(height)?;
         db_data
-            .rewind_to_height(height)
+            .truncate_to_height(height)
             .map(|_| true)
             .map_err(|e| format_err!("Error while rewinding data DB to height {}: {}", height, e))
     });
@@ -2102,7 +2102,7 @@ pub unsafe extern "C" fn zcashlc_rewind_fs_block_cache_to_height(
         let block_db = block_db(fs_block_db_root, fs_block_db_root_len)?;
         let height = BlockHeight::try_from(height)?;
         block_db
-            .rewind_to_height(height)
+            .truncate_to_height(height)
             .map(|_| true)
             .map_err(|e| format_err!("Error while rewinding data DB to height {}: {}", height, e))
     });
