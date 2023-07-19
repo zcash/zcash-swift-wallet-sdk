@@ -13,15 +13,16 @@ build = "rust/build.rs"
 [dependencies]
 hex = "0.4"
 memuse = "0.2.1"
+rusqlite = "0.29"
 schemer = "0.2.1"
-secp256k1 = "0.21"
+secp256k1 = "0.26"
 secrecy = "0.8"
-orchard = { version = "0.4", default-features = false }
-zcash_address = { version = "0.2" }
+orchard = { version = "0.5", default-features = false }
+zcash_address = { version = "0.3" }
 zcash_client_backend = { version = "0.9.0", features = ["transparent-inputs", "unstable"] }
 zcash_client_sqlite = { version = "0.7.0", features = ["transparent-inputs", "unstable"] }
-zcash_primitives = "0.11.0"
-zcash_proofs = "0.11.0"
+zcash_primitives = "0.12"
+zcash_proofs = "0.12"
 
 # FFI
 anyhow = "1.0"
@@ -52,6 +53,15 @@ crate-type = ["staticlib"]
 lto = true
 
 [features]
-
 mainnet = ["zcash_client_sqlite/mainnet"]
 testnet = []
+
+[patch.crates-io]
+incrementalmerkletree = { git = "https://github.com/zcash/incrementalmerkletree.git", rev = "da97e6c399c5acddedad2c1730dbb7ee55499a2f" }
+shardtree = { git = "https://github.com/zcash/incrementalmerkletree.git", rev = "da97e6c399c5acddedad2c1730dbb7ee55499a2f" }
+orchard = { git = "https://github.com/zcash/orchard.git", rev = "6ef89d5f154de2cf7b7dd87edb8d8c49158beebb" }
+zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "b580c42bdc9cb0d0fb06a3975783be1bb34395e8" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "b580c42bdc9cb0d0fb06a3975783be1bb34395e8" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "b580c42bdc9cb0d0fb06a3975783be1bb34395e8" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "b580c42bdc9cb0d0fb06a3975783be1bb34395e8" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "b580c42bdc9cb0d0fb06a3975783be1bb34395e8" }
