@@ -20,7 +20,12 @@ where
     let log = OsLog::new(subsystem, category);
     (
         fmt::Layer::new()
-            .event_format(Format::default().with_level(false).without_time())
+            .event_format(
+                Format::default()
+                    .with_ansi(false)
+                    .with_level(false)
+                    .without_time(),
+            )
             .with_writer(AppleOsLogMakeWriter::new(log.clone())),
         OsSignpost::new(log),
     )

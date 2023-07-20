@@ -13,7 +13,7 @@ use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::slice;
-use tracing::debug;
+use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 use zcash_client_backend::data_api::{
     chain::CommitmentTreeRoot, NoteId, ShieldedProtocol, WalletCommitmentTrees,
@@ -129,11 +129,13 @@ fn block_db(fsblock_db: *const u8, fsblock_db_len: usize) -> anyhow::Result<FsBl
 
 /// Initializes global Rust state, such as the logging infrastructure and threadpools.
 ///
+/// When `show_trace_logs` is `true`, Rust events at the `TRACE` level will be logged.
+///
 /// # Panics
 ///
 /// This method panics if called more than once.
 #[no_mangle]
-pub extern "C" fn zcashlc_init_on_load() {
+pub extern "C" fn zcashlc_init_on_load(show_trace_logs: bool) {
     // Set up the tracing layers for the Apple OS logging framework.
     let (log_layer, signpost_layer) = os_log::layers("co.electriccoin.ios", "rust");
 
@@ -141,6 +143,11 @@ pub extern "C" fn zcashlc_init_on_load() {
     tracing_subscriber::registry()
         .with(log_layer)
         .with(signpost_layer)
+        .with(if show_trace_logs {
+            LevelFilter::TRACE
+        } else {
+            LevelFilter::DEBUG
+        })
         .init();
 
     // Log panics instead of writing them to stderr.
