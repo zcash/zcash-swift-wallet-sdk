@@ -2,9 +2,9 @@
 
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
+use prost::Message;
 use schemer::MigratorError;
 use secrecy::Secret;
-use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr};
 use std::mem::ManuallyDrop;
@@ -36,18 +36,19 @@ use zcash_client_backend::{
             decrypt_and_store_transaction, input_selection::GreedyInputSelector,
             shield_transparent_funds, spend,
         },
-        WalletRead, WalletWrite,
+        AccountBirthday, WalletRead, WalletWrite,
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
     fees::{fixed, zip317, DustOutputPolicy},
     keys::{DecodingError, Era, UnifiedFullViewingKey, UnifiedSpendingKey},
+    proto::service::TreeState,
     wallet::{OvkPolicy, WalletTransparentOutput},
     zip321::{Payment, TransactionRequest},
 };
 
 use zcash_client_sqlite::{
     chain::{init::init_blockmeta_db, BlockMeta},
-    wallet::init::{init_accounts_table, init_blocks_table, init_wallet_db, WalletMigrationError},
+    wallet::init::{init_wallet_db, WalletMigrationError},
     FsBlockDb, WalletDb,
 };
 use zcash_primitives::consensus::Network::{MainNetwork, TestNetwork};
@@ -322,15 +323,34 @@ pub unsafe extern "C" fn zcashlc_create_account(
     db_data_len: usize,
     seed: *const u8,
     seed_len: usize,
+    treestate: *const u8,
+    treestate_len: usize,
+    recover_until: i64,
     network_id: u32,
 ) -> *mut FFIBinaryKey {
+    use zcash_client_backend::data_api::BirthdayError;
+
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let seed = Secret::new((unsafe { slice::from_raw_parts(seed, seed_len) }).to_vec());
+        let treestate =
+            TreeState::decode(unsafe { slice::from_raw_parts(treestate, treestate_len) })
+                .map_err(|e| anyhow!("Invalid TreeState: {}", e))?;
+        let recover_until = recover_until.try_into().ok();
+
+        let birthday =
+            AccountBirthday::from_treestate(treestate, recover_until).map_err(|e| match e {
+                BirthdayError::HeightInvalid(e) => {
+                    anyhow!("Invalid TreeState: Invalid height: {}", e)
+                }
+                BirthdayError::Decode(e) => {
+                    anyhow!("Invalid TreeState: Invalid frontier encoding: {}", e)
+                }
+            })?;
 
         db_data
-            .create_account(&seed)
+            .create_account(&seed, birthday)
             .map(|(account, usk)| {
                 let encoded = usk.to_bytes(Era::Orchard);
                 Box::into_raw(Box::new(FFIBinaryKey::new(account, encoded)))
@@ -405,54 +425,6 @@ pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
         }
         drop(s);
     }
-}
-
-/// Initialises the data database with the given set of unified full viewing keys. This
-/// should only be used in special cases for implementing wallet recovery; prefer
-/// `zcashlc_create_account` for normal account creation purposes.
-///
-/// # Safety
-///
-/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a string representing a valid system path in the
-///   operating system's preferred representation.
-/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
-/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-/// - `ufvks` must be non-null and valid for reads for `ufvks_len * sizeof(FFIEncodedKey)` bytes.
-///   It must point to an array of `FFIEncodedKey` values.
-/// - The memory referenced by `ufvks` must not be mutated for the duration of the function call.
-/// - The total size `ufvks_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_init_accounts_table_with_keys(
-    db_data: *const u8,
-    db_data_len: usize,
-    ufvks_ptr: *mut FFIEncodedKey,
-    ufvks_len: usize,
-    network_id: u32,
-) -> bool {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-
-        let encoded_keys: &mut [FFIEncodedKey] =
-            unsafe { slice::from_raw_parts_mut(ufvks_ptr, ufvks_len) };
-        let ufvks: HashMap<AccountId, UnifiedFullViewingKey> = encoded_keys
-            .iter_mut()
-            .map(|u| {
-                let ufvkstr = unsafe { CStr::from_ptr(u.encoding).to_str().unwrap() };
-                UnifiedFullViewingKey::decode(&network, ufvkstr)
-                    .map(|ufvk| (AccountId::from(u.account_id), ufvk))
-            })
-            .collect::<Result<HashMap<_, _>, _>>()
-            .map_err(|e| anyhow!("Error decoding unified full viewing keys: {:?}", e))?;
-
-        init_accounts_table(&mut db_data, &ufvks)
-            .map(|()| true)
-            .map_err(|e| anyhow!("Error while initializing accounts: {}", e))
-    });
-    unwrap_exc_or(res, false)
 }
 
 /// Derives and returns a unified spending key from the given seed for the given account ID.
@@ -550,61 +522,6 @@ pub unsafe extern "C" fn zcashlc_spending_key_to_full_viewing_key(
             let ufvk = usk.to_unified_full_viewing_key();
             CString::new(ufvk.encode(&network)).unwrap().into_raw()
         })
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// Initialises the data database with the given block metadata.
-///
-/// This enables a newly-created database to be immediately-usable, without needing to
-/// synchronise historic blocks.
-///
-/// The string represented by `sapling_tree_hex` should contain the encoded byte representation
-/// of a Sapling commitment tree.
-///
-/// # Safety
-///
-/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a string representing a valid system path in the
-///   operating system's preferred representation.
-/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
-/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-/// - `hash_hex` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `hash_hex` must not be mutated for the duration of the function call.
-/// - `sapling_tree_hex` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `sapling_tree_hex` must not be mutated for the duration of the
-///   function call.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_init_blocks_table(
-    db_data: *const u8,
-    db_data_len: usize,
-    height: i32,
-    hash_hex: *const c_char,
-    time: u32,
-    sapling_tree_hex: *const c_char,
-    network_id: u32,
-) -> i32 {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let hash = {
-            let mut hash = hex::decode(unsafe { CStr::from_ptr(hash_hex) }.to_str()?).unwrap();
-            hash.reverse();
-            BlockHash::from_slice(&hash)
-        };
-        let sapling_tree =
-            hex::decode(unsafe { CStr::from_ptr(sapling_tree_hex) }.to_str()?).unwrap();
-
-        init_blocks_table(
-            &mut db_data,
-            BlockHeight::from_u32(height as u32),
-            hash,
-            time,
-            &sapling_tree,
-        )
-        .map(|()| 1)
-        .map_err(|e| anyhow!("Error while initializing blocks table: {}", e))
     });
     unwrap_exc_or_null(res)
 }
@@ -1206,23 +1123,20 @@ pub unsafe extern "C" fn zcashlc_get_balance(
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let account = AccountId::from(
+            u32::try_from(account).map_err(|_| anyhow!("account argument must be positive"))?,
+        );
 
-        if account >= 0 {
-            let chain_height = db_data
-                .chain_height()
-                .map_err(|e| anyhow!("Error while fetching max block height: {}", e))
-                .and_then(|opt| {
-                    opt.ok_or_else(|| {
-                        anyhow!("No blockchain information available; scan required.")
-                    })
-                })?;
-
-            db_data
-                .get_balance_at(AccountId::from(account as u32), chain_height)
-                .map(|b| b.into())
-                .map_err(|e| anyhow!("Error while fetching balance: {}", e))
+        if let Some(wallet_summary) = db_data.get_wallet_summary(0)? {
+            wallet_summary
+                .account_balances()
+                .get(&account)
+                .ok_or_else(|| anyhow!("Unknown account"))
+                .map(|balances| Amount::from(balances.sapling_balance.total()).into())
         } else {
-            Err(anyhow!("account argument must be positive"))
+            // `None` means that the caller has not yet called `updateChainTip` on a
+            // brand-new wallet, so we can assume the balance is zero.
+            Ok(0)
         }
     });
     unwrap_exc_or(res, -1)
@@ -1249,26 +1163,21 @@ pub unsafe extern "C" fn zcashlc_get_verified_balance(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
-            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        if account >= 0 {
-            db_data
-                .get_target_and_anchor_heights(min_confirmations)
-                .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
-                .and_then(|opt_anchor| {
-                    opt_anchor
-                        .map(|(_, a)| a)
-                        .ok_or_else(|| anyhow!("Anchor height not available; scan required."))
-                })
-                .and_then(|anchor| {
-                    db_data
-                        .get_balance_at(AccountId::from(account as u32), anchor)
-                        .map_err(|e| anyhow!("Error while fetching verified balance: {}", e))
-                })
-                .map(|amount| amount.into())
+        let account = AccountId::from(
+            u32::try_from(account).map_err(|_| anyhow!("account argument must be positive"))?,
+        );
+
+        if let Some(wallet_summary) = db_data.get_wallet_summary(min_confirmations)? {
+            wallet_summary
+                .account_balances()
+                .get(&account)
+                .ok_or_else(|| anyhow!("Unknown account"))
+                .map(|balances| Amount::from(balances.sapling_balance.spendable_value).into())
         } else {
-            Err(anyhow!("account argument must be positive"))
+            // `None` means that the caller has not yet called `updateChainTip` on a
+            // brand-new wallet, so we can assume the balance is zero.
+            Ok(0)
         }
     });
     unwrap_exc_or(res, -1)
@@ -1837,6 +1746,141 @@ pub unsafe extern "C" fn zcashlc_update_chain_tip(
     unwrap_exc_or(res, false)
 }
 
+/// Returns the height to which the wallet has been fully scanned.
+///
+/// This is the height for which the wallet has fully trial-decrypted this and all
+/// preceding blocks above the wallet's birthday height.
+///
+/// Returns a non-negative block height, -1 if empty, or -2 if an error occurred.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_fully_scanned_height(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+) -> i64 {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        match db_data.block_fully_scanned() {
+            Ok(Some(metadata)) => Ok(i64::from(u32::from(metadata.block_height()))),
+            Ok(None) => Ok(-1),
+            Err(e) => Err(anyhow!(
+                "Failed to read block metadata from WalletDb: {:?}",
+                e
+            )),
+        }
+    });
+
+    unwrap_exc_or(res, -2)
+}
+
+/// Returns the maximum height that the wallet has scanned.
+///
+/// If the wallet is fully synced, this will be equivalent to `zcashlc_block_fully_scanned`;
+/// otherwise the maximal scanned height is likely to be greater than the fully scanned
+/// height due to the fact that out-of-order scanning can leave gaps.
+///
+/// Returns a non-negative block height, -1 if empty, or -2 if an error occurred.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_max_scanned_height(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+) -> i64 {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        match db_data.block_max_scanned() {
+            Ok(Some(metadata)) => Ok(i64::from(u32::from(metadata.block_height()))),
+            Ok(None) => Ok(-1),
+            Err(e) => Err(anyhow!(
+                "Failed to read block metadata from WalletDb: {:?}",
+                e
+            )),
+        }
+    });
+
+    unwrap_exc_or(res, -2)
+}
+
+/// A struct that contains details about scan progress.
+///
+/// When `denominator` is zero, the numerator encodes a non-progress indicator:
+/// - 0: progress is unknown.
+/// - 1: an error occurred.
+#[repr(C)]
+pub struct FfiScanProgress {
+    numerator: u64,
+    denominator: u64,
+}
+
+/// Returns the scan progress derived from the current wallet state.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must
+///   have an alignment of `1`. Its contents must be a string representing a valid system
+///   path in the operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the
+///   function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_get_scan_progress(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+) -> FfiScanProgress {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let progress = match db_data
+            .get_wallet_summary(0)
+            .map_err(|e| anyhow!("Error while fetching suggested scan ranges: {}", e))?
+            .and_then(|wallet_summary| wallet_summary.scan_progress())
+        {
+            Some(progress) => FfiScanProgress {
+                numerator: *progress.numerator(),
+                denominator: *progress.denominator(),
+            },
+            None => FfiScanProgress {
+                numerator: 0,
+                denominator: 0,
+            },
+        };
+
+        Ok(progress)
+    });
+    unwrap_exc_or(
+        res,
+        FfiScanProgress {
+            numerator: 1,
+            denominator: 0,
+        },
+    )
+}
+
 /// A struct that contains the start (inclusive) and end (exclusive) of a range of blocks
 /// to scan.
 #[repr(C)]
@@ -2228,7 +2272,7 @@ pub unsafe extern "C" fn zcashlc_rewind_fs_block_cache_to_height(
 
 /// Get the latest cached block height in the filesystem block cache
 ///
-/// Returns a positive blockheight or -1 if empty or an error occurred.
+/// Returns a non-negative block height, -1 if empty, or -2 if an error occurred.
 ///
 /// # Safety
 ///
@@ -2261,7 +2305,7 @@ pub unsafe extern "C" fn zcashlc_latest_cached_block_height(
         }
     });
 
-    unwrap_exc_or(res, -1)
+    unwrap_exc_or(res, -2)
 }
 
 /// Decrypts whatever parts of the specified transaction it can and stores them in db_data.
