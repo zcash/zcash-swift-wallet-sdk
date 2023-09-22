@@ -1,6 +1,6 @@
 [package]
 name = "libzcashlc"
-version = "0.4.0-rc.2"
+version = "0.4.0-rc.4"
 authors = [
     "Jack Grigg <jack@z.cash>",
     "Francisco Gindre <francisco@z.cash>",
@@ -20,8 +20,8 @@ secp256k1 = "0.26"
 secrecy = "0.8"
 orchard = { version = "0.6", default-features = false }
 zcash_address = { version = "0.3" }
-zcash_client_backend = { version = "=0.10.0-rc.3", features = ["transparent-inputs", "unstable"] }
-zcash_client_sqlite = { version = "=0.8.0-rc.4", features = ["transparent-inputs", "unstable"] }
+zcash_client_backend = { version = "=0.10.0-rc.4", features = ["transparent-inputs", "unstable"] }
+zcash_client_sqlite = { version = "=0.8.0-rc.5", features = ["transparent-inputs", "unstable"] }
 zcash_primitives = "=0.13.0-rc.1"
 zcash_proofs = "=0.13.0-rc.1"
 
