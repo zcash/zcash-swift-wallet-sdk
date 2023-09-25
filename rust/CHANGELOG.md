@@ -4,7 +4,7 @@ All notable changes to this library will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 0.4.0-rc.1 - 2023-09-08
+## 0.4.0 - 2023-09-25
 
 ### Notable Changes
 
@@ -21,10 +21,10 @@ from the previous release carefully.
 
 Updated dependencies:
   - `zcash_address 0.3`
-  - `zcash_client_backend 0.10.0-rc.1`
-  - `zcash_client_sqlite 0.8.0-rc.1`
-  - `zcash_primitives 0.13.0-rc.1`
-  - `zcash_proofs 0.13.0-rc.1`
+  - `zcash_client_backend 0.10.0`
+  - `zcash_client_sqlite 0.8.0`
+  - `zcash_primitives 0.13.0`
+  - `zcash_proofs 0.13.0`
 
   - `orchard 0.6`
   - `ffi_helpers 0.3`
