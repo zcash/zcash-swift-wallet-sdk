@@ -21,7 +21,7 @@ secrecy = "0.8"
 orchard = { version = "0.6", default-features = false }
 zcash_address = { version = "0.3" }
 zcash_client_backend = { version = "0.10", features = ["transparent-inputs", "unstable"] }
-zcash_client_sqlite = { version = "0.8", features = ["transparent-inputs", "unstable"] }
+zcash_client_sqlite = { version = "^0.8.1", features = ["transparent-inputs", "unstable"] }
 zcash_primitives = "0.13"
 zcash_proofs = "0.13"
 
