@@ -4,6 +4,15 @@ All notable changes to this library will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.1 - 2023-10-20
+
+### Issues Resolved
+- [#103] Update to `zcash_client_sqlite` with a fix for
+  [incorrect note deduplication in `v_transactions`](https://github.com/zcash/librustzcash/pull/1020).
+
+Updated dependencies:
+  - `zcash_client_sqlite 0.8.1`
+
 ## 0.4.0 - 2023-09-25
 
 ### Notable Changes
