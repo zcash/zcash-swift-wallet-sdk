@@ -12,6 +12,7 @@ use std::num::NonZeroU32;
 use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::ptr;
 use std::slice;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
@@ -36,7 +37,7 @@ use zcash_client_backend::{
             decrypt_and_store_transaction, input_selection::GreedyInputSelector,
             shield_transparent_funds, spend,
         },
-        AccountBirthday, WalletRead, WalletWrite,
+        AccountBalance, AccountBirthday, Balance, WalletRead, WalletSummary, WalletWrite,
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
     fees::{fixed, zip317, DustOutputPolicy},
@@ -1103,86 +1104,6 @@ fn is_valid_unified_address(address: &str, network: &Network) -> bool {
     }
 }
 
-/// Returns the balance for the specified account, including all unspent notes that we know about.
-///
-/// # Safety
-///
-/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a string representing a valid system path in the
-///   operating system's preferred representation.
-/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
-/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_get_balance(
-    db_data: *const u8,
-    db_data_len: usize,
-    account: i32,
-    network_id: u32,
-) -> i64 {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = AccountId::from(
-            u32::try_from(account).map_err(|_| anyhow!("account argument must be positive"))?,
-        );
-
-        if let Some(wallet_summary) = db_data.get_wallet_summary(0)? {
-            wallet_summary
-                .account_balances()
-                .get(&account)
-                .ok_or_else(|| anyhow!("Unknown account"))
-                .map(|balances| Amount::from(balances.sapling_balance.total()).into())
-        } else {
-            // `None` means that the caller has not yet called `updateChainTip` on a
-            // brand-new wallet, so we can assume the balance is zero.
-            Ok(0)
-        }
-    });
-    unwrap_exc_or(res, -1)
-}
-
-/// Returns the verified balance for the account, which ignores notes that have been
-/// received too recently and are not yet deemed spendable according to `min_confirmations`.
-///
-/// # Safety
-///
-/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a string representing a valid system path in the
-///   operating system's preferred representation.
-/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
-/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_get_verified_balance(
-    db_data: *const u8,
-    db_data_len: usize,
-    account: i32,
-    network_id: u32,
-    min_confirmations: u32,
-) -> i64 {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = AccountId::from(
-            u32::try_from(account).map_err(|_| anyhow!("account argument must be positive"))?,
-        );
-
-        if let Some(wallet_summary) = db_data.get_wallet_summary(min_confirmations)? {
-            wallet_summary
-                .account_balances()
-                .get(&account)
-                .ok_or_else(|| anyhow!("Unknown account"))
-                .map(|balances| Amount::from(balances.sapling_balance.spendable_value).into())
-        } else {
-            // `None` means that the caller has not yet called `updateChainTip` on a
-            // brand-new wallet, so we can assume the balance is zero.
-            Ok(0)
-        }
-    });
-    unwrap_exc_or(res, -1)
-}
-
 /// Returns the verified transparent balance for `address`, which ignores utxos that have been
 /// received too recently and are not yet deemed spendable according to `min_confirmations`.
 ///
@@ -1823,6 +1744,64 @@ pub unsafe extern "C" fn zcashlc_max_scanned_height(
     unwrap_exc_or(res, -2)
 }
 
+/// Balance information for a value within a single pool in an account.
+#[repr(C)]
+pub struct FfiBalance {
+    /// The value in the account that may currently be spent; it is possible to compute witnesses
+    /// for all the notes that comprise this value, and all of this value is confirmed to the
+    /// required confirmation depth.
+    spendable_value: i64,
+
+    /// The value in the account of shielded change notes that do not yet have sufficient
+    /// confirmations to be spendable.
+    change_pending_confirmation: i64,
+
+    /// The value in the account of all remaining received notes that either do not have sufficient
+    /// confirmations to be spendable, or for which witnesses cannot yet be constructed without
+    /// additional scanning.
+    value_pending_spendability: i64,
+}
+
+impl FfiBalance {
+    fn new(balance: Balance) -> Self {
+        Self {
+            spendable_value: Amount::from(balance.spendable_value).into(),
+            change_pending_confirmation: Amount::from(balance.change_pending_confirmation).into(),
+            value_pending_spendability: Amount::from(balance.value_pending_spendability).into(),
+        }
+    }
+}
+
+/// Balance information for a single account.
+///
+/// The sum of this struct's fields is the total balance of the account.
+#[repr(C)]
+pub struct FfiAccountBalance {
+    account_id: u32,
+
+    /// The value of unspent Sapling outputs belonging to the account.
+    sapling_balance: FfiBalance,
+
+    /// The value of all unspent transparent outputs belonging to the account,
+    /// irrespective of confirmation depth.
+    ///
+    /// Unshielded balances are not subject to confirmation-depth constraints, because the
+    /// only possible operation on a transparent balance is to shield it, it is possible
+    /// to create a zero-conf transaction to perform that shielding, and the resulting
+    /// shielded notes will be subject to normal confirmation rules.
+    unshielded: i64,
+}
+
+impl FfiAccountBalance {
+    fn new((account_id, balance): (&AccountId, &AccountBalance)) -> Self {
+        Self {
+            account_id: u32::from(*account_id),
+            sapling_balance: FfiBalance::new(balance.sapling_balance),
+            unshielded: Amount::from(balance.unshielded).into(),
+        }
+    }
+}
+
 /// A struct that contains details about scan progress.
 ///
 /// When `denominator` is zero, the numerator encodes a non-progress indicator:
@@ -1834,7 +1813,91 @@ pub struct FfiScanProgress {
     denominator: u64,
 }
 
-/// Returns the scan progress derived from the current wallet state.
+/// A type representing the potentially-spendable value of unspent outputs in the wallet.
+///
+/// The balances reported using this data structure may overestimate the total spendable
+/// value of the wallet, in the case that the spend of a previously received shielded note
+/// has not yet been detected by the process of scanning the chain. The balances reported
+/// using this data structure can only be certain to be unspent in the case that
+/// [`Self::is_synced`] is true, and even in this circumstance it is possible that a newly
+/// created transaction could conflict with a not-yet-mined transaction in the mempool.
+///
+/// # Safety
+///
+/// - `account_balances` must be non-null and must be valid for reads for
+///   `account_balances_len * mem::size_of::<FfiAccountBalance>()` many bytes, and it must
+///   be properly aligned. This means in particular:
+///   - The entire memory range pointed to by `account_balances` must be contained within
+///     a single allocated object. Slices can never span across multiple allocated objects.
+///   - `account_balances` must be non-null and aligned even for zero-length slices.
+///   - `account_balances` must point to `len` consecutive properly initialized values of
+///     type [`FfiAccountBalance`].
+/// - The total size `account_balances_len * mem::size_of::<FfiAccountBalance>()` of the
+///   slice pointed to by `account_balances` must be no larger than `isize::MAX`. See the
+///   safety documentation of `pointer::offset`.
+/// - `scan_progress` must, if non-null, point to a struct having the layout of
+///   [`FfiScanProgress`].
+#[repr(C)]
+pub struct FfiWalletSummary {
+    account_balances: *mut FfiAccountBalance,
+    account_balances_len: usize,
+    chain_tip_height: i32,
+    fully_scanned_height: i32,
+    scan_progress: *mut FfiScanProgress,
+}
+
+impl FfiWalletSummary {
+    fn some(summary: WalletSummary) -> *mut Self {
+        let (account_balances, account_balances_len) = {
+            let account_balances: Box<[FfiAccountBalance]> = summary
+                .account_balances()
+                .iter()
+                .map(FfiAccountBalance::new)
+                .collect();
+
+            let len = account_balances.len();
+            let fat_ptr: *mut [FfiAccountBalance] = Box::into_raw(account_balances);
+            // It is guaranteed to be possible to obtain a raw pointer to the start
+            // of a slice by casting the pointer-to-slice, as documented e.g. at
+            // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
+            // TODO: replace with `as_mut_ptr()` when that is stable.
+            let slim_ptr: *mut FfiAccountBalance = fat_ptr as _;
+            (slim_ptr, len)
+        };
+
+        let scan_progress = if let Some(progress) = summary.scan_progress() {
+            Box::into_raw(Box::new(FfiScanProgress {
+                numerator: *progress.numerator(),
+                denominator: *progress.denominator(),
+            }))
+        } else {
+            ptr::null_mut()
+        };
+
+        Box::into_raw(Box::new(Self {
+            account_balances,
+            account_balances_len,
+            chain_tip_height: u32::from(summary.chain_tip_height()) as i32,
+            fully_scanned_height: u32::from(summary.fully_scanned_height()) as i32,
+            scan_progress,
+        }))
+    }
+
+    fn none() -> *mut Self {
+        Box::into_raw(Box::new(Self {
+            account_balances: ptr::null_mut(),
+            account_balances_len: 0,
+            chain_tip_height: 0,
+            fully_scanned_height: -1,
+            scan_progress: ptr::null_mut(),
+        }))
+    }
+}
+
+/// Returns the account balances and sync status given the specified minimum number of
+/// confirmations.
+///
+/// Returns `fully_scanned_height = -1` if the wallet has no balance data available.
 ///
 /// # Safety
 ///
@@ -1846,39 +1909,50 @@ pub struct FfiScanProgress {
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_get_scan_progress(
+pub unsafe extern "C" fn zcashlc_get_wallet_summary(
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
-) -> FfiScanProgress {
+    min_confirmations: u32,
+) -> *mut FfiWalletSummary {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let progress = match db_data
-            .get_wallet_summary(0)
-            .map_err(|e| anyhow!("Error while fetching suggested scan ranges: {}", e))?
-            .and_then(|wallet_summary| wallet_summary.scan_progress())
+        match db_data
+            .get_wallet_summary(min_confirmations)
+            .map_err(|e| anyhow!("Error while fetching wallet summary: {}", e))?
         {
-            Some(progress) => FfiScanProgress {
-                numerator: *progress.numerator(),
-                denominator: *progress.denominator(),
-            },
-            None => FfiScanProgress {
-                numerator: 0,
-                denominator: 0,
-            },
-        };
-
-        Ok(progress)
+            Some(summary) => Ok(FfiWalletSummary::some(summary)),
+            None => Ok(FfiWalletSummary::none()),
+        }
     });
-    unwrap_exc_or(
-        res,
-        FfiScanProgress {
-            numerator: 1,
-            denominator: 0,
-        },
-    )
+    unwrap_exc_or(res, ptr::null_mut())
+}
+
+/// Frees an [`FfiWalletSummary`] value.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiWalletSummary`].
+///   See the safety documentation of [`FfiWalletSummary`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_wallet_summary(ptr: *mut FfiWalletSummary) {
+    if !ptr.is_null() {
+        let summary = unsafe { Box::from_raw(ptr) };
+        if !summary.account_balances.is_null() {
+            let slice = unsafe {
+                slice::from_raw_parts_mut(summary.account_balances, summary.account_balances_len)
+            };
+            let boxed_slice = unsafe { Box::from_raw(slice) };
+            drop(boxed_slice);
+        }
+        if !summary.scan_progress.is_null() {
+            let progress = unsafe { Box::from_raw(summary.scan_progress) };
+            drop(progress);
+        }
+        drop(summary);
+    }
 }
 
 /// A struct that contains the start (inclusive) and end (exclusive) of a range of blocks
