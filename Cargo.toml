@@ -16,6 +16,7 @@ hex = "0.4"
 memuse = "0.2.1"
 prost = "0.12"
 rusqlite = "0.29"
+sapling = { package = "sapling-crypto", version = "0.0", default-features = false }
 schemer = "0.2.1"
 secp256k1 = "0.26"
 secrecy = "0.8"
@@ -54,6 +55,11 @@ crate-type = ["staticlib"]
 [profile.release]
 lto = true
 
-[features]
-mainnet = ["zcash_client_sqlite/mainnet"]
-testnet = []
+[patch.crates-io]
+orchard = { git = "https://github.com/zcash/orchard.git", rev = "189257391a5726d7f3f2568d547a5ef8603c7156" }
+sapling = { package = "sapling-crypto", git = "https://github.com/zcash/sapling-crypto.git", rev = "4ec6a48daab0af1fe6cb930f6a150030ce91d0e9" }
+zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "a99e842404ad99d3ec73082b0cd6679e6adc0ee2" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "a99e842404ad99d3ec73082b0cd6679e6adc0ee2" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "a99e842404ad99d3ec73082b0cd6679e6adc0ee2" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "a99e842404ad99d3ec73082b0cd6679e6adc0ee2" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "a99e842404ad99d3ec73082b0cd6679e6adc0ee2" }
