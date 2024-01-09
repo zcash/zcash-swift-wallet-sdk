@@ -34,7 +34,7 @@ use zcash_client_backend::{
         WalletSummary, WalletWrite,
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
-    fees::{fixed, zip317, DustOutputPolicy},
+    fees::{standard::SingleOutputChangeStrategy, DustOutputPolicy},
     keys::{DecodingError, Era, UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey},
     proto::service::TreeState,
     wallet::{NoteId, OvkPolicy, WalletTransparentOutput},
@@ -55,7 +55,7 @@ use zcash_primitives::{
     merkle_tree::HashSer,
     transaction::{
         components::{amount::NonNegativeAmount, Amount, OutPoint, TxOut},
-        fees::{fixed::FeeRule as FixedFeeRule, zip317::FeeRule as Zip317FeeRule},
+        fees::StandardFeeRule,
         Transaction, TxId,
     },
     zip32::fingerprint::SeedFingerprint,
@@ -2406,6 +2406,22 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
     unwrap_exc_or(res, -1)
 }
 
+fn zip317_helper<DbT>(
+    change_memo: Option<MemoBytes>,
+    use_zip317_fees: bool,
+) -> GreedyInputSelector<DbT, SingleOutputChangeStrategy> {
+    let fee_rule = if use_zip317_fees {
+        StandardFeeRule::Zip317
+    } else {
+        #[allow(deprecated)]
+        StandardFeeRule::PreZip313
+    };
+    GreedyInputSelector::new(
+        SingleOutputChangeStrategy::new(fee_rule, change_memo),
+        DustOutputPolicy::default(),
+    )
+}
+
 /// Creates a transaction paying the specified address from the given account.
 ///
 /// Returns the row index of the newly-created transaction in the `transactions` table
@@ -2502,6 +2518,8 @@ pub unsafe extern "C" fn zcashlc_create_to_address(
             }
         }?;
 
+        let input_selector = zip317_helper(None, use_zip317_fees);
+
         let prover = LocalTxProver::new(spend_params, output_params);
 
         let req = TransactionRequest::new(vec![Payment {
@@ -2514,44 +2532,18 @@ pub unsafe extern "C" fn zcashlc_create_to_address(
         }])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        let txid = if use_zip317_fees {
-            let input_selector = GreedyInputSelector::new(
-                zip317::SingleOutputChangeStrategy::new(Zip317FeeRule::standard(), None),
-                DustOutputPolicy::default(),
-            );
-
-            spend(
-                &mut db_data,
-                &network,
-                &prover,
-                &prover,
-                &input_selector,
-                &usk,
-                req,
-                OvkPolicy::Sender,
-                min_confirmations,
-            )
-            .map_err(|e| anyhow!("Error while sending funds: {}", e))
-        } else {
-            #[allow(deprecated)]
-            let input_selector = GreedyInputSelector::new(
-                fixed::SingleOutputChangeStrategy::new(FixedFeeRule::standard(), None),
-                DustOutputPolicy::default(),
-            );
-
-            spend(
-                &mut db_data,
-                &network,
-                &prover,
-                &prover,
-                &input_selector,
-                &usk,
-                req,
-                OvkPolicy::Sender,
-                min_confirmations,
-            )
-            .map_err(|e| anyhow!("Error while sending funds: {}", e))
-        }?;
+        let txid = spend(
+            &mut db_data,
+            &network,
+            &prover,
+            &prover,
+            &input_selector,
+            &usk,
+            req,
+            OvkPolicy::Sender,
+            min_confirmations,
+        )
+        .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
         let txid_bytes = unsafe { slice::from_raw_parts_mut(txid_bytes_ret, 32) };
         txid.write(txid_bytes)?;
@@ -2682,49 +2674,22 @@ pub unsafe extern "C" fn zcashlc_shield_funds(
             .cloned()
             .collect();
 
+        let input_selector = zip317_helper(Some(memo_bytes), use_zip317_fees);
+
         let prover = LocalTxProver::new(spend_params, output_params);
 
-        let txid = if use_zip317_fees {
-            let input_selector = GreedyInputSelector::new(
-                zip317::SingleOutputChangeStrategy::new(
-                    Zip317FeeRule::standard(),
-                    Some(memo_bytes),
-                ),
-                DustOutputPolicy::default(),
-            );
-
-            shield_transparent_funds(
-                &mut db_data,
-                &network,
-                &prover,
-                &prover,
-                &input_selector,
-                shielding_threshold,
-                &usk,
-                &taddrs,
-                min_confirmations,
-            )
-            .map_err(|e| anyhow!("Error while shielding transaction: {}", e))
-        } else {
-            #[allow(deprecated)]
-            let input_selector = GreedyInputSelector::new(
-                fixed::SingleOutputChangeStrategy::new(FixedFeeRule::standard(), Some(memo_bytes)),
-                DustOutputPolicy::default(),
-            );
-
-            shield_transparent_funds(
-                &mut db_data,
-                &network,
-                &prover,
-                &prover,
-                &input_selector,
-                shielding_threshold,
-                &usk,
-                &taddrs,
-                min_confirmations,
-            )
-            .map_err(|e| anyhow!("Error while shielding transaction: {}", e))
-        }?;
+        let txid = shield_transparent_funds(
+            &mut db_data,
+            &network,
+            &prover,
+            &prover,
+            &input_selector,
+            shielding_threshold,
+            &usk,
+            &taddrs,
+            min_confirmations,
+        )
+        .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 
         let txid_bytes = unsafe { slice::from_raw_parts_mut(txid_bytes_ret, 32) };
         txid.write(txid_bytes)?;
