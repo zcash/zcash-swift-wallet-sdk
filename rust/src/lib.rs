@@ -69,6 +69,8 @@ use zcash_primitives::{
 use zcash_proofs::prover::LocalTxProver;
 
 mod ffi;
+
+#[cfg(target_vendor = "apple")]
 mod os_log;
 
 fn unwrap_exc_or<T>(exc: Result<T, ()>, def: T) -> T {
@@ -138,12 +140,14 @@ fn block_db(fsblock_db: *const u8, fsblock_db_len: usize) -> anyhow::Result<FsBl
 #[no_mangle]
 pub extern "C" fn zcashlc_init_on_load(show_trace_logs: bool) {
     // Set up the tracing layers for the Apple OS logging framework.
+    #[cfg(target_vendor = "apple")]
     let (log_layer, signpost_layer) = os_log::layers("co.electriccoin.ios", "rust");
 
     // Install the `tracing` subscriber.
-    tracing_subscriber::registry()
-        .with(log_layer)
-        .with(signpost_layer)
+    let registry = tracing_subscriber::registry();
+    #[cfg(target_vendor = "apple")]
+    let registry = registry.with(log_layer).with(signpost_layer);
+    registry
         .with(if show_trace_logs {
             LevelFilter::TRACE
         } else {
