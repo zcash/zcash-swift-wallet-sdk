@@ -5,7 +5,7 @@ use ffi_helpers::panic::catch_panic;
 use prost::Message;
 use schemer::MigratorError;
 use secrecy::Secret;
-use std::convert::{TryFrom, TryInto};
+use std::convert::{Infallible, TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr};
 use std::mem::ManuallyDrop;
 use std::num::NonZeroU32;
@@ -27,8 +27,8 @@ use zcash_client_backend::{
         chain::{scan_cached_blocks, CommitmentTreeRoot},
         scanning::ScanPriority,
         wallet::{
-            decrypt_and_store_transaction, input_selection::GreedyInputSelector,
-            shield_transparent_funds, spend,
+            create_proposed_transaction, decrypt_and_store_transaction,
+            input_selection::GreedyInputSelector, propose_shielding, propose_transfer,
         },
         AccountBalance, AccountBirthday, Balance, InputSource, WalletCommitmentTrees, WalletRead,
         WalletSummary, WalletWrite,
@@ -36,7 +36,7 @@ use zcash_client_backend::{
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
     fees::{standard::SingleOutputChangeStrategy, DustOutputPolicy},
     keys::{DecodingError, Era, UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey},
-    proto::service::TreeState,
+    proto::{proposal::Proposal, service::TreeState},
     wallet::{NoteId, OvkPolicy, WalletTransparentOutput},
     zip321::{Payment, TransactionRequest},
     ShieldedProtocol,
@@ -2422,14 +2422,57 @@ fn zip317_helper<DbT>(
     )
 }
 
-/// Creates a transaction paying the specified address from the given account.
+/// A struct that contains a pointer to, and length information for, a heap-allocated
+/// boxed slice.
 ///
-/// Returns the row index of the newly-created transaction in the `transactions` table
-/// within the data database. The caller can read the raw transaction bytes from the `raw`
-/// column in order to broadcast the transaction to the network.
+/// # Safety
 ///
-/// Do not call this multiple times in parallel, or you will generate transactions that
-/// double-spend the same notes.
+/// - `ptr` must be non-null and valid for reads for `len` bytes, and it must have an
+///   alignment of `1`. Its contents must be an encoded Proposal protobuf.
+/// - The memory referenced by `ptr` must not be mutated for the lifetime of the struct
+///   (up until [`zcashlc_free_boxed_slice`] is called with it).
+/// - The total size `len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+#[repr(C)]
+pub struct FfiBoxedSlice {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl FfiBoxedSlice {
+    fn ptr_from_vec(v: Vec<u8>) -> *mut Self {
+        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
+        let boxed_slice: Box<[u8]> = v.into_boxed_slice();
+        let len = boxed_slice.len();
+        let fat_ptr: *mut [u8] = Box::into_raw(boxed_slice);
+        // It is guaranteed to be possible to obtain a raw pointer to the start
+        // of a slice by casting the pointer-to-slice, as documented e.g. at
+        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
+        // TODO: replace with `as_mut_ptr()` when that is stable.
+        let slim_ptr: *mut u8 = fat_ptr as _;
+        Box::into_raw(Box::new(FfiBoxedSlice { ptr: slim_ptr, len }))
+    }
+}
+
+/// Frees an [`FfiBoxedSlice`].
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of
+///   [`FfiBoxedSlice`]. See the safety documentation of [`FfiBoxedSlice`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
+    if !ptr.is_null() {
+        let s: Box<FfiBoxedSlice> = unsafe { Box::from_raw(ptr) };
+        let slice: Box<[u8]> = unsafe { Box::from_raw(slice::from_raw_parts_mut(s.ptr, s.len)) };
+        drop(slice);
+        drop(s);
+    }
+}
+
+/// Select transaction inputs, compute fees, and construct a proposal for a transaction
+/// that can then be authorized and made ready for submission to the network with
+/// `zcashlc_create_proposed_transaction`.
 ///
 /// # Safety
 ///
@@ -2439,60 +2482,32 @@ fn zip317_helper<DbT>(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes containing a unified
-///   spending key encoded as returned from the `zcashlc_create_account` or
-///   `zcashlc_derive_spending_key` functions.
-/// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
-/// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
-///   of pointer::offset.
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
 ///    512-byte array.
-/// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
-/// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
-/// - The total size `spend_params_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-/// - `output_params` must be non-null and valid for reads for `output_params_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be the Sapling output proving parameters.
-/// - The memory referenced by `output_params` must not be mutated for the duration of the function call.
-/// - The total size `output_params_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
 /// - `txid_bytes_ret` must be non-null and must point to an allocated 32-byte region of memory.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_create_to_address(
+pub unsafe extern "C" fn zcashlc_propose_transfer(
     db_data: *const u8,
     db_data_len: usize,
-    usk_ptr: *const u8,
-    usk_len: usize,
+    account: i32,
     to: *const c_char,
     value: i64,
     memo: *const u8,
-    spend_params: *const u8,
-    spend_params_len: usize,
-    output_params: *const u8,
-    output_params_len: usize,
     network_id: u32,
     min_confirmations: u32,
     use_zip317_fees: bool,
-    txid_bytes_ret: *mut u8,
-) -> bool {
+) -> *mut FfiBoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let min_confirmations = NonZeroU32::new(min_confirmations)
             .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let usk = unsafe { decode_usk(usk_ptr, usk_len) }?;
+        let account = account_id_from_i32(account)?;
         let to = unsafe { CStr::from_ptr(to) }.to_str()?;
         let value = NonNegativeAmount::from_nonnegative_i64(value)
             .map_err(|()| anyhow!("Invalid amount, out of range"))?;
-        let spend_params = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(spend_params, spend_params_len)
-        }));
-        let output_params = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(output_params, output_params_len)
-        }));
 
         let to = Address::decode(&network, to)
             .ok_or_else(|| anyhow!("PaymentAddress is for the wrong network"))?;
@@ -2520,8 +2535,6 @@ pub unsafe extern "C" fn zcashlc_create_to_address(
 
         let input_selector = zip317_helper(None, use_zip317_fees);
 
-        let prover = LocalTxProver::new(spend_params, output_params);
-
         let req = TransactionRequest::new(vec![Payment {
             recipient_address: to,
             amount: value,
@@ -2532,25 +2545,23 @@ pub unsafe extern "C" fn zcashlc_create_to_address(
         }])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        let txid = spend(
+        let proposal = propose_transfer::<_, _, _, Infallible>(
             &mut db_data,
             &network,
-            &prover,
-            &prover,
+            account,
             &input_selector,
-            &usk,
             req,
-            OvkPolicy::Sender,
             min_confirmations,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
-        let txid_bytes = unsafe { slice::from_raw_parts_mut(txid_bytes_ret, 32) };
-        txid.write(txid_bytes)?;
+        let encoded = Proposal::from_standard_proposal(&network, &proposal)
+            .expect("transaction request should not be empty")
+            .encode_to_vec();
 
-        Ok(true)
+        Ok(FfiBoxedSlice::ptr_from_vec(encoded))
     });
-    unwrap_exc_or(res, false)
+    unwrap_exc_or_null(res)
 }
 
 #[no_mangle]
@@ -2578,8 +2589,9 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
     }
 }
 
-/// Shield transparent UTXOs by sending them to an address associated with the specified Sapling
-/// spending key.
+/// Select transaction inputs, compute fees, and construct a proposal for a shielding
+/// transaction that can then be authorized and made ready for submission to the network
+/// with `zcashlc_create_proposed_transaction`.
 ///
 /// # Safety
 ///
@@ -2589,46 +2601,24 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes containing a unified
-///   spending key encoded as returned from the `zcashlc_create_account` or
-///   `zcashlc_derive_spending_key` functions.
-/// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
-/// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
-/// - `memo` must either be null (indicating an empty memo) or point to a 512-byte array.
 /// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
-/// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be the Sapling spend proving parameters.
-/// - The memory referenced by `spend_params` must not be mutated for the duration of the function call.
-/// - The total size `spend_params_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-/// - `output_params` must be non-null and valid for reads for `output_params_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be the Sapling output proving parameters.
-/// - The memory referenced by `output_params` must not be mutated for the duration of the function call.
-/// - The total size `output_params_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
 /// - `txid_bytes_ret` must be non-null and must point to an allocated 32-byte region of memory.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_shield_funds(
+pub unsafe extern "C" fn zcashlc_propose_shielding(
     db_data: *const u8,
     db_data_len: usize,
-    usk_ptr: *const u8,
-    usk_len: usize,
+    account: i32,
     memo: *const u8,
     shielding_threshold: u64,
-    spend_params: *const u8,
-    spend_params_len: usize,
-    output_params: *const u8,
-    output_params_len: usize,
     network_id: u32,
     min_confirmations: u32,
     use_zip317_fees: bool,
-    txid_bytes_ret: *mut u8,
-) -> bool {
+) -> *mut FfiBoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let usk = unsafe { decode_usk(usk_ptr, usk_len) }?;
+        let account = account_id_from_i32(account)?;
 
         let memo_bytes = if memo.is_null() {
             MemoBytes::empty()
@@ -2639,17 +2629,6 @@ pub unsafe extern "C" fn zcashlc_shield_funds(
 
         let shielding_threshold = NonNegativeAmount::from_u64(shielding_threshold)
             .map_err(|()| anyhow!("Invalid amount, out of range"))?;
-
-        let spend_params = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(spend_params, spend_params_len)
-        }));
-        let output_params = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(output_params, output_params_len)
-        }));
-
-        let account = db_data
-            .get_account_for_ufvk(&usk.to_unified_full_viewing_key())?
-            .ok_or_else(|| anyhow!("Spending key not recognized."))?;
 
         let taddrs: Vec<TransparentAddress> = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
@@ -2676,20 +2655,118 @@ pub unsafe extern "C" fn zcashlc_shield_funds(
 
         let input_selector = zip317_helper(Some(memo_bytes), use_zip317_fees);
 
-        let prover = LocalTxProver::new(spend_params, output_params);
-
-        let txid = shield_transparent_funds(
+        let proposal = propose_shielding::<_, _, _, Infallible>(
             &mut db_data,
             &network,
-            &prover,
-            &prover,
             &input_selector,
             shielding_threshold,
-            &usk,
             &taddrs,
             min_confirmations,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
+
+        let encoded = Proposal::from_standard_proposal(&network, &proposal)
+            .expect("transaction request should not be empty")
+            .encode_to_vec();
+
+        Ok(FfiBoxedSlice::ptr_from_vec(encoded))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Creates a transaction from the given proposal.
+///
+/// Returns the row index of the newly-created transaction in the `transactions` table
+/// within the data database. The caller can read the raw transaction bytes from the `raw`
+/// column in order to broadcast the transaction to the network.
+///
+/// Do not call this multiple times in parallel, or you will generate transactions that
+/// double-spend the same notes.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must
+///   have an alignment of `1`. Its contents must be a string representing a valid system
+///   path in the operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the
+///   function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `proposal_ptr` must be non-null and valid for reads for `proposal_len` bytes, and it
+///   must have an alignment of `1`. Its contents must be an encoded Proposal protobuf.
+/// - The memory referenced by `proposal_ptr` must not be mutated for the duration of the
+///   function call.
+/// - The total size `proposal_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes containing
+///   a unified spending key encoded as returned from the `zcashlc_create_account` or
+///   `zcashlc_derive_spending_key` functions.
+/// - The memory referenced by `usk_ptr` must not be mutated for the duration of the
+///   function call.
+/// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `to` must be non-null and must point to a null-terminated UTF-8 string.
+/// - `memo` must either be null (indicating an empty memo or a transparent recipient) or
+///   point to a 512-byte array.
+/// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes,
+///   and it must have an alignment of `1`. Its contents must be the Sapling spend proving
+///   parameters.
+/// - The memory referenced by `spend_params` must not be mutated for the duration of the
+///   function call.
+/// - The total size `spend_params_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `output_params` must be non-null and valid for reads for `output_params_len` bytes,
+///   and it must have an alignment of `1`. Its contents must be the Sapling output
+///   proving parameters.
+/// - The memory referenced by `output_params` must not be mutated for the duration of the
+///   function call.
+/// - The total size `output_params_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `txid_bytes_ret` must be non-null and must point to an allocated 32-byte region of
+///   memory.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_create_proposed_transaction(
+    db_data: *const u8,
+    db_data_len: usize,
+    proposal_ptr: *const u8,
+    proposal_len: usize,
+    usk_ptr: *const u8,
+    usk_len: usize,
+    spend_params: *const u8,
+    spend_params_len: usize,
+    output_params: *const u8,
+    output_params_len: usize,
+    network_id: u32,
+    txid_bytes_ret: *mut u8,
+) -> bool {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let proposal =
+            Proposal::decode(unsafe { slice::from_raw_parts(proposal_ptr, proposal_len) })
+                .map_err(|e| anyhow!("Invalid proposal: {}", e))?
+                .try_into_standard_proposal(&network, &db_data)?;
+        let usk = unsafe { decode_usk(usk_ptr, usk_len) }?;
+        let spend_params = Path::new(OsStr::from_bytes(unsafe {
+            slice::from_raw_parts(spend_params, spend_params_len)
+        }));
+        let output_params = Path::new(OsStr::from_bytes(unsafe {
+            slice::from_raw_parts(output_params, output_params_len)
+        }));
+
+        let prover = LocalTxProver::new(spend_params, output_params);
+
+        let txid = create_proposed_transaction::<_, _, Infallible, _, _>(
+            &mut db_data,
+            &network,
+            &prover,
+            &prover,
+            &usk,
+            OvkPolicy::Sender,
+            &proposal,
+        )
+        .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
         let txid_bytes = unsafe { slice::from_raw_parts_mut(txid_bytes_ret, 32) };
         txid.write(txid_bytes)?;
