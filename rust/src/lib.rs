@@ -2564,6 +2564,65 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
     unwrap_exc_or_null(res)
 }
 
+/// Select transaction inputs, compute fees, and construct a proposal for a transaction
+/// from a ZIP-321 payment URI that can then be authorized and made ready for submission to the
+/// network with `zcashlc_create_proposed_transaction`.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `payment_uri` must be non-null and must point to a null-terminated UTF-8 string.
+/// - `network_id` a u32. 0 for Testnet and 1 for Mainnet
+/// - `min_confirmations` number of confirmations of the funds to spend
+/// - `use_zip317_fees` `true`` to use ZIP-317 fees.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
+    db_data: *const u8,
+    db_data_len: usize,
+    account: i32,
+    payment_uri: *const c_char,
+    network_id: u32,
+    min_confirmations: u32,
+    use_zip317_fees: bool,
+) -> *mut FfiBoxedSlice {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let min_confirmations = NonZeroU32::new(min_confirmations)
+            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let account = account_id_from_i32(account)?;
+        let payment_uri_str = unsafe { CStr::from_ptr(payment_uri) }.to_str()?;
+
+        let input_selector = zip317_helper(None, use_zip317_fees);
+
+        let req = TransactionRequest::from_uri(&network, payment_uri_str)
+            .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
+
+        let proposal = propose_transfer::<_, _, _, Infallible>(
+            &mut db_data,
+            &network,
+            account,
+            &input_selector,
+            req,
+            min_confirmations,
+        )
+        .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
+
+        let encoded = Proposal::from_standard_proposal(&network, &proposal)
+            .expect("transaction request should not be empty")
+            .encode_to_vec();
+
+        Ok(FfiBoxedSlice::ptr_from_vec(encoded))
+    });
+    unwrap_exc_or_null(res)
+}
+
 #[no_mangle]
 pub extern "C" fn zcashlc_branch_id_for_height(height: i32, network_id: u32) -> i32 {
     let res = catch_panic(|| {
