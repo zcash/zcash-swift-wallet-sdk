@@ -1821,6 +1821,7 @@ pub struct FfiWalletSummary {
     chain_tip_height: i32,
     fully_scanned_height: i32,
     scan_progress: *mut FfiScanProgress,
+    next_sapling_subtree_index: u64,
 }
 
 impl FfiWalletSummary {
@@ -1857,6 +1858,7 @@ impl FfiWalletSummary {
             chain_tip_height: u32::from(summary.chain_tip_height()) as i32,
             fully_scanned_height: u32::from(summary.fully_scanned_height()) as i32,
             scan_progress,
+            next_sapling_subtree_index: summary.next_sapling_subtree_index(),
         }))
     }
 
@@ -1867,6 +1869,7 @@ impl FfiWalletSummary {
             chain_tip_height: 0,
             fully_scanned_height: -1,
             scan_progress: ptr::null_mut(),
+            next_sapling_subtree_index: 0,
         }))
     }
 }
