@@ -24,7 +24,7 @@ use zcash_address::{
 use zcash_client_backend::{
     address::{Address, UnifiedAddress},
     data_api::{
-        chain::{scan_cached_blocks, CommitmentTreeRoot},
+        chain::{scan_cached_blocks, CommitmentTreeRoot, ScanSummary},
         scanning::ScanPriority,
         wallet::{
             create_proposed_transaction, decrypt_and_store_transaction,
@@ -1821,6 +1821,7 @@ pub struct FfiWalletSummary {
     chain_tip_height: i32,
     fully_scanned_height: i32,
     scan_progress: *mut FfiScanProgress,
+    next_sapling_subtree_index: u64,
 }
 
 impl FfiWalletSummary {
@@ -1857,6 +1858,7 @@ impl FfiWalletSummary {
             chain_tip_height: u32::from(summary.chain_tip_height()) as i32,
             fully_scanned_height: u32::from(summary.fully_scanned_height()) as i32,
             scan_progress,
+            next_sapling_subtree_index: summary.next_sapling_subtree_index(),
         }))
     }
 
@@ -1867,6 +1869,7 @@ impl FfiWalletSummary {
             chain_tip_height: 0,
             fully_scanned_height: -1,
             scan_progress: ptr::null_mut(),
+            next_sapling_subtree_index: 0,
         }))
     }
 }
@@ -2048,6 +2051,29 @@ pub unsafe extern "C" fn zcashlc_suggest_scan_ranges(
     unwrap_exc_or_null(res)
 }
 
+/// Metadata about modifications to the wallet state made in the course of scanning a set
+/// of blocks.
+#[repr(C)]
+pub struct FfiScanSummary {
+    scanned_start: i32,
+    scanned_end: i32,
+    spent_sapling_note_count: u64,
+    received_sapling_note_count: u64,
+}
+
+impl FfiScanSummary {
+    fn new(scan_summary: ScanSummary) -> *mut Self {
+        let scanned_range = scan_summary.scanned_range();
+
+        Box::into_raw(Box::new(Self {
+            scanned_start: u32::from(scanned_range.start) as i32,
+            scanned_end: u32::from(scanned_range.end) as i32,
+            spent_sapling_note_count: scan_summary.spent_sapling_note_count() as u64,
+            received_sapling_note_count: scan_summary.received_sapling_note_count() as u64,
+        }))
+    }
+}
+
 /// Scans new blocks added to the cache for any transactions received by the tracked
 /// accounts, while checking that they form a valid chan.
 ///
@@ -2088,7 +2114,7 @@ pub unsafe extern "C" fn zcashlc_scan_blocks(
     from_height: i32,
     scan_limit: u32,
     network_id: u32,
-) -> i32 {
+) -> *mut FfiScanSummary {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let block_db = block_db(fs_block_cache_root, fs_block_cache_root_len)?;
@@ -2096,12 +2122,24 @@ pub unsafe extern "C" fn zcashlc_scan_blocks(
         let from_height = BlockHeight::try_from(from_height)?;
         let limit = usize::try_from(scan_limit)?;
         match scan_cached_blocks(&network, &block_db, &mut db_data, from_height, limit) {
-            // TODO: Return ScanSummary.
-            Ok(_) => Ok(1),
+            Ok(scan_summary) => Ok(FfiScanSummary::new(scan_summary)),
             Err(e) => Err(anyhow!("Error while scanning blocks: {}", e)),
         }
     });
     unwrap_exc_or_null(res)
+}
+
+/// Frees an [`FfiScanSummary`] value.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiScanSummary`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_scan_summary(ptr: *mut FfiScanSummary) {
+    if !ptr.is_null() {
+        let summary = unsafe { Box::from_raw(ptr) };
+        drop(summary);
+    }
 }
 
 /// Inserts a UTXO into the wallet database.
