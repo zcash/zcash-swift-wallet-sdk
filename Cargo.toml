@@ -16,10 +16,11 @@ hex = "0.4"
 memuse = "0.2.1"
 prost = "0.12"
 rusqlite = "0.29"
+sapling = { package = "sapling-crypto", version = "0.1", default-features = false }
 schemer = "0.2.1"
 secp256k1 = "0.26"
 secrecy = "0.8"
-orchard = { version = "0.6", default-features = false }
+orchard = { version = "0.7", default-features = false }
 zcash_address = { version = "0.3" }
 zcash_client_backend = { version = "0.10", features = ["transparent-inputs", "unstable"] }
 zcash_client_sqlite = { version = "^0.8.1", features = ["transparent-inputs", "unstable"] }
@@ -42,7 +43,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 [build-dependencies]
-bindgen = "0.68"
+bindgen = "0.69"
 cbindgen = "0.26"
 cc = "1.0"
 
@@ -54,6 +55,10 @@ crate-type = ["staticlib"]
 [profile.release]
 lto = true
 
-[features]
-mainnet = ["zcash_client_sqlite/mainnet"]
-testnet = []
+[patch.crates-io]
+# Tag `ecc_sdk-20240129`
+zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "e387c6ce3f76ff32f023849f816f8b4214dc437f" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "e387c6ce3f76ff32f023849f816f8b4214dc437f" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "e387c6ce3f76ff32f023849f816f8b4214dc437f" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "e387c6ce3f76ff32f023849f816f8b4214dc437f" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "e387c6ce3f76ff32f023849f816f8b4214dc437f" }

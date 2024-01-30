@@ -8,7 +8,7 @@ fn main() {
 
     let bindings = bindgen::builder()
         .header("rust/wrapper.h")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .allowlist_function("os_log_.*")
         .allowlist_function("os_release")
         .allowlist_function("os_signpost_.*")
