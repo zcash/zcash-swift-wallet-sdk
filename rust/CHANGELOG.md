@@ -4,6 +4,45 @@ All notable changes to this library will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0 - 2024-01-29
+
+## Notable Changes
+
+This release updates the `librustzcash` dependencies to the stable interim tag
+`ecc_sdk-20240129`. This provides improvements to wallet query performance that
+have not yet been released in a published version of the `zcash_client_sqlite`
+crate, as well as numerous unreleased changes to the `zcash_client_backend` and
+`zcash_primitives` crates. 
+
+### Added
+- FFI data structures:
+  - `FfiBalance`
+  - `FfiAccountBalance`
+  - `FfiWalletSummary`
+  - `FfiScanSummary`
+  - `FfiBoxedSlice`
+- FFI methods:
+  - `zcashlc_propose_transfer`
+  - `zcashlc_propose_transfer_from_uri`
+  - `zcashlc_propose_shielding`
+  - `zcashlc_create_proposed_transaction`
+  - `zcashlc_get_wallet_summary`
+  - `zcashlc_free_wallet_summary`
+  - `zcashlc_free_boxed_slice`
+  - `zcashlc_free_scan_summary`
+
+### Changed
+- `zcashlc_scan_blocks` now returns a `FfiScanSummary` value.
+
+### Removed
+- `zcashlc_get_balance` (use `zcashlc_get_wallet_summary` instead)
+- `zcashlc_get_scan_progress` (use `zcashlc_get_wallet_summary` instead)
+- `zcashlc_get_verified_balance` (use `zcashlc_get_wallet_summary` instead)
+- `zcashlc_create_to_address` (use `zcashlc_propose_transfer`  and
+  `zcashlc_create_proposed_transaction` instead)
+- `zcashlc_shield_funds` (use `zcashlc_propose_shielding`  and
+  `zcashlc_create_proposed_transaction` instead)
+
 ## 0.4.1 - 2023-10-20
 
 ### Issues Resolved
