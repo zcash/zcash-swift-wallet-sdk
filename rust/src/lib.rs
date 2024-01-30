@@ -591,7 +591,10 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account = account_id_from_i32(account)?;
 
-        match db_data.get_next_available_address(account, UnifiedAddressRequest::DEFAULT) {
+        // Do not generate Orchard receivers until we support receiving Orchard funds.
+        let request =
+            UnifiedAddressRequest::new(false, true, true).expect("have shielded receiver");
+        match db_data.get_next_available_address(account, request) {
             Ok(Some(ua)) => {
                 let address_str = ua.encode(&network);
                 Ok(CString::new(address_str).unwrap().into_raw())
