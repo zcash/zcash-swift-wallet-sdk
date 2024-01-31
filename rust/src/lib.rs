@@ -2596,9 +2596,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
-        let encoded = Proposal::from_standard_proposal(&network, &proposal)
-            .expect("transaction request should not be empty")
-            .encode_to_vec();
+        let encoded = Proposal::from_standard_proposal(&network, &proposal).encode_to_vec();
 
         Ok(FfiBoxedSlice::ptr_from_vec(encoded))
     });
@@ -2655,9 +2653,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
-        let encoded = Proposal::from_standard_proposal(&network, &proposal)
-            .expect("transaction request should not be empty")
-            .encode_to_vec();
+        let encoded = Proposal::from_standard_proposal(&network, &proposal).encode_to_vec();
 
         Ok(FfiBoxedSlice::ptr_from_vec(encoded))
     });
@@ -2765,9 +2761,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 
-        let encoded = Proposal::from_standard_proposal(&network, &proposal)
-            .expect("transaction request should not be empty")
-            .encode_to_vec();
+        let encoded = Proposal::from_standard_proposal(&network, &proposal).encode_to_vec();
 
         Ok(FfiBoxedSlice::ptr_from_vec(encoded))
     });
