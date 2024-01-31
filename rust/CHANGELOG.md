@@ -4,6 +4,15 @@ All notable changes to this library will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.1 - 2024-01-30
+
+Update to `librustzcash` tag `ecc_sdk-20240130a`.
+
+### Fixes
+This release fixes a problem in the serialization of transaction proposals having
+empty transaction requests (shielding transactions are change-only and contain
+no payments.)
+
 ## 0.5.0 - 2024-01-29
 
 ## Notable Changes
