@@ -2764,7 +2764,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             }
         }?;
 
-        let mut account_receivers = db_data
+        let account_receivers = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
@@ -2782,36 +2782,19 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                             e,
                         )
                     })
-            })?
-            .into_iter();
+            })?;
 
-        let from_addrs = if let Some((receiver_if_none_provided, value)) = account_receivers.next()
-        {
-            // At least one transparent receiver has funds to shield.
-            if let Some(addr) = transparent_receiver {
-                if (addr == receiver_if_none_provided && value >= shielding_threshold.into())
-                    || account_receivers.any(|(a, v)| addr == a && v >= shielding_threshold.into())
-                {
-                    // The provided transparent receiver has sufficient funds to shield.
-                    [addr]
-                } else {
-                    // Insufficient funds to shield; don't create a proposal.
-                    return Ok(FfiBoxedSlice::none());
-                }
-            } else if account_receivers.next().is_none() {
-                // Only one transparent receiver has funds to shield...
-                if value >= shielding_threshold.into() {
-                    // ... and it has sufficient funds to shield.
-                    [receiver_if_none_provided]
-                } else {
-                    // Insufficient funds to shield; don't create a proposal.
-                    return Ok(FfiBoxedSlice::none());
-                }
+        let from_addrs = if let Some((addr, _)) = transparent_receiver.map_or_else(||
+            if account_receivers.len() > 1 {
+                Err(anyhow!(
+                    "Account has more than one transparent receiver with funds to shield; this is not yet supported by the SDK. Provide a specific transparent receiver to shield funds from."
+                ))
             } else {
-                return Err(anyhow!(
-                        "Account has more than one transparent receiver with funds to shield; this is not yet supported by the SDK. Provide a specific transparent receiver to shield funds from."
-                    ));
-            }
+                Ok(account_receivers.iter().next().map(|(a, v)| (*a, *v)))
+            },
+            |addr| Ok(account_receivers.get(&addr).map(|value| (addr, *value)))
+        )?.filter(|(_, value)| *value >= shielding_threshold.into()) {
+            [addr]
         } else {
             // There are no transparent funds to shield; don't create a proposal.
             return Ok(FfiBoxedSlice::none());
