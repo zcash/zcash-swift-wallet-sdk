@@ -2493,6 +2493,13 @@ impl FfiBoxedSlice {
         let slim_ptr: *mut u8 = fat_ptr as _;
         Box::into_raw(Box::new(FfiBoxedSlice { ptr: slim_ptr, len }))
     }
+
+    fn none() -> *mut Self {
+        Box::into_raw(Box::new(Self {
+            ptr: ptr::null_mut(),
+            len: 0,
+        }))
+    }
 }
 
 /// Frees an [`FfiBoxedSlice`].
@@ -2505,8 +2512,11 @@ impl FfiBoxedSlice {
 pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
     if !ptr.is_null() {
         let s: Box<FfiBoxedSlice> = unsafe { Box::from_raw(ptr) };
-        let slice: Box<[u8]> = unsafe { Box::from_raw(slice::from_raw_parts_mut(s.ptr, s.len)) };
-        drop(slice);
+        if !s.ptr.is_null() {
+            let slice: Box<[u8]> =
+                unsafe { Box::from_raw(slice::from_raw_parts_mut(s.ptr, s.len)) };
+            drop(slice);
+        }
         drop(s);
     }
 }
@@ -2704,6 +2714,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
     account: i32,
     memo: *const u8,
     shielding_threshold: u64,
+    transparent_receiver: *const c_char,
     network_id: u32,
     min_confirmations: u32,
     use_zip317_fees: bool,
@@ -2724,7 +2735,36 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
         let shielding_threshold = NonNegativeAmount::from_u64(shielding_threshold)
             .map_err(|()| anyhow!("Invalid amount, out of range"))?;
 
-        let taddrs: Vec<TransparentAddress> = db_data
+        let transparent_receiver = if transparent_receiver.is_null() {
+            Ok(None)
+        } else {
+            match Address::decode(
+                &network,
+                unsafe { CStr::from_ptr(transparent_receiver) }.to_str()?,
+            ) {
+                None => Err(anyhow!("Transparent receiver is for the wrong network")),
+                Some(addr) => match addr {
+                    Address::Sapling(_) | Address::Unified(_) => {
+                        Err(anyhow!("Transparent receiver is not a transparent address"))
+                    }
+                    Address::Transparent(addr) => {
+                        if db_data
+                            .get_transparent_receivers(account)?
+                            .contains_key(&addr)
+                        {
+                            Ok(Some(addr))
+                        } else {
+                            Err(anyhow!(
+                                "Transparent receiver does not belong to account {}",
+                                u32::from(account),
+                            ))
+                        }
+                    }
+                },
+            }
+        }?;
+
+        let mut account_receivers = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
@@ -2743,9 +2783,39 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                         )
                     })
             })?
-            .keys()
-            .cloned()
-            .collect();
+            .into_iter();
+
+        let from_addrs = if let Some((receiver_if_none_provided, value)) = account_receivers.next()
+        {
+            // At least one transparent receiver has funds to shield.
+            if let Some(addr) = transparent_receiver {
+                if (addr == receiver_if_none_provided && value >= shielding_threshold.into())
+                    || account_receivers.any(|(a, v)| addr == a && v >= shielding_threshold.into())
+                {
+                    // The provided transparent receiver has sufficient funds to shield.
+                    [addr]
+                } else {
+                    // Insufficient funds to shield; don't create a proposal.
+                    return Ok(FfiBoxedSlice::none());
+                }
+            } else if account_receivers.next().is_none() {
+                // Only one transparent receiver has funds to shield...
+                if value >= shielding_threshold.into() {
+                    // ... and it has sufficient funds to shield.
+                    [receiver_if_none_provided]
+                } else {
+                    // Insufficient funds to shield; don't create a proposal.
+                    return Ok(FfiBoxedSlice::none());
+                }
+            } else {
+                return Err(anyhow!(
+                        "Account has more than one transparent receiver with funds to shield; this is not yet supported by the SDK. Provide a specific transparent receiver to shield funds from."
+                    ));
+            }
+        } else {
+            // There are no transparent funds to shield; don't create a proposal.
+            return Ok(FfiBoxedSlice::none());
+        };
 
         let input_selector = zip317_helper(Some(memo_bytes), use_zip317_fees);
 
@@ -2754,7 +2824,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             &network,
             &input_selector,
             shielding_threshold,
-            &taddrs,
+            &from_addrs,
             min_confirmations,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
