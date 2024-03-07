@@ -4,6 +4,27 @@ All notable changes to this library will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.6.0 - 2024-03-07
+
+### Added
+- `zcashlc_create_proposed_transactions`
+
+### Changed
+- Migrated to `zcash_client_sqlite 0.9`.
+
+- `zcashlc_propose_shielding` now raises an error if more than one transparent
+  receiver has funds that require shielding, to avoid creating transactions that
+  link these receivers on chain. It also now takes a `transparent_receiver`
+  argument that can be used to select a specific receiver for which to shield
+  funds.
+- `zcashlc_propose_shielding` now returns a "none" `FfiBoxedSlice` (with its
+  `ptr` field set to `null`) if there are no funds to shield, or if the funds
+  are below `shielding_threshold`.
+
+### Removed
+- `zcashlc_create_proposed_transaction`
+  (use `zcashlc_create_proposed_transactions` instead).
+
 ## 0.5.1 - 2024-01-30
 
 Update to `librustzcash` tag `ecc_sdk-20240130a`.

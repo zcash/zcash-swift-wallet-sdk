@@ -27,7 +27,7 @@ use zcash_client_backend::{
         chain::{scan_cached_blocks, CommitmentTreeRoot, ScanSummary},
         scanning::ScanPriority,
         wallet::{
-            create_proposed_transaction, decrypt_and_store_transaction,
+            create_proposed_transactions, decrypt_and_store_transaction,
             input_selection::GreedyInputSelector, propose_shielding, propose_transfer,
         },
         AccountBalance, AccountBirthday, Balance, InputSource, WalletCommitmentTrees, WalletRead,
@@ -755,10 +755,10 @@ pub unsafe extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
 
         if let Some(taddr) = ua.0.transparent() {
             let taddr = match taddr {
-                TransparentAddress::PublicKey(data) => {
+                TransparentAddress::PublicKeyHash(data) => {
                     ZcashAddress::from_transparent_p2pkh(network, *data)
                 }
-                TransparentAddress::Script(data) => {
+                TransparentAddress::ScriptHash(data) => {
                     ZcashAddress::from_transparent_p2sh(network, *data)
                 }
             };
@@ -1828,7 +1828,7 @@ pub struct FfiWalletSummary {
 }
 
 impl FfiWalletSummary {
-    fn some(summary: WalletSummary) -> *mut Self {
+    fn some(summary: WalletSummary<AccountId>) -> *mut Self {
         let (account_balances, account_balances_len) = {
             let account_balances: Box<[FfiAccountBalance]> = summary
                 .account_balances()
@@ -2458,7 +2458,7 @@ fn zip317_helper<DbT>(
         StandardFeeRule::PreZip313
     };
     GreedyInputSelector::new(
-        SingleOutputChangeStrategy::new(fee_rule, change_memo),
+        SingleOutputChangeStrategy::new(fee_rule, change_memo, ShieldedProtocol::Sapling),
         DustOutputPolicy::default(),
     )
 }
@@ -2493,6 +2493,13 @@ impl FfiBoxedSlice {
         let slim_ptr: *mut u8 = fat_ptr as _;
         Box::into_raw(Box::new(FfiBoxedSlice { ptr: slim_ptr, len }))
     }
+
+    fn none() -> *mut Self {
+        Box::into_raw(Box::new(Self {
+            ptr: ptr::null_mut(),
+            len: 0,
+        }))
+    }
 }
 
 /// Frees an [`FfiBoxedSlice`].
@@ -2505,8 +2512,11 @@ impl FfiBoxedSlice {
 pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
     if !ptr.is_null() {
         let s: Box<FfiBoxedSlice> = unsafe { Box::from_raw(ptr) };
-        let slice: Box<[u8]> = unsafe { Box::from_raw(slice::from_raw_parts_mut(s.ptr, s.len)) };
-        drop(slice);
+        if !s.ptr.is_null() {
+            let slice: Box<[u8]> =
+                unsafe { Box::from_raw(slice::from_raw_parts_mut(s.ptr, s.len)) };
+            drop(slice);
+        }
         drop(s);
     }
 }
@@ -2526,7 +2536,6 @@ pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
 ///    512-byte array.
-/// - `txid_bytes_ret` must be non-null and must point to an allocated 32-byte region of memory.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_propose_transfer(
     db_data: *const u8,
@@ -2698,7 +2707,6 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
-/// - `txid_bytes_ret` must be non-null and must point to an allocated 32-byte region of memory.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_propose_shielding(
     db_data: *const u8,
@@ -2706,6 +2714,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
     account: i32,
     memo: *const u8,
     shielding_threshold: u64,
+    transparent_receiver: *const c_char,
     network_id: u32,
     min_confirmations: u32,
     use_zip317_fees: bool,
@@ -2726,7 +2735,36 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
         let shielding_threshold = NonNegativeAmount::from_u64(shielding_threshold)
             .map_err(|()| anyhow!("Invalid amount, out of range"))?;
 
-        let taddrs: Vec<TransparentAddress> = db_data
+        let transparent_receiver = if transparent_receiver.is_null() {
+            Ok(None)
+        } else {
+            match Address::decode(
+                &network,
+                unsafe { CStr::from_ptr(transparent_receiver) }.to_str()?,
+            ) {
+                None => Err(anyhow!("Transparent receiver is for the wrong network")),
+                Some(addr) => match addr {
+                    Address::Sapling(_) | Address::Unified(_) => {
+                        Err(anyhow!("Transparent receiver is not a transparent address"))
+                    }
+                    Address::Transparent(addr) => {
+                        if db_data
+                            .get_transparent_receivers(account)?
+                            .contains_key(&addr)
+                        {
+                            Ok(Some(addr))
+                        } else {
+                            Err(anyhow!(
+                                "Transparent receiver does not belong to account {}",
+                                u32::from(account),
+                            ))
+                        }
+                    }
+                },
+            }
+        }?;
+
+        let account_receivers = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
             .and_then(|opt_anchor| {
@@ -2744,10 +2782,23 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                             e,
                         )
                     })
-            })?
-            .keys()
-            .cloned()
-            .collect();
+            })?;
+
+        let from_addrs = if let Some((addr, _)) = transparent_receiver.map_or_else(||
+            if account_receivers.len() > 1 {
+                Err(anyhow!(
+                    "Account has more than one transparent receiver with funds to shield; this is not yet supported by the SDK. Provide a specific transparent receiver to shield funds from."
+                ))
+            } else {
+                Ok(account_receivers.iter().next().map(|(a, v)| (*a, *v)))
+            },
+            |addr| Ok(account_receivers.get(&addr).map(|value| (addr, *value)))
+        )?.filter(|(_, value)| *value >= shielding_threshold.into()) {
+            [addr]
+        } else {
+            // There are no transparent funds to shield; don't create a proposal.
+            return Ok(FfiBoxedSlice::none());
+        };
 
         let input_selector = zip317_helper(Some(memo_bytes), use_zip317_fees);
 
@@ -2756,7 +2807,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             &network,
             &input_selector,
             shielding_threshold,
-            &taddrs,
+            &from_addrs,
             min_confirmations,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
@@ -2766,6 +2817,59 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
         Ok(FfiBoxedSlice::ptr_from_vec(encoded))
     });
     unwrap_exc_or_null(res)
+}
+
+/// A struct that contains a pointer to, and length information for, a heap-allocated
+/// slice of `[u8; 32]` arrays.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<[u8; 32]>()`
+///   many bytes, and it must be properly aligned. This means in particular:
+///   - The entire memory range pointed to by `ptr` must be contained within a single
+///     allocated object. Slices can never span across multiple allocated objects.
+///   - `ptr` must be non-null and aligned even for zero-length slices.
+///   - `ptr` must point to `len` consecutive properly initialized values of type
+///     `[u8; 32]`.
+/// - The total size `len * mem::size_of::<[u8; 32]>()` of the slice pointed to
+///   by `ptr` must be no larger than isize::MAX. See the safety documentation of
+///   `pointer::offset`.
+#[repr(C)]
+pub struct FfiTxIds {
+    ptr: *mut [u8; 32],
+    len: usize, // number of elems
+}
+
+impl FfiTxIds {
+    pub fn ptr_from_vec(v: Vec<[u8; 32]>) -> *mut Self {
+        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
+        let boxed_slice: Box<[[u8; 32]]> = v.into_boxed_slice();
+        let len = boxed_slice.len();
+        let fat_ptr: *mut [[u8; 32]] = Box::into_raw(boxed_slice);
+        // It is guaranteed to be possible to obtain a raw pointer to the start
+        // of a slice by casting the pointer-to-slice, as documented e.g. at
+        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
+        // TODO: replace with `as_mut_ptr()` when that is stable.
+        let slim_ptr: *mut [u8; 32] = fat_ptr as _;
+        Box::into_raw(Box::new(FfiTxIds { ptr: slim_ptr, len }))
+    }
+}
+
+/// Frees an array of FfiTxIds values as allocated by `zcashlc_create_proposed_transactions`.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiTxIds`].
+///   See the safety documentation of [`FfiTxIds`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_txids(ptr: *mut FfiTxIds) {
+    if !ptr.is_null() {
+        let s: Box<FfiTxIds> = unsafe { Box::from_raw(ptr) };
+        let slice: &mut [[u8; 32]] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
+        let boxed_slice = unsafe { Box::from_raw(slice) };
+        drop(boxed_slice);
+        drop(s);
+    }
 }
 
 /// Creates a transaction from the given proposal.
@@ -2816,10 +2920,8 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
 ///   function call.
 /// - The total size `output_params_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `txid_bytes_ret` must be non-null and must point to an allocated 32-byte region of
-///   memory.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_create_proposed_transaction(
+pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
     db_data: *const u8,
     db_data_len: usize,
     proposal_ptr: *const u8,
@@ -2831,8 +2933,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transaction(
     output_params: *const u8,
     output_params_len: usize,
     network_id: u32,
-    txid_bytes_ret: *mut u8,
-) -> bool {
+) -> *mut FfiTxIds {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -2851,7 +2952,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transaction(
 
         let prover = LocalTxProver::new(spend_params, output_params);
 
-        let txid = create_proposed_transaction::<_, _, Infallible, _, _>(
+        let txids = create_proposed_transactions::<_, _, Infallible, _, _>(
             &mut db_data,
             &network,
             &prover,
@@ -2862,12 +2963,11 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transaction(
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
-        let txid_bytes = unsafe { slice::from_raw_parts_mut(txid_bytes_ret, 32) };
-        txid.write(txid_bytes)?;
-
-        Ok(true)
+        Ok(FfiTxIds::ptr_from_vec(
+            txids.into_iter().map(|txid| *txid.as_ref()).collect(),
+        ))
     });
-    unwrap_exc_or(res, false)
+    unwrap_exc_or_null(res)
 }
 
 //
