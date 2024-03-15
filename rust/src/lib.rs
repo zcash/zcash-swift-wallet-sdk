@@ -251,6 +251,104 @@ pub unsafe extern "C" fn zcashlc_init_data_database(
     unwrap_exc_or(res, -1)
 }
 
+/// A struct that contains details about an account in the wallet.
+#[repr(C)]
+pub struct FfiAccount {
+    account_index: u32,
+}
+
+/// A struct that contains a pointer to, and length information for, a heap-allocated
+/// slice of [`FfiAccount`] values.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FfiAccount>()`
+///   many bytes, and it must be properly aligned. This means in particular:
+///   - The entire memory range pointed to by `ptr` must be contained within a single allocated
+///     object. Slices can never span across multiple allocated objects.
+///   - `ptr` must be non-null and aligned even for zero-length slices.
+///   - `ptr` must point to `len` consecutive properly initialized values of type
+///     [`FfiAccount`].
+/// - The total size `len * mem::size_of::<FfiAccount>()` of the slice pointed to
+///   by `ptr` must be no larger than isize::MAX. See the safety documentation of pointer::offset.
+/// - See the safety documentation of [`FfiAccount`]
+#[repr(C)]
+pub struct FfiAccounts {
+    ptr: *mut FfiAccount,
+    len: usize, // number of elems
+}
+
+impl FfiAccounts {
+    pub fn ptr_from_vec(v: Vec<FfiAccount>) -> *mut Self {
+        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
+        let boxed_slice: Box<[FfiAccount]> = v.into_boxed_slice();
+        let len = boxed_slice.len();
+        let fat_ptr: *mut [FfiAccount] = Box::into_raw(boxed_slice);
+        // It is guaranteed to be possible to obtain a raw pointer to the start
+        // of a slice by casting the pointer-to-slice, as documented e.g. at
+        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
+        // TODO: replace with `as_mut_ptr()` when that is stable.
+        let slim_ptr: *mut FfiAccount = fat_ptr as _;
+        Box::into_raw(Box::new(FfiAccounts { ptr: slim_ptr, len }))
+    }
+}
+
+/// Frees an array of FfiAccounts values as allocated by `zcashlc_list_accounts`.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiAccounts`].
+///   See the safety documentation of [`FfiAccounts`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_accounts(ptr: *mut FfiAccounts) {
+    if !ptr.is_null() {
+        let s: Box<FfiAccounts> = unsafe { Box::from_raw(ptr) };
+
+        if !s.ptr.is_null() {
+            let slice: &mut [FfiAccount] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
+            let boxed_slice = unsafe { Box::from_raw(slice) };
+            drop(boxed_slice);
+        }
+
+        drop(s);
+    }
+}
+
+/// Returns a list of the accounts in the wallet.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_accounts`] to free the memory associated with the returned pointer
+///   when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_list_accounts(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+) -> *mut FfiAccounts {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        Ok(FfiAccounts::ptr_from_vec(
+            db_data
+                .get_account_ids()?
+                .into_iter()
+                .map(|account_index| FfiAccount {
+                    account_index: account_index.into(),
+                })
+                .collect(),
+        ))
+    });
+    unwrap_exc_or_null(res)
+}
+
 /// A struct that contains an account identifier along with a pointer to the binary encoding
 /// of an associated key.
 ///
