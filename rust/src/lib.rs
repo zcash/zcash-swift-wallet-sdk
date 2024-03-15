@@ -43,6 +43,7 @@ use zcash_client_backend::{
 };
 use zcash_client_sqlite::{
     chain::{init::init_blockmeta_db, BlockMeta},
+    error::SqliteClientError,
     wallet::init::{init_wallet_db, WalletMigrationError},
     AccountId, FsBlockDb, WalletDb,
 };
@@ -516,6 +517,49 @@ pub unsafe extern "C" fn zcashlc_create_account(
         ))))
     });
     unwrap_exc_or_null(res)
+}
+
+/// Checks whether the given seed is relevant to any of the accounts in the wallet.
+///
+/// Returns:
+/// - `1` for `Ok(true)`.
+/// - `0` for `Ok(false)`.
+/// - `-1` for `Err(_)`.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_wallet(
+    db_data: *const u8,
+    db_data_len: usize,
+    seed: *const u8,
+    seed_len: usize,
+    network_id: u32,
+) -> i8 {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let seed = Secret::new((unsafe { slice::from_raw_parts(seed, seed_len) }).to_vec());
+
+        for account_id in db_data.get_account_ids()? {
+            match db_data.validate_seed(account_id, &seed) {
+                // The seed is relevant to this account. No need to check any others.
+                Ok(true) => return Ok(1),
+                // We know by dead reckoning that this account ID exists in the wallet, so
+                // this must be the other `false` state, that the account is derived from
+                // a different seed.
+                Ok(false) => (),
+                // The account is imported. The seed _might_ be relevant, but the only way
+                // we could determine that is by brute-forcing the ZIP 32 account index
+                // space, which we're not going to do. Assume the seed is not relevant,
+                // which technically violates the intent of this method.
+                Err(SqliteClientError::UnknownZip32Derivation) => (),
+                // Other error cases are assumed to be actual errors, not distinguishers.
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        // The seed was not relevant to any of the accounts in the wallet.
+        Ok(0)
+    });
+    unwrap_exc_or(res, -1)
 }
 
 /// A struct that contains an account identifier along with a pointer to the string encoding
