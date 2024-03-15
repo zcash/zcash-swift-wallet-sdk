@@ -13,6 +13,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `FfiAccounts`
   - `FfiAccount`
 
+### Changed
+- `zcashlc_scan_blocks` now takes a `TreeState` protobuf object that provides
+  the frontiers of the note commitment trees as of the end of the block prior to
+  the range being scanned.
+
 ## 0.6.0 - 2024-03-07
 
 ### Added
