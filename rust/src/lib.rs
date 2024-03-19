@@ -789,9 +789,7 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account = account_id_from_ffi(&db_data, account)?;
 
-        // Do not generate Orchard receivers until we support receiving Orchard funds.
-        let request =
-            UnifiedAddressRequest::new(false, true, true).expect("have shielded receiver");
+        let request = UnifiedAddressRequest::new(true, true, true).expect("have shielded receiver");
         match db_data.get_next_available_address(account, request) {
             Ok(Some(ua)) => {
                 let address_str = ua.encode(&network);
@@ -1960,6 +1958,9 @@ pub struct FfiAccountBalance {
     /// The value of unspent Sapling outputs belonging to the account.
     sapling_balance: FfiBalance,
 
+    /// The value of unspent Orchard outputs belonging to the account.
+    orchard_balance: FfiBalance,
+
     /// The value of all unspent transparent outputs belonging to the account,
     /// irrespective of confirmation depth.
     ///
@@ -1975,6 +1976,7 @@ impl FfiAccountBalance {
         Self {
             account_id: u32::from(*account_id),
             sapling_balance: FfiBalance::new(balance.sapling_balance()),
+            orchard_balance: FfiBalance::new(balance.orchard_balance()),
             unshielded: Amount::from(balance.unshielded()).into(),
         }
     }
@@ -2023,6 +2025,7 @@ pub struct FfiWalletSummary {
     fully_scanned_height: i32,
     scan_progress: *mut FfiScanProgress,
     next_sapling_subtree_index: u64,
+    next_orchard_subtree_index: u64,
 }
 
 impl FfiWalletSummary {
@@ -2076,6 +2079,7 @@ impl FfiWalletSummary {
             fully_scanned_height: u32::from(summary.fully_scanned_height()) as i32,
             scan_progress,
             next_sapling_subtree_index: summary.next_sapling_subtree_index(),
+            next_orchard_subtree_index: summary.next_orchard_subtree_index(),
         })))
     }
 
@@ -2087,6 +2091,7 @@ impl FfiWalletSummary {
             fully_scanned_height: -1,
             scan_progress: ptr::null_mut(),
             next_sapling_subtree_index: 0,
+            next_orchard_subtree_index: 0,
         }))
     }
 }

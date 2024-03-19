@@ -21,8 +21,8 @@ schemer = "0.2.1"
 secp256k1 = "0.26"
 secrecy = "0.8"
 zcash_address = { version = "0.3" }
-zcash_client_backend = { version = "0.11", features = ["transparent-inputs", "unstable"] }
-zcash_client_sqlite = { version = "0.9", features = ["transparent-inputs", "unstable"] }
+zcash_client_backend = { version = "0.11", features = ["orchard", "transparent-inputs", "unstable"] }
+zcash_client_sqlite = { version = "0.9", features = ["orchard", "transparent-inputs", "unstable"] }
 zcash_primitives = "0.14"
 zcash_proofs = "0.14"
 
