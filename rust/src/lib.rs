@@ -3,9 +3,9 @@
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
 use prost::Message;
-use schemer::MigratorError;
 use secrecy::Secret;
 use std::convert::{Infallible, TryFrom, TryInto};
+use std::error::Error;
 use std::ffi::{CStr, CString, OsStr};
 use std::mem::ManuallyDrop;
 use std::num::NonZeroU32;
@@ -30,8 +30,8 @@ use zcash_client_backend::{
             create_proposed_transactions, decrypt_and_store_transaction,
             input_selection::GreedyInputSelector, propose_shielding, propose_transfer,
         },
-        Account, AccountBalance, AccountBirthday, AccountKind, Balance, InputSource,
-        WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite,
+        Account, AccountBalance, AccountBirthday, AccountSource, Balance, InputSource,
+        SeedRelevance, WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite,
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
     fees::{standard::SingleOutputChangeStrategy, DustOutputPolicy},
@@ -43,7 +43,6 @@ use zcash_client_backend::{
 };
 use zcash_client_sqlite::{
     chain::{init::init_blockmeta_db, BlockMeta},
-    error::SqliteClientError,
     wallet::init::{init_wallet_db, WalletMigrationError},
     AccountId, FsBlockDb, WalletDb,
 };
@@ -147,8 +146,8 @@ fn account_id_from_ffi<P: Parameters>(
                 .get_account(account_id)
                 .transpose()
                 .expect("account_id exists")
-                .map(|account| match account.kind() {
-                    AccountKind::Derived { account_index, .. }
+                .map(|account| match account.source() {
+                    AccountSource::Derived { account_index, .. }
                         if account_index == requested_account_index =>
                     {
                         Some(account)
@@ -239,8 +238,11 @@ pub extern "C" fn zcashlc_clear_last_error() {
 /// null pointer if the caller wishes to attempt migrations without providing the wallet's seed
 /// value.
 ///
-/// Returns 0 if successful, 1 if the seed must be provided in order to execute the requested
-/// migrations, or -1 otherwise.
+/// Returns:
+/// - 0 if successful.
+/// - 1 if the seed must be provided in order to execute the requested migrations
+/// - 2 if the provided seed is not relevant to any of the derived accounts in the wallet.
+/// - -1 on error.
 ///
 /// # Safety
 ///
@@ -277,7 +279,22 @@ pub unsafe extern "C" fn zcashlc_init_data_database(
 
         match init_wallet_db(&mut db_data, seed) {
             Ok(_) => Ok(0),
-            Err(MigratorError::Adapter(WalletMigrationError::SeedRequired)) => Ok(1),
+            Err(e)
+                if matches!(
+                    e.source().and_then(|e| e.downcast_ref()),
+                    Some(&WalletMigrationError::SeedRequired),
+                ) =>
+            {
+                Ok(1)
+            }
+            Err(e)
+                if matches!(
+                    e.source().and_then(|e| e.downcast_ref()),
+                    Some(&WalletMigrationError::SeedNotRelevant),
+                ) =>
+            {
+                Ok(2)
+            }
             Err(e) => Err(anyhow!("Error while initializing data DB: {}", e)),
         }
     });
@@ -377,15 +394,15 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
                 .map(|account_id| {
                     let account = db_data.get_account(account_id)?.expect("account ID exists");
 
-                    match account.kind() {
-                        AccountKind::Derived {
+                    match account.source() {
+                        AccountSource::Derived {
                             seed_fingerprint,
                             account_index,
                         } => Ok(FfiAccount {
                             seed_fingerprint: seed_fingerprint.to_bytes(),
                             account_index: account_index.into(),
                         }),
-                        AccountKind::Imported => Err(anyhow!(
+                        AccountSource::Imported => Err(anyhow!(
                             "Wallet DB contains imported accounts, which are unsuppported"
                         )),
                     }
@@ -505,9 +522,9 @@ pub unsafe extern "C" fn zcashlc_create_account(
             .map_err(|e| anyhow!("Error while initializing accounts: {}", e))?;
 
         let account = db_data.get_account(account_id)?.expect("just created");
-        let account_index = match account.kind() {
-            AccountKind::Derived { account_index, .. } => account_index,
-            AccountKind::Imported => unreachable!("just created"),
+        let account_index = match account.source() {
+            AccountSource::Derived { account_index, .. } => account_index,
+            AccountSource::Imported => unreachable!("just created"),
         };
 
         let encoded = usk.to_bytes(Era::Orchard);
@@ -526,7 +543,7 @@ pub unsafe extern "C" fn zcashlc_create_account(
 /// - `0` for `Ok(false)`.
 /// - `-1` for `Err(_)`.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_wallet(
+pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_any_derived_account(
     db_data: *const u8,
     db_data_len: usize,
     seed: *const u8,
@@ -538,26 +555,11 @@ pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_wallet(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let seed = Secret::new((unsafe { slice::from_raw_parts(seed, seed_len) }).to_vec());
 
-        for account_id in db_data.get_account_ids()? {
-            match db_data.validate_seed(account_id, &seed) {
-                // The seed is relevant to this account. No need to check any others.
-                Ok(true) => return Ok(1),
-                // We know by dead reckoning that this account ID exists in the wallet, so
-                // this must be the other `false` state, that the account is derived from
-                // a different seed.
-                Ok(false) => (),
-                // The account is imported. The seed _might_ be relevant, but the only way
-                // we could determine that is by brute-forcing the ZIP 32 account index
-                // space, which we're not going to do. Assume the seed is not relevant,
-                // which technically violates the intent of this method.
-                Err(SqliteClientError::UnknownZip32Derivation) => (),
-                // Other error cases are assumed to be actual errors, not distinguishers.
-                Err(e) => return Err(e.into()),
-            }
-        }
-
-        // The seed was not relevant to any of the accounts in the wallet.
-        Ok(0)
+        // Replicate the logic from `initWalletDb`.
+        Ok(match db_data.seed_relevance_to_derived_accounts(&seed)? {
+            SeedRelevance::Relevant { .. } | SeedRelevance::NoAccounts => 1,
+            SeedRelevance::NotRelevant | SeedRelevance::NoDerivedAccounts => 0,
+        })
     });
     unwrap_exc_or(res, -1)
 }
@@ -2036,10 +2038,10 @@ impl FfiWalletSummary {
                     let account_index = match db_data
                         .get_account(*account_id)?
                         .expect("the account exists in the wallet")
-                        .kind()
+                        .source()
                     {
-                        AccountKind::Derived { account_index, .. } => account_index,
-                        AccountKind::Imported => {
+                        AccountSource::Derived { account_index, .. } => account_index,
+                        AccountSource::Imported => {
                             unreachable!("Imported accounts are unimplemented")
                         }
                     };

@@ -12,7 +12,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `zcashlc_free_accounts`
   - `FfiAccounts`
   - `FfiAccount`
-- `zcashlc_is_seed_relevant_to_wallet`
+- `zcashlc_is_seed_relevant_to_any_derived_account`
 
 ### Changed
 - `zcashlc_scan_blocks` now takes a `TreeState` protobuf object that provides
