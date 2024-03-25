@@ -518,7 +518,7 @@ pub unsafe extern "C" fn zcashlc_create_account(
             })?;
 
         let (account_id, usk) = db_data
-            .create_account(&seed, birthday)
+            .create_account(&seed, &birthday)
             .map_err(|e| anyhow!("Error while initializing accounts: {}", e))?;
 
         let account = db_data.get_account(account_id)?.expect("just created");
