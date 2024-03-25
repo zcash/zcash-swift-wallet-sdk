@@ -4,6 +4,21 @@ All notable changes to this library will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- Structs and functions for listing accounts in the wallet:
+  - `zcashlc_list_accounts`
+  - `zcashlc_free_accounts`
+  - `FfiAccounts`
+  - `FfiAccount`
+- `zcashlc_is_seed_relevant_to_any_derived_account`
+
+### Changed
+- `zcashlc_scan_blocks` now takes a `TreeState` protobuf object that provides
+  the frontiers of the note commitment trees as of the end of the block prior to
+  the range being scanned.
+
 ## 0.6.0 - 2024-03-07
 
 ### Added
