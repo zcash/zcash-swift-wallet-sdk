@@ -6,6 +6,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.7.1 - 2024-03-25
+
+- Updates to `zcash_client_sqlite` version 0.10.1 to fix an incorrect 
+  constraint on the `sent_notes` table. Databases built or upgraded 
+  using version 0.7.0 will need to be deleted and restored from seed.
+
+## 0.7.0 - 2024-03-25
+
+This version has been yanked due to a bug in zcash_client_sqlite version 0.10.0
+
+## Notable Changes
+- Adds Orchard support.
+
 ### Added
 - Structs and functions for listing accounts in the wallet:
   - `zcashlc_list_accounts`
@@ -15,6 +28,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zcashlc_is_seed_relevant_to_any_derived_account`
 
 ### Changed
+- Update to zcash_client_backend version 0.12.0 and zcash_client_sqlite version
+  0.10.0.
 - `zcashlc_scan_blocks` now takes a `TreeState` protobuf object that provides
   the frontiers of the note commitment trees as of the end of the block prior to
   the range being scanned.
