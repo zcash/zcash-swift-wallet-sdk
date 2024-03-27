@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.7.2 - 2024-03-27
+
 - Updates to `zcash_client_sqlite 0.10.2` to fix a bug in an SQL query
   that prevented shielding of transparent funds.
 
