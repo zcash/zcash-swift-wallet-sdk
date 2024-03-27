@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "libzcashlc"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -960,9 +960,9 @@ dependencies = [
 
 [[package]]
 name = "memchr"
-version = "2.7.1"
+version = "2.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "523dc4f511e55ab87b694dc30d0f820d60906ef06413f93d4d7a1385599cc149"
+checksum = "6c8640c5d730cb13ebd907d8d04b52f55ac9a2eec55b440c8892f40d56c76c1d"
 
 [[package]]
 name = "memuse"
@@ -2141,9 +2141,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_backend"
-version = "0.12.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77c6f17dba9e13f7cb8d0a9f5a1715e288b3b9102a87cba7ff935d671a980c44"
+checksum = "0364e69c446fcf96a1f73f342c6c3fa697ea65ae7eeeae7d76ca847b9c442e40"
 dependencies = [
  "base64",
  "bech32",
