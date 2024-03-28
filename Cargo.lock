@@ -904,6 +904,7 @@ dependencies = [
  "log-panics",
  "memuse",
  "once_cell",
+ "orchard",
  "prost",
  "rayon",
  "rusqlite",
