@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.7.4 - 2024-03-28
+
 ### Added
 - `zcashlc_put_orchard_subtree_roots`
 
