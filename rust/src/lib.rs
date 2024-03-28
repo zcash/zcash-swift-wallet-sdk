@@ -1807,6 +1807,58 @@ pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
     unwrap_exc_or(res, false)
 }
 
+/// Adds a sequence of Orchard subtree roots to the data store.
+///
+/// Returns true if the subtrees could be stored, false otherwise. When false is returned,
+/// caller should check for errors.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `roots` must be non-null and initialized.
+/// - The memory referenced by `roots` must not be mutated for the duration of the function call.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_put_orchard_subtree_roots(
+    db_data: *const u8,
+    db_data_len: usize,
+    start_index: u64,
+    roots: *const FfiSubtreeRoots,
+    network_id: u32,
+) -> bool {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let roots = unsafe { roots.as_ref().unwrap() };
+        let roots_slice: &[FfiSubtreeRoot] = unsafe { slice::from_raw_parts(roots.ptr, roots.len) };
+
+        let roots = roots_slice
+            .iter()
+            .map(|r| {
+                let root_hash_bytes =
+                    unsafe { slice::from_raw_parts(r.root_hash_ptr, r.root_hash_ptr_len) };
+                let root_hash = orchard::tree::MerkleHashOrchard::read(root_hash_bytes)?;
+
+                Ok(CommitmentTreeRoot::from_parts(
+                    BlockHeight::from_u32(r.completing_block_height),
+                    root_hash,
+                ))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        db_data
+            .put_orchard_subtree_roots(start_index, &roots)
+            .map(|()| true)
+            .map_err(|e| anyhow!("Error while storing Orchard subtree roots: {}", e))
+    });
+    unwrap_exc_or(res, false)
+}
+
 /// Updates the wallet's view of the blockchain.
 ///
 /// This method is used to provide the wallet with information about the state of the blockchain,

@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "libzcashlc"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -904,6 +904,7 @@ dependencies = [
  "log-panics",
  "memuse",
  "once_cell",
+ "orchard",
  "prost",
  "rayon",
  "rusqlite",
