@@ -2742,7 +2742,7 @@ fn zip317_helper<DbT>(
         StandardFeeRule::PreZip313
     };
     GreedyInputSelector::new(
-        SingleOutputChangeStrategy::new(fee_rule, change_memo, ShieldedProtocol::Sapling),
+        SingleOutputChangeStrategy::new(fee_rule, change_memo, ShieldedProtocol::Orchard),
         DustOutputPolicy::default(),
     )
 }
