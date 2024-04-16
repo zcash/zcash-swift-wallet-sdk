@@ -1511,6 +1511,14 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
     unwrap_exc_or(res, -1)
 }
 
+fn parse_protocol(code: u32) -> Option<ShieldedProtocol> {
+    match code {
+        2 => Some(ShieldedProtocol::Sapling),
+        3 => Some(ShieldedProtocol::Orchard),
+        _ => None,
+    }
+}
+
 /// Returns the memo for a note by copying the corresponding bytes to the received
 /// pointer in `memo_bytes_ret`.
 ///
@@ -1530,6 +1538,7 @@ pub unsafe extern "C" fn zcashlc_get_memo(
     db_data: *const u8,
     db_data_len: usize,
     txid_bytes: *const u8,
+    output_pool: u32,
     output_index: u16,
     memo_bytes_ret: *mut u8,
     network_id: u32,
@@ -1541,8 +1550,13 @@ pub unsafe extern "C" fn zcashlc_get_memo(
         let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, 32) };
         let txid = TxId::read(&txid_bytes[..])?;
 
+        let protocol = parse_protocol(output_pool).ok_or(anyhow!(
+            "Shielded protocol not recognized for code: {}",
+            output_pool
+        ))?;
+
         let memo_bytes = db_data
-            .get_memo(NoteId::new(txid, ShieldedProtocol::Sapling, output_index))
+            .get_memo(NoteId::new(txid, protocol, output_index))
             .map_err(|e| anyhow!("An error occurred retrieving the memo: {}", e))
             .and_then(|memo| memo.ok_or(anyhow!("Memo not available")))
             .map(|memo| memo.encode())?;
