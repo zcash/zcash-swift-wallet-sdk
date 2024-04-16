@@ -52,6 +52,9 @@ products/%/frameworks/libzcashlc.framework: products/%/universal/libzcashlc.a
 	cp -R ../target/Headers $@
 	mkdir $@/Modules
 	cp module.modulemap $@/Modules
+	# Workaround for a bug in the XCode 15.3 build system.
+	# https://github.com/Electric-Coin-Company/zashi-ios/issues/1166
+	cp platform-Info.plist $@/Info.plist
 
 products/macos/universal/libzcashlc.a: $(MACOS_ARCHS)
 	mkdir -p $(@D)
