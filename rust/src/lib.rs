@@ -1012,19 +1012,19 @@ pub unsafe extern "C" fn zcashlc_get_sapling_receiver_for_unified_address(
 /// - `address` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `address` must not be mutated for the duration of the function call.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_shielded_address(
+pub unsafe extern "C" fn zcashlc_is_valid_sapling_address(
     address: *const c_char,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        Ok(is_valid_shielded_address(addr, &network))
+        Ok(is_valid_sapling_address(addr, &network))
     });
     unwrap_exc_or(res, false)
 }
 
-fn is_valid_shielded_address(address: &str, network: &Network) -> bool {
+fn is_valid_sapling_address(address: &str, network: &Network) -> bool {
     match Address::decode(network, address) {
         Some(addr) => match addr {
             Address::Sapling(_) => true,
