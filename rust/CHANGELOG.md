@@ -6,6 +6,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.8.0 - 2024-04-17
+
+### Added
+- `zcashlc_is_valid_sapling_address`
+
+### Changed
+- Updates to `zcash_client_sqlite` version `0.10.3` to add migrations that ensure the
+  wallet's default Unified address contains an Orchard receiver.
+- `zcashlc_get_memo` now takes an additional `output_pool` parameter. This fixes a problem
+  with the retrieval of Orchard memos.
+
+### Removed
+- `zcashlc_is_valid_shielded_address` - use `zcashlc_is_valid_sapling_address` instead.
+
 ## 0.7.4 - 2024-03-28
 
 ### Added
