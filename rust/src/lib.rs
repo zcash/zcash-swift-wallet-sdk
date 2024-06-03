@@ -343,16 +343,8 @@ pub struct FfiAccounts {
 
 impl FfiAccounts {
     pub fn ptr_from_vec(v: Vec<FfiAccount>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[FfiAccount]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [FfiAccount] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut FfiAccount = fat_ptr as _;
-        Box::into_raw(Box::new(FfiAccounts { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FfiAccounts { ptr, len }))
     }
 }
 
@@ -366,13 +358,7 @@ impl FfiAccounts {
 pub unsafe extern "C" fn zcashlc_free_accounts(ptr: *mut FfiAccounts) {
     if !ptr.is_null() {
         let s: Box<FfiAccounts> = unsafe { Box::from_raw(ptr) };
-
-        if !s.ptr.is_null() {
-            let slice: &mut [FfiAccount] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
-            let boxed_slice = unsafe { Box::from_raw(slice) };
-            drop(boxed_slice);
-        }
-
+        free_ptr_from_vec(s.ptr, s.len);
         drop(s);
     }
 }
@@ -440,11 +426,11 @@ pub struct FFIBinaryKey {
 
 impl FFIBinaryKey {
     fn new(account_id: zip32::AccountId, key_bytes: Vec<u8>) -> Self {
-        let mut raw_key_bytes = ManuallyDrop::new(key_bytes.into_boxed_slice());
+        let (encoding, encoding_len) = ptr_from_vec(key_bytes);
         FFIBinaryKey {
             account_id: account_id.into(),
-            encoding: raw_key_bytes.as_mut_ptr(),
-            encoding_len: raw_key_bytes.len(),
+            encoding,
+            encoding_len,
         }
     }
 }
@@ -459,9 +445,8 @@ impl FFIBinaryKey {
 pub unsafe extern "C" fn zcashlc_free_binary_key(ptr: *mut FFIBinaryKey) {
     if !ptr.is_null() {
         let key: Box<FFIBinaryKey> = unsafe { Box::from_raw(ptr) };
-        let key_slice: &mut [u8] =
-            unsafe { slice::from_raw_parts_mut(key.encoding, key.encoding_len) };
-        drop(unsafe { Box::from_raw(key_slice) });
+        free_ptr_from_vec(key.encoding, key.encoding_len);
+        drop(key);
     }
 }
 
@@ -611,16 +596,8 @@ pub struct FFIEncodedKeys {
 
 impl FFIEncodedKeys {
     pub fn ptr_from_vec(v: Vec<FFIEncodedKey>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[FFIEncodedKey]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [FFIEncodedKey] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut FFIEncodedKey = fat_ptr as _;
-        Box::into_raw(Box::new(FFIEncodedKeys { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FFIEncodedKeys { ptr, len }))
     }
 }
 
@@ -634,11 +611,7 @@ impl FFIEncodedKeys {
 pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
     if !ptr.is_null() {
         let s: Box<FFIEncodedKeys> = unsafe { Box::from_raw(ptr) };
-
-        let slice: &mut [FFIEncodedKey] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
-        for k in slice.iter_mut() {
-            unsafe { zcashlc_string_free(k.encoding) }
-        }
+        free_ptr_from_vec_with(s.ptr, s.len, |k| unsafe { zcashlc_string_free(k.encoding) });
         drop(s);
     }
 }
@@ -920,10 +893,7 @@ pub unsafe extern "C" fn zcashlc_get_typecodes_for_unified_address_receivers(
 ///   [`zcashlc_get_typecodes_for_unified_address_receivers`].
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_free_typecodes(data: *mut u32, len: usize) {
-    if !data.is_null() {
-        let s = unsafe { Box::from_raw(slice::from_raw_parts_mut(data, len)) };
-        drop(s);
-    }
+    free_ptr_from_vec(data, len);
 }
 
 struct UnifiedAddressParser(UnifiedAddress);
@@ -2112,7 +2082,7 @@ impl FfiWalletSummary {
         summary: WalletSummary<AccountId>,
     ) -> anyhow::Result<*mut Self> {
         let (account_balances, account_balances_len) = {
-            let account_balances: Box<[FfiAccountBalance]> = summary
+            let account_balances: Vec<FfiAccountBalance> = summary
                 .account_balances()
                 .iter()
                 .map(|(account_id, balance)| {
@@ -2131,14 +2101,7 @@ impl FfiWalletSummary {
                 })
                 .collect::<Result<_, _>>()?;
 
-            let len = account_balances.len();
-            let fat_ptr: *mut [FfiAccountBalance] = Box::into_raw(account_balances);
-            // It is guaranteed to be possible to obtain a raw pointer to the start
-            // of a slice by casting the pointer-to-slice, as documented e.g. at
-            // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-            // TODO: replace with `as_mut_ptr()` when that is stable.
-            let slim_ptr: *mut FfiAccountBalance = fat_ptr as _;
-            (slim_ptr, len)
+            ptr_from_vec(account_balances)
         };
 
         let scan_progress = if let Some(progress) = summary.scan_progress() {
@@ -2220,13 +2183,7 @@ pub unsafe extern "C" fn zcashlc_get_wallet_summary(
 pub unsafe extern "C" fn zcashlc_free_wallet_summary(ptr: *mut FfiWalletSummary) {
     if !ptr.is_null() {
         let summary = unsafe { Box::from_raw(ptr) };
-        if !summary.account_balances.is_null() {
-            let slice = unsafe {
-                slice::from_raw_parts_mut(summary.account_balances, summary.account_balances_len)
-            };
-            let boxed_slice = unsafe { Box::from_raw(slice) };
-            drop(boxed_slice);
-        }
+        free_ptr_from_vec(summary.account_balances, summary.account_balances_len);
         if !summary.scan_progress.is_null() {
             let progress = unsafe { Box::from_raw(summary.scan_progress) };
             drop(progress);
@@ -2267,16 +2224,8 @@ pub struct FfiScanRanges {
 
 impl FfiScanRanges {
     pub fn ptr_from_vec(v: Vec<FfiScanRange>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[FfiScanRange]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [FfiScanRange] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut FfiScanRange = fat_ptr as _;
-        Box::into_raw(Box::new(FfiScanRanges { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FfiScanRanges { ptr, len }))
     }
 }
 
@@ -2290,9 +2239,7 @@ impl FfiScanRanges {
 pub unsafe extern "C" fn zcashlc_free_scan_ranges(ptr: *mut FfiScanRanges) {
     if !ptr.is_null() {
         let s: Box<FfiScanRanges> = unsafe { Box::from_raw(ptr) };
-        let slice: &mut [FfiScanRange] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
-        let boxed_slice = unsafe { Box::from_raw(slice) };
-        drop(boxed_slice);
+        free_ptr_from_vec(s.ptr, s.len);
         drop(s);
     }
 }
@@ -2534,16 +2481,8 @@ pub struct FFIBlocksMeta {
 
 impl FFIBlocksMeta {
     pub fn ptr_from_vec(v: Vec<FFIBlockMeta>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[FFIBlockMeta]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [FFIBlockMeta] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut FFIBlockMeta = fat_ptr as _;
-        Box::into_raw(Box::new(FFIBlocksMeta { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FFIBlocksMeta { ptr, len }))
     }
 }
 
@@ -2792,16 +2731,8 @@ pub struct FfiBoxedSlice {
 
 impl FfiBoxedSlice {
     fn ptr_from_vec(v: Vec<u8>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[u8]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [u8] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut u8 = fat_ptr as _;
-        Box::into_raw(Box::new(FfiBoxedSlice { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FfiBoxedSlice { ptr, len }))
     }
 
     fn none() -> *mut Self {
@@ -2822,11 +2753,7 @@ impl FfiBoxedSlice {
 pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
     if !ptr.is_null() {
         let s: Box<FfiBoxedSlice> = unsafe { Box::from_raw(ptr) };
-        if !s.ptr.is_null() {
-            let slice: Box<[u8]> =
-                unsafe { Box::from_raw(slice::from_raw_parts_mut(s.ptr, s.len)) };
-            drop(slice);
-        }
+        free_ptr_from_vec(s.ptr, s.len);
         drop(s);
     }
 }
@@ -3133,16 +3060,8 @@ pub struct FfiTxIds {
 
 impl FfiTxIds {
     pub fn ptr_from_vec(v: Vec<[u8; 32]>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[[u8; 32]]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [[u8; 32]] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut [u8; 32] = fat_ptr as _;
-        Box::into_raw(Box::new(FfiTxIds { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FfiTxIds { ptr, len }))
     }
 }
 
@@ -3156,9 +3075,7 @@ impl FfiTxIds {
 pub unsafe extern "C" fn zcashlc_free_txids(ptr: *mut FfiTxIds) {
     if !ptr.is_null() {
         let s: Box<FfiTxIds> = unsafe { Box::from_raw(ptr) };
-        let slice: &mut [[u8; 32]] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
-        let boxed_slice = unsafe { Box::from_raw(slice) };
-        drop(boxed_slice);
+        free_ptr_from_vec(s.ptr, s.len);
         drop(s);
     }
 }
@@ -3270,5 +3187,51 @@ fn parse_network(value: u32) -> anyhow::Result<Network> {
         0 => Ok(TestNetwork),
         1 => Ok(MainNetwork),
         _ => Err(anyhow!("Invalid network type: {}. Expected either 0 or 1 for Testnet or Mainnet, respectively.", value))
+    }
+}
+
+/// Converts the given vector into a raw pointer and length.
+///
+/// # Safety
+///
+/// The memory associated with the returned pointer must be freed with an appropriate
+/// method ([`free_ptr_from_vec`] or [`free_ptr_from_vec_with`]).
+fn ptr_from_vec<T>(v: Vec<T>) -> (*mut T, usize) {
+    // Going from Vec<_> to Box<[_]> drops the (extra) `capacity`.
+    // However, the guarantee for this was reverted in 1.77.0; we need to keep an eye on
+    // <https://github.com/rust-lang/rust/issues/125941>.
+    let boxed_slice: Box<[T]> = v.into_boxed_slice();
+    let len = boxed_slice.len();
+    let fat_ptr: *mut [T] = Box::into_raw(boxed_slice);
+    // It is guaranteed to be possible to obtain a raw pointer to the start
+    // of a slice by casting the pointer-to-slice, as documented e.g. at
+    // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
+    // TODO: replace with `as_mut_ptr()` when that is stable.
+    let slim_ptr: *mut T = fat_ptr as _;
+    (slim_ptr, len)
+}
+
+/// Frees vectors that had been converted into raw pointers.
+///
+/// # Safety
+///
+/// - `ptr` and `len` must have been returned from the same call to `ptr_from_vec`.
+fn free_ptr_from_vec<T>(ptr: *mut T, len: usize) {
+    free_ptr_from_vec_with(ptr, len, |_| ());
+}
+
+/// Frees vectors that had been converted into raw pointers, the elements of which
+/// themselves contain raw pointers that need freeing.
+///
+/// # Safety
+///
+/// - `ptr` and `len` must have been returned from the same call to `ptr_from_vec`.
+fn free_ptr_from_vec_with<T>(ptr: *mut T, len: usize, f: impl Fn(&mut T)) {
+    if !ptr.is_null() {
+        let mut s = unsafe { Box::from_raw(slice::from_raw_parts_mut(ptr, len)) };
+        for k in s.iter_mut() {
+            f(k);
+        }
+        drop(s);
     }
 }
