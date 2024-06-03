@@ -2869,40 +2869,24 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         let value = NonNegativeAmount::from_nonnegative_i64(value)
             .map_err(|_| anyhow!("Invalid amount, out of range"))?;
 
-        let to = Address::decode(&network, to)
-            .ok_or_else(|| anyhow!("PaymentAddress is for the wrong network"))?;
+        let to: ZcashAddress = to
+            .parse()
+            .map_err(|e| anyhow!("Can't parse recipient address: {}", e))?;
 
-        let memo = match to {
-            Address::Sapling(_) | Address::Unified(_) => {
-                if memo.is_null() {
-                    Ok(None)
-                } else {
-                    MemoBytes::from_bytes(unsafe { slice::from_raw_parts(memo, 512) })
-                        .map(Some)
-                        .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))
-                }
-            }
-            Address::Transparent(_) => {
-                if memo.is_null() {
-                    Ok(None)
-                } else {
-                    Err(anyhow!(
-                        "Memos are not permitted when sending to transparent recipients."
-                    ))
-                }
-            }
+        let memo = if memo.is_null() {
+            Ok(None)
+        } else {
+            MemoBytes::from_bytes(unsafe { slice::from_raw_parts(memo, 512) })
+                .map(Some)
+                .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))
         }?;
 
         let input_selector = zip317_helper(None, use_zip317_fees);
 
-        let req = TransactionRequest::new(vec![Payment {
-            recipient_address: to,
-            amount: value,
-            memo,
-            label: None,
-            message: None,
-            other_params: vec![],
-        }])
+        let req = TransactionRequest::new(vec![Payment::new(to, value, memo, None, None, vec![])
+            .ok_or_else(|| {
+                anyhow!("Memos are not permitted when sending to transparent recipients.")
+            })?])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
         let proposal = propose_transfer::<_, _, _, Infallible>(
@@ -2915,7 +2899,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
-        let encoded = Proposal::from_standard_proposal(&network, &proposal).encode_to_vec();
+        let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
         Ok(FfiBoxedSlice::ptr_from_vec(encoded))
     });
@@ -2959,7 +2943,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
 
         let input_selector = zip317_helper(None, use_zip317_fees);
 
-        let req = TransactionRequest::from_uri(&network, payment_uri_str)
+        let req = TransactionRequest::from_uri(payment_uri_str)
             .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
         let proposal = propose_transfer::<_, _, _, Infallible>(
@@ -2972,7 +2956,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
-        let encoded = Proposal::from_standard_proposal(&network, &proposal).encode_to_vec();
+        let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
         Ok(FfiBoxedSlice::ptr_from_vec(encoded))
     });
@@ -3119,7 +3103,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 
-        let encoded = Proposal::from_standard_proposal(&network, &proposal).encode_to_vec();
+        let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
         Ok(FfiBoxedSlice::ptr_from_vec(encoded))
     });
@@ -3248,7 +3232,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
         let proposal =
             Proposal::decode(unsafe { slice::from_raw_parts(proposal_ptr, proposal_len) })
                 .map_err(|e| anyhow!("Invalid proposal: {}", e))?
-                .try_into_standard_proposal(&network, &db_data)?;
+                .try_into_standard_proposal(&db_data)?;
         let usk = unsafe { decode_usk(usk_ptr, usk_len) }?;
         let spend_params = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(spend_params, spend_params_len)
