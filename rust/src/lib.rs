@@ -2712,17 +2712,20 @@ fn zip317_helper<DbT>(
     )
 }
 
-/// A struct that contains a pointer to, and length information for, a heap-allocated
-/// boxed slice.
+/// A struct that optionally contains a pointer to, and length information for, a
+/// heap-allocated boxed slice.
+///
+/// This is an FFI representation of `Option<Box<[u8]>>`.
 ///
 /// # Safety
 ///
-/// - `ptr` must be non-null and valid for reads for `len` bytes, and it must have an
-///   alignment of `1`. Its contents must be an encoded Proposal protobuf.
+/// - If `ptr` is non-null, it must be valid for reads for `len` bytes, and it must have
+///   an alignment of `1`.
 /// - The memory referenced by `ptr` must not be mutated for the lifetime of the struct
 ///   (up until [`zcashlc_free_boxed_slice`] is called with it).
 /// - The total size `len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of `pointer::offset`.
+///   - When `ptr` is null, `len` should be zero.
 #[repr(C)]
 pub struct FfiBoxedSlice {
     ptr: *mut u8,
@@ -2730,7 +2733,7 @@ pub struct FfiBoxedSlice {
 }
 
 impl FfiBoxedSlice {
-    fn ptr_from_vec(v: Vec<u8>) -> *mut Self {
+    fn some(v: Vec<u8>) -> *mut Self {
         let (ptr, len) = ptr_from_vec(v);
         Box::into_raw(Box::new(FfiBoxedSlice { ptr, len }))
     }
@@ -2773,6 +2776,8 @@ pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
 ///    512-byte array.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_propose_transfer(
     db_data: *const u8,
@@ -2828,7 +2833,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 
         let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
-        Ok(FfiBoxedSlice::ptr_from_vec(encoded))
+        Ok(FfiBoxedSlice::some(encoded))
     });
     unwrap_exc_or_null(res)
 }
@@ -2848,7 +2853,9 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 /// - `payment_uri` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `network_id` a u32. 0 for Testnet and 1 for Mainnet
 /// - `min_confirmations` number of confirmations of the funds to spend
-/// - `use_zip317_fees` `true`` to use ZIP-317 fees.
+/// - `use_zip317_fees` `true` to use ZIP-317 fees.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
     db_data: *const u8,
@@ -2885,7 +2892,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
 
         let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
-        Ok(FfiBoxedSlice::ptr_from_vec(encoded))
+        Ok(FfiBoxedSlice::some(encoded))
     });
     unwrap_exc_or_null(res)
 }
@@ -2928,6 +2935,8 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_propose_shielding(
     db_data: *const u8,
@@ -3032,7 +3041,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
 
         let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
-        Ok(FfiBoxedSlice::ptr_from_vec(encoded))
+        Ok(FfiBoxedSlice::some(encoded))
     });
     unwrap_exc_or_null(res)
 }
