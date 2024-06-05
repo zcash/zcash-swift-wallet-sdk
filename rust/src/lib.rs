@@ -178,13 +178,49 @@ fn account_id_from_ffi<P: Parameters>(
 
 /// Initializes global Rust state, such as the logging infrastructure and threadpools.
 ///
-/// When `show_trace_logs` is `true`, Rust events at the `TRACE` level will be logged.
+/// `log_level` defines how the Rust layer logs its events. These values are supported,
+/// each level logging more information in addition to the earlier levels:
+/// - `off`: The logs are completely disabled.
+/// - `error`: Logs very serious errors.
+/// - `warn`: Logs hazardous situations.
+/// - `info`: Logs useful information.
+/// - `debug`: Logs lower priority information.
+/// - `trace`: Logs very low priority, often extremely verbose, information.
+///
+/// # Safety
+///
+/// - The memory pointed to by `log_level` must contain a valid nul terminator at the end
+///   of the string.
+/// - `log_level` must be valid for reads of bytes up to and including the nul terminator.
+///   This means in particular:
+///   - The entire memory range of this `CStr` must be contained within a single allocated
+///     object!
+/// - The memory referenced by the returned `CStr` must not be mutated for the duration of
+///   the function call.
+/// - The nul terminator must be within `isize::MAX` from `log_level`.
 ///
 /// # Panics
 ///
 /// This method panics if called more than once.
 #[no_mangle]
-pub extern "C" fn zcashlc_init_on_load(show_trace_logs: bool) {
+pub extern "C" fn zcashlc_init_on_load(log_level: *const c_char) {
+    let log_filter = if log_level.is_null() {
+        eprintln!("log_level not provided, falling back on 'debug' level");
+        LevelFilter::DEBUG
+    } else {
+        unsafe { CStr::from_ptr(log_level) }
+            .to_str()
+            .unwrap_or_else(|_| {
+                eprintln!("log_level not UTF-8, falling back on 'debug' level");
+                "debug"
+            })
+            .parse()
+            .unwrap_or_else(|_| {
+                eprintln!("log_level not a valid level, falling back on 'debug' level");
+                LevelFilter::DEBUG
+            })
+    };
+
     // Set up the tracing layers for the Apple OS logging framework.
     #[cfg(target_vendor = "apple")]
     let (log_layer, signpost_layer) = os_log::layers("co.electriccoin.ios", "rust");
@@ -193,13 +229,7 @@ pub extern "C" fn zcashlc_init_on_load(show_trace_logs: bool) {
     let registry = tracing_subscriber::registry();
     #[cfg(target_vendor = "apple")]
     let registry = registry.with(log_layer).with(signpost_layer);
-    registry
-        .with(if show_trace_logs {
-            LevelFilter::TRACE
-        } else {
-            LevelFilter::DEBUG
-        })
-        .init();
+    registry.with(log_filter).init();
 
     // Log panics instead of writing them to stderr.
     log_panics::init();

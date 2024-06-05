@@ -8,6 +8,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Migrated to `zcash_client_sqlite 0.11`.
+- `zcashlc_init_on_load` now takes a log level filter as a UTF-8 C string, instead of
+  a boolean.
 
 ## 0.8.0 - 2024-04-17
 
