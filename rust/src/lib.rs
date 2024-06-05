@@ -178,13 +178,49 @@ fn account_id_from_ffi<P: Parameters>(
 
 /// Initializes global Rust state, such as the logging infrastructure and threadpools.
 ///
-/// When `show_trace_logs` is `true`, Rust events at the `TRACE` level will be logged.
+/// `log_level` defines how the Rust layer logs its events. These values are supported,
+/// each level logging more information in addition to the earlier levels:
+/// - `off`: The logs are completely disabled.
+/// - `error`: Logs very serious errors.
+/// - `warn`: Logs hazardous situations.
+/// - `info`: Logs useful information.
+/// - `debug`: Logs lower priority information.
+/// - `trace`: Logs very low priority, often extremely verbose, information.
+///
+/// # Safety
+///
+/// - The memory pointed to by `log_level` must contain a valid nul terminator at the end
+///   of the string.
+/// - `log_level` must be valid for reads of bytes up to and including the nul terminator.
+///   This means in particular:
+///   - The entire memory range of this `CStr` must be contained within a single allocated
+///     object!
+/// - The memory referenced by the returned `CStr` must not be mutated for the duration of
+///   the function call.
+/// - The nul terminator must be within `isize::MAX` from `log_level`.
 ///
 /// # Panics
 ///
 /// This method panics if called more than once.
 #[no_mangle]
-pub extern "C" fn zcashlc_init_on_load(show_trace_logs: bool) {
+pub extern "C" fn zcashlc_init_on_load(log_level: *const c_char) {
+    let log_filter = if log_level.is_null() {
+        eprintln!("log_level not provided, falling back on 'debug' level");
+        LevelFilter::DEBUG
+    } else {
+        unsafe { CStr::from_ptr(log_level) }
+            .to_str()
+            .unwrap_or_else(|_| {
+                eprintln!("log_level not UTF-8, falling back on 'debug' level");
+                "debug"
+            })
+            .parse()
+            .unwrap_or_else(|_| {
+                eprintln!("log_level not a valid level, falling back on 'debug' level");
+                LevelFilter::DEBUG
+            })
+    };
+
     // Set up the tracing layers for the Apple OS logging framework.
     #[cfg(target_vendor = "apple")]
     let (log_layer, signpost_layer) = os_log::layers("co.electriccoin.ios", "rust");
@@ -193,13 +229,7 @@ pub extern "C" fn zcashlc_init_on_load(show_trace_logs: bool) {
     let registry = tracing_subscriber::registry();
     #[cfg(target_vendor = "apple")]
     let registry = registry.with(log_layer).with(signpost_layer);
-    registry
-        .with(if show_trace_logs {
-            LevelFilter::TRACE
-        } else {
-            LevelFilter::DEBUG
-        })
-        .init();
+    registry.with(log_filter).init();
 
     // Log panics instead of writing them to stderr.
     log_panics::init();
@@ -343,16 +373,8 @@ pub struct FfiAccounts {
 
 impl FfiAccounts {
     pub fn ptr_from_vec(v: Vec<FfiAccount>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[FfiAccount]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [FfiAccount] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut FfiAccount = fat_ptr as _;
-        Box::into_raw(Box::new(FfiAccounts { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FfiAccounts { ptr, len }))
     }
 }
 
@@ -366,13 +388,7 @@ impl FfiAccounts {
 pub unsafe extern "C" fn zcashlc_free_accounts(ptr: *mut FfiAccounts) {
     if !ptr.is_null() {
         let s: Box<FfiAccounts> = unsafe { Box::from_raw(ptr) };
-
-        if !s.ptr.is_null() {
-            let slice: &mut [FfiAccount] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
-            let boxed_slice = unsafe { Box::from_raw(slice) };
-            drop(boxed_slice);
-        }
-
+        free_ptr_from_vec(s.ptr, s.len);
         drop(s);
     }
 }
@@ -440,11 +456,11 @@ pub struct FFIBinaryKey {
 
 impl FFIBinaryKey {
     fn new(account_id: zip32::AccountId, key_bytes: Vec<u8>) -> Self {
-        let mut raw_key_bytes = ManuallyDrop::new(key_bytes.into_boxed_slice());
+        let (encoding, encoding_len) = ptr_from_vec(key_bytes);
         FFIBinaryKey {
             account_id: account_id.into(),
-            encoding: raw_key_bytes.as_mut_ptr(),
-            encoding_len: raw_key_bytes.len(),
+            encoding,
+            encoding_len,
         }
     }
 }
@@ -459,9 +475,8 @@ impl FFIBinaryKey {
 pub unsafe extern "C" fn zcashlc_free_binary_key(ptr: *mut FFIBinaryKey) {
     if !ptr.is_null() {
         let key: Box<FFIBinaryKey> = unsafe { Box::from_raw(ptr) };
-        let key_slice: &mut [u8] =
-            unsafe { slice::from_raw_parts_mut(key.encoding, key.encoding_len) };
-        drop(unsafe { Box::from_raw(key_slice) });
+        free_ptr_from_vec(key.encoding, key.encoding_len);
+        drop(key);
     }
 }
 
@@ -611,16 +626,8 @@ pub struct FFIEncodedKeys {
 
 impl FFIEncodedKeys {
     pub fn ptr_from_vec(v: Vec<FFIEncodedKey>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[FFIEncodedKey]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [FFIEncodedKey] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut FFIEncodedKey = fat_ptr as _;
-        Box::into_raw(Box::new(FFIEncodedKeys { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FFIEncodedKeys { ptr, len }))
     }
 }
 
@@ -634,11 +641,7 @@ impl FFIEncodedKeys {
 pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
     if !ptr.is_null() {
         let s: Box<FFIEncodedKeys> = unsafe { Box::from_raw(ptr) };
-
-        let slice: &mut [FFIEncodedKey] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
-        for k in slice.iter_mut() {
-            unsafe { zcashlc_string_free(k.encoding) }
-        }
+        free_ptr_from_vec_with(s.ptr, s.len, |k| unsafe { zcashlc_string_free(k.encoding) });
         drop(s);
     }
 }
@@ -920,10 +923,7 @@ pub unsafe extern "C" fn zcashlc_get_typecodes_for_unified_address_receivers(
 ///   [`zcashlc_get_typecodes_for_unified_address_receivers`].
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_free_typecodes(data: *mut u32, len: usize) {
-    if !data.is_null() {
-        let s = unsafe { Box::from_raw(slice::from_raw_parts_mut(data, len)) };
-        drop(s);
-    }
+    free_ptr_from_vec(data, len);
 }
 
 struct UnifiedAddressParser(UnifiedAddress);
@@ -2112,7 +2112,7 @@ impl FfiWalletSummary {
         summary: WalletSummary<AccountId>,
     ) -> anyhow::Result<*mut Self> {
         let (account_balances, account_balances_len) = {
-            let account_balances: Box<[FfiAccountBalance]> = summary
+            let account_balances: Vec<FfiAccountBalance> = summary
                 .account_balances()
                 .iter()
                 .map(|(account_id, balance)| {
@@ -2131,14 +2131,7 @@ impl FfiWalletSummary {
                 })
                 .collect::<Result<_, _>>()?;
 
-            let len = account_balances.len();
-            let fat_ptr: *mut [FfiAccountBalance] = Box::into_raw(account_balances);
-            // It is guaranteed to be possible to obtain a raw pointer to the start
-            // of a slice by casting the pointer-to-slice, as documented e.g. at
-            // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-            // TODO: replace with `as_mut_ptr()` when that is stable.
-            let slim_ptr: *mut FfiAccountBalance = fat_ptr as _;
-            (slim_ptr, len)
+            ptr_from_vec(account_balances)
         };
 
         let scan_progress = if let Some(progress) = summary.scan_progress() {
@@ -2220,13 +2213,7 @@ pub unsafe extern "C" fn zcashlc_get_wallet_summary(
 pub unsafe extern "C" fn zcashlc_free_wallet_summary(ptr: *mut FfiWalletSummary) {
     if !ptr.is_null() {
         let summary = unsafe { Box::from_raw(ptr) };
-        if !summary.account_balances.is_null() {
-            let slice = unsafe {
-                slice::from_raw_parts_mut(summary.account_balances, summary.account_balances_len)
-            };
-            let boxed_slice = unsafe { Box::from_raw(slice) };
-            drop(boxed_slice);
-        }
+        free_ptr_from_vec(summary.account_balances, summary.account_balances_len);
         if !summary.scan_progress.is_null() {
             let progress = unsafe { Box::from_raw(summary.scan_progress) };
             drop(progress);
@@ -2267,16 +2254,8 @@ pub struct FfiScanRanges {
 
 impl FfiScanRanges {
     pub fn ptr_from_vec(v: Vec<FfiScanRange>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[FfiScanRange]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [FfiScanRange] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut FfiScanRange = fat_ptr as _;
-        Box::into_raw(Box::new(FfiScanRanges { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FfiScanRanges { ptr, len }))
     }
 }
 
@@ -2290,9 +2269,7 @@ impl FfiScanRanges {
 pub unsafe extern "C" fn zcashlc_free_scan_ranges(ptr: *mut FfiScanRanges) {
     if !ptr.is_null() {
         let s: Box<FfiScanRanges> = unsafe { Box::from_raw(ptr) };
-        let slice: &mut [FfiScanRange] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
-        let boxed_slice = unsafe { Box::from_raw(slice) };
-        drop(boxed_slice);
+        free_ptr_from_vec(s.ptr, s.len);
         drop(s);
     }
 }
@@ -2534,16 +2511,8 @@ pub struct FFIBlocksMeta {
 
 impl FFIBlocksMeta {
     pub fn ptr_from_vec(v: Vec<FFIBlockMeta>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[FFIBlockMeta]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [FFIBlockMeta] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut FFIBlockMeta = fat_ptr as _;
-        Box::into_raw(Box::new(FFIBlocksMeta { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FFIBlocksMeta { ptr, len }))
     }
 }
 
@@ -2773,17 +2742,20 @@ fn zip317_helper<DbT>(
     )
 }
 
-/// A struct that contains a pointer to, and length information for, a heap-allocated
-/// boxed slice.
+/// A struct that optionally contains a pointer to, and length information for, a
+/// heap-allocated boxed slice.
+///
+/// This is an FFI representation of `Option<Box<[u8]>>`.
 ///
 /// # Safety
 ///
-/// - `ptr` must be non-null and valid for reads for `len` bytes, and it must have an
-///   alignment of `1`. Its contents must be an encoded Proposal protobuf.
+/// - If `ptr` is non-null, it must be valid for reads for `len` bytes, and it must have
+///   an alignment of `1`.
 /// - The memory referenced by `ptr` must not be mutated for the lifetime of the struct
 ///   (up until [`zcashlc_free_boxed_slice`] is called with it).
 /// - The total size `len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of `pointer::offset`.
+///   - When `ptr` is null, `len` should be zero.
 #[repr(C)]
 pub struct FfiBoxedSlice {
     ptr: *mut u8,
@@ -2791,17 +2763,9 @@ pub struct FfiBoxedSlice {
 }
 
 impl FfiBoxedSlice {
-    fn ptr_from_vec(v: Vec<u8>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[u8]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [u8] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut u8 = fat_ptr as _;
-        Box::into_raw(Box::new(FfiBoxedSlice { ptr: slim_ptr, len }))
+    fn some(v: Vec<u8>) -> *mut Self {
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FfiBoxedSlice { ptr, len }))
     }
 
     fn none() -> *mut Self {
@@ -2822,11 +2786,7 @@ impl FfiBoxedSlice {
 pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
     if !ptr.is_null() {
         let s: Box<FfiBoxedSlice> = unsafe { Box::from_raw(ptr) };
-        if !s.ptr.is_null() {
-            let slice: Box<[u8]> =
-                unsafe { Box::from_raw(slice::from_raw_parts_mut(s.ptr, s.len)) };
-            drop(slice);
-        }
+        free_ptr_from_vec(s.ptr, s.len);
         drop(s);
     }
 }
@@ -2846,6 +2806,8 @@ pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
 ///    512-byte array.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_propose_transfer(
     db_data: *const u8,
@@ -2869,40 +2831,24 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         let value = NonNegativeAmount::from_nonnegative_i64(value)
             .map_err(|_| anyhow!("Invalid amount, out of range"))?;
 
-        let to = Address::decode(&network, to)
-            .ok_or_else(|| anyhow!("PaymentAddress is for the wrong network"))?;
+        let to: ZcashAddress = to
+            .parse()
+            .map_err(|e| anyhow!("Can't parse recipient address: {}", e))?;
 
-        let memo = match to {
-            Address::Sapling(_) | Address::Unified(_) => {
-                if memo.is_null() {
-                    Ok(None)
-                } else {
-                    MemoBytes::from_bytes(unsafe { slice::from_raw_parts(memo, 512) })
-                        .map(Some)
-                        .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))
-                }
-            }
-            Address::Transparent(_) => {
-                if memo.is_null() {
-                    Ok(None)
-                } else {
-                    Err(anyhow!(
-                        "Memos are not permitted when sending to transparent recipients."
-                    ))
-                }
-            }
+        let memo = if memo.is_null() {
+            Ok(None)
+        } else {
+            MemoBytes::from_bytes(unsafe { slice::from_raw_parts(memo, 512) })
+                .map(Some)
+                .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))
         }?;
 
         let input_selector = zip317_helper(None, use_zip317_fees);
 
-        let req = TransactionRequest::new(vec![Payment {
-            recipient_address: to,
-            amount: value,
-            memo,
-            label: None,
-            message: None,
-            other_params: vec![],
-        }])
+        let req = TransactionRequest::new(vec![Payment::new(to, value, memo, None, None, vec![])
+            .ok_or_else(|| {
+                anyhow!("Memos are not permitted when sending to transparent recipients.")
+            })?])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
         let proposal = propose_transfer::<_, _, _, Infallible>(
@@ -2915,9 +2861,9 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
-        let encoded = Proposal::from_standard_proposal(&network, &proposal).encode_to_vec();
+        let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
-        Ok(FfiBoxedSlice::ptr_from_vec(encoded))
+        Ok(FfiBoxedSlice::some(encoded))
     });
     unwrap_exc_or_null(res)
 }
@@ -2937,7 +2883,9 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 /// - `payment_uri` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `network_id` a u32. 0 for Testnet and 1 for Mainnet
 /// - `min_confirmations` number of confirmations of the funds to spend
-/// - `use_zip317_fees` `true`` to use ZIP-317 fees.
+/// - `use_zip317_fees` `true` to use ZIP-317 fees.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
     db_data: *const u8,
@@ -2959,7 +2907,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
 
         let input_selector = zip317_helper(None, use_zip317_fees);
 
-        let req = TransactionRequest::from_uri(&network, payment_uri_str)
+        let req = TransactionRequest::from_uri(payment_uri_str)
             .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
         let proposal = propose_transfer::<_, _, _, Infallible>(
@@ -2972,9 +2920,9 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
-        let encoded = Proposal::from_standard_proposal(&network, &proposal).encode_to_vec();
+        let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
-        Ok(FfiBoxedSlice::ptr_from_vec(encoded))
+        Ok(FfiBoxedSlice::some(encoded))
     });
     unwrap_exc_or_null(res)
 }
@@ -3017,6 +2965,8 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_propose_shielding(
     db_data: *const u8,
@@ -3119,9 +3069,9 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 
-        let encoded = Proposal::from_standard_proposal(&network, &proposal).encode_to_vec();
+        let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
-        Ok(FfiBoxedSlice::ptr_from_vec(encoded))
+        Ok(FfiBoxedSlice::some(encoded))
     });
     unwrap_exc_or_null(res)
 }
@@ -3149,16 +3099,8 @@ pub struct FfiTxIds {
 
 impl FfiTxIds {
     pub fn ptr_from_vec(v: Vec<[u8; 32]>) -> *mut Self {
-        // Going from Vec<_> to Box<[_]> just drops the (extra) `capacity`
-        let boxed_slice: Box<[[u8; 32]]> = v.into_boxed_slice();
-        let len = boxed_slice.len();
-        let fat_ptr: *mut [[u8; 32]] = Box::into_raw(boxed_slice);
-        // It is guaranteed to be possible to obtain a raw pointer to the start
-        // of a slice by casting the pointer-to-slice, as documented e.g. at
-        // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
-        // TODO: replace with `as_mut_ptr()` when that is stable.
-        let slim_ptr: *mut [u8; 32] = fat_ptr as _;
-        Box::into_raw(Box::new(FfiTxIds { ptr: slim_ptr, len }))
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FfiTxIds { ptr, len }))
     }
 }
 
@@ -3172,9 +3114,7 @@ impl FfiTxIds {
 pub unsafe extern "C" fn zcashlc_free_txids(ptr: *mut FfiTxIds) {
     if !ptr.is_null() {
         let s: Box<FfiTxIds> = unsafe { Box::from_raw(ptr) };
-        let slice: &mut [[u8; 32]] = unsafe { slice::from_raw_parts_mut(s.ptr, s.len) };
-        let boxed_slice = unsafe { Box::from_raw(slice) };
-        drop(boxed_slice);
+        free_ptr_from_vec(s.ptr, s.len);
         drop(s);
     }
 }
@@ -3248,7 +3188,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
         let proposal =
             Proposal::decode(unsafe { slice::from_raw_parts(proposal_ptr, proposal_len) })
                 .map_err(|e| anyhow!("Invalid proposal: {}", e))?
-                .try_into_standard_proposal(&network, &db_data)?;
+                .try_into_standard_proposal(&db_data)?;
         let usk = unsafe { decode_usk(usk_ptr, usk_len) }?;
         let spend_params = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(spend_params, spend_params_len)
@@ -3286,5 +3226,52 @@ fn parse_network(value: u32) -> anyhow::Result<Network> {
         0 => Ok(TestNetwork),
         1 => Ok(MainNetwork),
         _ => Err(anyhow!("Invalid network type: {}. Expected either 0 or 1 for Testnet or Mainnet, respectively.", value))
+    }
+}
+
+/// Converts the given vector into a raw pointer and length.
+///
+/// # Safety
+///
+/// The memory associated with the returned pointer must be freed with an appropriate
+/// method ([`free_ptr_from_vec`] or [`free_ptr_from_vec_with`]).
+fn ptr_from_vec<T>(v: Vec<T>) -> (*mut T, usize) {
+    // Going from Vec<_> to Box<[_]> drops the (extra) `capacity`, subject to memory
+    // fitting <https://doc.rust-lang.org/nightly/std/alloc/trait.Allocator.html#memory-fitting>.
+    // However, the guarantee for this was reverted in 1.77.0; we need to keep an eye on
+    // <https://github.com/rust-lang/rust/issues/125941>.
+    let boxed_slice: Box<[T]> = v.into_boxed_slice();
+    let len = boxed_slice.len();
+    let fat_ptr: *mut [T] = Box::into_raw(boxed_slice);
+    // It is guaranteed to be possible to obtain a raw pointer to the start
+    // of a slice by casting the pointer-to-slice, as documented e.g. at
+    // <https://doc.rust-lang.org/std/primitive.pointer.html#method.as_mut_ptr>.
+    // TODO: replace with `as_mut_ptr()` when that is stable.
+    let slim_ptr: *mut T = fat_ptr as _;
+    (slim_ptr, len)
+}
+
+/// Frees vectors that had been converted into raw pointers.
+///
+/// # Safety
+///
+/// - `ptr` and `len` must have been returned from the same call to `ptr_from_vec`.
+fn free_ptr_from_vec<T>(ptr: *mut T, len: usize) {
+    free_ptr_from_vec_with(ptr, len, |_| ());
+}
+
+/// Frees vectors that had been converted into raw pointers, the elements of which
+/// themselves contain raw pointers that need freeing.
+///
+/// # Safety
+///
+/// - `ptr` and `len` must have been returned from the same call to `ptr_from_vec`.
+fn free_ptr_from_vec_with<T>(ptr: *mut T, len: usize, f: impl Fn(&mut T)) {
+    if !ptr.is_null() {
+        let mut s = unsafe { Box::from_raw(slice::from_raw_parts_mut(ptr, len)) };
+        for k in s.iter_mut() {
+            f(k);
+        }
+        drop(s);
     }
 }
