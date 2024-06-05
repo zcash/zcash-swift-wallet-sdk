@@ -3236,7 +3236,8 @@ fn parse_network(value: u32) -> anyhow::Result<Network> {
 /// The memory associated with the returned pointer must be freed with an appropriate
 /// method ([`free_ptr_from_vec`] or [`free_ptr_from_vec_with`]).
 fn ptr_from_vec<T>(v: Vec<T>) -> (*mut T, usize) {
-    // Going from Vec<_> to Box<[_]> drops the (extra) `capacity`.
+    // Going from Vec<_> to Box<[_]> drops the (extra) `capacity`, subject to memory
+    // fitting <https://doc.rust-lang.org/nightly/std/alloc/trait.Allocator.html#memory-fitting>.
     // However, the guarantee for this was reverted in 1.77.0; we need to keep an eye on
     // <https://github.com/rust-lang/rust/issues/125941>.
     let boxed_slice: Box<[T]> = v.into_boxed_slice();
