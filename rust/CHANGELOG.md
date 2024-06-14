@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+- Further changes for compatibility with XCode 15.3 and above.
+
 ## 0.8.0 - 2024-04-17
 
 ### Added
