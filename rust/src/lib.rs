@@ -1040,7 +1040,7 @@ fn is_valid_sapling_address(address: &str, network: &Network) -> bool {
     match Address::decode(network, address) {
         Some(addr) => match addr {
             Address::Sapling(_) => true,
-            Address::Transparent(_) | Address::Unified(_) => false,
+            Address::Transparent(_) | Address::Unified(_) | Address::Tex(_) => false,
         },
         None => false,
     }
@@ -1191,7 +1191,7 @@ pub unsafe extern "C" fn zcashlc_is_valid_transparent_address(
 fn is_valid_transparent_address(address: &str, network: &Network) -> bool {
     match Address::decode(network, address) {
         Some(addr) => match addr {
-            Address::Sapling(_) | Address::Unified(_) => false,
+            Address::Sapling(_) | Address::Unified(_) | Address::Tex(_) => false,
             Address::Transparent(_) => true,
         },
         None => false,
@@ -1292,7 +1292,7 @@ fn is_valid_unified_address(address: &str, network: &Network) -> bool {
     match Address::decode(network, address) {
         Some(addr) => match addr {
             Address::Unified(_) => true,
-            Address::Sapling(_) | Address::Transparent(_) => false,
+            Address::Sapling(_) | Address::Transparent(_) | Address::Tex(_) => false,
         },
         None => false,
     }
@@ -1328,15 +1328,15 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
         let taddr = TransparentAddress::decode(&network, addr).unwrap();
         let amount = db_data
             .get_target_and_anchor_heights(min_confirmations)
-            .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
-            .and_then(|opt_anchor| {
-                opt_anchor
-                    .map(|(_, a)| a)
-                    .ok_or_else(|| anyhow!("height not available; scan required."))
+            .map_err(|e| anyhow!("Error while fetching target height: {}", e))
+            .and_then(|opt_target| {
+                opt_target
+                    .map(|(target, _)| target)
+                    .ok_or_else(|| anyhow!("Target height not available; scan required."))
             })
-            .and_then(|anchor| {
+            .and_then(|target| {
                 db_data
-                    .get_unspent_transparent_outputs(&taddr, anchor, &[])
+                    .get_spendable_transparent_outputs(&taddr, target, 0)
                     .map_err(|e| {
                         anyhow!("Error while fetching verified transparent balance: {}", e)
                     })
@@ -1374,20 +1374,18 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
-            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account = account_id_from_ffi(&db_data, account)?;
 
         let amount = db_data
-            .get_target_and_anchor_heights(min_confirmations)
+            .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
-            .and_then(|opt_anchor| {
-                opt_anchor
-                    .map(|(_, a)| a)
-                    .ok_or_else(|| anyhow!("height not available; scan required."))
+            .and_then(|opt_target| {
+                opt_target
+                    .map(|(target, _)| target)
+                    .ok_or_else(|| anyhow!("Target height not available; scan required."))
             })
-            .and_then(|anchor| {
+            .and_then(|target| {
                 db_data
                     .get_transparent_receivers(account)
                     .map_err(|e| {
@@ -1402,7 +1400,11 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
                             .keys()
                             .map(|taddr| {
                                 db_data
-                                    .get_unspent_transparent_outputs(taddr, anchor, &[])
+                                    .get_spendable_transparent_outputs(
+                                        taddr,
+                                        target,
+                                        min_confirmations,
+                                    )
                                     .map_err(|e| {
                                         anyhow!(
                                             "Error while fetching verified transparent balance: {}",
@@ -1450,15 +1452,15 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
         let taddr = TransparentAddress::decode(&network, addr).unwrap();
         let amount = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
-            .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
-            .and_then(|opt_anchor| {
-                opt_anchor
-                    .map(|(target, _)| target) // Include unconfirmed funds.
-                    .ok_or_else(|| anyhow!("height not available; scan required."))
+            .map_err(|e| anyhow!("Error while fetching target height: {}", e))
+            .and_then(|opt_target| {
+                opt_target
+                    .map(|(target, _)| target)
+                    .ok_or_else(|| anyhow!("Target height not available; scan required."))
             })
-            .and_then(|anchor| {
+            .and_then(|target| {
                 db_data
-                    .get_unspent_transparent_outputs(&taddr, anchor, &[])
+                    .get_spendable_transparent_outputs(&taddr, target, 0)
                     .map_err(|e| anyhow!("Error while fetching total transparent balance: {}", e))
             })?
             .iter()
@@ -3004,7 +3006,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             ) {
                 None => Err(anyhow!("Transparent receiver is for the wrong network")),
                 Some(addr) => match addr {
-                    Address::Sapling(_) | Address::Unified(_) => {
+                    Address::Sapling(_) | Address::Unified(_) | Address::Tex(_) => {
                         Err(anyhow!("Transparent receiver is not a transparent address"))
                     }
                     Address::Transparent(addr) => {
