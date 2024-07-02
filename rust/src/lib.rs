@@ -203,7 +203,7 @@ fn account_id_from_ffi<P: Parameters>(
 ///
 /// This method panics if called more than once.
 #[no_mangle]
-pub extern "C" fn zcashlc_init_on_load(log_level: *const c_char) {
+pub unsafe extern "C" fn zcashlc_init_on_load(log_level: *const c_char) {
     let log_filter = if log_level.is_null() {
         eprintln!("log_level not provided, falling back on 'debug' level");
         LevelFilter::DEBUG
@@ -569,6 +569,20 @@ pub unsafe extern "C" fn zcashlc_create_account(
 /// - `1` for `Ok(true)`.
 /// - `0` for `Ok(false)`.
 /// - `-1` for `Err(_)`.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_any_derived_account(
     db_data: *const u8,
@@ -1562,7 +1576,7 @@ pub unsafe extern "C" fn zcashlc_get_memo(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, 32) };
-        let txid = TxId::read(&txid_bytes[..])?;
+        let txid = TxId::read(txid_bytes)?;
 
         let protocol = parse_protocol(output_pool).ok_or(anyhow!(
             "Shielded protocol not recognized for code: {}",
@@ -1608,7 +1622,7 @@ pub unsafe extern "C" fn zcashlc_get_memo_as_utf8(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, 32) };
-        let txid = TxId::read(&txid_bytes[..])?;
+        let txid = TxId::read(txid_bytes)?;
 
         let memo = db_data
             .get_memo(NoteId::new(txid, ShieldedProtocol::Sapling, output_index))
@@ -3052,7 +3066,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                 Ok(account_receivers.iter().next().map(|(a, v)| (*a, *v)))
             },
             |addr| Ok(account_receivers.get(&addr).map(|value| (addr, *value)))
-        )?.filter(|(_, value)| *value >= shielding_threshold.into()) {
+        )?.filter(|(_, value)| *value >= shielding_threshold) {
             [addr]
         } else {
             // There are no transparent funds to shield; don't create a proposal.

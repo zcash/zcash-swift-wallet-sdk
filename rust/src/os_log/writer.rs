@@ -10,7 +10,7 @@ use tracing_subscriber::fmt::MakeWriter;
 
 use super::{LogType, OsLog};
 
-static BUFFER_POOL: Lazy<Pool<Vec<u8>>> = Lazy::new(|| Pool::new());
+static BUFFER_POOL: Lazy<Pool<Vec<u8>>> = Lazy::new(Pool::new);
 
 /// A [`MakeWriter`] suitable for writing to the Apple OS logging system.
 #[derive(Debug)]
