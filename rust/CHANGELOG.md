@@ -11,7 +11,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Migrated to `zcash_client_sqlite 0.11`.
 - `zcashlc_init_on_load` now takes a log level filter as a UTF-8 C string, instead of
   a boolean.
-- `zcashlc_get_address_metadata` now supports ZIP 320 (TEX) addresses.
+- The following methods now support ZIP 320 (TEX) addresses:
+  - `zcashlc_get_address_metadata`
+  - `zcashlc_propose_transfer`
 
 ### Removed
 - `zcashlc_is_valid_sapling_address`, `zcashlc_is_valid_transparent_address`,
