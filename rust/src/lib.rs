@@ -1036,6 +1036,7 @@ enum AddressType {
     P2sh,
     Sapling,
     Unified,
+    Tex,
 }
 
 struct AddressMetadata {
@@ -1099,6 +1100,16 @@ impl TryFromAddress for AddressMetadata {
             addr_type: AddressType::P2sh,
         })
     }
+
+    fn try_from_tex(
+        network: zcash_address::Network,
+        _data: [u8; 20],
+    ) -> Result<Self, ConversionError<Self::Error>> {
+        Ok(AddressMetadata {
+            network,
+            addr_type: AddressType::Tex,
+        })
+    }
 }
 
 /// Returns the network type and address kind for the given address string,
@@ -1109,6 +1120,7 @@ impl TryFromAddress for AddressMetadata {
 /// * p2sh: 1
 /// * sapling: 2
 /// * unified: 3
+/// * tex: 4
 ///
 /// # Safety
 ///
@@ -1141,6 +1153,7 @@ pub unsafe extern "C" fn zcashlc_get_address_metadata(
                 AddressType::P2sh => 1,
                 AddressType::Sapling => 2,
                 AddressType::Unified => 3,
+                AddressType::Tex => 4,
                 AddressType::Sprout => {
                     return Err(anyhow!("Sprout addresses are not supported."));
                 }
