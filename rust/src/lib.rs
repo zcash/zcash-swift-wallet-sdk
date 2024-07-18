@@ -203,7 +203,7 @@ fn account_id_from_ffi<P: Parameters>(
 ///
 /// This method panics if called more than once.
 #[no_mangle]
-pub extern "C" fn zcashlc_init_on_load(log_level: *const c_char) {
+pub unsafe extern "C" fn zcashlc_init_on_load(log_level: *const c_char) {
     let log_filter = if log_level.is_null() {
         eprintln!("log_level not provided, falling back on 'debug' level");
         LevelFilter::DEBUG
@@ -569,6 +569,20 @@ pub unsafe extern "C" fn zcashlc_create_account(
 /// - `1` for `Ok(true)`.
 /// - `0` for `Ok(false)`.
 /// - `-1` for `Err(_)`.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_any_derived_account(
     db_data: *const u8,
@@ -1040,7 +1054,7 @@ fn is_valid_sapling_address(address: &str, network: &Network) -> bool {
     match Address::decode(network, address) {
         Some(addr) => match addr {
             Address::Sapling(_) => true,
-            Address::Transparent(_) | Address::Unified(_) => false,
+            Address::Transparent(_) | Address::Unified(_) | Address::Tex(_) => false,
         },
         None => false,
     }
@@ -1191,7 +1205,7 @@ pub unsafe extern "C" fn zcashlc_is_valid_transparent_address(
 fn is_valid_transparent_address(address: &str, network: &Network) -> bool {
     match Address::decode(network, address) {
         Some(addr) => match addr {
-            Address::Sapling(_) | Address::Unified(_) => false,
+            Address::Sapling(_) | Address::Unified(_) | Address::Tex(_) => false,
             Address::Transparent(_) => true,
         },
         None => false,
@@ -1292,7 +1306,7 @@ fn is_valid_unified_address(address: &str, network: &Network) -> bool {
     match Address::decode(network, address) {
         Some(addr) => match addr {
             Address::Unified(_) => true,
-            Address::Sapling(_) | Address::Transparent(_) => false,
+            Address::Sapling(_) | Address::Transparent(_) | Address::Tex(_) => false,
         },
         None => false,
     }
@@ -1328,15 +1342,15 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
         let taddr = TransparentAddress::decode(&network, addr).unwrap();
         let amount = db_data
             .get_target_and_anchor_heights(min_confirmations)
-            .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
-            .and_then(|opt_anchor| {
-                opt_anchor
-                    .map(|(_, a)| a)
-                    .ok_or_else(|| anyhow!("height not available; scan required."))
+            .map_err(|e| anyhow!("Error while fetching target height: {}", e))
+            .and_then(|opt_target| {
+                opt_target
+                    .map(|(target, _)| target)
+                    .ok_or_else(|| anyhow!("Target height not available; scan required."))
             })
-            .and_then(|anchor| {
+            .and_then(|target| {
                 db_data
-                    .get_unspent_transparent_outputs(&taddr, anchor, &[])
+                    .get_spendable_transparent_outputs(&taddr, target, 0)
                     .map_err(|e| {
                         anyhow!("Error while fetching verified transparent balance: {}", e)
                     })
@@ -1374,20 +1388,18 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
-            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account = account_id_from_ffi(&db_data, account)?;
 
         let amount = db_data
-            .get_target_and_anchor_heights(min_confirmations)
+            .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
-            .and_then(|opt_anchor| {
-                opt_anchor
-                    .map(|(_, a)| a)
-                    .ok_or_else(|| anyhow!("height not available; scan required."))
+            .and_then(|opt_target| {
+                opt_target
+                    .map(|(target, _)| target)
+                    .ok_or_else(|| anyhow!("Target height not available; scan required."))
             })
-            .and_then(|anchor| {
+            .and_then(|target| {
                 db_data
                     .get_transparent_receivers(account)
                     .map_err(|e| {
@@ -1402,7 +1414,11 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
                             .keys()
                             .map(|taddr| {
                                 db_data
-                                    .get_unspent_transparent_outputs(taddr, anchor, &[])
+                                    .get_spendable_transparent_outputs(
+                                        taddr,
+                                        target,
+                                        min_confirmations,
+                                    )
                                     .map_err(|e| {
                                         anyhow!(
                                             "Error while fetching verified transparent balance: {}",
@@ -1450,15 +1466,15 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
         let taddr = TransparentAddress::decode(&network, addr).unwrap();
         let amount = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
-            .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))
-            .and_then(|opt_anchor| {
-                opt_anchor
-                    .map(|(target, _)| target) // Include unconfirmed funds.
-                    .ok_or_else(|| anyhow!("height not available; scan required."))
+            .map_err(|e| anyhow!("Error while fetching target height: {}", e))
+            .and_then(|opt_target| {
+                opt_target
+                    .map(|(target, _)| target)
+                    .ok_or_else(|| anyhow!("Target height not available; scan required."))
             })
-            .and_then(|anchor| {
+            .and_then(|target| {
                 db_data
-                    .get_unspent_transparent_outputs(&taddr, anchor, &[])
+                    .get_spendable_transparent_outputs(&taddr, target, 0)
                     .map_err(|e| anyhow!("Error while fetching total transparent balance: {}", e))
             })?
             .iter()
@@ -1560,7 +1576,7 @@ pub unsafe extern "C" fn zcashlc_get_memo(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, 32) };
-        let txid = TxId::read(&txid_bytes[..])?;
+        let txid = TxId::read(txid_bytes)?;
 
         let protocol = parse_protocol(output_pool).ok_or(anyhow!(
             "Shielded protocol not recognized for code: {}",
@@ -1606,7 +1622,7 @@ pub unsafe extern "C" fn zcashlc_get_memo_as_utf8(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, 32) };
-        let txid = TxId::read(&txid_bytes[..])?;
+        let txid = TxId::read(txid_bytes)?;
 
         let memo = db_data
             .get_memo(NoteId::new(txid, ShieldedProtocol::Sapling, output_index))
@@ -3004,7 +3020,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             ) {
                 None => Err(anyhow!("Transparent receiver is for the wrong network")),
                 Some(addr) => match addr {
-                    Address::Sapling(_) | Address::Unified(_) => {
+                    Address::Sapling(_) | Address::Unified(_) | Address::Tex(_) => {
                         Err(anyhow!("Transparent receiver is not a transparent address"))
                     }
                     Address::Transparent(addr) => {
@@ -3050,7 +3066,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                 Ok(account_receivers.iter().next().map(|(a, v)| (*a, *v)))
             },
             |addr| Ok(account_receivers.get(&addr).map(|value| (addr, *value)))
-        )?.filter(|(_, value)| *value >= shielding_threshold.into()) {
+        )?.filter(|(_, value)| *value >= shielding_threshold) {
             [addr]
         } else {
             // There are no transparent funds to shield; don't create a proposal.
