@@ -12,6 +12,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zcashlc_init_on_load` now takes a log level filter as a UTF-8 C string, instead of
   a boolean.
 
+### Removed
+- `zcashlc_is_valid_sapling_address`, `zcashlc_is_valid_transparent_address`,
+  `zcashlc_is_valid_unified_address` (use `zcashlc_get_address_metadata` instead).
+
 ## 0.8.1 - 2024-06-14
 
 ### Fixed
