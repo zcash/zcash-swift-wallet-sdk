@@ -7,7 +7,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Changed
-- MSRV is now 1.79.
+- MSRV is now 1.80.
 - Migrated to `zcash_client_sqlite 0.11`.
 - `zcashlc_init_on_load` now takes a log level filter as a UTF-8 C string, instead of
   a boolean.
