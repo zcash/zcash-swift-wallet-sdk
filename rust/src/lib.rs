@@ -2421,7 +2421,7 @@ pub unsafe extern "C" fn zcashlc_put_utxo(
                     .map_err(|_| anyhow!("Invalid UTXO value"))?,
                 script_pubkey,
             },
-            BlockHeight::from(height as u32),
+            Some(BlockHeight::from(height as u32)),
         )
         .ok_or_else(|| {
             anyhow!(
