@@ -1030,42 +1030,13 @@ pub unsafe extern "C" fn zcashlc_get_sapling_receiver_for_unified_address(
     unwrap_exc_or_null(res)
 }
 
-/// Returns true when the provided address decodes to a valid Sapling payment address for the
-/// specified network, false in any other case.
-///
-/// # Safety
-///
-/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `address` must not be mutated for the duration of the function call.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_sapling_address(
-    address: *const c_char,
-    network_id: u32,
-) -> bool {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        Ok(is_valid_sapling_address(addr, &network))
-    });
-    unwrap_exc_or(res, false)
-}
-
-fn is_valid_sapling_address(address: &str, network: &Network) -> bool {
-    match Address::decode(network, address) {
-        Some(addr) => match addr {
-            Address::Sapling(_) => true,
-            Address::Transparent(_) | Address::Unified(_) | Address::Tex(_) => false,
-        },
-        None => false,
-    }
-}
-
 enum AddressType {
     Sprout,
     P2pkh,
     P2sh,
     Sapling,
     Unified,
+    Tex,
 }
 
 struct AddressMetadata {
@@ -1129,6 +1100,16 @@ impl TryFromAddress for AddressMetadata {
             addr_type: AddressType::P2sh,
         })
     }
+
+    fn try_from_tex(
+        network: zcash_address::Network,
+        _data: [u8; 20],
+    ) -> Result<Self, ConversionError<Self::Error>> {
+        Ok(AddressMetadata {
+            network,
+            addr_type: AddressType::Tex,
+        })
+    }
 }
 
 /// Returns the network type and address kind for the given address string,
@@ -1139,6 +1120,7 @@ impl TryFromAddress for AddressMetadata {
 /// * p2sh: 1
 /// * sapling: 2
 /// * unified: 3
+/// * tex: 4
 ///
 /// # Safety
 ///
@@ -1171,6 +1153,7 @@ pub unsafe extern "C" fn zcashlc_get_address_metadata(
                 AddressType::P2sh => 1,
                 AddressType::Sapling => 2,
                 AddressType::Unified => 3,
+                AddressType::Tex => 4,
                 AddressType::Sprout => {
                     return Err(anyhow!("Sprout addresses are not supported."));
                 }
@@ -1180,36 +1163,6 @@ pub unsafe extern "C" fn zcashlc_get_address_metadata(
         Ok(true)
     });
     unwrap_exc_or(res, false)
-}
-
-/// Returns true when the address is a valid transparent payment address for the specified network,
-/// false in any other case.
-///
-/// # Safety
-///
-/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `address` must not be mutated for the duration of the function call.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_transparent_address(
-    address: *const c_char,
-    network_id: u32,
-) -> bool {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        Ok(is_valid_transparent_address(addr, &network))
-    });
-    unwrap_exc_or(res, false)
-}
-
-fn is_valid_transparent_address(address: &str, network: &Network) -> bool {
-    match Address::decode(network, address) {
-        Some(addr) => match addr {
-            Address::Sapling(_) | Address::Unified(_) | Address::Tex(_) => false,
-            Address::Transparent(_) => true,
-        },
-        None => false,
-    }
 }
 
 /// Returns true when the provided key decodes to a valid Sapling extended spending key for the
@@ -1279,37 +1232,6 @@ pub unsafe extern "C" fn zcashlc_is_valid_unified_full_viewing_key(
         Ok(UnifiedFullViewingKey::decode(&network, ufvkstr).is_ok())
     });
     unwrap_exc_or(res, false)
-}
-
-/// Returns true when the provided key decodes to a valid unified address for the
-/// specified network, false in any other case.
-///
-/// # Safety
-///
-/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `address` must not be mutated for the duration of the
-///   function call.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_unified_address(
-    address: *const c_char,
-    network_id: u32,
-) -> bool {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        Ok(is_valid_unified_address(addr, &network))
-    });
-    unwrap_exc_or(res, false)
-}
-
-fn is_valid_unified_address(address: &str, network: &Network) -> bool {
-    match Address::decode(network, address) {
-        Some(addr) => match addr {
-            Address::Unified(_) => true,
-            Address::Sapling(_) | Address::Transparent(_) | Address::Tex(_) => false,
-        },
-        None => false,
-    }
 }
 
 /// Returns the verified transparent balance for `address`, which ignores utxos that have been
