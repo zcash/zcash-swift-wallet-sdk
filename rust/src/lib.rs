@@ -11,9 +11,11 @@ use std::mem::ManuallyDrop;
 use std::num::NonZeroU32;
 use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::ptr;
 use std::slice;
+use tor_rtcompat::BlockOn;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 
@@ -37,6 +39,7 @@ use zcash_client_backend::{
     fees::{standard::SingleOutputChangeStrategy, DustOutputPolicy},
     keys::{DecodingError, Era, UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey},
     proto::{proposal::Proposal, service::TreeState},
+    tor::http::cryptex,
     wallet::{NoteId, OvkPolicy, WalletTransparentOutput},
     zip321::{Payment, TransactionRequest},
     ShieldedProtocol,
@@ -63,9 +66,12 @@ use zcash_primitives::{
 use zcash_proofs::prover::LocalTxProver;
 
 mod ffi;
+mod tor;
 
 #[cfg(target_vendor = "apple")]
 mod os_log;
+
+use crate::tor::TorRuntime;
 
 fn unwrap_exc_or<T>(exc: Result<T, ()>, def: T) -> T {
     match exc {
@@ -3153,6 +3159,115 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
         ))
     });
     unwrap_exc_or_null(res)
+}
+
+//
+// Tor support
+//
+
+/// Creates a Tor runtime.
+///
+/// # Safety
+///
+/// - `tor_dir` must be non-null and valid for reads for `tor_dir_len` bytes, and it must
+///   have an alignment of `1`. Its contents must be a string representing a valid system
+///   path in the operating system's preferred representation.
+/// - The memory referenced by `tor_dir` must not be mutated for the duration of the
+///   function call.
+/// - The total size `tor_dir_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_tor_runtime`] to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_create_tor_runtime(
+    tor_dir: *const u8,
+    tor_dir_len: usize,
+) -> *mut TorRuntime {
+    let res = catch_panic(|| {
+        let tor_dir = Path::new(OsStr::from_bytes(unsafe {
+            slice::from_raw_parts(tor_dir, tor_dir_len)
+        }));
+
+        let tor = crate::tor::TorRuntime::create(tor_dir)?;
+
+        Ok(Box::into_raw(Box::new(tor)))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Frees a Tor runtime.
+///
+/// # Safety
+///
+/// - If `ptr` is non-null, it must point to a struct having the layout of [`TorRuntime`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_tor_runtime(ptr: *mut TorRuntime) {
+    if !ptr.is_null() {
+        let s: Box<TorRuntime> = unsafe { Box::from_raw(ptr) };
+        drop(s);
+    }
+}
+
+/// A decimal suitable for converting into an `NSDecimalNumber`.
+#[repr(C)]
+pub struct Decimal {
+    mantissa: u64,
+    exponent: i16,
+    is_sign_negative: bool,
+}
+
+impl Decimal {
+    fn from_rust(d: rust_decimal::Decimal) -> Option<Self> {
+        d.mantissa().abs().try_into().ok().map(|mantissa| Self {
+            mantissa,
+            exponent: -(d.scale() as i16),
+            is_sign_negative: d.is_sign_negative(),
+        })
+    }
+}
+
+/// Fetches the current ZEC-USD exchange rate over Tor.
+///
+/// The result is a `u128` containing a packed decimal:
+/// - Bits 16-23: Contains "e", a value between 0-28 that indicates the scale.
+/// - Bit 31: the sign of the Decimal value, 0 meaning positive and 1 meaning negative.
+/// - Bits 32-127: Contains the representation of the Decimal value as a 96-bit integer.
+///
+/// Returns a negative value on error.
+///
+/// # Safety
+///
+/// - `tor_runtime` must be non-null and point to a struct having the layout of
+///   [`TorRuntime`].
+/// - `tor_runtime` must not be passed to two FFI calls at the same time.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd(tor_runtime: *mut TorRuntime) -> Decimal {
+    // SAFETY: We ensure unwind safety by:
+    // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `TorRuntime` whenever we get an error that is due to a panic.
+    let tor_runtime = AssertUnwindSafe(tor_runtime);
+
+    let res = catch_panic(|| {
+        let tor_runtime =
+            unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
+
+        let exchanges = cryptex::Exchanges::unauthenticated_known_with_gemini_trusted();
+
+        let rate = tor_runtime.runtime().block_on(async {
+            tor_runtime
+                .client()
+                .get_latest_zec_to_usd_rate(&exchanges)
+                .await
+        })?;
+
+        Decimal::from_rust(rate)
+            .ok_or_else(|| anyhow!("Exchange rate has too many significant figures: {}", rate))
+    });
+    unwrap_exc_or(
+        res,
+        Decimal::from_rust(rust_decimal::Decimal::NEGATIVE_ONE).expect("fits"),
+    )
 }
 
 //
