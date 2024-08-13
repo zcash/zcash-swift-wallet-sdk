@@ -436,7 +436,7 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
                             seed_fingerprint: seed_fingerprint.to_bytes(),
                             account_index: account_index.into(),
                         }),
-                        AccountSource::Imported => Err(anyhow!(
+                        AccountSource::Imported { .. } => Err(anyhow!(
                             "Wallet DB contains imported accounts, which are unsuppported"
                         )),
                     }
@@ -557,7 +557,7 @@ pub unsafe extern "C" fn zcashlc_create_account(
         let account = db_data.get_account(account_id)?.expect("just created");
         let account_index = match account.source() {
             AccountSource::Derived { account_index, .. } => account_index,
-            AccountSource::Imported => unreachable!("just created"),
+            AccountSource::Imported { .. } => unreachable!("just created"),
         };
 
         let encoded = usk.to_bytes(Era::Orchard);
@@ -1760,7 +1760,7 @@ pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
             .map(|r| {
                 let root_hash_bytes =
                     unsafe { slice::from_raw_parts(r.root_hash_ptr, r.root_hash_ptr_len) };
-                let root_hash = sapling::Node::read(root_hash_bytes)?;
+                let root_hash = HashSer::read(root_hash_bytes)?;
 
                 Ok(CommitmentTreeRoot::from_parts(
                     BlockHeight::from_u32(r.completing_block_height),
@@ -1812,7 +1812,7 @@ pub unsafe extern "C" fn zcashlc_put_orchard_subtree_roots(
             .map(|r| {
                 let root_hash_bytes =
                     unsafe { slice::from_raw_parts(r.root_hash_ptr, r.root_hash_ptr_len) };
-                let root_hash = orchard::tree::MerkleHashOrchard::read(root_hash_bytes)?;
+                let root_hash = HashSer::read(root_hash_bytes)?;
 
                 Ok(CommitmentTreeRoot::from_parts(
                     BlockHeight::from_u32(r.completing_block_height),
@@ -2066,7 +2066,7 @@ impl FfiWalletSummary {
                         .source()
                     {
                         AccountSource::Derived { account_index, .. } => account_index,
-                        AccountSource::Imported => {
+                        AccountSource::Imported { .. } => {
                             unreachable!("Imported accounts are unimplemented")
                         }
                     };
@@ -2646,7 +2646,7 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
     db_data_len: usize,
     tx: *const u8,
     tx_len: usize,
-    _mined_height: u32,
+    mined_height: i64,
     network_id: u32,
 ) -> i32 {
     let res = catch_panic(|| {
@@ -2662,7 +2662,19 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
         //   from their encoding.
         let tx = Transaction::read(tx_bytes, BranchId::Sapling)?;
 
-        match decrypt_and_store_transaction(&network, &mut db_data, &tx) {
+        //
+        let mined_height = if mined_height > 0 {
+            let h = u32::try_from(mined_height)
+                .map_err(|e| anyhow!("Block height outside valid range: {}", e))?;
+            Some(h.into())
+        } else {
+            // We do not provide a mined height to `decrypt_and_store_transaction` for either
+            // transactions in the mempool or for transactions that have been mined on a fork
+            // but not in the main chain.
+            None
+        };
+
+        match decrypt_and_store_transaction(&network, &mut db_data, &tx, mined_height) {
             Ok(()) => Ok(1),
             Err(e) => Err(anyhow!("Error while decrypting transaction: {}", e)),
         }
