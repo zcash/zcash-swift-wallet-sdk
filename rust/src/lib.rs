@@ -18,6 +18,7 @@ use std::slice;
 use tor_rtcompat::BlockOn;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
+use zcash_client_backend::data_api::TransactionStatus;
 
 use zcash_address::{
     unified::{self, Container, Encoding},
@@ -3171,6 +3172,69 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
         ))
     });
     unwrap_exc_or_null(res)
+}
+
+/// Metadata about the status of a transaction obtained by inspecting the chain state.
+#[repr(C, u8)]
+pub enum FfiTransactionStatus {
+    /// The requested transaction ID was not recognized by the node.
+    TxidNotRecognized,
+    /// The requested transaction ID corresponds to a transaction that is recognized by the node,
+    /// but is in the mempool or is otherwise not mined in the main chain (but may have been mined
+    /// on a fork that was reorged away).
+    NotInMainChain,
+    /// The requested transaction ID corresponds to a transaction that has been included in the
+    /// block at the provided height.
+    Mined(u32),
+}
+
+/// Sets the transaction status to the provided value.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must
+///   have an alignment of `1`. Its contents must be a string representing a valid system
+///   path in the operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the
+///   function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `txid_bytes` must be non-null and valid for reads for `db_data_len` bytes, and it must have
+///   an alignment of `1`.
+/// - The memory referenced by `txid_bytes_len` must not be mutated for the duration of the
+///   function call.
+/// - The total size `txid_bytes_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_set_transaction_status(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    txid_bytes: *const u8,
+    txid_bytes_len: usize,
+    status: FfiTransactionStatus,
+) {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, txid_bytes_len) };
+        let mut txid = [0u8; 32];
+        txid.copy_from_slice(txid_bytes);
+        let txid = TxId::from_bytes(txid);
+
+        let status = match status {
+            FfiTransactionStatus::TxidNotRecognized => TransactionStatus::TxidNotRecognized,
+            FfiTransactionStatus::NotInMainChain => TransactionStatus::NotInMainChain,
+            FfiTransactionStatus::Mined(h) => TransactionStatus::Mined(BlockHeight::from(h)),
+        };
+
+        db_data
+            .set_transaction_status(txid, status)
+            .map_err(|e| anyhow!("Error setting transaction status for txid {}: {}", txid, e))
+    });
+
+    unwrap_exc_or(res, ())
 }
 
 //
