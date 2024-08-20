@@ -18,6 +18,7 @@ use std::slice;
 use tor_rtcompat::BlockOn;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
+use zcash_client_backend::data_api::TransactionStatus;
 
 use zcash_address::{
     unified::{self, Container, Encoding},
@@ -33,7 +34,8 @@ use zcash_client_backend::{
             input_selection::GreedyInputSelector, propose_shielding, propose_transfer,
         },
         Account, AccountBalance, AccountBirthday, AccountSource, Balance, InputSource,
-        SeedRelevance, WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite,
+        SeedRelevance, TransactionDataRequest, WalletCommitmentTrees, WalletRead, WalletSummary,
+        WalletWrite,
     },
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
     fees::{standard::SingleOutputChangeStrategy, DustOutputPolicy},
@@ -436,7 +438,7 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
                             seed_fingerprint: seed_fingerprint.to_bytes(),
                             account_index: account_index.into(),
                         }),
-                        AccountSource::Imported => Err(anyhow!(
+                        AccountSource::Imported { .. } => Err(anyhow!(
                             "Wallet DB contains imported accounts, which are unsuppported"
                         )),
                     }
@@ -557,7 +559,7 @@ pub unsafe extern "C" fn zcashlc_create_account(
         let account = db_data.get_account(account_id)?.expect("just created");
         let account_index = match account.source() {
             AccountSource::Derived { account_index, .. } => account_index,
-            AccountSource::Imported => unreachable!("just created"),
+            AccountSource::Imported { .. } => unreachable!("just created"),
         };
 
         let encoded = usk.to_bytes(Era::Orchard);
@@ -1760,7 +1762,7 @@ pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
             .map(|r| {
                 let root_hash_bytes =
                     unsafe { slice::from_raw_parts(r.root_hash_ptr, r.root_hash_ptr_len) };
-                let root_hash = sapling::Node::read(root_hash_bytes)?;
+                let root_hash = HashSer::read(root_hash_bytes)?;
 
                 Ok(CommitmentTreeRoot::from_parts(
                     BlockHeight::from_u32(r.completing_block_height),
@@ -1812,7 +1814,7 @@ pub unsafe extern "C" fn zcashlc_put_orchard_subtree_roots(
             .map(|r| {
                 let root_hash_bytes =
                     unsafe { slice::from_raw_parts(r.root_hash_ptr, r.root_hash_ptr_len) };
-                let root_hash = orchard::tree::MerkleHashOrchard::read(root_hash_bytes)?;
+                let root_hash = HashSer::read(root_hash_bytes)?;
 
                 Ok(CommitmentTreeRoot::from_parts(
                     BlockHeight::from_u32(r.completing_block_height),
@@ -2066,7 +2068,7 @@ impl FfiWalletSummary {
                         .source()
                     {
                         AccountSource::Derived { account_index, .. } => account_index,
-                        AccountSource::Imported => {
+                        AccountSource::Imported { .. } => {
                             unreachable!("Imported accounts are unimplemented")
                         }
                     };
@@ -2646,7 +2648,7 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
     db_data_len: usize,
     tx: *const u8,
     tx_len: usize,
-    _mined_height: u32,
+    mined_height: i64,
     network_id: u32,
 ) -> i32 {
     let res = catch_panic(|| {
@@ -2662,7 +2664,24 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
         //   from their encoding.
         let tx = Transaction::read(tx_bytes, BranchId::Sapling)?;
 
-        match decrypt_and_store_transaction(&network, &mut db_data, &tx) {
+        // Following the conventions of the `zcashd` `getrawtransaction` RPC method,
+        // negative values (specifically -1) indicate that the transaction may have been 
+        // mined, but in a fork of the chain rather than the main chain, whereas a value 
+        // of zero indicates that the transaction is in the mempool. We do not distinguish
+        // between these in `librustzcash`, and so both cases are mapped to `None`,
+        // indicating that the mined height of the transaction is simply unknown.
+        let mined_height = if mined_height > 0 {
+            let h = u32::try_from(mined_height)
+                .map_err(|e| anyhow!("Block height outside valid range: {}", e))?;
+            Some(h.into())
+        } else {
+            // We do not provide a mined height to `decrypt_and_store_transaction` for either
+            // transactions in the mempool or for transactions that have been mined on a fork
+            // but not in the main chain.
+            None
+        };
+
+        match decrypt_and_store_transaction(&network, &mut db_data, &tx, mined_height) {
             Ok(()) => Ok(1),
             Err(e) => Err(anyhow!("Error while decrypting transaction: {}", e)),
         }
@@ -3156,6 +3175,217 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
 
         Ok(FfiTxIds::ptr_from_vec(
             txids.into_iter().map(|txid| *txid.as_ref()).collect(),
+        ))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Metadata about the status of a transaction obtained by inspecting the chain state.
+#[repr(C, u8)]
+pub enum FfiTransactionStatus {
+    /// The requested transaction ID was not recognized by the node.
+    TxidNotRecognized,
+    /// The requested transaction ID corresponds to a transaction that is recognized by the node,
+    /// but is in the mempool or is otherwise not mined in the main chain (but may have been mined
+    /// on a fork that was reorged away).
+    NotInMainChain,
+    /// The requested transaction ID corresponds to a transaction that has been included in the
+    /// block at the provided height.
+    Mined(u32),
+}
+
+/// Sets the transaction status to the provided value.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must
+///   have an alignment of `1`. Its contents must be a string representing a valid system
+///   path in the operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the
+///   function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `txid_bytes` must be non-null and valid for reads for `db_data_len` bytes, and it must have
+///   an alignment of `1`.
+/// - The memory referenced by `txid_bytes_len` must not be mutated for the duration of the
+///   function call.
+/// - The total size `txid_bytes_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_set_transaction_status(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    txid_bytes: *const u8,
+    txid_bytes_len: usize,
+    status: FfiTransactionStatus,
+) {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, txid_bytes_len) };
+        let txid = TxId::read(&txid_bytes[..])?;
+
+        let status = match status {
+            FfiTransactionStatus::TxidNotRecognized => TransactionStatus::TxidNotRecognized,
+            FfiTransactionStatus::NotInMainChain => TransactionStatus::NotInMainChain,
+            FfiTransactionStatus::Mined(h) => TransactionStatus::Mined(BlockHeight::from(h)),
+        };
+
+        db_data
+            .set_transaction_status(txid, status)
+            .map_err(|e| anyhow!("Error setting transaction status for txid {}: {}", txid, e))
+    });
+
+    unwrap_exc_or(res, ())
+}
+
+/// A request for transaction data enhancement, spentness check, or discovery
+/// of spends from a given transparent address within a specific block range.
+#[repr(C, u8)]
+pub enum FfiTransactionDataRequest {
+    /// Information about the chain's view of a transaction is requested.
+    ///
+    /// The caller evaluating this request on behalf of the wallet backend should respond to this
+    /// request by determining the status of the specified transaction with respect to the main
+    /// chain; if using `lightwalletd` for access to chain data, this may be obtained by
+    /// interpreting the results of the [`GetTransaction`] RPC method. It should then call
+    /// [`WalletWrite::set_transaction_status`] to provide the resulting transaction status
+    /// information to the wallet backend.
+    ///
+    /// [`GetTransaction`]: crate::proto::service::compact_tx_streamer_client::CompactTxStreamerClient::get_transaction
+    GetStatus([u8; 32]),
+    /// Transaction enhancement (download of complete raw transaction data) is requested.
+    ///
+    /// The caller evaluating this request on behalf of the wallet backend should respond to this
+    /// request by providing complete data for the specified transaction to
+    /// [`wallet::decrypt_and_store_transaction`]; if using `lightwalletd` for access to chain
+    /// state, this may be obtained via the [`GetTransaction`] RPC method. If no data is available
+    /// for the specified transaction, this should be reported to the backend using
+    /// [`WalletWrite::set_transaction_status`]. A [`TransactionDataRequest::Enhancement`] request
+    /// subsumes any previously existing [`TransactionDataRequest::GetStatus`] request.
+    ///
+    /// [`GetTransaction`]: crate::proto::service::compact_tx_streamer_client::CompactTxStreamerClient::get_transaction
+    Enhancement([u8; 32]),
+    /// Information about transactions that receive or spend funds belonging to the specified
+    /// transparent address is requested.
+    ///
+    /// Fully transparent transactions, and transactions that do not contain either shielded inputs
+    /// or shielded outputs belonging to the wallet, may not be discovered by the process of chain
+    /// scanning; as a consequence, the wallet must actively query to find transactions that spend
+    /// such funds. Ideally we'd be able to query by [`OutPoint`] but this is not currently
+    /// functionality that is supported by the light wallet server.
+    ///
+    /// The caller evaluating this request on behalf of the wallet backend should respond to this
+    /// request by detecting transactions involving the specified address within the provided block
+    /// range; if using `lightwalletd` for access to chain data, this may be performed using the
+    /// [`GetTaddressTxids`] RPC method. It should then call [`wallet::decrypt_and_store_transaction`]
+    /// for each transaction so detected.
+    ///
+    /// [`GetTaddressTxids`]: crate::proto::service::compact_tx_streamer_client::CompactTxStreamerClient::get_taddress_txids
+    SpendsFromAddress {
+        address: *mut c_char,
+        block_range_start: u32,
+        /// An optional end height; no end height is represented as `-1`
+        block_range_end: i64,
+    },
+}
+
+/// A struct that contains a pointer to, and length information for, a heap-allocated
+/// slice of [`FfiTransactionDataRequest`] values.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FfiTransactionDataRequest>()`
+///   many bytes, and it must be properly aligned. This means in particular:
+///   - The entire memory range pointed to by `ptr` must be contained within a single allocated
+///     object. Slices can never span across multiple allocated objects.
+///   - `ptr` must be non-null and aligned even for zero-length slices.
+///   - `ptr` must point to `len` consecutive properly initialized values of type
+///     [`FfiTransactionDataRequest`].
+/// - The total size `len * mem::size_of::<FfiTransactionDataRequest>()` of the slice pointed to
+///   by `ptr` must be no larger than isize::MAX. See the safety documentation of pointer::offset.
+/// - See the safety documentation of [`FfiTransactionDataRequest`]
+#[repr(C)]
+pub struct FfiTransactionDataRequests {
+    ptr: *mut FfiTransactionDataRequest,
+    len: usize, // number of elems
+}
+
+impl FfiTransactionDataRequests {
+    pub fn ptr_from_vec(v: Vec<FfiTransactionDataRequest>) -> *mut Self {
+        let (ptr, len) = ptr_from_vec(v);
+        Box::into_raw(Box::new(FfiTransactionDataRequests { ptr, len }))
+    }
+}
+
+/// Frees an array of FfiTransactionDataRequest values as allocated by `zcashlc_transaction_data_requests`.
+///
+/// # Safety
+///
+/// - `ptr` if `ptr` is non-null it must point to a struct having the layout of [`FfiTransactionDataRequests`].
+///   See the safety documentation of [`FfiTransactionDataRequests`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_transaction_data_requests(
+    ptr: *mut FfiTransactionDataRequests,
+) {
+    if !ptr.is_null() {
+        let s: Box<FfiTransactionDataRequests> = unsafe { Box::from_raw(ptr) };
+        free_ptr_from_vec_with(s.ptr, s.len, |req| match req {
+            FfiTransactionDataRequest::SpendsFromAddress { address, .. } => unsafe {
+                zcashlc_string_free(*address)
+            },
+            _ => (),
+        });
+        drop(s);
+    }
+}
+
+/// Returns a list of transaction data requests that the network client should satisfy.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_transaction_data_requests`] to free the memory associated with the
+///   returned pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_transaction_data_requests(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+) -> *mut FfiTransactionDataRequests {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        Ok(FfiTransactionDataRequests::ptr_from_vec(
+            db_data
+                .transaction_data_requests()?
+                .into_iter()
+                .map(|req| match req {
+                    TransactionDataRequest::GetStatus(txid) => {
+                        FfiTransactionDataRequest::GetStatus(txid.into())
+                    }
+                    TransactionDataRequest::Enhancement(txid) => {
+                        FfiTransactionDataRequest::Enhancement(txid.into())
+                    }
+                    TransactionDataRequest::SpendsFromAddress {
+                        address,
+                        block_range_start,
+                        block_range_end,
+                    } => FfiTransactionDataRequest::SpendsFromAddress {
+                        address: CString::new(address.encode(&network)).unwrap().into_raw(),
+                        block_range_start: block_range_start.into(),
+                        block_range_end: block_range_end.map_or(-1, |h| u32::from(h).into()),
+                    },
+                })
+                .collect(),
         ))
     });
     unwrap_exc_or_null(res)
