@@ -2664,7 +2664,12 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
         //   from their encoding.
         let tx = Transaction::read(tx_bytes, BranchId::Sapling)?;
 
-        //
+        // Following the conventions of the `zcashd` `getrawtransaction` RPC method,
+        // negative values (specifically -1) indicate that the transaction may have been 
+        // mined, but in a fork of the chain rather than the main chain, whereas a value 
+        // of zero indicates that the transaction is in the mempool. We do not distinguish
+        // between these in `librustzcash`, and so both cases are mapped to `None`,
+        // indicating that the mined height of the transaction is simply unknown.
         let mined_height = if mined_height > 0 {
             let h = u32::try_from(mined_height)
                 .map_err(|e| anyhow!("Block height outside valid range: {}", e))?;
@@ -3220,9 +3225,7 @@ pub unsafe extern "C" fn zcashlc_set_transaction_status(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, txid_bytes_len) };
-        let mut txid = [0u8; 32];
-        txid.copy_from_slice(txid_bytes);
-        let txid = TxId::from_bytes(txid);
+        let txid = TxId::read(&txid_bytes[..])?;
 
         let status = match status {
             FfiTransactionStatus::TxidNotRecognized => TransactionStatus::TxidNotRecognized,
@@ -3321,7 +3324,7 @@ impl FfiTransactionDataRequests {
 ///
 /// # Safety
 ///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiTransactionDataRequests`].
+/// - `ptr` if `ptr` is non-null it must point to a struct having the layout of [`FfiTransactionDataRequests`].
 ///   See the safety documentation of [`FfiTransactionDataRequests`].
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_free_transaction_data_requests(
