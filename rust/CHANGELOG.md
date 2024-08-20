@@ -19,6 +19,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The following methods now support ZIP 320 (TEX) addresses:
   - `zcashlc_get_address_metadata`
   - `zcashlc_propose_transfer`
+- `zcashlc_decrypt_and_store_transaction` now takes its `mined_height` argument
+  as `int64_t`. This allows callers to pass the value of `mined_height` as
+  returned by the zcashd `getrawtransaction` RPC method.
 
 ### Removed
 - `zcashlc_is_valid_sapling_address`, `zcashlc_is_valid_transparent_address`,
