@@ -3458,10 +3458,8 @@ impl Decimal {
 
 /// Fetches the current ZEC-USD exchange rate over Tor.
 ///
-/// The result is a `u128` containing a packed decimal:
-/// - Bits 16-23: Contains "e", a value between 0-28 that indicates the scale.
-/// - Bit 31: the sign of the Decimal value, 0 meaning positive and 1 meaning negative.
-/// - Bits 32-127: Contains the representation of the Decimal value as a 96-bit integer.
+/// The result is a [`Decimal`] struct containing the fields necessary to construct an
+/// [`NSDecimalNumber`](https://developer.apple.com/documentation/foundation/nsdecimalnumber/1416003-init).
 ///
 /// Returns a negative value on error.
 ///
