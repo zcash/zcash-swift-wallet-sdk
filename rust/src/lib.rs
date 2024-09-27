@@ -19,6 +19,7 @@ use tor_rtcompat::BlockOn;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 use zcash_client_backend::data_api::TransactionStatus;
+use zcash_client_sqlite::error::SqliteClientError;
 
 use zcash_address::{
     unified::{self, Container, Encoding},
@@ -1606,61 +1607,17 @@ pub unsafe extern "C" fn zcashlc_seed_fingerprint(
     unwrap_exc_or(res, false)
 }
 
-/// Returns the most recent block height to which it is possible to reset the state
-/// of the data database.
+/// Rewinds the data database to at most the given height.
 ///
-/// # Safety
+/// If the requested height is greater than or equal to the height of the last scanned block, this
+/// function does nothing.
 ///
-/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a string representing a valid system path in the
-///   operating system's preferred representation.
-/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
-/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_get_nearest_rewind_height(
-    db_data: *const u8,
-    db_data_len: usize,
-    height: i32,
-    network_id: u32,
-) -> i32 {
-    #[allow(deprecated)]
-    let res = catch_panic(|| {
-        if height < 100 {
-            Ok(height)
-        } else {
-            let network = parse_network(network_id)?;
-            let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-            let height = BlockHeight::try_from(height)?;
-
-            match db_data.get_min_unspent_height() {
-                Ok(Some(best_height)) => {
-                    let first_unspent_note_height = u32::from(best_height);
-                    let rewind_height = u32::from(height);
-                    Ok(std::cmp::min(
-                        first_unspent_note_height as i32,
-                        rewind_height as i32,
-                    ))
-                }
-                Ok(None) => {
-                    let rewind_height = u32::from(height);
-                    Ok(rewind_height as i32)
-                }
-                Err(e) => Err(anyhow!(
-                    "Error while getting nearest rewind height for {}: {}",
-                    height,
-                    e
-                )),
-            }
-        }
-    });
-    unwrap_exc_or(res, -1)
-}
-
-/// Rewinds the data database to the given height.
+/// This procedure returns the height to which the database was actually rewound, or `-1` if no
+/// rewind was performed.
 ///
-/// If the requested height is greater than or equal to the height of the last scanned
-/// block, this function does nothing.
+/// If the requested rewind could not be performed, but a rewind to a different (greater) height
+/// would be valid, the `safe_rewind_ret` output parameter will be set to that value on completion;
+/// otherwise, it will remain unmodified.
 ///
 /// # Safety
 ///
@@ -1674,20 +1631,36 @@ pub unsafe extern "C" fn zcashlc_get_nearest_rewind_height(
 pub unsafe extern "C" fn zcashlc_rewind_to_height(
     db_data: *const u8,
     db_data_len: usize,
-    height: i32,
+    height: u32,
     network_id: u32,
-) -> bool {
+    safe_rewind_ret: *mut u32,
+) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let height = BlockHeight::try_from(height)?;
-        db_data
-            .truncate_to_height(height)
-            .map(|_| true)
-            .map_err(|e| anyhow!("Error while rewinding data DB to height {}: {}", height, e))
+        let height = BlockHeight::from(height);
+        let result_height = db_data.truncate_to_height(height);
+
+        result_height.map_or_else(
+            |err| match err {
+                SqliteClientError::RequestedRewindInvalid {
+                    safe_rewind_height: Some(h),
+                    ..
+                } => {
+                    unsafe { *safe_rewind_ret = h.into() };
+                    Ok(-1)
+                }
+                other => Err(anyhow!(
+                    "Error while rewinding data DB to height {}: {}",
+                    height,
+                    other
+                )),
+            },
+            |h| Ok(u32::from(h).into()),
+        )
     });
-    unwrap_exc_or(res, false)
+    unwrap_exc_or(res, -1)
 }
 
 /// A struct that contains a subtree root.
@@ -2665,8 +2638,8 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
         let tx = Transaction::read(tx_bytes, BranchId::Sapling)?;
 
         // Following the conventions of the `zcashd` `getrawtransaction` RPC method,
-        // negative values (specifically -1) indicate that the transaction may have been 
-        // mined, but in a fork of the chain rather than the main chain, whereas a value 
+        // negative values (specifically -1) indicate that the transaction may have been
+        // mined, but in a fork of the chain rather than the main chain, whereas a value
         // of zero indicates that the transaction is in the mempool. We do not distinguish
         // between these in `librustzcash`, and so both cases are mapped to `None`,
         // indicating that the mined height of the transaction is simply unknown.

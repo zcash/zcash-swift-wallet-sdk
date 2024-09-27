@@ -6,6 +6,25 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- `zcashlc_rewind_to_height` now returns an `i64` value instead of a boolean. The
+  value `-1` indicates failure; any other height indicates the height to which the
+  data store was actually truncated. Also, this procedure now takes an additional
+  `safe_rewind_ret` parameter that, on failure to rewind, will be set to the
+  minimum height for which the rewind would succeed or will remain unmodified if
+  no such height can be determined.
+
+### Removed
+- `zcashlc_get_nearest_rewind_height` has been removed. The return value of 
+  `zcashlc_rewind_to_height`, or in the case of rewind failure the value of its
+  `safe_rewind_ret` return parameter should be used instead.
+
+### Fixed
+- This release fixes a potential source of corruption in wallet note commitment
+  trees related to incorrect handling of chain reorgs. It includes a database
+  migration that will repair the corrupted database state of any wallet
+  affected by this corner case.
+
 ## 0.9.1 - 2024-08-21
 
 ### Fixed
