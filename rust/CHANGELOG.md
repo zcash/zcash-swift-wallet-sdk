@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.10.0 - 2024-10-04
+
 ### Changed
 - `zcashlc_rewind_to_height` now returns an `i64` value instead of a boolean. The
   value `-1` indicates failure; any other height indicates the height to which the
@@ -15,7 +17,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no such height can be determined.
 
 ### Removed
-- `zcashlc_get_nearest_rewind_height` has been removed. The return value of 
+- `zcashlc_get_nearest_rewind_height` has been removed. The return value of
   `zcashlc_rewind_to_height`, or in the case of rewind failure the value of its
   `safe_rewind_ret` return parameter should be used instead.
 
@@ -28,7 +30,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.9.1 - 2024-08-21
 
 ### Fixed
-- A database migration misconfiguration that could results in problems with wallet 
+- A database migration misconfiguration that could results in problems with wallet
   initialization was fixed.
 
 ## 0.9.0 - 2024-08-20
