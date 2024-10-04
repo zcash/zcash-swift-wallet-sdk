@@ -2057,11 +2057,18 @@ impl FfiWalletSummary {
             ptr_from_vec(account_balances)
         };
 
-        let scan_progress = if let Some(progress) = summary.scan_progress() {
-            Box::into_raw(Box::new(FfiScanProgress {
-                numerator: *progress.numerator(),
-                denominator: *progress.denominator(),
-            }))
+        let scan_progress = if let Some(scan_progress) = summary.scan_progress() {
+            if let Some(recovery_progress) = summary.recovery_progress() {
+                Box::into_raw(Box::new(FfiScanProgress {
+                    numerator: *scan_progress.numerator() + *recovery_progress.numerator(),
+                    denominator: *scan_progress.denominator() + *recovery_progress.denominator(),
+                }))
+            } else {
+                Box::into_raw(Box::new(FfiScanProgress {
+                    numerator: *scan_progress.numerator(),
+                    denominator: *scan_progress.denominator(),
+                }))
+            }
         } else {
             ptr::null_mut()
         };
