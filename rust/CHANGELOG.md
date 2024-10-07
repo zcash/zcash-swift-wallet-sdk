@@ -13,7 +13,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value `-1` indicates failure; any other height indicates the height to which the
   data store was actually truncated. Also, this procedure now takes an additional
   `safe_rewind_ret` parameter that, on failure to rewind, will be set to the
-  minimum height for which the rewind would succeed or will remain unmodified if
+  minimum height for which the rewind would succeed, or to -1 if
   no such height can be determined.
 
 ### Removed

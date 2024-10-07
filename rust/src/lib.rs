@@ -1621,7 +1621,7 @@ pub unsafe extern "C" fn zcashlc_seed_fingerprint(
 ///
 /// # Safety
 ///
-/// - `safe_rewind_ret` must be non-null, aligned, and valid for writing a `uint32_t`.
+/// - `safe_rewind_ret` must be non-null, aligned, and valid for writing an `int64_t`.
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be a string representing a valid system path in the
 ///   operating system's preferred representation.
