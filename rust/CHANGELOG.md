@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.10.1 - 2024-10-10
+
+### Changed
+- Updated to `zcash_client_sqlite` version `0.12.1`
+
+### Fixed
+- This release fixes an error in scan progress computation that could, under
+  certain circumstances, result in scan progress values greater than 100% being
+  reported.
+
 ## 0.10.0 - 2024-10-04
 
 ### Changed

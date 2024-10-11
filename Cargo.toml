@@ -1,6 +1,6 @@
 [package]
 name = "libzcashlc"
-version = "0.8.1"
+version = "0.10.1"
 authors = [
     "Jack Grigg <jack@electriccoin.co>",
     "Francisco Gindre",
@@ -18,7 +18,7 @@ orchard = "0.10"
 sapling = { package = "sapling-crypto", version = "0.3", default-features = false }
 zcash_address = { version = "0.6" }
 zcash_client_backend = { version = "0.14", features = ["orchard", "tor", "transparent-inputs", "unstable"] }
-zcash_client_sqlite = { version = "0.12", features = ["orchard", "transparent-inputs", "unstable"] }
+zcash_client_sqlite = { version = "0.12.1", features = ["orchard", "transparent-inputs", "unstable"] }
 zcash_primitives = "0.19"
 zcash_proofs = "0.19"
 
