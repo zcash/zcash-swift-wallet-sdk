@@ -6,6 +6,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.10.2 - 2024-10-22
+
+### Changed
+- Updated to `zcash_client_sqlite` version `0.12.2`
+
+### Fixed
+- This release fixes an error in wallet rewind that could cause a crash in the
+  wallet backend in certain circumstances.
+
+### Changed
+- Updated to `zcash_client_sqlite` version `0.12.1`
+
 ## 0.10.1 - 2024-10-10
 
 ### Changed
