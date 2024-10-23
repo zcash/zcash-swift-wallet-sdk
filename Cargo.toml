@@ -21,6 +21,7 @@ zcash_client_backend = { version = "0.14", features = ["orchard", "tor", "transp
 zcash_client_sqlite = { version = "0.12.1", features = ["orchard", "transparent-inputs", "unstable"] }
 zcash_primitives = "0.19"
 zcash_proofs = "0.19"
+zip32 = "0.1.2"
 
 # Infrastructure
 prost = "0.13"

@@ -8,6 +8,7 @@ use std::mem::ManuallyDrop;
 use std::os::raw::c_char;
 use std::slice;
 use zcash_primitives::consensus::NetworkConstants;
+use zip32::{arbitrary, ChildIndex};
 
 use zcash_address::{
     unified::{self, Container, Encoding},
@@ -22,7 +23,7 @@ use zcash_primitives::legacy::TransparentAddress;
 
 use crate::{
     account_id_from_i32, decode_usk, free_ptr_from_vec, parse_network, unwrap_exc_or,
-    unwrap_exc_or_null, FFIBinaryKey,
+    unwrap_exc_or_null, FFIBinaryKey, FfiBoxedSlice,
 };
 
 enum AddressType {
@@ -440,6 +441,99 @@ pub unsafe extern "C" fn zcashlc_get_sapling_receiver_for_unified_address(
                 "Unified Address doesn't contain a Sapling receiver"
             ))
         }
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Derives and returns a ZIP 32 Arbitrary Key from the given seed at the "wallet level", i.e.
+/// directly from the seed with no ZIP 32 path applied.
+///
+/// The resulting key will be the same across all networks (Zcash mainnet, Zcash testnet, OtherCoin
+/// mainnet, and so on). You can think of it as a context-specific seed fingerprint that can be used
+/// as (static) key material.
+///
+/// `context_string` is a globally-unique non-empty sequence of at most 252 bytes that identifies
+/// the desired context.
+///
+/// # Safety
+///
+/// - `context_string` must be non-null and valid for reads for `context_string_len` bytes, and it
+///   must have an alignment of `1`.
+/// - The memory referenced by `context_string` must not be mutated for the duration of the function
+///   call.
+/// - The total size `context_string_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
+/// - Call `zcashlc_free_boxed_slice` to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_derive_arbitrary_wallet_key(
+    context_string: *const u8,
+    context_string_len: usize,
+    seed: *const u8,
+    seed_len: usize,
+) -> *mut FfiBoxedSlice {
+    let res = catch_panic(|| {
+        let context_string = unsafe { slice::from_raw_parts(context_string, context_string_len) };
+        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
+
+        let key = arbitrary::SecretKey::from_path(context_string, seed, &[]);
+
+        Ok(FfiBoxedSlice::some(key.data().to_vec()))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Derives and returns a ZIP 32 Arbitrary Key from the given seed at the account level.
+///
+/// `context_string` is a globally-unique non-empty sequence of at most 252 bytes that identifies
+/// the desired context.
+///
+/// # Safety
+///
+/// - `context_string` must be non-null and valid for reads for `context_string_len` bytes, and it
+///   must have an alignment of `1`.
+/// - The memory referenced by `context_string` must not be mutated for the duration of the function
+///   call.
+/// - The total size `context_string_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of pointer::offset.
+/// - Call `zcashlc_free_boxed_slice` to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_derive_arbitrary_account_key(
+    context_string: *const u8,
+    context_string_len: usize,
+    seed: *const u8,
+    seed_len: usize,
+    account: i32,
+    network_id: u32,
+) -> *mut FfiBoxedSlice {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let context_string = unsafe { slice::from_raw_parts(context_string, context_string_len) };
+        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
+        let account = account_id_from_i32(account)?;
+
+        let key = arbitrary::SecretKey::from_path(
+            context_string,
+            seed,
+            &[
+                ChildIndex::hardened(32),
+                ChildIndex::hardened(network.coin_type()),
+                ChildIndex::hardened(account.into()),
+            ],
+        );
+
+        Ok(FfiBoxedSlice::some(key.data().to_vec()))
     });
     unwrap_exc_or_null(res)
 }
