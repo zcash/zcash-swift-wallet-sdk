@@ -654,7 +654,7 @@ impl FFIEncodedKeys {
     }
 }
 
-/// Frees an array of FFIEncodedKeys values as allocated by `zcashlc_derive_unified_viewing_keys_from_seed`
+/// Frees an array of `FFIEncodedKeys` values as allocated by `zcashlc_list_transparent_receivers`.
 ///
 /// # Safety
 ///
@@ -2189,7 +2189,7 @@ impl FfiScanRanges {
     }
 }
 
-/// Frees an array of FfiScanRanges values as allocated by `zcashlc_derive_unified_viewing_keys_from_seed`
+/// Frees an array of `FfiScanRanges` values as allocated by `zcashlc_suggest_scan_ranges`.
 ///
 /// # Safety
 ///
