@@ -173,8 +173,8 @@ pub unsafe extern "C" fn zcashlc_get_address_metadata(
 ///
 /// # Safety
 ///
-/// - `ua` must be non-null and must point to a null-terminated UTF-8 string containing an
-///   encoded Unified Address.
+/// - `ua` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `ua` must not be mutated for the duration of the function call.
 /// - Call [`zcashlc_free_typecodes`] to free the memory associated with the returned
 ///   pointer when done using it.
 #[no_mangle]
@@ -297,11 +297,10 @@ pub unsafe extern "C" fn zcashlc_is_valid_unified_full_viewing_key(
 ///
 /// # Safety
 ///
-/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
-///   alignment of `1`.
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes.
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
-///   of pointer::offset.
+///   of `pointer::offset`.
 /// - Call `zcashlc_free_binary_key` to free the memory associated with the returned pointer when
 ///   you are finished using it.
 #[no_mangle]
@@ -336,7 +335,7 @@ pub unsafe extern "C" fn zcashlc_derive_spending_key(
 /// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes.
 /// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
 /// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
-///   of pointer::offset.
+///   of `pointer::offset`.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when you are done using it.
 #[no_mangle]
@@ -374,6 +373,7 @@ impl zcash_address::TryFromRawAddress for UnifiedAddressParser {
 /// # Safety
 ///
 /// - `ua` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `ua` must not be mutated for the duration of the function call.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
@@ -415,6 +415,7 @@ pub unsafe extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
 /// # Safety
 ///
 /// - `ua` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `ua` must not be mutated for the duration of the function call.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
@@ -457,17 +458,15 @@ pub unsafe extern "C" fn zcashlc_get_sapling_receiver_for_unified_address(
 ///
 /// # Safety
 ///
-/// - `context_string` must be non-null and valid for reads for `context_string_len` bytes, and it
-///   must have an alignment of `1`.
+/// - `context_string` must be non-null and valid for reads for `context_string_len` bytes.
 /// - The memory referenced by `context_string` must not be mutated for the duration of the function
 ///   call.
 /// - The total size `context_string_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
-///   alignment of `1`.
+///   documentation of `pointer::offset`.
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes.
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
-///   of pointer::offset.
+///   of `pointer::offset`.
 /// - Call `zcashlc_free_boxed_slice` to free the memory associated with the returned
 ///   pointer when done using it.
 #[no_mangle]
@@ -495,17 +494,15 @@ pub unsafe extern "C" fn zcashlc_derive_arbitrary_wallet_key(
 ///
 /// # Safety
 ///
-/// - `context_string` must be non-null and valid for reads for `context_string_len` bytes, and it
-///   must have an alignment of `1`.
+/// - `context_string` must be non-null and valid for reads for `context_string_len` bytes.
 /// - The memory referenced by `context_string` must not be mutated for the duration of the function
 ///   call.
 /// - The total size `context_string_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
-///   alignment of `1`.
+///   documentation of `pointer::offset`.
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes`.
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
-///   of pointer::offset.
+///   of `pointer::offset`.
 /// - Call `zcashlc_free_boxed_slice` to free the memory associated with the returned
 ///   pointer when done using it.
 #[no_mangle]
