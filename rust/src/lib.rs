@@ -7,17 +7,19 @@ use secrecy::Secret;
 use std::convert::{Infallible, TryFrom, TryInto};
 use std::error::Error;
 use std::ffi::{CStr, CString, OsStr};
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::ptr;
 use std::slice;
-use tor_rtcompat::BlockOn;
+use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 use zcash_client_backend::data_api::TransactionStatus;
+use zcash_client_backend::fees::zip317::MultiOutputChangeStrategy;
+use zcash_client_backend::fees::{SplitPolicy, StandardFeeRule};
 use zcash_client_sqlite::error::SqliteClientError;
 
 use zcash_address::ZcashAddress;
@@ -35,7 +37,7 @@ use zcash_client_backend::{
         WalletWrite,
     },
     encoding::AddressCodec,
-    fees::{standard::SingleOutputChangeStrategy, DustOutputPolicy},
+    fees::DustOutputPolicy,
     keys::{DecodingError, Era, UnifiedAddressRequest, UnifiedSpendingKey},
     proto::{proposal::Proposal, service::TreeState},
     tor::http::cryptex,
@@ -48,21 +50,24 @@ use zcash_client_sqlite::{
     wallet::init::{init_wallet_db, WalletMigrationError},
     AccountId, FsBlockDb, WalletDb,
 };
-use zcash_primitives::consensus::Network::{MainNetwork, TestNetwork};
 use zcash_primitives::{
     block::BlockHash,
-    consensus::{BlockHeight, BranchId, Network, Parameters},
+    consensus::{
+        BlockHeight, BranchId, Network,
+        Network::{MainNetwork, TestNetwork},
+        Parameters,
+    },
     legacy::{self, TransparentAddress},
     memo::{Memo, MemoBytes},
     merkle_tree::HashSer,
     transaction::{
-        components::{amount::NonNegativeAmount, Amount, OutPoint, TxOut},
-        fees::StandardFeeRule,
+        components::{OutPoint, TxOut},
         Transaction, TxId,
     },
     zip32::{self, fingerprint::SeedFingerprint},
 };
 use zcash_proofs::prover::LocalTxProver;
+use zcash_protocol::value::{ZatBalance, Zatoshis};
 
 mod derivation;
 mod ffi;
@@ -866,10 +871,10 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
             })?
             .iter()
             .map(|utxo| utxo.txout().value)
-            .sum::<Option<NonNegativeAmount>>()
+            .sum::<Option<Zatoshis>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
-        Ok(Amount::from(amount).into())
+        Ok(ZatBalance::from(amount).into())
     });
     unwrap_exc_or(res, -1)
 }
@@ -941,10 +946,10 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
             .iter()
             .flatten()
             .map(|utxo| utxo.txout().value)
-            .sum::<Option<NonNegativeAmount>>()
+            .sum::<Option<Zatoshis>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
-        Ok(Amount::from(amount).into())
+        Ok(ZatBalance::from(amount).into())
     });
     unwrap_exc_or(res, -1)
 }
@@ -988,10 +993,10 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
             })?
             .iter()
             .map(|utxo| utxo.txout().value)
-            .sum::<Option<NonNegativeAmount>>()
+            .sum::<Option<Zatoshis>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
-        Ok(Amount::from(amount).into())
+        Ok(ZatBalance::from(amount).into())
     });
     unwrap_exc_or(res, -1)
 }
@@ -1040,7 +1045,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
                     })
             })?
             .values()
-            .sum::<Option<NonNegativeAmount>>()
+            .sum::<Option<Zatoshis>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
         Ok(amount.into_u64() as i64)
@@ -1520,9 +1525,11 @@ pub struct FfiBalance {
 impl FfiBalance {
     fn new(balance: &Balance) -> Self {
         Self {
-            spendable_value: Amount::from(balance.spendable_value()).into(),
-            change_pending_confirmation: Amount::from(balance.change_pending_confirmation()).into(),
-            value_pending_spendability: Amount::from(balance.value_pending_spendability()).into(),
+            spendable_value: ZatBalance::from(balance.spendable_value()).into(),
+            change_pending_confirmation: ZatBalance::from(balance.change_pending_confirmation())
+                .into(),
+            value_pending_spendability: ZatBalance::from(balance.value_pending_spendability())
+                .into(),
         }
     }
 }
@@ -1556,7 +1563,7 @@ impl FfiAccountBalance {
             account_id: u32::from(*account_id),
             sapling_balance: FfiBalance::new(balance.sapling_balance()),
             orchard_balance: FfiBalance::new(balance.orchard_balance()),
-            unshielded: Amount::from(balance.unshielded()).into(),
+            unshielded: ZatBalance::from(balance.unshielded()).into(),
         }
     }
 }
@@ -1635,20 +1642,17 @@ impl FfiWalletSummary {
             ptr_from_vec(account_balances)
         };
 
-        let scan_progress = if let Some(scan_progress) = summary.scan_progress() {
-            if let Some(recovery_progress) = summary.recovery_progress() {
-                Box::into_raw(Box::new(FfiScanProgress {
-                    numerator: *scan_progress.numerator() + *recovery_progress.numerator(),
-                    denominator: *scan_progress.denominator() + *recovery_progress.denominator(),
-                }))
-            } else {
-                Box::into_raw(Box::new(FfiScanProgress {
-                    numerator: *scan_progress.numerator(),
-                    denominator: *scan_progress.denominator(),
-                }))
-            }
+        let scan_progress = if let Some(recovery_progress) = summary.progress().recovery() {
+            Box::into_raw(Box::new(FfiScanProgress {
+                numerator: *summary.progress().scan().numerator() + *recovery_progress.numerator(),
+                denominator: *summary.progress().scan().denominator()
+                    + *recovery_progress.denominator(),
+            }))
         } else {
-            ptr::null_mut()
+            Box::into_raw(Box::new(FfiScanProgress {
+                numerator: *summary.progress().scan().numerator(),
+                denominator: *summary.progress().scan().denominator(),
+            }))
         };
 
         Ok(Box::into_raw(Box::new(Self {
@@ -1987,7 +1991,7 @@ pub unsafe extern "C" fn zcashlc_put_utxo(
         let output = WalletTransparentOutput::from_parts(
             OutPoint::new(txid, index as u32),
             TxOut {
-                value: NonNegativeAmount::from_nonnegative_i64(value)
+                value: Zatoshis::from_nonnegative_i64(value)
                     .map_err(|_| anyhow!("Invalid UTXO value"))?,
                 script_pubkey,
             },
@@ -2253,17 +2257,22 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
 
 fn zip317_helper<DbT>(
     change_memo: Option<MemoBytes>,
-    use_zip317_fees: bool,
-) -> GreedyInputSelector<DbT, SingleOutputChangeStrategy> {
-    let fee_rule = if use_zip317_fees {
-        StandardFeeRule::Zip317
-    } else {
-        #[allow(deprecated)]
-        StandardFeeRule::PreZip313
-    };
-    GreedyInputSelector::new(
-        SingleOutputChangeStrategy::new(fee_rule, change_memo, ShieldedProtocol::Orchard),
-        DustOutputPolicy::default(),
+) -> (
+    MultiOutputChangeStrategy<StandardFeeRule, DbT>,
+    GreedyInputSelector<DbT>,
+) {
+    (
+        MultiOutputChangeStrategy::new(
+            StandardFeeRule::Zip317,
+            change_memo,
+            ShieldedProtocol::Orchard,
+            DustOutputPolicy::default(),
+            SplitPolicy::with_min_output_value(
+                NonZeroUsize::new(4).unwrap(),
+                Zatoshis::const_from_u64(10000000),
+            ),
+        ),
+        GreedyInputSelector::new(),
     )
 }
 
@@ -2343,7 +2352,6 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
     memo: *const u8,
     network_id: u32,
     min_confirmations: u32,
-    use_zip317_fees: bool,
 ) -> *mut FfiBoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2353,7 +2361,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 
         let account = account_id_from_ffi(&db_data, account)?;
         let to = unsafe { CStr::from_ptr(to) }.to_str()?;
-        let value = NonNegativeAmount::from_nonnegative_i64(value)
+        let value = Zatoshis::from_nonnegative_i64(value)
             .map_err(|_| anyhow!("Invalid amount, out of range"))?;
 
         let to: ZcashAddress = to
@@ -2368,7 +2376,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
                 .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))
         }?;
 
-        let input_selector = zip317_helper(None, use_zip317_fees);
+        let (change_strategy, input_selector) = zip317_helper(None);
 
         let req = TransactionRequest::new(vec![Payment::new(to, value, memo, None, None, vec![])
             .ok_or_else(|| {
@@ -2376,11 +2384,12 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
             })?])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        let proposal = propose_transfer::<_, _, _, Infallible>(
+        let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
             account,
             &input_selector,
+            &change_strategy,
             req,
             min_confirmations,
         )
@@ -2419,7 +2428,6 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
     payment_uri: *const c_char,
     network_id: u32,
     min_confirmations: u32,
-    use_zip317_fees: bool,
 ) -> *mut FfiBoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2430,16 +2438,17 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
         let account = account_id_from_ffi(&db_data, account)?;
         let payment_uri_str = unsafe { CStr::from_ptr(payment_uri) }.to_str()?;
 
-        let input_selector = zip317_helper(None, use_zip317_fees);
+        let (change_strategy, input_selector) = zip317_helper(None);
 
         let req = TransactionRequest::from_uri(payment_uri_str)
             .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        let proposal = propose_transfer::<_, _, _, Infallible>(
+        let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
             account,
             &input_selector,
+            &change_strategy,
             req,
             min_confirmations,
         )
@@ -2502,7 +2511,6 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
     transparent_receiver: *const c_char,
     network_id: u32,
     min_confirmations: u32,
-    use_zip317_fees: bool,
 ) -> *mut FfiBoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2517,7 +2525,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                 .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?
         };
 
-        let shielding_threshold = NonNegativeAmount::from_u64(shielding_threshold)
+        let shielding_threshold = Zatoshis::from_u64(shielding_threshold)
             .map_err(|_| anyhow!("Invalid amount, out of range"))?;
 
         let transparent_receiver = if transparent_receiver.is_null() {
@@ -2582,14 +2590,16 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             return Ok(FfiBoxedSlice::none());
         };
 
-        let input_selector = zip317_helper(Some(memo_bytes), use_zip317_fees);
+        let (change_strategy, input_selector) = zip317_helper(Some(memo_bytes));
 
-        let proposal = propose_shielding::<_, _, _, Infallible>(
+        let proposal = propose_shielding::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
             &input_selector,
+            &change_strategy,
             shielding_threshold,
             &from_addrs,
+            account,
             min_confirmations,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
@@ -2724,7 +2734,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
 
         let prover = LocalTxProver::new(spend_params, output_params);
 
-        let txids = create_proposed_transactions::<_, _, Infallible, _, _>(
+        let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
             &mut db_data,
             &network,
             &prover,
