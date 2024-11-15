@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.11.0 - 2024-11-15
+
 ### Added
 - `zcashlc_derive_arbitrary_wallet_key`
 - `zcashlc_derive_arbitrary_account_key`
