@@ -2269,7 +2269,7 @@ fn zip317_helper<DbT>(
             DustOutputPolicy::default(),
             SplitPolicy::with_min_output_value(
                 NonZeroUsize::new(4).unwrap(),
-                Zatoshis::const_from_u64(10000000),
+                Zatoshis::const_from_u64(1000_0000),
             ),
         ),
         GreedyInputSelector::new(),
