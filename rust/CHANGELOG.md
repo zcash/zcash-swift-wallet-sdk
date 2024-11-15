@@ -6,6 +6,25 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.11.0 - 2024-11-15
+
+### Added
+- `zcashlc_derive_arbitrary_wallet_key`
+- `zcashlc_derive_arbitrary_account_key`
+
+### Changed
+- Updated `librustzcash` dependencies:
+  - `zcash_primitives 0.20`
+  - `zcash_proofs 0.20`
+  - `zcash_keys 0.5`
+  - `zcash_client_backend 0.15`
+  - `zcash_client_sqlite 0.13`
+- Updated to `rusqlite` version `0.32`
+- Updated to `tor-rtcompat` version `0.23`
+- `zcashlc_propose_transfer`, `zcashlc_propose_transfer_from_uri` and
+  `zcashlc_propose_shielding` no longer accpt a `use_zip317_fees` parameter;
+  ZIP 317 standard fees are now always used and are not configurable.
+
 ## 0.10.2 - 2024-10-22
 
 ### Changed

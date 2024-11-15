@@ -7,26 +7,24 @@ use secrecy::Secret;
 use std::convert::{Infallible, TryFrom, TryInto};
 use std::error::Error;
 use std::ffi::{CStr, CString, OsStr};
-use std::mem::ManuallyDrop;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::ptr;
 use std::slice;
-use tor_rtcompat::BlockOn;
+use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 use zcash_client_backend::data_api::TransactionStatus;
+use zcash_client_backend::fees::zip317::MultiOutputChangeStrategy;
+use zcash_client_backend::fees::{SplitPolicy, StandardFeeRule};
 use zcash_client_sqlite::error::SqliteClientError;
 
-use zcash_address::{
-    unified::{self, Container, Encoding},
-    ConversionError, ToAddress, TryFromAddress, ZcashAddress,
-};
+use zcash_address::ZcashAddress;
 use zcash_client_backend::{
-    address::{Address, UnifiedAddress},
+    address::Address,
     data_api::{
         chain::{scan_cached_blocks, CommitmentTreeRoot, ScanSummary},
         scanning::ScanPriority,
@@ -38,9 +36,9 @@ use zcash_client_backend::{
         SeedRelevance, TransactionDataRequest, WalletCommitmentTrees, WalletRead, WalletSummary,
         WalletWrite,
     },
-    encoding::{decode_extended_full_viewing_key, decode_extended_spending_key, AddressCodec},
-    fees::{standard::SingleOutputChangeStrategy, DustOutputPolicy},
-    keys::{DecodingError, Era, UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey},
+    encoding::AddressCodec,
+    fees::DustOutputPolicy,
+    keys::{DecodingError, Era, UnifiedAddressRequest, UnifiedSpendingKey},
     proto::{proposal::Proposal, service::TreeState},
     tor::http::cryptex,
     wallet::{NoteId, OvkPolicy, WalletTransparentOutput},
@@ -52,22 +50,26 @@ use zcash_client_sqlite::{
     wallet::init::{init_wallet_db, WalletMigrationError},
     AccountId, FsBlockDb, WalletDb,
 };
-use zcash_primitives::consensus::Network::{MainNetwork, TestNetwork};
 use zcash_primitives::{
     block::BlockHash,
-    consensus::{BlockHeight, BranchId, Network, NetworkConstants, Parameters},
+    consensus::{
+        BlockHeight, BranchId, Network,
+        Network::{MainNetwork, TestNetwork},
+        Parameters,
+    },
     legacy::{self, TransparentAddress},
     memo::{Memo, MemoBytes},
     merkle_tree::HashSer,
     transaction::{
-        components::{amount::NonNegativeAmount, Amount, OutPoint, TxOut},
-        fees::StandardFeeRule,
+        components::{OutPoint, TxOut},
         Transaction, TxId,
     },
     zip32::{self, fingerprint::SeedFingerprint},
 };
 use zcash_proofs::prover::LocalTxProver;
+use zcash_protocol::value::{ZatBalance, Zatoshis};
 
+mod derivation;
 mod ffi;
 mod tor;
 
@@ -654,7 +656,7 @@ impl FFIEncodedKeys {
     }
 }
 
-/// Frees an array of FFIEncodedKeys values as allocated by `zcashlc_derive_unified_viewing_keys_from_seed`
+/// Frees an array of `FFIEncodedKeys` values as allocated by `zcashlc_list_transparent_receivers`.
 ///
 /// # Safety
 ///
@@ -667,42 +669,6 @@ pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
         free_ptr_from_vec_with(s.ptr, s.len, |k| unsafe { zcashlc_string_free(k.encoding) });
         drop(s);
     }
-}
-
-/// Derives and returns a unified spending key from the given seed for the given account ID.
-///
-/// Returns the binary encoding of the spending key. The caller should manage the memory of (and
-/// store, if necessary) the returned spending key in a secure fashion.
-///
-/// # Safety
-///
-/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
-///   alignment of `1`.
-/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
-/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
-///   of pointer::offset.
-/// - Call `zcashlc_free_binary_key` to free the memory associated with the returned pointer when
-///   you are finished using it.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_spending_key(
-    seed: *const u8,
-    seed_len: usize,
-    account: i32,
-    network_id: u32,
-) -> *mut FFIBinaryKey {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
-        let account = account_id_from_i32(account)?;
-
-        UnifiedSpendingKey::from_seed(&network, seed, account)
-            .map_err(|e| anyhow!("error generating unified spending key from seed: {:?}", e))
-            .map(move |usk| {
-                let encoded = usk.to_bytes(Era::Orchard);
-                Box::into_raw(Box::new(FFIBinaryKey::new(account, encoded)))
-            })
-    });
-    unwrap_exc_or_null(res)
 }
 
 /// A private utility function to reduce duplication across functions that take an USK
@@ -732,35 +698,6 @@ unsafe fn decode_usk(usk_ptr: *const u8, usk_len: usize) -> anyhow::Result<Unifi
             e
         ),
     })
-}
-
-/// Obtains the unified full viewing key for the given binary-encoded unified spending key
-/// and returns the resulting encoded UFVK string. `usk_ptr` should point to an array of `usk_len`
-/// bytes containing a unified spending key encoded as returned from the `zcashlc_create_account`
-/// or `zcashlc_derive_spending_key` functions.
-///
-/// # Safety
-///
-/// - `usk_ptr` must be non-null and must point to an array of `usk_len` bytes.
-/// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
-/// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
-///   of pointer::offset.
-/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
-///   when you are done using it.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_spending_key_to_full_viewing_key(
-    usk_ptr: *const u8,
-    usk_len: usize,
-    network_id: u32,
-) -> *mut c_char {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        unsafe { decode_usk(usk_ptr, usk_len) }.map(|usk| {
-            let ufvk = usk.to_unified_full_viewing_key();
-            CString::new(ufvk.encode(&network)).unwrap().into_raw()
-        })
-    });
-    unwrap_exc_or_null(res)
 }
 
 /// Returns the most-recently-generated unified payment address for the specified account.
@@ -889,360 +826,6 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
     unwrap_exc_or_null(res)
 }
 
-/// Extracts the typecodes of the receivers within the given Unified Address.
-///
-/// Returns a pointer to a slice of typecodes. `len_ret` is set to the length of the
-/// slice.
-///
-/// See the following sections of ZIP 316 for details on how to interpret typecodes:
-/// - [List of known typecodes](https://zips.z.cash/zip-0316#encoding-of-unified-addresses)
-/// - [Adding new types](https://zips.z.cash/zip-0316#adding-new-types)
-/// - [Metadata Items](https://zips.z.cash/zip-0316#metadata-items)
-///
-/// # Safety
-///
-/// - `ua` must be non-null and must point to a null-terminated UTF-8 string containing an
-///   encoded Unified Address.
-/// - Call [`zcashlc_free_typecodes`] to free the memory associated with the returned
-///   pointer when done using it.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_get_typecodes_for_unified_address_receivers(
-    ua: *const c_char,
-    len_ret: *mut usize,
-) -> *mut u32 {
-    let res = catch_panic(|| {
-        let ua_str = unsafe { CStr::from_ptr(ua).to_str()? };
-
-        let (_, ua) = unified::Address::decode(ua_str)
-            .map_err(|e| anyhow!("Invalid Unified Address: {}", e))?;
-
-        let typecodes = ua
-            .items()
-            .into_iter()
-            .map(|receiver| match receiver {
-                unified::Receiver::P2pkh(_) => unified::Typecode::P2pkh,
-                unified::Receiver::P2sh(_) => unified::Typecode::P2sh,
-                unified::Receiver::Sapling(_) => unified::Typecode::Sapling,
-                unified::Receiver::Orchard(_) => unified::Typecode::Orchard,
-                unified::Receiver::Unknown { typecode, .. } => unified::Typecode::Unknown(typecode),
-            })
-            .map(u32::from)
-            .collect::<Vec<_>>();
-
-        let mut typecodes = ManuallyDrop::new(typecodes.into_boxed_slice());
-        let (ptr, len) = (typecodes.as_mut_ptr(), typecodes.len());
-
-        unsafe { *len_ret = len };
-        Ok(ptr)
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// Frees a list of typecodes previously obtained from the FFI.
-///
-/// # Safety
-///
-/// - `data` and `len` must have been obtained from
-///   [`zcashlc_get_typecodes_for_unified_address_receivers`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_typecodes(data: *mut u32, len: usize) {
-    free_ptr_from_vec(data, len);
-}
-
-struct UnifiedAddressParser(UnifiedAddress);
-
-impl zcash_address::TryFromRawAddress for UnifiedAddressParser {
-    type Error = anyhow::Error;
-
-    fn try_from_raw_unified(
-        data: zcash_address::unified::Address,
-    ) -> Result<Self, zcash_address::ConversionError<Self::Error>> {
-        data.try_into()
-            .map(UnifiedAddressParser)
-            .map_err(|e| anyhow!("Invalid Unified Address: {}", e).into())
-    }
-}
-
-/// Returns the transparent receiver within the given Unified Address, if any.
-///
-/// # Safety
-///
-/// - `ua` must be non-null and must point to a null-terminated UTF-8 string.
-/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
-///   when done using it.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
-    ua: *const c_char,
-) -> *mut c_char {
-    let res = catch_panic(|| {
-        let ua_str = unsafe { CStr::from_ptr(ua).to_str()? };
-
-        let (network, ua) = match ZcashAddress::try_from_encoded(ua_str) {
-            Ok(addr) => addr
-                .convert::<(_, UnifiedAddressParser)>()
-                .map_err(|e| anyhow!("Not a Unified Address: {}", e)),
-            Err(e) => return Err(anyhow!("Invalid Zcash address: {}", e)),
-        }?;
-
-        if let Some(taddr) = ua.0.transparent() {
-            let taddr = match taddr {
-                TransparentAddress::PublicKeyHash(data) => {
-                    ZcashAddress::from_transparent_p2pkh(network, *data)
-                }
-                TransparentAddress::ScriptHash(data) => {
-                    ZcashAddress::from_transparent_p2sh(network, *data)
-                }
-            };
-
-            Ok(CString::new(taddr.encode())?.into_raw())
-        } else {
-            Err(anyhow!(
-                "Unified Address doesn't contain a transparent receiver"
-            ))
-        }
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// Returns the Sapling receiver within the given Unified Address, if any.
-///
-/// # Safety
-///
-/// - `ua` must be non-null and must point to a null-terminated UTF-8 string.
-/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
-///   when done using it.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_get_sapling_receiver_for_unified_address(
-    ua: *const c_char,
-) -> *mut c_char {
-    let res = catch_panic(|| {
-        let ua_str = unsafe { CStr::from_ptr(ua).to_str()? };
-
-        let (network, ua) = match ZcashAddress::try_from_encoded(ua_str) {
-            Ok(addr) => addr
-                .convert::<(_, UnifiedAddressParser)>()
-                .map_err(|e| anyhow!("Not a Unified Address: {}", e)),
-            Err(e) => return Err(anyhow!("Invalid Zcash address: {}", e)),
-        }?;
-
-        if let Some(addr) = ua.0.sapling() {
-            Ok(
-                CString::new(ZcashAddress::from_sapling(network, addr.to_bytes()).encode())?
-                    .into_raw(),
-            )
-        } else {
-            Err(anyhow!(
-                "Unified Address doesn't contain a Sapling receiver"
-            ))
-        }
-    });
-    unwrap_exc_or_null(res)
-}
-
-enum AddressType {
-    Sprout,
-    P2pkh,
-    P2sh,
-    Sapling,
-    Unified,
-    Tex,
-}
-
-struct AddressMetadata {
-    network: zcash_address::Network,
-    addr_type: AddressType,
-}
-
-#[derive(Debug)]
-enum Void {}
-
-impl TryFromAddress for AddressMetadata {
-    /// This instance produces no errors.
-    type Error = Void;
-
-    fn try_from_sprout(
-        network: zcash_address::Network,
-        _data: [u8; 64],
-    ) -> Result<Self, ConversionError<Self::Error>> {
-        Ok(AddressMetadata {
-            network,
-            addr_type: AddressType::Sprout,
-        })
-    }
-
-    fn try_from_sapling(
-        network: zcash_address::Network,
-        _data: [u8; 43],
-    ) -> Result<Self, ConversionError<Self::Error>> {
-        Ok(AddressMetadata {
-            network,
-            addr_type: AddressType::Sapling,
-        })
-    }
-
-    fn try_from_unified(
-        network: zcash_address::Network,
-        _data: unified::Address,
-    ) -> Result<Self, ConversionError<Self::Error>> {
-        Ok(AddressMetadata {
-            network,
-            addr_type: AddressType::Unified,
-        })
-    }
-
-    fn try_from_transparent_p2pkh(
-        network: zcash_address::Network,
-        _data: [u8; 20],
-    ) -> Result<Self, ConversionError<Self::Error>> {
-        Ok(AddressMetadata {
-            network,
-            addr_type: AddressType::P2pkh,
-        })
-    }
-
-    fn try_from_transparent_p2sh(
-        network: zcash_address::Network,
-        _data: [u8; 20],
-    ) -> Result<Self, ConversionError<Self::Error>> {
-        Ok(AddressMetadata {
-            network,
-            addr_type: AddressType::P2sh,
-        })
-    }
-
-    fn try_from_tex(
-        network: zcash_address::Network,
-        _data: [u8; 20],
-    ) -> Result<Self, ConversionError<Self::Error>> {
-        Ok(AddressMetadata {
-            network,
-            addr_type: AddressType::Tex,
-        })
-    }
-}
-
-/// Returns the network type and address kind for the given address string,
-/// if the address is a valid Zcash address.
-///
-/// Address kind codes are as follows:
-/// * p2pkh: 0
-/// * p2sh: 1
-/// * sapling: 2
-/// * unified: 3
-/// * tex: 4
-///
-/// # Safety
-///
-/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `address` must not be mutated for the duration of the function call.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_get_address_metadata(
-    address: *const c_char,
-    network_id_ret: *mut u32,
-    addr_kind_ret: *mut u32,
-) -> bool {
-    let res = catch_panic(|| {
-        let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        let zaddr = ZcashAddress::try_from_encoded(addr)?;
-
-        // The following .unwrap is safe because address type detection
-        // cannot fail for valid ZcashAddress values.
-        let addr_meta: AddressMetadata = zaddr.convert().unwrap();
-        unsafe {
-            *network_id_ret = match addr_meta.network {
-                zcash_address::Network::Main => 1,
-                zcash_address::Network::Test => 0,
-                zcash_address::Network::Regtest => {
-                    return Err(anyhow!("Regtest addresses are not supported."));
-                }
-            };
-
-            *addr_kind_ret = match addr_meta.addr_type {
-                AddressType::P2pkh => 0,
-                AddressType::P2sh => 1,
-                AddressType::Sapling => 2,
-                AddressType::Unified => 3,
-                AddressType::Tex => 4,
-                AddressType::Sprout => {
-                    return Err(anyhow!("Sprout addresses are not supported."));
-                }
-            };
-        }
-
-        Ok(true)
-    });
-    unwrap_exc_or(res, false)
-}
-
-/// Returns true when the provided key decodes to a valid Sapling extended spending key for the
-/// specified network, false in any other case.
-///
-/// # Safety
-///
-/// - `extsk` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `extsk` must not be mutated for the duration of the function call.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_sapling_extended_spending_key(
-    extsk: *const c_char,
-    network_id: u32,
-) -> bool {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let extsk = unsafe { CStr::from_ptr(extsk).to_str()? };
-
-        Ok(
-            decode_extended_spending_key(network.hrp_sapling_extended_spending_key(), extsk)
-                .is_ok(),
-        )
-    });
-    unwrap_exc_or(res, false)
-}
-
-/// Returns true when the provided key decodes to a valid Sapling extended full viewing key for the
-/// specified network, false in any other case.
-///
-/// # Safety
-///
-/// - `key` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `key` must not be mutated for the duration of the function call.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_viewing_key(key: *const c_char, network_id: u32) -> bool {
-    let res =
-        catch_panic(|| {
-            let network = parse_network(network_id)?;
-            let vkstr = unsafe { CStr::from_ptr(key).to_str()? };
-
-            Ok(decode_extended_full_viewing_key(
-                network.hrp_sapling_extended_full_viewing_key(),
-                vkstr,
-            )
-            .is_ok())
-        });
-    unwrap_exc_or(res, false)
-}
-
-/// Returns true when the provided key decodes to a valid unified full viewing key for the
-/// specified network, false in any other case.
-///
-/// # Safety
-///
-/// - `ufvk` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `ufvk` must not be mutated for the duration of the
-///   function call.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_is_valid_unified_full_viewing_key(
-    ufvk: *const c_char,
-    network_id: u32,
-) -> bool {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let ufvkstr = unsafe { CStr::from_ptr(ufvk).to_str()? };
-
-        Ok(UnifiedFullViewingKey::decode(&network, ufvkstr).is_ok())
-    });
-    unwrap_exc_or(res, false)
-}
-
 /// Returns the verified transparent balance for `address`, which ignores utxos that have been
 /// received too recently and are not yet deemed spendable according to `min_confirmations`.
 ///
@@ -1288,10 +871,10 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
             })?
             .iter()
             .map(|utxo| utxo.txout().value)
-            .sum::<Option<NonNegativeAmount>>()
+            .sum::<Option<Zatoshis>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
-        Ok(Amount::from(amount).into())
+        Ok(ZatBalance::from(amount).into())
     });
     unwrap_exc_or(res, -1)
 }
@@ -1363,10 +946,10 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
             .iter()
             .flatten()
             .map(|utxo| utxo.txout().value)
-            .sum::<Option<NonNegativeAmount>>()
+            .sum::<Option<Zatoshis>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
-        Ok(Amount::from(amount).into())
+        Ok(ZatBalance::from(amount).into())
     });
     unwrap_exc_or(res, -1)
 }
@@ -1410,10 +993,10 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
             })?
             .iter()
             .map(|utxo| utxo.txout().value)
-            .sum::<Option<NonNegativeAmount>>()
+            .sum::<Option<Zatoshis>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
-        Ok(Amount::from(amount).into())
+        Ok(ZatBalance::from(amount).into())
     });
     unwrap_exc_or(res, -1)
 }
@@ -1462,7 +1045,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
                     })
             })?
             .values()
-            .sum::<Option<NonNegativeAmount>>()
+            .sum::<Option<Zatoshis>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
         Ok(amount.into_u64() as i64)
@@ -1942,9 +1525,11 @@ pub struct FfiBalance {
 impl FfiBalance {
     fn new(balance: &Balance) -> Self {
         Self {
-            spendable_value: Amount::from(balance.spendable_value()).into(),
-            change_pending_confirmation: Amount::from(balance.change_pending_confirmation()).into(),
-            value_pending_spendability: Amount::from(balance.value_pending_spendability()).into(),
+            spendable_value: ZatBalance::from(balance.spendable_value()).into(),
+            change_pending_confirmation: ZatBalance::from(balance.change_pending_confirmation())
+                .into(),
+            value_pending_spendability: ZatBalance::from(balance.value_pending_spendability())
+                .into(),
         }
     }
 }
@@ -1978,7 +1563,7 @@ impl FfiAccountBalance {
             account_id: u32::from(*account_id),
             sapling_balance: FfiBalance::new(balance.sapling_balance()),
             orchard_balance: FfiBalance::new(balance.orchard_balance()),
-            unshielded: Amount::from(balance.unshielded()).into(),
+            unshielded: ZatBalance::from(balance.unshielded()).into(),
         }
     }
 }
@@ -2057,20 +1642,17 @@ impl FfiWalletSummary {
             ptr_from_vec(account_balances)
         };
 
-        let scan_progress = if let Some(scan_progress) = summary.scan_progress() {
-            if let Some(recovery_progress) = summary.recovery_progress() {
-                Box::into_raw(Box::new(FfiScanProgress {
-                    numerator: *scan_progress.numerator() + *recovery_progress.numerator(),
-                    denominator: *scan_progress.denominator() + *recovery_progress.denominator(),
-                }))
-            } else {
-                Box::into_raw(Box::new(FfiScanProgress {
-                    numerator: *scan_progress.numerator(),
-                    denominator: *scan_progress.denominator(),
-                }))
-            }
+        let scan_progress = if let Some(recovery_progress) = summary.progress().recovery() {
+            Box::into_raw(Box::new(FfiScanProgress {
+                numerator: *summary.progress().scan().numerator() + *recovery_progress.numerator(),
+                denominator: *summary.progress().scan().denominator()
+                    + *recovery_progress.denominator(),
+            }))
         } else {
-            ptr::null_mut()
+            Box::into_raw(Box::new(FfiScanProgress {
+                numerator: *summary.progress().scan().numerator(),
+                denominator: *summary.progress().scan().denominator(),
+            }))
         };
 
         Ok(Box::into_raw(Box::new(Self {
@@ -2189,7 +1771,7 @@ impl FfiScanRanges {
     }
 }
 
-/// Frees an array of FfiScanRanges values as allocated by `zcashlc_derive_unified_viewing_keys_from_seed`
+/// Frees an array of `FfiScanRanges` values as allocated by `zcashlc_suggest_scan_ranges`.
 ///
 /// # Safety
 ///
@@ -2409,7 +1991,7 @@ pub unsafe extern "C" fn zcashlc_put_utxo(
         let output = WalletTransparentOutput::from_parts(
             OutPoint::new(txid, index as u32),
             TxOut {
-                value: NonNegativeAmount::from_nonnegative_i64(value)
+                value: Zatoshis::from_nonnegative_i64(value)
                     .map_err(|_| anyhow!("Invalid UTXO value"))?,
                 script_pubkey,
             },
@@ -2675,17 +2257,22 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
 
 fn zip317_helper<DbT>(
     change_memo: Option<MemoBytes>,
-    use_zip317_fees: bool,
-) -> GreedyInputSelector<DbT, SingleOutputChangeStrategy> {
-    let fee_rule = if use_zip317_fees {
-        StandardFeeRule::Zip317
-    } else {
-        #[allow(deprecated)]
-        StandardFeeRule::PreZip313
-    };
-    GreedyInputSelector::new(
-        SingleOutputChangeStrategy::new(fee_rule, change_memo, ShieldedProtocol::Orchard),
-        DustOutputPolicy::default(),
+) -> (
+    MultiOutputChangeStrategy<StandardFeeRule, DbT>,
+    GreedyInputSelector<DbT>,
+) {
+    (
+        MultiOutputChangeStrategy::new(
+            StandardFeeRule::Zip317,
+            change_memo,
+            ShieldedProtocol::Orchard,
+            DustOutputPolicy::default(),
+            SplitPolicy::with_min_output_value(
+                NonZeroUsize::new(4).unwrap(),
+                Zatoshis::const_from_u64(1000_0000),
+            ),
+        ),
+        GreedyInputSelector::new(),
     )
 }
 
@@ -2765,7 +2352,6 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
     memo: *const u8,
     network_id: u32,
     min_confirmations: u32,
-    use_zip317_fees: bool,
 ) -> *mut FfiBoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2775,7 +2361,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 
         let account = account_id_from_ffi(&db_data, account)?;
         let to = unsafe { CStr::from_ptr(to) }.to_str()?;
-        let value = NonNegativeAmount::from_nonnegative_i64(value)
+        let value = Zatoshis::from_nonnegative_i64(value)
             .map_err(|_| anyhow!("Invalid amount, out of range"))?;
 
         let to: ZcashAddress = to
@@ -2790,7 +2376,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
                 .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))
         }?;
 
-        let input_selector = zip317_helper(None, use_zip317_fees);
+        let (change_strategy, input_selector) = zip317_helper(None);
 
         let req = TransactionRequest::new(vec![Payment::new(to, value, memo, None, None, vec![])
             .ok_or_else(|| {
@@ -2798,11 +2384,12 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
             })?])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        let proposal = propose_transfer::<_, _, _, Infallible>(
+        let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
             account,
             &input_selector,
+            &change_strategy,
             req,
             min_confirmations,
         )
@@ -2841,7 +2428,6 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
     payment_uri: *const c_char,
     network_id: u32,
     min_confirmations: u32,
-    use_zip317_fees: bool,
 ) -> *mut FfiBoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2852,16 +2438,17 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
         let account = account_id_from_ffi(&db_data, account)?;
         let payment_uri_str = unsafe { CStr::from_ptr(payment_uri) }.to_str()?;
 
-        let input_selector = zip317_helper(None, use_zip317_fees);
+        let (change_strategy, input_selector) = zip317_helper(None);
 
         let req = TransactionRequest::from_uri(payment_uri_str)
             .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        let proposal = propose_transfer::<_, _, _, Infallible>(
+        let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
             account,
             &input_selector,
+            &change_strategy,
             req,
             min_confirmations,
         )
@@ -2924,7 +2511,6 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
     transparent_receiver: *const c_char,
     network_id: u32,
     min_confirmations: u32,
-    use_zip317_fees: bool,
 ) -> *mut FfiBoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2939,7 +2525,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                 .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))?
         };
 
-        let shielding_threshold = NonNegativeAmount::from_u64(shielding_threshold)
+        let shielding_threshold = Zatoshis::from_u64(shielding_threshold)
             .map_err(|_| anyhow!("Invalid amount, out of range"))?;
 
         let transparent_receiver = if transparent_receiver.is_null() {
@@ -3004,14 +2590,16 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             return Ok(FfiBoxedSlice::none());
         };
 
-        let input_selector = zip317_helper(Some(memo_bytes), use_zip317_fees);
+        let (change_strategy, input_selector) = zip317_helper(Some(memo_bytes));
 
-        let proposal = propose_shielding::<_, _, _, Infallible>(
+        let proposal = propose_shielding::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
             &input_selector,
+            &change_strategy,
             shielding_threshold,
             &from_addrs,
+            account,
             min_confirmations,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
@@ -3146,7 +2734,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
 
         let prover = LocalTxProver::new(spend_params, output_params);
 
-        let txids = create_proposed_transactions::<_, _, Infallible, _, _>(
+        let txids = create_proposed_transactions::<_, _, Infallible, _, Infallible, _>(
             &mut db_data,
             &network,
             &prover,
