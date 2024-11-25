@@ -2168,8 +2168,8 @@ pub unsafe extern "C" fn zcashlc_init_block_metadata_db(
 /// - The total size `fs_block_db_root_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - Block metadata represented in `blocks_meta` must be non-null. Caller must guarantee that the
-/// memory reference by this pointer is not freed up, dereferenced or invalidated while this function
-/// is invoked.
+///   memory reference by this pointer is not freed up, dereferenced or invalidated while this
+///   function is invoked.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_write_block_metadata(
     fs_block_db_root: *const u8,
@@ -2884,7 +2884,7 @@ pub unsafe extern "C" fn zcashlc_set_transaction_status(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, txid_bytes_len) };
-        let txid = TxId::read(&txid_bytes[..])?;
+        let txid = TxId::read(txid_bytes)?;
 
         let status = match status {
             FfiTransactionStatus::TxidNotRecognized => TransactionStatus::TxidNotRecognized,
@@ -2991,11 +2991,10 @@ pub unsafe extern "C" fn zcashlc_free_transaction_data_requests(
 ) {
     if !ptr.is_null() {
         let s: Box<FfiTransactionDataRequests> = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec_with(s.ptr, s.len, |req| match req {
-            FfiTransactionDataRequest::SpendsFromAddress { address, .. } => unsafe {
-                zcashlc_string_free(*address)
-            },
-            _ => (),
+        free_ptr_from_vec_with(s.ptr, s.len, |req| {
+            if let FfiTransactionDataRequest::SpendsFromAddress { address, .. } = req {
+                unsafe { zcashlc_string_free(*address) }
+            }
         });
         drop(s);
     }
