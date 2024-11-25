@@ -520,6 +520,11 @@ pub unsafe extern "C" fn zcashlc_free_binary_key(ptr: *mut FFIBinaryKey) {
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
+/// - `treestate` must be non-null and valid for reads for `treestate_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `treestate` must not be mutated for the duration of the function call.
+/// - The total size `treestate_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 /// - Call [`zcashlc_free_binary_key`] to free the memory associated with the returned pointer when
 ///   you are finished using it.
 ///
