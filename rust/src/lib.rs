@@ -17,9 +17,10 @@ use std::slice;
 use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
-use zcash_client_backend::data_api::TransactionStatus;
+use zcash_client_backend::data_api::{AccountPurpose, TransactionStatus};
 use zcash_client_backend::fees::zip317::MultiOutputChangeStrategy;
 use zcash_client_backend::fees::{SplitPolicy, StandardFeeRule};
+use zcash_client_backend::keys::UnifiedFullViewingKey;
 use zcash_client_sqlite::error::SqliteClientError;
 
 use zcash_address::ZcashAddress;
@@ -519,6 +520,11 @@ pub unsafe extern "C" fn zcashlc_free_binary_key(ptr: *mut FFIBinaryKey) {
 /// - The memory referenced by `seed` must not be mutated for the duration of the function call.
 /// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
+/// - `treestate` must be non-null and valid for reads for `treestate_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `treestate` must not be mutated for the duration of the function call.
+/// - The total size `treestate_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 /// - Call [`zcashlc_free_binary_key`] to free the memory associated with the returned pointer when
 ///   you are finished using it.
 ///
@@ -570,6 +576,87 @@ pub unsafe extern "C" fn zcashlc_create_account(
             account_index,
             encoded,
         ))))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Adds a new account to the wallet by importing the UFVK that will be used to detect incoming
+/// payments.
+///
+/// Returns the globally unique identifier for the account.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `ufvk` must be non-null and must point to a null-terminated UTF-8 string.
+/// - `treestate` must be non-null and valid for reads for `treestate_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `treestate` must not be mutated for the duration of the function call.
+/// - The total size `treestate_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+///
+// TODO: Once account IDs are exposed as UUIDs, this should return an encoding of that UUID.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_import_account_ufvk(
+    db_data: *const u8,
+    db_data_len: usize,
+    ufvk: *const c_char,
+    treestate: *const u8,
+    treestate_len: usize,
+    recover_until: i64,
+    network_id: u32,
+    purpose: u32,
+) -> i32 {
+    use zcash_client_backend::data_api::BirthdayError;
+
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let ufvk_str = unsafe { CStr::from_ptr(ufvk).to_str()? };
+        let ufvk = UnifiedFullViewingKey::decode(&network, ufvk_str).map_err(|e| {
+            anyhow!(
+                "Value \"{}\" did not decode as a valid UFVK: {}",
+                ufvk_str,
+                e
+            )
+        })?;
+        let treestate =
+            TreeState::decode(unsafe { slice::from_raw_parts(treestate, treestate_len) })
+                .map_err(|e| anyhow!("Invalid TreeState: {}", e))?;
+        let recover_until = recover_until.try_into().ok();
+
+        let birthday =
+            AccountBirthday::from_treestate(treestate, recover_until).map_err(|e| match e {
+                BirthdayError::HeightInvalid(e) => {
+                    anyhow!("Invalid TreeState: Invalid height: {}", e)
+                }
+                BirthdayError::Decode(e) => {
+                    anyhow!("Invalid TreeState: Invalid frontier encoding: {}", e)
+                }
+            })?;
+
+        let purpose = match purpose {
+            0 => Ok(AccountPurpose::Spending),
+            1 => Ok(AccountPurpose::ViewOnly),
+            _ => Err(anyhow!(
+                "Account purpose must be either 0 (Spending) or 1 (ViewOnly)"
+            )),
+        }?;
+
+        let account = db_data
+            .import_account_ufvk(&ufvk, &birthday, purpose)
+            .map_err(|e| anyhow!("Error while initializing accounts: {}", e))?;
+
+        account
+            .id()
+            .as_u32()
+            .try_into()
+            .map_err(|_| anyhow!("Account identifiers must fit into an i32 (for now)"))
     });
     unwrap_exc_or_null(res)
 }
@@ -2081,8 +2168,8 @@ pub unsafe extern "C" fn zcashlc_init_block_metadata_db(
 /// - The total size `fs_block_db_root_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - Block metadata represented in `blocks_meta` must be non-null. Caller must guarantee that the
-/// memory reference by this pointer is not freed up, dereferenced or invalidated while this function
-/// is invoked.
+///   memory reference by this pointer is not freed up, dereferenced or invalidated while this
+///   function is invoked.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_write_block_metadata(
     fs_block_db_root: *const u8,
@@ -2797,7 +2884,7 @@ pub unsafe extern "C" fn zcashlc_set_transaction_status(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, txid_bytes_len) };
-        let txid = TxId::read(&txid_bytes[..])?;
+        let txid = TxId::read(txid_bytes)?;
 
         let status = match status {
             FfiTransactionStatus::TxidNotRecognized => TransactionStatus::TxidNotRecognized,
@@ -2904,11 +2991,10 @@ pub unsafe extern "C" fn zcashlc_free_transaction_data_requests(
 ) {
     if !ptr.is_null() {
         let s: Box<FfiTransactionDataRequests> = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec_with(s.ptr, s.len, |req| match req {
-            FfiTransactionDataRequest::SpendsFromAddress { address, .. } => unsafe {
-                zcashlc_string_free(*address)
-            },
-            _ => (),
+        free_ptr_from_vec_with(s.ptr, s.len, |req| {
+            if let FfiTransactionDataRequest::SpendsFromAddress { address, .. } = req {
+                unsafe { zcashlc_string_free(*address) }
+            }
         });
         drop(s);
     }
