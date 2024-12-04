@@ -32,6 +32,7 @@ secrecy = "0.8"
 # FFI
 anyhow = "1.0"
 ffi_helpers = "0.3"
+uuid = "1.1"
 
 # Initialization
 cfg-if = "1.0"
@@ -62,3 +63,12 @@ crate-type = ["staticlib"]
 
 [profile.release]
 lto = true
+
+[patch.crates-io]
+zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "c33ad67568eb768f5a3ceedf4c607af0f052ef45" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "c33ad67568eb768f5a3ceedf4c607af0f052ef45" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "c33ad67568eb768f5a3ceedf4c607af0f052ef45" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash.git", rev = "c33ad67568eb768f5a3ceedf4c607af0f052ef45" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "c33ad67568eb768f5a3ceedf4c607af0f052ef45" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "c33ad67568eb768f5a3ceedf4c607af0f052ef45" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "c33ad67568eb768f5a3ceedf4c607af0f052ef45" }
