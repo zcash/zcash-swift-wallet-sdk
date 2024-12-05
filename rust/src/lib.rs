@@ -19,7 +19,7 @@ use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
-use zcash_client_backend::data_api::{AccountPurpose, TransactionStatus};
+use zcash_client_backend::data_api::{AccountPurpose, TransactionStatus, Zip32Derivation};
 use zcash_client_backend::fees::zip317::MultiOutputChangeStrategy;
 use zcash_client_backend::fees::{SplitPolicy, StandardFeeRule};
 use zcash_client_backend::keys::UnifiedFullViewingKey;
@@ -310,6 +310,67 @@ pub unsafe extern "C" fn zcashlc_init_data_database(
     unwrap_exc_or(res, -1)
 }
 
+/// A struct that contains a 16-byte account uuid along with key derivation metadata for that
+/// account.
+///
+/// A returned value containing the all-zeros seed fingerprint and/or u32::MAX for the
+/// hd_account_index indicates that no derivation metadata is available.
+#[repr(C)]
+pub struct FfiAccount {
+    uuid_bytes: [u8; 16],
+    account_name: *mut c_char,
+    key_source: *mut c_char,
+    seed_fingerprint: [u8; 32],
+    hd_account_index: u32,
+}
+
+impl FfiAccount {
+    const NOT_FOUND: FfiAccount = FfiAccount {
+        uuid_bytes: [0u8; 16],
+        account_name: ptr::null_mut(),
+        key_source: ptr::null_mut(),
+        seed_fingerprint: [0u8; 32],
+        hd_account_index: u32::MAX,
+    };
+
+    fn from_account(
+        account: &impl zcash_client_backend::data_api::Account<AccountId = AccountUuid>,
+    ) -> Self {
+        let derivation = account.source().key_derivation();
+        FfiAccount {
+            uuid_bytes: account.id().expose_uuid().into_bytes(),
+            account_name: account.name().map_or(ptr::null_mut(), |name| {
+                CString::new(name).unwrap().into_raw()
+            }),
+            key_source: account
+                .source()
+                .key_source()
+                .map_or(ptr::null_mut(), |s| CString::new(s).unwrap().into_raw()),
+            seed_fingerprint: derivation.map_or([0u8; 32], |d| d.seed_fingerprint().to_bytes()),
+            hd_account_index: derivation.map_or(u32::MAX, |d| d.account_index().into()),
+        }
+    }
+}
+
+/// Frees a FfiAccount value
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiAccount`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_account(ptr: *mut FfiAccount) {
+    if !ptr.is_null() {
+        let account: Box<FfiAccount> = unsafe { Box::from_raw(ptr) };
+        if !(account.account_name.is_null()) {
+            unsafe { zcashlc_string_free(account.account_name) }
+        }
+        if !(account.key_source.is_null()) {
+            unsafe { zcashlc_string_free(account.key_source) }
+        }
+        drop(account);
+    }
+}
+
 /// A struct that contains a pointer to, and length information for, a heap-allocated
 /// slice of [`FfiUuid`] values.
 ///
@@ -381,6 +442,44 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
                 .map(FfiUuid::new)
                 .collect::<Vec<_>>(),
         ))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Returns the account data for the specified account identifier, or the [`FfiAccount::NOT_FOUND`]
+/// sentinel value if the account id does not correspond to an account in the wallet.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///    of `1`.
+/// - Call [`zcashlc_free_account`] to free the memory associated with the returned pointer
+///   when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_get_account(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    account_uuid_bytes: *const u8,
+) -> *mut FfiAccount {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
+
+        Ok(Box::into_raw(Box::new(
+            db_data
+                .get_account(account_uuid)?
+                .map_or(FfiAccount::NOT_FOUND, |account| {
+                    FfiAccount::from_account(&account)
+                }),
+        )))
     });
     unwrap_exc_or_null(res)
 }
@@ -496,8 +595,9 @@ pub unsafe extern "C" fn zcashlc_create_account(
             })?;
 
         let account_name = unsafe { CStr::from_ptr(account_name).to_str()? };
-        let key_source =
-            (!key_source.is_null()).then_some(unsafe { CStr::from_ptr(key_source).to_str()? });
+        let key_source = (!key_source.is_null())
+            .then(|| unsafe { CStr::from_ptr(key_source).to_str() })
+            .transpose()?;
 
         let (account_uuid, usk) = db_data
             .create_account(account_name, &seed, &birthday, key_source)
@@ -542,6 +642,11 @@ pub unsafe extern "C" fn zcashlc_free_ffi_uuid(ptr: *mut FfiUuid) {
 /// Adds a new account to the wallet by importing the UFVK that will be used to detect incoming
 /// payments.
 ///
+/// Derivation metadata may optionally be included. To indicate that no derivation metadata is
+/// available, the `seed_fingerprint` argument should be set to the null pointer and
+/// `hd_account_index` should be set to the value `u32::MAX`. Derivation metadata will not be
+/// stored unless both the seed fingerprint and the HD account index are provided.
+///
 /// Returns the globally unique identifier for the account.
 ///
 /// # Safety
@@ -558,6 +663,8 @@ pub unsafe extern "C" fn zcashlc_free_ffi_uuid(ptr: *mut FfiUuid) {
 /// - The memory referenced by `treestate` must not be mutated for the duration of the function call.
 /// - The total size `treestate_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - `seed_fingerprint` must either be either null or valid for reads for 32 bytes, and it must
+///   have an alignment of `1`.
 ///
 /// - Call [`zcashlc_free_ffi_uuid`] to free the memory associated with the returned pointer when
 ///   you are finished using it.
@@ -573,6 +680,8 @@ pub unsafe extern "C" fn zcashlc_import_account_ufvk(
     purpose: u32,
     account_name: *const c_char,
     key_source: *const c_char,
+    seed_fingerprint: *const u8,
+    hd_account_index_raw: u32,
 ) -> *mut FfiUuid {
     use zcash_client_backend::data_api::BirthdayError;
 
@@ -602,8 +711,25 @@ pub unsafe extern "C" fn zcashlc_import_account_ufvk(
                 }
             })?;
 
+        let hd_account_index = zip32::AccountId::try_from(hd_account_index_raw).ok();
+        let seed_fp = (!seed_fingerprint.is_null())
+            .then(|| {
+                <[u8; 32]>::try_from(unsafe { slice::from_raw_parts(seed_fingerprint, 32) })
+                    .ok()
+                    .map(SeedFingerprint::from_bytes)
+            })
+            .flatten();
+
+        if hd_account_index.is_some() != seed_fp.is_some() {
+            return Err(anyhow!("Seed fingerprint and ZIP 32 account index must either both be valid or both be absent/invalid."));
+        }
+
+        let derivation = seed_fp
+            .zip(hd_account_index)
+            .map(|(fp, idx)| Zip32Derivation::new(fp, idx));
+
         let purpose = match purpose {
-            0 => Ok(AccountPurpose::Spending),
+            0 => Ok(AccountPurpose::Spending { derivation }),
             1 => Ok(AccountPurpose::ViewOnly),
             _ => Err(anyhow!(
                 "Account purpose must be either 0 (Spending) or 1 (ViewOnly)"
@@ -611,8 +737,9 @@ pub unsafe extern "C" fn zcashlc_import_account_ufvk(
         }?;
 
         let account_name = unsafe { CStr::from_ptr(account_name).to_str()? };
-        let key_source =
-            (!key_source.is_null()).then_some(unsafe { CStr::from_ptr(key_source).to_str()? });
+        let key_source = (!key_source.is_null())
+            .then(|| unsafe { CStr::from_ptr(key_source).to_str() })
+            .transpose()?;
 
         let account = db_data
             .import_account_ufvk(account_name, &ufvk, &birthday, purpose, key_source)
