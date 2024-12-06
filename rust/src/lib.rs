@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
 use prost::Message;
 use secrecy::Secret;
+use std::array::TryFromSliceError;
 use std::convert::{Infallible, TryFrom, TryInto};
 use std::error::Error;
 use std::ffi::{CStr, CString, OsStr};
@@ -17,7 +18,8 @@ use std::slice;
 use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
-use zcash_client_backend::data_api::{AccountPurpose, TransactionStatus};
+use uuid::Uuid;
+use zcash_client_backend::data_api::{AccountPurpose, TransactionStatus, Zip32Derivation};
 use zcash_client_backend::fees::zip317::MultiOutputChangeStrategy;
 use zcash_client_backend::fees::{SplitPolicy, StandardFeeRule};
 use zcash_client_backend::keys::UnifiedFullViewingKey;
@@ -33,9 +35,8 @@ use zcash_client_backend::{
             create_proposed_transactions, decrypt_and_store_transaction,
             input_selection::GreedyInputSelector, propose_shielding, propose_transfer,
         },
-        Account, AccountBalance, AccountBirthday, AccountSource, Balance, InputSource,
-        SeedRelevance, TransactionDataRequest, WalletCommitmentTrees, WalletRead, WalletSummary,
-        WalletWrite,
+        Account, AccountBalance, AccountBirthday, Balance, InputSource, SeedRelevance,
+        TransactionDataRequest, WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite,
     },
     encoding::AddressCodec,
     fees::DustOutputPolicy,
@@ -49,14 +50,13 @@ use zcash_client_backend::{
 use zcash_client_sqlite::{
     chain::{init::init_blockmeta_db, BlockMeta},
     wallet::init::{init_wallet_db, WalletMigrationError},
-    AccountId, FsBlockDb, WalletDb,
+    AccountUuid, FsBlockDb, WalletDb,
 };
 use zcash_primitives::{
     block::BlockHash,
     consensus::{
         BlockHeight, BranchId, Network,
         Network::{MainNetwork, TestNetwork},
-        Parameters,
     },
     legacy::{self, TransparentAddress},
     memo::{Memo, MemoBytes},
@@ -65,7 +65,7 @@ use zcash_primitives::{
         components::{OutPoint, TxOut},
         Transaction, TxId,
     },
-    zip32::{self, fingerprint::SeedFingerprint},
+    zip32::fingerprint::SeedFingerprint,
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::value::{ZatBalance, Zatoshis};
@@ -136,56 +136,11 @@ fn block_db(fsblock_db: *const u8, fsblock_db_len: usize) -> anyhow::Result<FsBl
         .map_err(|e| anyhow!("Error opening block source database connection: {}", e))
 }
 
-fn account_id_from_i32(account: i32) -> anyhow::Result<zip32::AccountId> {
-    u32::try_from(account)
-        .map_err(|_| ())
-        .and_then(|id| zip32::AccountId::try_from(id).map_err(|_| ()))
-        .map_err(|_| anyhow!("Invalid account ID"))
-}
-
-fn account_id_from_ffi<P: Parameters>(
-    db_data: &WalletDb<rusqlite::Connection, P>,
-    account_index: i32,
-) -> anyhow::Result<AccountId> {
-    let requested_account_index = account_id_from_i32(account_index)?;
-
-    // Find the single account matching the given ZIP 32 account index.
-    let mut accounts = db_data
-        .get_account_ids()?
-        .into_iter()
-        .filter_map(|account_id| {
-            db_data
-                .get_account(account_id)
-                .map_err(|e| {
-                    anyhow!(
-                        "Database error encountered retrieving account {:?}: {}",
-                        account_id,
-                        e
-                    )
-                })
-                .and_then(|acct_opt| {
-                    acct_opt
-                        .ok_or(anyhow!(
-                            "Wallet data corrupted: unable to retrieve account data for account {:?}",
-                            account_id
-                        ))
-                        .map(|account| match account.source() {
-                            AccountSource::Derived { account_index, .. }
-                                if account_index == requested_account_index =>
-                            {
-                                Some(account)
-                            }
-                            _ => None,
-                        })
-                })
-                .transpose()
-        });
-
-    match (accounts.next(), accounts.next()) {
-        (Some(account), None) => Ok(account?.id()),
-        (None, None) => Err(anyhow!("Account does not exist")),
-        (_, Some(_)) => Err(anyhow!("Account index matches more than one account")),
-    }
+fn account_uuid_from_bytes(uuid_bytes: *const u8) -> Result<AccountUuid, TryFromSliceError> {
+    let uuid_bytes = unsafe { slice::from_raw_parts(uuid_bytes, 16) };
+    Ok(AccountUuid::from_uuid(Uuid::from_bytes(
+        <[u8; 16]>::try_from(uuid_bytes)?,
+    )))
 }
 
 /// Initializes global Rust state, such as the logging infrastructure and threadpools.
@@ -355,36 +310,89 @@ pub unsafe extern "C" fn zcashlc_init_data_database(
     unwrap_exc_or(res, -1)
 }
 
-/// A struct that contains details about an account in the wallet.
+/// A struct that contains a 16-byte account uuid along with key derivation metadata for that
+/// account.
+///
+/// A returned value containing the all-zeros seed fingerprint and/or u32::MAX for the
+/// hd_account_index indicates that no derivation metadata is available.
 #[repr(C)]
 pub struct FfiAccount {
+    uuid_bytes: [u8; 16],
+    account_name: *mut c_char,
+    key_source: *mut c_char,
     seed_fingerprint: [u8; 32],
-    account_index: u32,
+    hd_account_index: u32,
 }
 
-/// A struct that contains a pointer to, and length information for, a heap-allocated
-/// slice of [`FfiAccount`] values.
+impl FfiAccount {
+    const NOT_FOUND: FfiAccount = FfiAccount {
+        uuid_bytes: [0u8; 16],
+        account_name: ptr::null_mut(),
+        key_source: ptr::null_mut(),
+        seed_fingerprint: [0u8; 32],
+        hd_account_index: u32::MAX,
+    };
+
+    fn from_account(
+        account: &impl zcash_client_backend::data_api::Account<AccountId = AccountUuid>,
+    ) -> Self {
+        let derivation = account.source().key_derivation();
+        FfiAccount {
+            uuid_bytes: account.id().expose_uuid().into_bytes(),
+            account_name: account.name().map_or(ptr::null_mut(), |name| {
+                CString::new(name).unwrap().into_raw()
+            }),
+            key_source: account
+                .source()
+                .key_source()
+                .map_or(ptr::null_mut(), |s| CString::new(s).unwrap().into_raw()),
+            seed_fingerprint: derivation.map_or([0u8; 32], |d| d.seed_fingerprint().to_bytes()),
+            hd_account_index: derivation.map_or(u32::MAX, |d| d.account_index().into()),
+        }
+    }
+}
+
+/// Frees a FfiAccount value
 ///
 /// # Safety
 ///
-/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FfiAccount>()`
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiAccount`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_account(ptr: *mut FfiAccount) {
+    if !ptr.is_null() {
+        let account: Box<FfiAccount> = unsafe { Box::from_raw(ptr) };
+        if !(account.account_name.is_null()) {
+            unsafe { zcashlc_string_free(account.account_name) }
+        }
+        if !(account.key_source.is_null()) {
+            unsafe { zcashlc_string_free(account.key_source) }
+        }
+        drop(account);
+    }
+}
+
+/// A struct that contains a pointer to, and length information for, a heap-allocated
+/// slice of [`FfiUuid`] values.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FfiUuid>()`
 ///   many bytes, and it must be properly aligned. This means in particular:
 ///   - The entire memory range pointed to by `ptr` must be contained within a single allocated
 ///     object. Slices can never span across multiple allocated objects.
 ///   - `ptr` must be non-null and aligned even for zero-length slices.
 ///   - `ptr` must point to `len` consecutive properly initialized values of type
-///     [`FfiAccount`].
-/// - The total size `len * mem::size_of::<FfiAccount>()` of the slice pointed to
+///     [`FfiUuid`].
+/// - The total size `len * mem::size_of::<FfiUuid>()` of the slice pointed to
 ///   by `ptr` must be no larger than isize::MAX. See the safety documentation of pointer::offset.
-/// - See the safety documentation of [`FfiAccount`]
 #[repr(C)]
 pub struct FfiAccounts {
-    ptr: *mut FfiAccount,
+    ptr: *mut FfiUuid,
     len: usize, // number of elems
 }
 
 impl FfiAccounts {
-    pub fn ptr_from_vec(v: Vec<FfiAccount>) -> *mut Self {
+    pub fn ptr_from_vec(v: Vec<FfiUuid>) -> *mut Self {
         let (ptr, len) = ptr_from_vec(v);
         Box::into_raw(Box::new(FfiAccounts { ptr, len }))
     }
@@ -431,24 +439,47 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
             db_data
                 .get_account_ids()?
                 .into_iter()
-                .map(|account_id| {
-                    let account = db_data.get_account(account_id)?.expect("account ID exists");
-
-                    match account.source() {
-                        AccountSource::Derived {
-                            seed_fingerprint,
-                            account_index,
-                        } => Ok(FfiAccount {
-                            seed_fingerprint: seed_fingerprint.to_bytes(),
-                            account_index: account_index.into(),
-                        }),
-                        AccountSource::Imported { .. } => Err(anyhow!(
-                            "Wallet DB contains imported accounts, which are unsuppported"
-                        )),
-                    }
-                })
-                .collect::<Result<_, _>>()?,
+                .map(FfiUuid::new)
+                .collect::<Vec<_>>(),
         ))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Returns the account data for the specified account identifier, or the [`FfiAccount::NOT_FOUND`]
+/// sentinel value if the account id does not correspond to an account in the wallet.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///    of `1`.
+/// - Call [`zcashlc_free_account`] to free the memory associated with the returned pointer
+///   when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_get_account(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    account_uuid_bytes: *const u8,
+) -> *mut FfiAccount {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
+
+        Ok(Box::into_raw(Box::new(
+            db_data
+                .get_account(account_uuid)?
+                .map_or(FfiAccount::NOT_FOUND, |account| {
+                    FfiAccount::from_account(&account)
+                }),
+        )))
     });
     unwrap_exc_or_null(res)
 }
@@ -461,16 +492,16 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
 /// - `encoding` must be non-null and must point to an array of `encoding_len` bytes.
 #[repr(C)]
 pub struct FFIBinaryKey {
-    account_id: u32,
+    account_uuid: [u8; 16],
     encoding: *mut u8,
     encoding_len: usize,
 }
 
 impl FFIBinaryKey {
-    fn new(account_id: zip32::AccountId, key_bytes: Vec<u8>) -> Self {
+    fn new(account_uuid: AccountUuid, key_bytes: Vec<u8>) -> Self {
         let (encoding, encoding_len) = ptr_from_vec(key_bytes);
         FFIBinaryKey {
-            account_id: account_id.into(),
+            account_uuid: account_uuid.expose_uuid().into_bytes(),
             encoding,
             encoding_len,
         }
@@ -539,6 +570,8 @@ pub unsafe extern "C" fn zcashlc_create_account(
     treestate_len: usize,
     recover_until: i64,
     network_id: u32,
+    account_name: *const c_char,
+    key_source: *const c_char,
 ) -> *mut FFIBinaryKey {
     use zcash_client_backend::data_api::BirthdayError;
 
@@ -561,27 +594,58 @@ pub unsafe extern "C" fn zcashlc_create_account(
                 }
             })?;
 
-        let (account_id, usk) = db_data
-            .create_account(&seed, &birthday)
-            .map_err(|e| anyhow!("Error while initializing accounts: {}", e))?;
+        let account_name = unsafe { CStr::from_ptr(account_name).to_str()? };
+        let key_source = (!key_source.is_null())
+            .then(|| unsafe { CStr::from_ptr(key_source).to_str() })
+            .transpose()?;
 
-        let account = db_data.get_account(account_id)?.expect("just created");
-        let account_index = match account.source() {
-            AccountSource::Derived { account_index, .. } => account_index,
-            AccountSource::Imported { .. } => unreachable!("just created"),
-        };
+        let (account_uuid, usk) = db_data
+            .create_account(account_name, &seed, &birthday, key_source)
+            .map_err(|e| anyhow!("Error while initializing accounts: {}", e))?;
 
         let encoded = usk.to_bytes(Era::Orchard);
         Ok(Box::into_raw(Box::new(FFIBinaryKey::new(
-            account_index,
+            account_uuid,
             encoded,
         ))))
     });
     unwrap_exc_or_null(res)
 }
 
+/// A struct that contains a 16-byte account uuid.
+#[repr(C)]
+pub struct FfiUuid {
+    uuid_bytes: [u8; 16],
+}
+
+impl FfiUuid {
+    fn new(account_uuid: AccountUuid) -> Self {
+        FfiUuid {
+            uuid_bytes: account_uuid.expose_uuid().into_bytes(),
+        }
+    }
+}
+
+/// Frees a FfiUuid value
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiUuid`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_ffi_uuid(ptr: *mut FfiUuid) {
+    if !ptr.is_null() {
+        let key: Box<FfiUuid> = unsafe { Box::from_raw(ptr) };
+        drop(key);
+    }
+}
+
 /// Adds a new account to the wallet by importing the UFVK that will be used to detect incoming
 /// payments.
+///
+/// Derivation metadata may optionally be included. To indicate that no derivation metadata is
+/// available, the `seed_fingerprint` argument should be set to the null pointer and
+/// `hd_account_index` should be set to the value `u32::MAX`. Derivation metadata will not be
+/// stored unless both the seed fingerprint and the HD account index are provided.
 ///
 /// Returns the globally unique identifier for the account.
 ///
@@ -599,8 +663,11 @@ pub unsafe extern "C" fn zcashlc_create_account(
 /// - The memory referenced by `treestate` must not be mutated for the duration of the function call.
 /// - The total size `treestate_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - `seed_fingerprint` must either be either null or valid for reads for 32 bytes, and it must
+///   have an alignment of `1`.
 ///
-// TODO: Once account IDs are exposed as UUIDs, this should return an encoding of that UUID.
+/// - Call [`zcashlc_free_ffi_uuid`] to free the memory associated with the returned pointer when
+///   you are finished using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_import_account_ufvk(
     db_data: *const u8,
@@ -611,7 +678,11 @@ pub unsafe extern "C" fn zcashlc_import_account_ufvk(
     recover_until: i64,
     network_id: u32,
     purpose: u32,
-) -> i32 {
+    account_name: *const c_char,
+    key_source: *const c_char,
+    seed_fingerprint: *const u8,
+    hd_account_index_raw: u32,
+) -> *mut FfiUuid {
     use zcash_client_backend::data_api::BirthdayError;
 
     let res = catch_panic(|| {
@@ -640,23 +711,41 @@ pub unsafe extern "C" fn zcashlc_import_account_ufvk(
                 }
             })?;
 
+        let hd_account_index = zip32::AccountId::try_from(hd_account_index_raw).ok();
+        let seed_fp = (!seed_fingerprint.is_null())
+            .then(|| {
+                <[u8; 32]>::try_from(unsafe { slice::from_raw_parts(seed_fingerprint, 32) })
+                    .ok()
+                    .map(SeedFingerprint::from_bytes)
+            })
+            .flatten();
+
+        if hd_account_index.is_some() != seed_fp.is_some() {
+            return Err(anyhow!("Seed fingerprint and ZIP 32 account index must either both be valid or both be absent/invalid."));
+        }
+
+        let derivation = seed_fp
+            .zip(hd_account_index)
+            .map(|(fp, idx)| Zip32Derivation::new(fp, idx));
+
         let purpose = match purpose {
-            0 => Ok(AccountPurpose::Spending),
+            0 => Ok(AccountPurpose::Spending { derivation }),
             1 => Ok(AccountPurpose::ViewOnly),
             _ => Err(anyhow!(
                 "Account purpose must be either 0 (Spending) or 1 (ViewOnly)"
             )),
         }?;
 
+        let account_name = unsafe { CStr::from_ptr(account_name).to_str()? };
+        let key_source = (!key_source.is_null())
+            .then(|| unsafe { CStr::from_ptr(key_source).to_str() })
+            .transpose()?;
+
         let account = db_data
-            .import_account_ufvk(&ufvk, &birthday, purpose)
+            .import_account_ufvk(account_name, &ufvk, &birthday, purpose, key_source)
             .map_err(|e| anyhow!("Error while initializing accounts: {}", e))?;
 
-        account
-            .id()
-            .as_u32()
-            .try_into()
-            .map_err(|_| anyhow!("Account identifiers must fit into an i32 (for now)"))
+        Ok(Box::into_raw(Box::new(FfiUuid::new(account.id()))))
     });
     unwrap_exc_or_null(res)
 }
@@ -711,8 +800,17 @@ pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_any_derived_account(
 /// - `encoding` must be non-null and must point to a null-terminated UTF-8 string.
 #[repr(C)]
 pub struct FFIEncodedKey {
-    account_id: u32,
+    account_uuid: [u8; 16],
     encoding: *mut c_char,
+}
+
+impl FFIEncodedKey {
+    fn new(account_uuid: AccountUuid, key_str: &str) -> Self {
+        FFIEncodedKey {
+            account_uuid: account_uuid.expose_uuid().into_bytes(),
+            encoding: CString::new(key_str).unwrap().into_raw(),
+        }
+    }
 }
 
 /// A struct that contains a pointer to, and length information for, a heap-allocated
@@ -797,28 +895,30 @@ unsafe fn decode_usk(usk_ptr: *const u8, usk_len: usize) -> anyhow::Result<Unifi
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///    of `1`.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_get_current_address(
     db_data: *const u8,
     db_data_len: usize,
-    account: i32,
+    account_uuid_bytes: *const u8,
     network_id: u32,
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account)?;
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
-        match db_data.get_current_address(account) {
+        match db_data.get_current_address(account_uuid) {
             Ok(Some(ua)) => {
                 let address_str = ua.encode(&network);
                 Ok(CString::new(address_str).unwrap().into_raw())
             }
             Ok(None) => Err(anyhow!(
                 "No payment address was available for account {:?}",
-                account
+                account_uuid
             )),
             Err(e) => Err(anyhow!("Error while fetching address: {}", e)),
         }
@@ -837,29 +937,31 @@ pub unsafe extern "C" fn zcashlc_get_current_address(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///    of `1`.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_get_next_available_address(
     db_data: *const u8,
     db_data_len: usize,
-    account: i32,
+    account_uuid_bytes: *const u8,
     network_id: u32,
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account)?;
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
         let request = UnifiedAddressRequest::new(true, true, true).expect("have shielded receiver");
-        match db_data.get_next_available_address(account, request) {
+        match db_data.get_next_available_address(account_uuid, request) {
             Ok(Some(ua)) => {
                 let address_str = ua.encode(&network);
                 Ok(CString::new(address_str).unwrap().into_raw())
             }
             Ok(None) => Err(anyhow!(
                 "No payment address was available for account {:?}",
-                account
+                account_uuid
             )),
             Err(e) => Err(anyhow!("Error while fetching address: {}", e)),
         }
@@ -878,30 +980,29 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///    of `1`.
 /// - Call [`zcashlc_free_keys`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
     db_data: *const u8,
     db_data_len: usize,
-    account_id: i32,
+    account_uuid_bytes: *const u8,
     network_id: u32,
 ) -> *mut FFIEncodedKeys {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account_id)?;
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
-        match db_data.get_transparent_receivers(account) {
+        match db_data.get_transparent_receivers(account_uuid) {
             Ok(receivers) => {
                 let keys = receivers
                     .keys()
                     .map(|receiver| {
                         let address_str = receiver.encode(&network);
-                        FFIEncodedKey {
-                            account_id: account_id as u32,
-                            encoding: CString::new(address_str).unwrap().into_raw(),
-                        }
+                        FFIEncodedKey::new(account_uuid, &address_str)
                     })
                     .collect::<Vec<_>>();
 
@@ -977,20 +1078,20 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `address` must not be mutated for the duration of the function call.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///    of `1`.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
-    account: i32,
+    account_uuid_bytes: *const u8,
     min_confirmations: u32,
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account)?;
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
         let amount = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
@@ -1002,11 +1103,11 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
             })
             .and_then(|target| {
                 db_data
-                    .get_transparent_receivers(account)
+                    .get_transparent_receivers(account_uuid)
                     .map_err(|e| {
                         anyhow!(
                             "Error while fetching transparent receivers for {:?}: {}",
-                            account,
+                            account_uuid,
                             e,
                         )
                     })
@@ -1098,19 +1199,19 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `address` must be non-null and must point to a null-terminated UTF-8 string.
-/// - The memory referenced by `address` must not be mutated for the duration of the function call.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///    of `1`.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
-    account: i32,
+    account_uuid_bytes: *const u8,
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-        let account = account_id_from_ffi(&db_data, account)?;
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
         let amount = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
@@ -1122,11 +1223,11 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
             })
             .and_then(|anchor| {
                 db_data
-                    .get_transparent_balances(account, anchor)
+                    .get_transparent_balances(account_uuid, anchor)
                     .map_err(|e| {
                         anyhow!(
                             "Error while fetching transparent balances for {:?}: {}",
-                            account,
+                            account_uuid,
                             e,
                         )
                     })
@@ -1626,7 +1727,7 @@ impl FfiBalance {
 /// The sum of this struct's fields is the total balance of the account.
 #[repr(C)]
 pub struct FfiAccountBalance {
-    account_id: u32,
+    account_uuid: [u8; 16],
 
     /// The value of unspent Sapling outputs belonging to the account.
     sapling_balance: FfiBalance,
@@ -1645,9 +1746,9 @@ pub struct FfiAccountBalance {
 }
 
 impl FfiAccountBalance {
-    fn new((account_id, balance): (&zip32::AccountId, &AccountBalance)) -> Self {
+    fn new((account_uuid, balance): (&AccountUuid, &AccountBalance)) -> Self {
         Self {
-            account_id: u32::from(*account_id),
+            account_uuid: account_uuid.expose_uuid().into_bytes(),
             sapling_balance: FfiBalance::new(balance.sapling_balance()),
             orchard_balance: FfiBalance::new(balance.orchard_balance()),
             unshielded: ZatBalance::from(balance.unshielded()).into(),
@@ -1702,27 +1803,13 @@ pub struct FfiWalletSummary {
 }
 
 impl FfiWalletSummary {
-    fn some<P: Parameters>(
-        db_data: &WalletDb<rusqlite::Connection, P>,
-        summary: WalletSummary<AccountId>,
-    ) -> anyhow::Result<*mut Self> {
+    fn some(summary: WalletSummary<AccountUuid>) -> anyhow::Result<*mut Self> {
         let (account_balances, account_balances_len) = {
             let account_balances: Vec<FfiAccountBalance> = summary
                 .account_balances()
                 .iter()
-                .map(|(account_id, balance)| {
-                    let account_index = match db_data
-                        .get_account(*account_id)?
-                        .expect("the account exists in the wallet")
-                        .source()
-                    {
-                        AccountSource::Derived { account_index, .. } => account_index,
-                        AccountSource::Imported { .. } => {
-                            unreachable!("Imported accounts are unimplemented")
-                        }
-                    };
-
-                    Ok::<_, anyhow::Error>(FfiAccountBalance::new((&account_index, balance)))
+                .map(|(account_uuid, balance)| {
+                    Ok::<_, anyhow::Error>(FfiAccountBalance::new((account_uuid, balance)))
                 })
                 .collect::<Result<_, _>>()?;
 
@@ -1795,7 +1882,7 @@ pub unsafe extern "C" fn zcashlc_get_wallet_summary(
             .get_wallet_summary(min_confirmations)
             .map_err(|e| anyhow!("Error while fetching wallet summary: {}", e))?
         {
-            Some(summary) => FfiWalletSummary::some(&db_data, summary),
+            Some(summary) => FfiWalletSummary::some(summary),
             None => Ok(FfiWalletSummary::none()),
         }
     });
@@ -2424,6 +2511,8 @@ pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///    of `1`.
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
 ///    512-byte array.
@@ -2433,7 +2522,7 @@ pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
 pub unsafe extern "C" fn zcashlc_propose_transfer(
     db_data: *const u8,
     db_data_len: usize,
-    account: i32,
+    account_uuid_bytes: *const u8,
     to: *const c_char,
     value: i64,
     memo: *const u8,
@@ -2446,7 +2535,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
             .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let account = account_id_from_ffi(&db_data, account)?;
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
         let to = unsafe { CStr::from_ptr(to) }.to_str()?;
         let value = Zatoshis::from_nonnegative_i64(value)
             .map_err(|_| anyhow!("Invalid amount, out of range"))?;
@@ -2474,7 +2563,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
-            account,
+            account_uuid,
             &input_selector,
             &change_strategy,
             req,
@@ -2501,6 +2590,8 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///    of `1`.
 /// - `payment_uri` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `network_id` a u32. 0 for Testnet and 1 for Mainnet
 /// - `min_confirmations` number of confirmations of the funds to spend
@@ -2511,7 +2602,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
     db_data: *const u8,
     db_data_len: usize,
-    account: i32,
+    account_uuid_bytes: *const u8,
     payment_uri: *const c_char,
     network_id: u32,
     min_confirmations: u32,
@@ -2522,7 +2613,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
             .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let account = account_id_from_ffi(&db_data, account)?;
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
         let payment_uri_str = unsafe { CStr::from_ptr(payment_uri) }.to_str()?;
 
         let (change_strategy, input_selector) = zip317_helper(None);
@@ -2533,7 +2624,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
-            account,
+            account_uuid,
             &input_selector,
             &change_strategy,
             req,
@@ -2585,6 +2676,8 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///    of `1`.
 /// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
@@ -2592,7 +2685,7 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 pub unsafe extern "C" fn zcashlc_propose_shielding(
     db_data: *const u8,
     db_data_len: usize,
-    account: i32,
+    account_uuid_bytes: *const u8,
     memo: *const u8,
     shielding_threshold: u64,
     transparent_receiver: *const c_char,
@@ -2603,7 +2696,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        let account = account_id_from_ffi(&db_data, account)?;
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
         let memo_bytes = if memo.is_null() {
             MemoBytes::empty()
@@ -2629,7 +2722,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                     }
                     Address::Transparent(addr) => {
                         if db_data
-                            .get_transparent_receivers(account)?
+                            .get_transparent_receivers(account_uuid)?
                             .contains_key(&addr)
                         {
                             Ok(Some(addr))
@@ -2651,11 +2744,11 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             })
             .and_then(|anchor| {
                 db_data
-                    .get_transparent_balances(account, anchor)
+                    .get_transparent_balances(account_uuid, anchor)
                     .map_err(|e| {
                         anyhow!(
                             "Error while fetching transparent balances for {:?}: {}",
-                            account,
+                            account_uuid,
                             e,
                         )
                     })
@@ -2686,7 +2779,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             &change_strategy,
             shielding_threshold,
             &from_addrs,
-            account,
+            account_uuid,
             min_confirmations,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;

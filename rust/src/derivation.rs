@@ -22,8 +22,7 @@ use zcash_client_backend::{
 use zcash_primitives::legacy::TransparentAddress;
 
 use crate::{
-    account_id_from_i32, decode_usk, free_ptr_from_vec, parse_network, unwrap_exc_or,
-    unwrap_exc_or_null, FFIBinaryKey, FfiBoxedSlice,
+    decode_usk, free_ptr_from_vec, parse_network, unwrap_exc_or, unwrap_exc_or_null, FfiBoxedSlice,
 };
 
 enum AddressType {
@@ -106,6 +105,13 @@ impl TryFromAddress for AddressMetadata {
             addr_type: AddressType::Tex,
         })
     }
+}
+
+fn zip32_account_index(account: i32) -> anyhow::Result<zip32::AccountId> {
+    u32::try_from(account)
+        .map_err(|_| ())
+        .and_then(|id| zip32::AccountId::try_from(id).map_err(|_| ()))
+        .map_err(|_| anyhow!("Invalid account ID"))
 }
 
 /// Returns the network type and address kind for the given address string,
@@ -309,17 +315,17 @@ pub unsafe extern "C" fn zcashlc_derive_spending_key(
     seed_len: usize,
     account: i32,
     network_id: u32,
-) -> *mut FFIBinaryKey {
+) -> *mut FfiBoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
-        let account = account_id_from_i32(account)?;
+        let account = zip32_account_index(account)?;
 
         UnifiedSpendingKey::from_seed(&network, seed, account)
             .map_err(|e| anyhow!("error generating unified spending key from seed: {:?}", e))
             .map(move |usk| {
                 let encoded = usk.to_bytes(Era::Orchard);
-                Box::into_raw(Box::new(FFIBinaryKey::new(account, encoded)))
+                FfiBoxedSlice::some(encoded)
             })
     });
     unwrap_exc_or_null(res)
@@ -518,7 +524,7 @@ pub unsafe extern "C" fn zcashlc_derive_arbitrary_account_key(
         let network = parse_network(network_id)?;
         let context_string = unsafe { slice::from_raw_parts(context_string, context_string_len) };
         let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
-        let account = account_id_from_i32(account)?;
+        let account = zip32_account_index(account)?;
 
         let key = arbitrary::SecretKey::from_path(
             context_string,
