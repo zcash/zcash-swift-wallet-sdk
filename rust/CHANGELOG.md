@@ -6,6 +6,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- `zcashlc_derive_address_ufvk`
+- `zcashlc_derive_address_uivk`
+
 ## 0.11.0 - 2024-11-15
 
 ### Added
