@@ -1750,7 +1750,7 @@ impl FfiAccountBalance {
             account_uuid: account_uuid.expose_uuid().into_bytes(),
             sapling_balance: FfiBalance::new(balance.sapling_balance()),
             orchard_balance: FfiBalance::new(balance.orchard_balance()),
-            unshielded: ZatBalance::from(balance.unshielded()).into(),
+            unshielded: ZatBalance::from(balance.unshielded_balance().total()).into(),
         }
     }
 }
