@@ -7,8 +7,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- `zcashlc_derive_address_ufvk`
-- `zcashlc_derive_address_uivk`
+- `zcashlc_derive_address_from_ufvk`
+- `zcashlc_derive_address_from_uivk`
+- `zcashlc_create_pczt_from_proposal`
+- `zcashlc_add_proofs_to_pczt`
+- `zcashlc_extract_and_store_from_pczt`
 
 ## 0.11.0 - 2024-11-15
 

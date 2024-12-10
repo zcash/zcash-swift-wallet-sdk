@@ -2,6 +2,9 @@
 
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
+use pczt::roles::combiner::Combiner;
+use pczt::roles::prover::Prover;
+use pczt::Pczt;
 use prost::Message;
 use secrecy::Secret;
 use std::array::TryFromSliceError;
@@ -19,6 +22,7 @@ use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
+use zcash_client_backend::data_api::wallet::extract_and_store_transaction_from_pczt;
 use zcash_client_backend::data_api::{AccountPurpose, TransactionStatus, Zip32Derivation};
 use zcash_client_backend::fees::zip317::MultiOutputChangeStrategy;
 use zcash_client_backend::fees::{SplitPolicy, StandardFeeRule};
@@ -32,7 +36,7 @@ use zcash_client_backend::{
         chain::{scan_cached_blocks, CommitmentTreeRoot, ScanSummary},
         scanning::ScanPriority,
         wallet::{
-            create_proposed_transactions, decrypt_and_store_transaction,
+            create_pczt_from_proposal, create_proposed_transactions, decrypt_and_store_transaction,
             input_selection::GreedyInputSelector, propose_shielding, propose_transfer,
         },
         Account, AccountBalance, AccountBirthday, Balance, InputSource, SeedRelevance,
@@ -457,8 +461,10 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
 /// - Call [`zcashlc_free_account`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
@@ -895,8 +901,10 @@ unsafe fn decode_usk(usk_ptr: *const u8, usk_len: usize) -> anyhow::Result<Unifi
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
@@ -937,8 +945,10 @@ pub unsafe extern "C" fn zcashlc_get_current_address(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
@@ -979,8 +989,10 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
 /// - Call [`zcashlc_free_keys`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
@@ -1077,8 +1089,10 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
     db_data: *const u8,
@@ -1198,8 +1212,10 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
-/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
     db_data: *const u8,
@@ -2512,6 +2528,8 @@ pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
 ///   documentation of pointer::offset.
 /// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
 ///    of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
 ///    512-byte array.
@@ -2591,6 +2609,8 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 ///   documentation of pointer::offset.
 /// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
 ///    of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
 /// - `payment_uri` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `network_id` a u32. 0 for Testnet and 1 for Mainnet
 /// - `min_confirmations` number of confirmations of the funds to spend
@@ -2677,6 +2697,8 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 ///   documentation of pointer::offset.
 /// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
 ///    of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
 /// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
@@ -2842,6 +2864,14 @@ pub unsafe extern "C" fn zcashlc_free_txids(ptr: *mut FfiTxIds) {
 /// Do not call this multiple times in parallel, or you will generate transactions that
 /// double-spend the same notes.
 ///
+/// # Parameters
+/// - `spend_params`: A pointer to a buffer containing the operating system path of the Sapling
+///   spend proving parameters, in the operating system's preferred path representation.
+/// - `spend_params_len`: the length of the `spend_params` buffer.
+/// - `output_params`: A pointer to a buffer containing the operating system path of the Sapling
+///   output proving parameters, in the operating system's preferred path representation.
+/// - `output_params_len`: the length of the `output_params` buffer.
+///
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must
@@ -2864,19 +2894,14 @@ pub unsafe extern "C" fn zcashlc_free_txids(ptr: *mut FfiTxIds) {
 ///   function call.
 /// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of `pointer::offset`.
-/// - `to` must be non-null and must point to a null-terminated UTF-8 string.
-/// - `memo` must either be null (indicating an empty memo or a transparent recipient) or
-///   point to a 512-byte array.
 /// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes,
-///   and it must have an alignment of `1`. Its contents must be the Sapling spend proving
-///   parameters.
+///   and it must have an alignment of `1`.
 /// - The memory referenced by `spend_params` must not be mutated for the duration of the
 ///   function call.
 /// - The total size `spend_params_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of `pointer::offset`.
 /// - `output_params` must be non-null and valid for reads for `output_params_len` bytes,
-///   and it must have an alignment of `1`. Its contents must be the Sapling output
-///   proving parameters.
+///   and it must have an alignment of `1`.
 /// - The memory referenced by `output_params` must not be mutated for the duration of the
 ///   function call.
 /// - The total size `output_params_len` must be no larger than `isize::MAX`. See the safety
@@ -2927,6 +2952,262 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
         Ok(FfiTxIds::ptr_from_vec(
             txids.into_iter().map(|txid| *txid.as_ref()).collect(),
         ))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Creates a partially-constructed (unsigned without proofs) transaction from the given proposal.
+///
+/// Returns the partially constructed transaction in the `postcard` format generated by the `pczt`
+/// crate.
+///
+/// Do not call this multiple times in parallel, or you will generate pczt instances that, if
+/// finalized, would double-spend the same notes.
+///
+/// # Parameters
+/// - `db_data`: A pointer to a buffer containing the operating system path of the wallet database,
+///   in the operating system's preferred path representation.
+/// - `db_data_len`: The length of the `db_data` buffer.
+/// - `proposal_ptr`: A pointer to a buffer containing an encoded `Proposal` protobuf.
+/// - `proposal_len`: The length of the `proposal_ptr` buffer.
+/// - `account_uuid_bytes`: A pointer to the 16-byte representaion of the account UUID.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `proposal_ptr` must be non-null and valid for reads for `proposal_len` bytes, and it
+///   must have an alignment of `1`.
+/// - The memory referenced by `proposal_ptr` must not be mutated for the duration of the
+///   function call.
+/// - The total size `proposal_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_create_pczt_from_proposal(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    proposal_ptr: *const u8,
+    proposal_len: usize,
+    account_uuid_bytes: *const u8,
+) -> *mut FfiBoxedSlice {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let proposal =
+            Proposal::decode(unsafe { slice::from_raw_parts(proposal_ptr, proposal_len) })
+                .map_err(|e| anyhow!("Invalid proposal: {}", e))?
+                .try_into_standard_proposal(&db_data)?;
+
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
+
+        if proposal.steps().len() == 1 {
+            let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
+                &mut db_data,
+                &network,
+                account_uuid,
+                OvkPolicy::Sender,
+                &proposal,
+            )
+            .map_err(|e| anyhow!("Error creating PCZT from single-step proposal: {}", e))?;
+
+            Ok(FfiBoxedSlice::some(pczt.serialize()))
+        } else {
+            Err(anyhow!(
+                "Multi-step proposals are not yet supported for PCZT generation."
+            ))
+        }
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Adds proofs to the given PCZT.
+///
+/// Returns the updated PCZT in its serialized format.
+///
+/// # Parameters
+/// - `pczt_ptr`: A pointer to a byte array containing the encoded partially-constructed
+///   transaction for which proofs will be computed.
+/// - `pczt_len`: The length of the `pczt_ptr` buffer.
+/// - `spend_params`: A pointer to a buffer containing the operating system path of the Sapling
+///   spend proving parameters, in the operating system's preferred path representation.
+/// - `spend_params_len`: the length of the `spend_params` buffer.
+/// - `output_params`: A pointer to a buffer containing the operating system path of the Sapling
+///   output proving parameters, in the operating system's preferred path representation.
+/// - `output_params_len`: the length of the `output_params` buffer.
+///
+/// # Safety
+///
+/// - `pczt_ptr` must be non-null and valid for reads for `pczt_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `pczt_ptr` must not be mutated for the duration of the function
+///   call.
+/// - The total size `pczt_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of `pointer::offset`.
+/// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must
+///   have an alignment of `1`.
+/// - The memory referenced by `spend_params` must not be mutated for the duration of the function
+///   call.
+/// - The total size `spend_params_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `output_params` must be non-null and valid for reads for `output_params_len` bytes, and it
+///   must have an alignment of `1`.
+/// - The memory referenced by `output_params` must not be mutated for the duration of the function
+///   call.
+/// - The total size `output_params_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub extern "C" fn zcashlc_add_proofs_to_pczt(
+    pczt_ptr: *const u8,
+    pczt_len: usize,
+    spend_params: *const u8,
+    spend_params_len: usize,
+    output_params: *const u8,
+    output_params_len: usize,
+) -> *mut FfiBoxedSlice {
+    let res = catch_panic(|| {
+        let pczt_bytes = unsafe { slice::from_raw_parts(pczt_ptr, pczt_len) };
+        let pczt = Pczt::parse(pczt_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
+        let spend_params = Path::new(OsStr::from_bytes(unsafe {
+            slice::from_raw_parts(spend_params, spend_params_len)
+        }));
+        let output_params = Path::new(OsStr::from_bytes(unsafe {
+            slice::from_raw_parts(output_params, output_params_len)
+        }));
+
+        let prover = LocalTxProver::new(spend_params, output_params);
+
+        let pczt_with_proofs = Prover::new(pczt)
+            .create_orchard_proof(&orchard::circuit::ProvingKey::build())
+            .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?
+            .create_sapling_proofs(&prover, &prover)
+            .map_err(|e| anyhow!("Failed to create Sapling proofs for PCZT: {:?}", e))?
+            .finish();
+
+        Ok(FfiBoxedSlice::some(pczt_with_proofs.serialize()))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Takes a PCZT that has been separately proven and signed, finalizes it, and stores it
+/// in the wallet.
+///
+/// Returns the txid of the completed transaction as a byte array.
+///
+/// # Parameters
+/// - `db_data`: A pointer to a buffer containing the operating system path of the wallet database,
+///   in the operating system's preferred path representation.
+/// - `db_data_len`: The length of the `db_data` buffer.
+/// - `pczt_with_proofs`: A pointer to a byte array containing the encoded partially-constructed
+///   transaction to which proofs have been added.
+/// - `pczt_with_proofs_len`: The length of the `pczt_with_proofs` buffer.
+/// - `pczt_with_sigs_ptr`: A pointer to a byte array containing the encoded partially-constructed
+///   transaction to which signatures have been added.
+/// - `pczt_with_sigs_len`: The length of the `pczt_with_sigs` buffer.
+/// - `spend_params`: A pointer to a buffer containing the operating system path of the Sapling
+///   spend proving parameters, in the operating system's preferred path representation.
+/// - `spend_params_len`: the length of the `spend_params` buffer.
+/// - `output_params`: A pointer to a buffer containing the operating system path of the Sapling
+///   output proving parameters, in the operating system's preferred path representation.
+/// - `output_params_len`: the length of the `output_params` buffer.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `pczt_with_proofs_ptr` must be non-null and valid for reads for `pczt_with_proofs_len` bytes,
+///   and it must have an alignment of `1`.
+/// - The memory referenced by `pczt_with_proofs_ptr` must not be mutated for the duration of the
+///   function call.
+/// - The total size `pczt_with_proofs_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `pczt_with_sigs_ptr` must be non-null and valid for reads for `pczt_with_sigs_len` bytes, and
+///   it must have an alignment of `1`.
+/// - The memory referenced by `pczt_with_sigs_ptr` must not be mutated for the duration of the
+///   function call.
+/// - The total size `pczt_with_sigs_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must
+///   have an alignment of `1`.
+/// - The memory referenced by `spend_params` must not be mutated for the duration of the function
+///   call.
+/// - The total size `spend_params_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of `pointer::offset`.
+/// - `output_params` must be non-null and valid for reads for `output_params_len` bytes, and it
+///   must have an alignment of `1`.
+/// - The memory referenced by `output_params` must not be mutated for the duration of the function
+///   call.
+/// - The total size `output_params_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned pointer
+///   when done using it.
+#[no_mangle]
+pub extern "C" fn zcashlc_extract_and_store_from_pczt(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    pczt_with_proofs_ptr: *const u8,
+    pczt_with_proofs_len: usize,
+    pczt_with_sigs_ptr: *const u8,
+    pczt_with_sigs_len: usize,
+    spend_params: *const u8,
+    spend_params_len: usize,
+    output_params: *const u8,
+    output_params_len: usize,
+) -> *mut FfiBoxedSlice {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let pczt_with_proofs_bytes =
+            unsafe { slice::from_raw_parts(pczt_with_proofs_ptr, pczt_with_proofs_len) };
+        let pczt_with_proofs =
+            Pczt::parse(pczt_with_proofs_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
+
+        let pczt_with_sigs_bytes =
+            unsafe { slice::from_raw_parts(pczt_with_sigs_ptr, pczt_with_sigs_len) };
+        let pczt_with_sigs =
+            Pczt::parse(pczt_with_sigs_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
+
+        let spend_params = Path::new(OsStr::from_bytes(unsafe {
+            slice::from_raw_parts(spend_params, spend_params_len)
+        }));
+        let output_params = Path::new(OsStr::from_bytes(unsafe {
+            slice::from_raw_parts(output_params, output_params_len)
+        }));
+
+        let prover = LocalTxProver::new(spend_params, output_params);
+        let (spend_vk, output_vk) = prover.verifying_keys();
+
+        let pczt = Combiner::new(vec![pczt_with_proofs, pczt_with_sigs])
+            .combine()
+            .map_err(|e| anyhow!("Failed to combine PCZTs: {:?}", e))?;
+
+        let txid = extract_and_store_transaction_from_pczt::<_, ()>(
+            &mut db_data,
+            pczt,
+            &spend_vk,
+            &output_vk,
+            &orchard::circuit::VerifyingKey::build(),
+        )
+        .map_err(|e| anyhow!("Failed to extract transaction from PCZT: {:?}", e))?;
+
+        Ok(FfiBoxedSlice::some(txid.as_ref().to_vec()))
     });
     unwrap_exc_or_null(res)
 }
