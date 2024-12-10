@@ -427,7 +427,7 @@ pub unsafe extern "C" fn zcashlc_free_ffi_address(ptr: *mut FfiAddress) {
 /// - Call [`zcashlc_free_ffi_address`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_address_ufvk(
+pub unsafe extern "C" fn zcashlc_derive_address_from_ufvk(
     network_id: u32,
     ufvk: *const c_char,
     diversifier_index_bytes: *const u8,
@@ -470,7 +470,7 @@ pub unsafe extern "C" fn zcashlc_derive_address_ufvk(
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_derive_address_uivk(
+pub unsafe extern "C" fn zcashlc_derive_address_from_uivk(
     network_id: u32,
     uivk: *const c_char,
     diversifier_index_bytes: *const u8,
