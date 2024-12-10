@@ -40,7 +40,7 @@ use zcash_client_backend::{
     },
     encoding::AddressCodec,
     fees::DustOutputPolicy,
-    keys::{DecodingError, Era, UnifiedAddressRequest, UnifiedSpendingKey},
+    keys::{DecodingError, Era, UnifiedSpendingKey},
     proto::{proposal::Proposal, service::TreeState},
     tor::http::cryptex,
     wallet::{NoteId, OvkPolicy, WalletTransparentOutput},
@@ -953,8 +953,7 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
-        let request = UnifiedAddressRequest::new(true, true, true).expect("have shielded receiver");
-        match db_data.get_next_available_address(account_uuid, request) {
+        match db_data.get_next_available_address(account_uuid, None) {
             Ok(Some(ua)) => {
                 let address_str = ua.encode(&network);
                 Ok(CString::new(address_str).unwrap().into_raw())
@@ -1751,7 +1750,7 @@ impl FfiAccountBalance {
             account_uuid: account_uuid.expose_uuid().into_bytes(),
             sapling_balance: FfiBalance::new(balance.sapling_balance()),
             orchard_balance: FfiBalance::new(balance.orchard_balance()),
-            unshielded: ZatBalance::from(balance.unshielded()).into(),
+            unshielded: ZatBalance::from(balance.unshielded_balance().total()).into(),
         }
     }
 }
