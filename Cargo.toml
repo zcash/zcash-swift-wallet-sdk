@@ -67,13 +67,13 @@ crate-type = ["staticlib"]
 lto = true
 
 [patch.crates-io]
-zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "67fe5f8c8851b17c4129c9f3a590dde00d59f667" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "67fe5f8c8851b17c4129c9f3a590dde00d59f667" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "67fe5f8c8851b17c4129c9f3a590dde00d59f667" }
-zcash_encoding = { git = "https://github.com/zcash/librustzcash.git", rev = "67fe5f8c8851b17c4129c9f3a590dde00d59f667" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "67fe5f8c8851b17c4129c9f3a590dde00d59f667" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "67fe5f8c8851b17c4129c9f3a590dde00d59f667" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "67fe5f8c8851b17c4129c9f3a590dde00d59f667" }
-pczt = { git = "https://github.com/zcash/librustzcash.git", rev = "67fe5f8c8851b17c4129c9f3a590dde00d59f667" }
+zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "1e274c892a11cd15f643f08ffa579166d60180bb" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "1e274c892a11cd15f643f08ffa579166d60180bb" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "1e274c892a11cd15f643f08ffa579166d60180bb" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash.git", rev = "1e274c892a11cd15f643f08ffa579166d60180bb" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "1e274c892a11cd15f643f08ffa579166d60180bb" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "1e274c892a11cd15f643f08ffa579166d60180bb" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "1e274c892a11cd15f643f08ffa579166d60180bb" }
+pczt = { git = "https://github.com/zcash/librustzcash.git", rev = "1e274c892a11cd15f643f08ffa579166d60180bb" }
 orchard = { git = "https://github.com/zcash/orchard.git", rev = "bcd08e1d23e70c42a338f3e3f79d6f4c0c219805" }
 sapling-crypto = { git = "https://github.com/zcash/sapling-crypto.git", rev = "29cff9683cdf2f0c522ff3224081dfb4fbc80248" }
