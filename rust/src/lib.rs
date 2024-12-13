@@ -1312,50 +1312,6 @@ pub unsafe extern "C" fn zcashlc_get_memo(
     unwrap_exc_or(res, false)
 }
 
-/// Returns the memo for a note, if it is known and a valid UTF-8 string.
-///
-/// # Safety
-///
-/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
-///   alignment of `1`. Its contents must be a string representing a valid system path in the
-///   operating system's preferred representation.
-/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
-/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
-///   documentation of pointer::offset.
-/// - `txid_bytes` must be non-null and valid for reads for 32 bytes, and it must have an alignment
-///   of `1`.
-/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
-///   when done using it.
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_get_memo_as_utf8(
-    db_data: *const u8,
-    db_data_len: usize,
-    txid_bytes: *const u8,
-    output_index: u16,
-    network_id: u32,
-) -> *mut c_char {
-    let res = catch_panic(|| {
-        let network = parse_network(network_id)?;
-        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-
-        let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, 32) };
-        let txid = TxId::read(txid_bytes)?;
-
-        let memo = db_data
-            .get_memo(NoteId::new(txid, ShieldedProtocol::Sapling, output_index))
-            .map_err(|e| anyhow!("An error occurred retrieving the memo: {}", e))
-            .and_then(|memo| match memo {
-                Some(Memo::Empty) => Ok("".to_string()),
-                Some(Memo::Text(memo)) => Ok(memo.into()),
-                None => Err(anyhow!("Memo not available")),
-                _ => Err(anyhow!("This memo does not contain UTF-8 text")),
-            })?;
-
-        Ok(CString::new(memo).unwrap().into_raw())
-    });
-    unwrap_exc_or_null(res)
-}
-
 #[no_mangle]
 /// Returns a ZIP-32 signature of the given seed bytes.
 ///
