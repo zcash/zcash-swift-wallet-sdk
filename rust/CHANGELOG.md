@@ -13,6 +13,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zcashlc_add_proofs_to_pczt`
 - `zcashlc_extract_and_store_from_pczt`
 
+### Removed
+- `zcashlc_get_memo_as_utf8`
+
 ## 0.11.0 - 2024-11-15
 
 ### Added
