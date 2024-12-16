@@ -13,6 +13,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zcashlc_add_proofs_to_pczt`
 - `zcashlc_extract_and_store_from_pczt`
 
+### Changed
+- Updated dependencies:
+  - `sapling-crypto 0.4`
+  - `orchard 0.10.1`
+  - `zcash_primitives 0.21`
+  - `zcash_proofs 0.21`
+  - `zcash_keys 0.6`
+  - `zcash_client_backend 0.16`
+  - `zcash_client_sqlite 0.14`
+
 ### Removed
 - `zcashlc_get_memo_as_utf8`
 
