@@ -1,6 +1,6 @@
 [package]
 name = "libzcashlc"
-version = "0.11.0"
+version = "0.12.0"
 authors = [
     "Jack Grigg <jack@electriccoin.co>",
     "Francisco Gindre",
@@ -14,17 +14,17 @@ build = "rust/build.rs"
 [dependencies]
 
 # Zcash
-orchard = "0.10"
-sapling = { package = "sapling-crypto", version = "0.3", default-features = false }
+orchard = "0.10.1"
+sapling = { package = "sapling-crypto", version = "0.4", default-features = false }
 zcash_address = { version = "0.6" }
-zcash_client_backend = { version = "0.15", features = ["orchard", "tor", "transparent-inputs", "unstable", "pczt"] }
-zcash_client_sqlite = { version = "0.13", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_backend = { version = "0.16", features = ["orchard", "tor", "transparent-inputs", "unstable", "pczt"] }
+zcash_client_sqlite = { version = "0.14", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
-zcash_primitives = "0.20"
-zcash_proofs = "0.20"
+zcash_primitives = "0.21"
+zcash_proofs = "0.21"
 zcash_protocol = "0.4"
 zip32 = "0.1.2"
-pczt = { version = "0.0.0", features = ["prover"] }
+pczt = { version = "0.1.0", features = ["prover"] }
 
 # Infrastructure
 prost = "0.13"
@@ -65,15 +65,3 @@ crate-type = ["staticlib"]
 
 [profile.release]
 lto = true
-
-[patch.crates-io]
-zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "702acff15593e6a3532436691205d633c28767fe" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "702acff15593e6a3532436691205d633c28767fe" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "702acff15593e6a3532436691205d633c28767fe" }
-zcash_encoding = { git = "https://github.com/zcash/librustzcash.git", rev = "702acff15593e6a3532436691205d633c28767fe" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "702acff15593e6a3532436691205d633c28767fe" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "702acff15593e6a3532436691205d633c28767fe" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "702acff15593e6a3532436691205d633c28767fe" }
-pczt = { git = "https://github.com/zcash/librustzcash.git", rev = "702acff15593e6a3532436691205d633c28767fe" }
-orchard = { git = "https://github.com/zcash/orchard.git", rev = "5b6cc68b746c4dab37e43d09314da98d5ee99c21" }
-sapling-crypto = { git = "https://github.com/zcash/sapling-crypto.git", rev = "29cff9683cdf2f0c522ff3224081dfb4fbc80248" }

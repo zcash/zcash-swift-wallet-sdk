@@ -63,7 +63,7 @@ use zcash_primitives::{
         Network::{MainNetwork, TestNetwork},
     },
     legacy::{self, TransparentAddress},
-    memo::{Memo, MemoBytes},
+    memo::MemoBytes,
     merkle_tree::HashSer,
     transaction::{
         components::{OutPoint, TxOut},
