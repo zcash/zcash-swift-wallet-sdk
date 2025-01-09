@@ -9,6 +9,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 0.12.0 - 2024-12-16
 
 ### Added
+- `FfiUuid`
+- `zcashlc_free_ffi_uuid`
+- `zcashlc_get_account`
+- `zcashlc_free_account`
+- `FfiAddress`
+- `zcashlc_free_ffi_address`
 - `zcashlc_derive_address_from_ufvk`
 - `zcashlc_derive_address_from_uivk`
 - `zcashlc_create_pczt_from_proposal`
@@ -24,6 +30,36 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `zcash_keys 0.6`
   - `zcash_client_backend 0.16`
   - `zcash_client_sqlite 0.14`
+- `FfiAccounts` now contains `FfiUuid`s instead of `FfiAccount`s.
+- `FfiAccount` has changed:
+  - It must now be freed with `zcashlc_free_account`.
+  - Added fields `uuid_bytes`, `account_name`, `key_source`.
+  - Renamed `account_index` field to `hd_account_index`.
+- The following structs now have an `account_uuid` field instead of an
+  `account_id` field:
+  - `FFIBinaryKey`
+  - `FFIEncodedKey`
+  - `FfiAccountBalance`
+- The following functions now have additional arguments `account_name` (which
+  must be set) and `key_source` (which may be null):
+  - `zcashlc_create_account`
+  - `zcashlc_import_account_ufvk`
+- `zcashlc_import_account_ufvk` now has additional arguments `seed_fingerprint`
+  and `hd_account_index_raw`, which must either both be set or both be "null"
+  values.
+- `zcashlc_import_account_ufvk` now returns `*mut FfiUuid` instead of `i32`.
+- The following functions now take an `account_uuid_bytes` pointer to a byte
+  array, instead of an `i32`:
+  - `zcashlc_get_current_address`
+  - `zcashlc_get_next_available_address`
+  - `zcashlc_list_transparent_receivers`
+  - `zcashlc_get_verified_transparent_balance_for_account`
+  - `zcashlc_get_total_transparent_balance_for_account`
+  - `zcashlc_propose_transfer`
+  - `zcashlc_propose_transfer_from_uri`
+  - `zcashlc_propose_shielding`
+- `zcashlc_derive_spending_key` now returns `*mut FfiBoxedSlice` instead of
+  `*mut FFIBinaryKey`.
 
 ### Removed
 - `zcashlc_get_memo_as_utf8`
