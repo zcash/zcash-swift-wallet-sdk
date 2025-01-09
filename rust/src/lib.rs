@@ -3025,7 +3025,7 @@ pub unsafe extern "C" fn zcashlc_create_pczt_from_proposal(
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
 #[no_mangle]
-pub extern "C" fn zcashlc_add_proofs_to_pczt(
+pub unsafe extern "C" fn zcashlc_add_proofs_to_pczt(
     pczt_ptr: *const u8,
     pczt_len: usize,
     spend_params: *const u8,
@@ -3113,7 +3113,7 @@ pub extern "C" fn zcashlc_add_proofs_to_pczt(
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[no_mangle]
-pub extern "C" fn zcashlc_extract_and_store_from_pczt(
+pub unsafe extern "C" fn zcashlc_extract_and_store_from_pczt(
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
