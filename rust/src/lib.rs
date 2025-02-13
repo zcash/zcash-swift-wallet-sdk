@@ -3405,7 +3405,16 @@ pub unsafe extern "C" fn zcashlc_create_tor_runtime(
             slice::from_raw_parts(tor_dir, tor_dir_len)
         }));
 
-        let tor = crate::tor::TorRuntime::create(tor_dir)?;
+        // iOS apps are run in sandboxes, so we can rely on them for enforcing that only
+        // the app can access its Tor data.
+        #[cfg(target_os = "ios")]
+        let dangerously_trust_everyone = true;
+
+        // On other platforms, have Tor manage its own file permissions.
+        #[cfg(not(target_os = "ios"))]
+        let dangerously_trust_everyone = false;
+
+        let tor = crate::tor::TorRuntime::create(tor_dir, dangerously_trust_everyone)?;
 
         Ok(Box::into_raw(Box::new(tor)))
     });

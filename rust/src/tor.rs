@@ -12,9 +12,16 @@ pub struct TorRuntime {
 
 impl TorRuntime {
     #[tracing::instrument]
-    pub(crate) fn create(tor_dir: &Path) -> anyhow::Result<Self> {
+    pub(crate) fn create(tor_dir: &Path, dangerously_trust_everyone: bool) -> anyhow::Result<Self> {
         let runtime = PreferredRuntime::create()?;
-        let client = runtime.block_on(async { Client::create(tor_dir).await })?;
+        let client = runtime.block_on(async {
+            Client::create(tor_dir, |permissions: &mut fs_mistrust::MistrustBuilder| {
+                if dangerously_trust_everyone {
+                    permissions.dangerously_trust_everyone();
+                }
+            })
+            .await
+        })?;
         Ok(Self { runtime, client })
     }
 
