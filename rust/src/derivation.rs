@@ -9,6 +9,7 @@ use std::os::raw::c_char;
 use std::slice;
 use zcash_client_backend::keys::UnifiedIncomingViewingKey;
 use zcash_primitives::consensus::{Network, NetworkConstants};
+use zcash_protocol::consensus::NetworkType;
 use zip32::{arbitrary, ChildIndex, DiversifierIndex};
 
 use zcash_address::{
@@ -37,7 +38,7 @@ enum AddressType {
 }
 
 struct AddressMetadata {
-    network: zcash_address::Network,
+    network: NetworkType,
     addr_type: AddressType,
 }
 
@@ -49,7 +50,7 @@ impl TryFromAddress for AddressMetadata {
     type Error = Void;
 
     fn try_from_sprout(
-        network: zcash_address::Network,
+        network: NetworkType,
         _data: [u8; 64],
     ) -> Result<Self, ConversionError<Self::Error>> {
         Ok(AddressMetadata {
@@ -59,7 +60,7 @@ impl TryFromAddress for AddressMetadata {
     }
 
     fn try_from_sapling(
-        network: zcash_address::Network,
+        network: NetworkType,
         _data: [u8; 43],
     ) -> Result<Self, ConversionError<Self::Error>> {
         Ok(AddressMetadata {
@@ -69,7 +70,7 @@ impl TryFromAddress for AddressMetadata {
     }
 
     fn try_from_unified(
-        network: zcash_address::Network,
+        network: NetworkType,
         _data: unified::Address,
     ) -> Result<Self, ConversionError<Self::Error>> {
         Ok(AddressMetadata {
@@ -79,7 +80,7 @@ impl TryFromAddress for AddressMetadata {
     }
 
     fn try_from_transparent_p2pkh(
-        network: zcash_address::Network,
+        network: NetworkType,
         _data: [u8; 20],
     ) -> Result<Self, ConversionError<Self::Error>> {
         Ok(AddressMetadata {
@@ -89,7 +90,7 @@ impl TryFromAddress for AddressMetadata {
     }
 
     fn try_from_transparent_p2sh(
-        network: zcash_address::Network,
+        network: NetworkType,
         _data: [u8; 20],
     ) -> Result<Self, ConversionError<Self::Error>> {
         Ok(AddressMetadata {
@@ -99,7 +100,7 @@ impl TryFromAddress for AddressMetadata {
     }
 
     fn try_from_tex(
-        network: zcash_address::Network,
+        network: NetworkType,
         _data: [u8; 20],
     ) -> Result<Self, ConversionError<Self::Error>> {
         Ok(AddressMetadata {
@@ -145,9 +146,9 @@ pub unsafe extern "C" fn zcashlc_get_address_metadata(
         let addr_meta: AddressMetadata = zaddr.convert().unwrap();
         unsafe {
             *network_id_ret = match addr_meta.network {
-                zcash_address::Network::Main => 1,
-                zcash_address::Network::Test => 0,
-                zcash_address::Network::Regtest => {
+                NetworkType::Main => 1,
+                NetworkType::Test => 0,
+                NetworkType::Regtest => {
                     return Err(anyhow!("Regtest addresses are not supported."));
                 }
             };

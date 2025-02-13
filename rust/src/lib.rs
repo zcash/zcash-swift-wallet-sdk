@@ -7,6 +7,11 @@ use pczt::roles::prover::Prover;
 use pczt::Pczt;
 use prost::Message;
 use secrecy::Secret;
+use transparent::{
+    address::TransparentAddress,
+    bundle::{OutPoint, TxOut},
+};
+
 use std::array::TryFromSliceError;
 use std::convert::{Infallible, TryFrom, TryInto};
 use std::error::Error;
@@ -18,6 +23,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::ptr;
 use std::slice;
+
 use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
@@ -49,7 +55,6 @@ use zcash_client_backend::{
     tor::http::cryptex,
     wallet::{NoteId, OvkPolicy, WalletTransparentOutput},
     zip321::{Payment, TransactionRequest},
-    ShieldedProtocol,
 };
 use zcash_client_sqlite::{
     chain::{init::init_blockmeta_db, BlockMeta},
@@ -62,17 +67,16 @@ use zcash_primitives::{
         BlockHeight, BranchId, Network,
         Network::{MainNetwork, TestNetwork},
     },
-    legacy::{self, TransparentAddress},
     memo::MemoBytes,
     merkle_tree::HashSer,
-    transaction::{
-        components::{OutPoint, TxOut},
-        Transaction, TxId,
-    },
+    transaction::{Transaction, TxId},
     zip32::fingerprint::SeedFingerprint,
 };
 use zcash_proofs::prover::LocalTxProver;
-use zcash_protocol::value::{ZatBalance, Zatoshis};
+use zcash_protocol::{
+    value::{ZatBalance, Zatoshis},
+    ShieldedProtocol,
+};
 
 mod derivation;
 mod ffi;
@@ -2131,7 +2135,7 @@ pub unsafe extern "C" fn zcashlc_put_utxo(
         txid.copy_from_slice(txid_bytes);
 
         let script_bytes = unsafe { slice::from_raw_parts(script_bytes, script_bytes_len) };
-        let script_pubkey = legacy::Script(script_bytes.to_vec());
+        let script_pubkey = transparent::address::Script(script_bytes.to_vec());
 
         let output = WalletTransparentOutput::from_parts(
             OutPoint::new(txid, index as u32),
