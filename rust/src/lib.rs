@@ -2,9 +2,10 @@
 
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
-use pczt::roles::combiner::Combiner;
-use pczt::roles::prover::Prover;
-use pczt::Pczt;
+use pczt::{
+    roles::{combiner::Combiner, prover::Prover, redactor::Redactor},
+    Pczt,
+};
 use prost::Message;
 use secrecy::Secret;
 use transparent::{
@@ -2987,6 +2988,60 @@ pub unsafe extern "C" fn zcashlc_create_pczt_from_proposal(
                 "Multi-step proposals are not yet supported for PCZT generation."
             ))
         }
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Redacts information from the given PCZT that is unnecessary for the Signer role.
+///
+/// Returns the updated PCZT in its serialized format.
+///
+/// # Parameters
+/// - `pczt_ptr`: A pointer to a byte array containing the encoded partially-constructed
+///   transaction to be redacted.
+/// - `pczt_len`: The length of the `pczt_ptr` buffer.
+///
+/// # Safety
+///
+/// - `pczt_ptr` must be non-null and valid for reads for `pczt_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `pczt_ptr` must not be mutated for the duration of the function
+///   call.
+/// - The total size `pczt_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of `pointer::offset`.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_redact_pczt_for_signer(
+    pczt_ptr: *const u8,
+    pczt_len: usize,
+) -> *mut FfiBoxedSlice {
+    let res = catch_panic(|| {
+        let pczt_bytes = unsafe { slice::from_raw_parts(pczt_ptr, pczt_len) };
+        let pczt = Pczt::parse(pczt_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
+
+        let redacted_pczt = Redactor::new(pczt)
+            .redact_global_with(|mut r| r.redact_proprietary("zcash_client_backend:proposal_info"))
+            .redact_orchard_with(|mut r| {
+                r.redact_actions(|mut ar| {
+                    ar.clear_spend_witness();
+                    ar.redact_output_proprietary("zcash_client_backend:output_info");
+                })
+            })
+            .redact_sapling_with(|mut r| {
+                r.redact_spends(|mut sr| sr.clear_witness());
+                r.redact_outputs(|mut or| {
+                    or.redact_proprietary("zcash_client_backend:output_info")
+                });
+            })
+            .redact_transparent_with(|mut r| {
+                r.redact_outputs(|mut or| {
+                    or.redact_proprietary("zcash_client_backend:output_info")
+                });
+            })
+            .finish();
+
+        Ok(FfiBoxedSlice::some(redacted_pczt.serialize()))
     });
     unwrap_exc_or_null(res)
 }
