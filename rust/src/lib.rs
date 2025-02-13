@@ -3046,6 +3046,43 @@ pub unsafe extern "C" fn zcashlc_redact_pczt_for_signer(
     unwrap_exc_or_null(res)
 }
 
+/// Returns `true` if this PCZT requires Sapling proofs (and thus the caller needs to have
+/// downloaded them).
+///
+/// # Parameters
+/// - `pczt_ptr`: A pointer to a byte array containing the encoded partially-constructed
+///   transaction to be redacted.
+/// - `pczt_len`: The length of the `pczt_ptr` buffer.
+///
+/// # Safety
+///
+/// - `pczt_ptr` must be non-null and valid for reads for `pczt_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `pczt_ptr` must not be mutated for the duration of the function
+///   call.
+/// - The total size `pczt_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of `pointer::offset`.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_pczt_requires_sapling_proofs(
+    pczt_ptr: *const u8,
+    pczt_len: usize,
+) -> bool {
+    let res = catch_panic(|| {
+        let pczt_bytes = unsafe { slice::from_raw_parts(pczt_ptr, pczt_len) };
+        let pczt = Pczt::parse(pczt_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
+
+        let prover = Prover::new(pczt);
+
+        Ok(prover.requires_sapling_proofs())
+    });
+
+    // The only error we can encounter here is an invalid PCZT. Pretend we don't need
+    // Sapling proofs so the caller doesn't block on Sapling parameter fetching, and
+    // instead calls `zcashlc_add_proofs_to_pczt` which will report the same error
+    // correctly.
+    unwrap_exc_or(res, false)
+}
+
 /// Adds proofs to the given PCZT.
 ///
 /// Returns the updated PCZT in its serialized format.

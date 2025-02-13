@@ -7,6 +7,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- `zcashlc_pczt_requires_sapling_proofs`
 - `zcashlc_redact_pczt_for_signer`
 
 ### Changed
