@@ -3095,21 +3095,39 @@ pub unsafe extern "C" fn zcashlc_add_proofs_to_pczt(
     let res = catch_panic(|| {
         let pczt_bytes = unsafe { slice::from_raw_parts(pczt_ptr, pczt_len) };
         let pczt = Pczt::parse(pczt_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
-        let spend_params = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(spend_params, spend_params_len)
-        }));
-        let output_params = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(output_params, output_params_len)
-        }));
 
-        let prover = LocalTxProver::new(spend_params, output_params);
+        let mut prover = Prover::new(pczt);
 
-        let pczt_with_proofs = Prover::new(pczt)
-            .create_orchard_proof(&orchard::circuit::ProvingKey::build())
-            .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?
-            .create_sapling_proofs(&prover, &prover)
-            .map_err(|e| anyhow!("Failed to create Sapling proofs for PCZT: {:?}", e))?
-            .finish();
+        if prover.requires_orchard_proof() {
+            prover = prover
+                .create_orchard_proof(&orchard::circuit::ProvingKey::build())
+                .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
+        }
+        assert!(!prover.requires_orchard_proof());
+
+        if prover.requires_sapling_proofs() {
+            if spend_params.is_null() {
+                return Err(anyhow!("Sapling Spend parameters are required"));
+            }
+            if output_params.is_null() {
+                return Err(anyhow!("Sapling Output parameters are required"));
+            }
+
+            let spend_params = Path::new(OsStr::from_bytes(unsafe {
+                slice::from_raw_parts(spend_params, spend_params_len)
+            }));
+            let output_params = Path::new(OsStr::from_bytes(unsafe {
+                slice::from_raw_parts(output_params, output_params_len)
+            }));
+            let local_prover = LocalTxProver::new(spend_params, output_params);
+
+            prover = prover
+                .create_sapling_proofs(&local_prover, &local_prover)
+                .map_err(|e| anyhow!("Failed to create Sapling proofs for PCZT: {:?}", e))?;
+        }
+        assert!(!prover.requires_sapling_proofs());
+
+        let pczt_with_proofs = prover.finish();
 
         Ok(FfiBoxedSlice::some(pczt_with_proofs.serialize()))
     });
