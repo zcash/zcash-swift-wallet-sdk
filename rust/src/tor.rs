@@ -32,4 +32,23 @@ impl TorRuntime {
     pub(crate) fn client(&self) -> &Client {
         &self.client
     }
+
+    /// Returns a new isolated `TorRuntime ` handle.
+    ///
+    /// The two `TorRuntime `s will share internal state and configuration, but their
+    /// streams will never share circuits with one another.
+    ///
+    /// Use this method when you want separate parts of your program to each have a
+    /// `TorRuntime ` handle, but where you don't want their activities to be linkable to
+    /// one another over the Tor network.
+    ///
+    /// Calling this method is usually preferable to creating a completely separate
+    /// `TorRuntime ` instance, since it can share its internals with the existing
+    /// `TorRuntime `.
+    pub(crate) fn isolated_client(&self) -> Self {
+        Self {
+            runtime: self.runtime.clone(),
+            client: self.client.isolated_client(),
+        }
+    }
 }

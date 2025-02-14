@@ -16,6 +16,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zcashlc_free_symmetric_keys`
 - `zcashlc_pczt_requires_sapling_proofs`
 - `zcashlc_redact_pczt_for_signer`
+- `zcashlc_tor_isolated_client`
 
 ### Changed
 - MSRV is now 1.84.
