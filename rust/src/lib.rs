@@ -2,11 +2,17 @@
 
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
-use pczt::roles::combiner::Combiner;
-use pczt::roles::prover::Prover;
-use pczt::Pczt;
+use pczt::{
+    roles::{combiner::Combiner, prover::Prover, redactor::Redactor},
+    Pczt,
+};
 use prost::Message;
 use secrecy::Secret;
+use transparent::{
+    address::TransparentAddress,
+    bundle::{OutPoint, TxOut},
+};
+
 use std::array::TryFromSliceError;
 use std::convert::{Infallible, TryFrom, TryInto};
 use std::error::Error;
@@ -18,6 +24,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::ptr;
 use std::slice;
+
 use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
@@ -49,7 +56,6 @@ use zcash_client_backend::{
     tor::http::cryptex,
     wallet::{NoteId, OvkPolicy, WalletTransparentOutput},
     zip321::{Payment, TransactionRequest},
-    ShieldedProtocol,
 };
 use zcash_client_sqlite::{
     chain::{init::init_blockmeta_db, BlockMeta},
@@ -62,17 +68,16 @@ use zcash_primitives::{
         BlockHeight, BranchId, Network,
         Network::{MainNetwork, TestNetwork},
     },
-    legacy::{self, TransparentAddress},
     memo::MemoBytes,
     merkle_tree::HashSer,
-    transaction::{
-        components::{OutPoint, TxOut},
-        Transaction, TxId,
-    },
+    transaction::{Transaction, TxId},
     zip32::fingerprint::SeedFingerprint,
 };
 use zcash_proofs::prover::LocalTxProver;
-use zcash_protocol::value::{ZatBalance, Zatoshis};
+use zcash_protocol::{
+    value::{ZatBalance, Zatoshis},
+    ShieldedProtocol,
+};
 
 mod derivation;
 mod ffi;
@@ -2131,7 +2136,7 @@ pub unsafe extern "C" fn zcashlc_put_utxo(
         txid.copy_from_slice(txid_bytes);
 
         let script_bytes = unsafe { slice::from_raw_parts(script_bytes, script_bytes_len) };
-        let script_pubkey = legacy::Script(script_bytes.to_vec());
+        let script_pubkey = transparent::address::Script(script_bytes.to_vec());
 
         let output = WalletTransparentOutput::from_parts(
             OutPoint::new(txid, index as u32),
@@ -2987,6 +2992,97 @@ pub unsafe extern "C" fn zcashlc_create_pczt_from_proposal(
     unwrap_exc_or_null(res)
 }
 
+/// Redacts information from the given PCZT that is unnecessary for the Signer role.
+///
+/// Returns the updated PCZT in its serialized format.
+///
+/// # Parameters
+/// - `pczt_ptr`: A pointer to a byte array containing the encoded partially-constructed
+///   transaction to be redacted.
+/// - `pczt_len`: The length of the `pczt_ptr` buffer.
+///
+/// # Safety
+///
+/// - `pczt_ptr` must be non-null and valid for reads for `pczt_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `pczt_ptr` must not be mutated for the duration of the function
+///   call.
+/// - The total size `pczt_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of `pointer::offset`.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_redact_pczt_for_signer(
+    pczt_ptr: *const u8,
+    pczt_len: usize,
+) -> *mut FfiBoxedSlice {
+    let res = catch_panic(|| {
+        let pczt_bytes = unsafe { slice::from_raw_parts(pczt_ptr, pczt_len) };
+        let pczt = Pczt::parse(pczt_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
+
+        let redacted_pczt = Redactor::new(pczt)
+            .redact_global_with(|mut r| r.redact_proprietary("zcash_client_backend:proposal_info"))
+            .redact_orchard_with(|mut r| {
+                r.redact_actions(|mut ar| {
+                    ar.clear_spend_witness();
+                    ar.redact_output_proprietary("zcash_client_backend:output_info");
+                })
+            })
+            .redact_sapling_with(|mut r| {
+                r.redact_spends(|mut sr| sr.clear_witness());
+                r.redact_outputs(|mut or| {
+                    or.redact_proprietary("zcash_client_backend:output_info")
+                });
+            })
+            .redact_transparent_with(|mut r| {
+                r.redact_outputs(|mut or| {
+                    or.redact_proprietary("zcash_client_backend:output_info")
+                });
+            })
+            .finish();
+
+        Ok(FfiBoxedSlice::some(redacted_pczt.serialize()))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Returns `true` if this PCZT requires Sapling proofs (and thus the caller needs to have
+/// downloaded them).
+///
+/// # Parameters
+/// - `pczt_ptr`: A pointer to a byte array containing the encoded partially-constructed
+///   transaction to be redacted.
+/// - `pczt_len`: The length of the `pczt_ptr` buffer.
+///
+/// # Safety
+///
+/// - `pczt_ptr` must be non-null and valid for reads for `pczt_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `pczt_ptr` must not be mutated for the duration of the function
+///   call.
+/// - The total size `pczt_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of `pointer::offset`.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_pczt_requires_sapling_proofs(
+    pczt_ptr: *const u8,
+    pczt_len: usize,
+) -> bool {
+    let res = catch_panic(|| {
+        let pczt_bytes = unsafe { slice::from_raw_parts(pczt_ptr, pczt_len) };
+        let pczt = Pczt::parse(pczt_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
+
+        let prover = Prover::new(pczt);
+
+        Ok(prover.requires_sapling_proofs())
+    });
+
+    // The only error we can encounter here is an invalid PCZT. Pretend we don't need
+    // Sapling proofs so the caller doesn't block on Sapling parameter fetching, and
+    // instead calls `zcashlc_add_proofs_to_pczt` which will report the same error
+    // correctly.
+    unwrap_exc_or(res, false)
+}
+
 /// Adds proofs to the given PCZT.
 ///
 /// Returns the updated PCZT in its serialized format.
@@ -3036,21 +3132,39 @@ pub unsafe extern "C" fn zcashlc_add_proofs_to_pczt(
     let res = catch_panic(|| {
         let pczt_bytes = unsafe { slice::from_raw_parts(pczt_ptr, pczt_len) };
         let pczt = Pczt::parse(pczt_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
-        let spend_params = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(spend_params, spend_params_len)
-        }));
-        let output_params = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(output_params, output_params_len)
-        }));
 
-        let prover = LocalTxProver::new(spend_params, output_params);
+        let mut prover = Prover::new(pczt);
 
-        let pczt_with_proofs = Prover::new(pczt)
-            .create_orchard_proof(&orchard::circuit::ProvingKey::build())
-            .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?
-            .create_sapling_proofs(&prover, &prover)
-            .map_err(|e| anyhow!("Failed to create Sapling proofs for PCZT: {:?}", e))?
-            .finish();
+        if prover.requires_orchard_proof() {
+            prover = prover
+                .create_orchard_proof(&orchard::circuit::ProvingKey::build())
+                .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
+        }
+        assert!(!prover.requires_orchard_proof());
+
+        if prover.requires_sapling_proofs() {
+            if spend_params.is_null() {
+                return Err(anyhow!("Sapling Spend parameters are required"));
+            }
+            if output_params.is_null() {
+                return Err(anyhow!("Sapling Output parameters are required"));
+            }
+
+            let spend_params = Path::new(OsStr::from_bytes(unsafe {
+                slice::from_raw_parts(spend_params, spend_params_len)
+            }));
+            let output_params = Path::new(OsStr::from_bytes(unsafe {
+                slice::from_raw_parts(output_params, output_params_len)
+            }));
+            let local_prover = LocalTxProver::new(spend_params, output_params);
+
+            prover = prover
+                .create_sapling_proofs(&local_prover, &local_prover)
+                .map_err(|e| anyhow!("Failed to create Sapling proofs for PCZT: {:?}", e))?;
+        }
+        assert!(!prover.requires_sapling_proofs());
+
+        let pczt_with_proofs = prover.finish();
 
         Ok(FfiBoxedSlice::some(pczt_with_proofs.serialize()))
     });
@@ -3405,7 +3519,16 @@ pub unsafe extern "C" fn zcashlc_create_tor_runtime(
             slice::from_raw_parts(tor_dir, tor_dir_len)
         }));
 
-        let tor = crate::tor::TorRuntime::create(tor_dir)?;
+        // iOS apps are run in sandboxes, so we can rely on them for enforcing that only
+        // the app can access its Tor data.
+        #[cfg(target_os = "ios")]
+        let dangerously_trust_everyone = true;
+
+        // On other platforms, have Tor manage its own file permissions.
+        #[cfg(not(target_os = "ios"))]
+        let dangerously_trust_everyone = false;
+
+        let tor = crate::tor::TorRuntime::create(tor_dir, dangerously_trust_everyone)?;
 
         Ok(Box::into_raw(Box::new(tor)))
     });
