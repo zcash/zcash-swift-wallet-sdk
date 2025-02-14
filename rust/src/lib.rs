@@ -2868,6 +2868,131 @@ pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd(
     )
 }
 
+/// Connects to the lightwalletd server at the given endpoint.
+///
+/// Each connection returned by this method is isolated from any other Tor usage.
+///
+/// # Safety
+///
+/// - `tor_runtime` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut TorRuntime` that has not previously been freed.
+/// - `tor_runtime` must not be passed to two FFI calls at the same time.
+/// - `endpoint` must be non-null and must point to a null-terminated UTF-8 string.
+/// - Call [`zcashlc_free_tor_lwd_conn`] to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_tor_connect_to_lightwalletd(
+    tor_runtime: *mut TorRuntime,
+    endpoint: *const c_char,
+) -> *mut tor::LwdConn {
+    // SAFETY: We ensure unwind safety by:
+    // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `TorRuntime` whenever we get an error that is due to a panic.
+    let tor_runtime = AssertUnwindSafe(tor_runtime);
+
+    let res = catch_panic(|| {
+        let tor_runtime =
+            unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
+
+        let endpoint = unsafe { CStr::from_ptr(endpoint).to_str()? }
+            .try_into()
+            .map_err(|e| anyhow!("Invalid lightwalletd endpoint: {e}"))?;
+
+        let lwd_conn = tor_runtime.connect_to_lightwalletd(endpoint)?;
+
+        Ok(Box::into_raw(Box::new(lwd_conn)))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Frees a Tor lightwalletd connection.
+///
+/// # Safety
+///
+/// - If `ptr` is non-null, it must be a pointer returned by a `zcashlc_*` method with
+///   return type `*mut tor::LwdConn` that has not previously been freed.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_tor_lwd_conn(ptr: *mut tor::LwdConn) {
+    if !ptr.is_null() {
+        let s: Box<tor::LwdConn> = unsafe { Box::from_raw(ptr) };
+        drop(s);
+    }
+}
+
+/// Fetches the transaction with the given ID.
+///
+/// # Safety
+///
+/// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut tor::LwdConn` that has not previously been freed.
+/// - `lwd_conn` must not be passed to two FFI calls at the same time.
+/// - `txid_bytes` must be non-null and valid for reads for 32 bytes, and it must have an alignment
+///   of `1`.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
+    lwd_conn: *mut tor::LwdConn,
+    txid_bytes: *const u8,
+) -> *mut ffi::BoxedSlice {
+    // SAFETY: We ensure unwind safety by:
+    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    let lwd_conn = AssertUnwindSafe(lwd_conn);
+
+    let res = catch_panic(|| {
+        let lwd_conn = unsafe { lwd_conn.as_mut() }
+            .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
+
+        let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, 32) };
+        let txid = TxId::from_bytes(txid_bytes.try_into().unwrap());
+
+        let tx = lwd_conn.get_transaction(txid)?;
+
+        Ok(ffi::BoxedSlice::some(tx))
+    });
+    unwrap_exc_or(res, ffi::BoxedSlice::none())
+}
+
+/// Submits a transaction to the Zcash network via the given lightwalletd connection.
+///
+/// # Safety
+///
+/// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut tor::LwdConn` that has not previously been freed.
+/// - `lwd_conn` must not be passed to two FFI calls at the same time.
+/// - `tx` must be non-null and valid for reads for `tx_len` bytes, and it must have an
+///   alignment of `1`.
+/// - The memory referenced by `tx` must not be mutated for the duration of the function call.
+/// - The total size `tx_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_tor_lwd_conn_submit_transaction(
+    lwd_conn: *mut tor::LwdConn,
+    tx: *const u8,
+    tx_len: usize,
+) -> bool {
+    // SAFETY: We ensure unwind safety by:
+    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    let lwd_conn = AssertUnwindSafe(lwd_conn);
+
+    let res = catch_panic(|| {
+        let lwd_conn = unsafe { lwd_conn.as_mut() }
+            .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
+
+        let tx_bytes = unsafe { slice::from_raw_parts(tx, tx_len) };
+
+        lwd_conn.send_transaction(tx_bytes.to_vec())?;
+
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
+}
+
 //
 // Utility functions
 //
