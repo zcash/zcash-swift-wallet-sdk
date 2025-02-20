@@ -8,7 +8,7 @@ use std::mem::ManuallyDrop;
 use std::os::raw::c_char;
 use std::slice;
 use zcash_client_backend::keys::UnifiedIncomingViewingKey;
-use zcash_primitives::consensus::{Network, NetworkConstants};
+use zcash_primitives::consensus::NetworkConstants;
 use zcash_protocol::consensus::NetworkType;
 use zip32::{arbitrary, ChildIndex, DiversifierIndex};
 
@@ -23,10 +23,7 @@ use zcash_client_backend::{
 };
 use zcash_primitives::legacy::TransparentAddress;
 
-use crate::{
-    decode_usk, free_ptr_from_vec, parse_network, unwrap_exc_or, unwrap_exc_or_null,
-    zcashlc_string_free, FfiBoxedSlice,
-};
+use crate::{decode_usk, ffi, free_ptr_from_vec, parse_network, unwrap_exc_or, unwrap_exc_or_null};
 
 enum AddressType {
     Sprout,
@@ -318,7 +315,7 @@ pub unsafe extern "C" fn zcashlc_derive_spending_key(
     seed_len: usize,
     hd_account_index: i32,
     network_id: u32,
-) -> *mut FfiBoxedSlice {
+) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
@@ -328,7 +325,7 @@ pub unsafe extern "C" fn zcashlc_derive_spending_key(
             .map_err(|e| anyhow!("error generating unified spending key from seed: {:?}", e))
             .map(move |usk| {
                 let encoded = usk.to_bytes(Era::Orchard);
-                FfiBoxedSlice::some(encoded)
+                ffi::BoxedSlice::some(encoded)
             })
     });
     unwrap_exc_or_null(res)
@@ -377,44 +374,6 @@ impl zcash_address::TryFromRawAddress for UnifiedAddressParser {
     }
 }
 
-/// A struct that contains a Zcash unified address, along with the diversifier index used to
-/// generate that address.
-#[repr(C)]
-pub struct FfiAddress {
-    address: *mut c_char,
-    diversifier_index_bytes: [u8; 11],
-}
-
-impl FfiAddress {
-    fn new(
-        network: &Network,
-        address: UnifiedAddress,
-        diversifier_index: DiversifierIndex,
-    ) -> Self {
-        let address_str = address.encode(network);
-        Self {
-            address: CString::new(address_str).unwrap().into_raw(),
-            diversifier_index_bytes: *diversifier_index.as_bytes(),
-        }
-    }
-}
-
-/// Frees a FfiAddress value
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiAddress`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_ffi_address(ptr: *mut FfiAddress) {
-    if !ptr.is_null() {
-        let ffi_address: Box<FfiAddress> = unsafe { Box::from_raw(ptr) };
-        if !(ffi_address.address.is_null()) {
-            unsafe { zcashlc_string_free(ffi_address.address) }
-        }
-        drop(ffi_address);
-    }
-}
-
 /// Derives a unified address address for the provided UFVK, along with the diversifier at which it
 /// was derived; this may not be equal to the provided diversifier index if no valid Sapling
 /// address could be derived at that index. If the `diversifier_index_bytes` parameter is null, the
@@ -432,7 +391,7 @@ pub unsafe extern "C" fn zcashlc_derive_address_from_ufvk(
     network_id: u32,
     ufvk: *const c_char,
     diversifier_index_bytes: *const u8,
-) -> *mut FfiAddress {
+) -> *mut ffi::Address {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let ufvk_str = unsafe { CStr::from_ptr(ufvk).to_str()? };
@@ -453,7 +412,7 @@ pub unsafe extern "C" fn zcashlc_derive_address_from_ufvk(
             ufvk.find_address(j, None)
         }?;
 
-        Ok(Box::into_raw(Box::new(FfiAddress::new(&network, ua, di))))
+        Ok(Box::into_raw(Box::new(ffi::Address::new(&network, ua, di))))
     });
     unwrap_exc_or_null(res)
 }
@@ -475,7 +434,7 @@ pub unsafe extern "C" fn zcashlc_derive_address_from_uivk(
     network_id: u32,
     uivk: *const c_char,
     diversifier_index_bytes: *const u8,
-) -> *mut FfiAddress {
+) -> *mut ffi::Address {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let uivk_str = unsafe { CStr::from_ptr(uivk).to_str()? };
@@ -496,7 +455,7 @@ pub unsafe extern "C" fn zcashlc_derive_address_from_uivk(
             uivk.find_address(j, None)
         }?;
 
-        Ok(Box::into_raw(Box::new(FfiAddress::new(&network, ua, di))))
+        Ok(Box::into_raw(Box::new(ffi::Address::new(&network, ua, di))))
     });
     unwrap_exc_or_null(res)
 }
@@ -608,14 +567,14 @@ pub unsafe extern "C" fn zcashlc_derive_arbitrary_wallet_key(
     context_string_len: usize,
     seed: *const u8,
     seed_len: usize,
-) -> *mut FfiBoxedSlice {
+) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let context_string = unsafe { slice::from_raw_parts(context_string, context_string_len) };
         let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
 
         let key = arbitrary::SecretKey::from_path(context_string, seed, &[]);
 
-        Ok(FfiBoxedSlice::some(key.data().to_vec()))
+        Ok(ffi::BoxedSlice::some(key.data().to_vec()))
     });
     unwrap_exc_or_null(res)
 }
@@ -646,7 +605,7 @@ pub unsafe extern "C" fn zcashlc_derive_arbitrary_account_key(
     seed_len: usize,
     account: i32,
     network_id: u32,
-) -> *mut FfiBoxedSlice {
+) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let context_string = unsafe { slice::from_raw_parts(context_string, context_string_len) };
@@ -663,7 +622,7 @@ pub unsafe extern "C" fn zcashlc_derive_arbitrary_account_key(
             ],
         );
 
-        Ok(FfiBoxedSlice::some(key.data().to_vec()))
+        Ok(ffi::BoxedSlice::some(key.data().to_vec()))
     });
     unwrap_exc_or_null(res)
 }
