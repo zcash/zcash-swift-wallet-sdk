@@ -6,7 +6,7 @@ use std::{
 use tracing::{span, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
-use crate::ffi::{os_signpost_id_generate, os_signpost_id_t};
+use crate::ffi::sys::{os_signpost_id_generate, os_signpost_id_t};
 
 use super::OsLog;
 
