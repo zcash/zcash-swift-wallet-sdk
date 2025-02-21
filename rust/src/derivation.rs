@@ -7,10 +7,12 @@ use std::ffi::{CStr, CString};
 use std::mem::ManuallyDrop;
 use std::os::raw::c_char;
 use std::slice;
+
+use zcash_address::unified::Item as _;
 use zcash_client_backend::keys::UnifiedIncomingViewingKey;
 use zcash_primitives::consensus::NetworkConstants;
-use zcash_protocol::consensus::NetworkType;
-use zip32::{arbitrary, ChildIndex, DiversifierIndex};
+use zcash_protocol::consensus::{NetworkType, Parameters};
+use zip32::{arbitrary, registered::PathElement, ChainCode, ChildIndex, DiversifierIndex};
 
 use zcash_address::{
     unified::{self, Container, Encoding},
@@ -534,6 +536,179 @@ pub unsafe extern "C" fn zcashlc_get_sapling_receiver_for_unified_address(
                 "Unified Address doesn't contain a Sapling receiver"
             ))
         }
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Constructs an ffi::AccountMetadataKey from its parts.
+///
+/// # Safety
+///
+/// - `sk` must be non-null and valid for reads for 32 bytes, and it must have an alignment of `1`.
+/// - The memory referenced by `sk` must not be mutated for the duration of the function call.
+/// - `chain_code` must be non-null and valid for reads for 32 bytes, and it must have an alignment
+///   of `1`.
+/// - The memory referenced by `chain_code` must not be mutated for the duration of the function
+///   call.
+/// - Call [`zcashlc_free_account_metadata_key`] to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_account_metadata_key_from_parts(
+    sk: *const u8,
+    chain_code: *const u8,
+) -> *mut ffi::AccountMetadataKey {
+    let res = catch_panic(|| {
+        let sk = unsafe { slice::from_raw_parts(sk, 32) }.try_into().unwrap();
+        let chain_code = ChainCode::new(
+            unsafe { slice::from_raw_parts(chain_code, 32) }
+                .try_into()
+                .unwrap(),
+        );
+
+        let key = zip32::registered::SecretKey::from_parts(sk, chain_code);
+
+        Ok(ffi::AccountMetadataKey::new(key))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Derives a ZIP 325 Account Metadata Key from the given seed.
+///
+/// # Safety
+///
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes.
+/// - The memory referenced by `seed` must not be mutated for the duration of the function call.
+/// - The total size `seed_len` must be no larger than `isize::MAX`. See the safety documentation
+///   of `pointer::offset`.
+/// - Call [`zcashlc_free_account_metadata_key`] to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_derive_account_metadata_key(
+    seed: *const u8,
+    seed_len: usize,
+    account: i32,
+    network_id: u32,
+) -> *mut ffi::AccountMetadataKey {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let seed = unsafe { slice::from_raw_parts(seed, seed_len) };
+        let account = zip32_account_index(account)?;
+
+        let key = zip32::registered::SecretKey::from_subpath(
+            b"MetadataKeys",
+            seed,
+            325,
+            &[
+                PathElement::new(ChildIndex::hardened(network.coin_type()), &[]),
+                PathElement::new(ChildIndex::hardened(account.into()), &[]),
+            ],
+        )?;
+
+        Ok(ffi::AccountMetadataKey::new(key))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Derives a metadata key for private use from a ZIP 325 Account Metadata Key.
+///
+/// - `ufvk` is the external UFVK for which a metadata key is required, or `null` if the
+///   metadata key is "inherent" (for the same account as the Account Metadata Key).
+/// - `private_use_subject` is a globally unique non-empty sequence of at most 252 bytes
+///   that identifies the desired private-use context.
+///
+/// If `ufvk` is null, this function will return a single 32-byte metadata key.
+///
+/// If `ufvk` is non-null, this function will return one metadata key for every FVK item
+/// contained within the UFVK, in preference order. As UFVKs may in general change over
+/// time (due to the inclusion of new higher-preference FVK items, or removal of older
+/// deprecated FVK items), private usage of these keys should always follow preference
+/// order:
+/// - For encryption-like private usage, the first key in the array should always be
+///   used, and all other keys ignored.
+/// - For decryption-like private usage, each key in the array should be tried in turn
+///   until metadata can be recovered, and then the metadata should be re-encrypted
+///   under the first key.
+///
+/// # Safety
+///
+/// - `account_metadata_key` must be non-null and must point to a struct having the layout
+///   of [`ffi::AccountMetadataKey`].
+/// - The memory referenced by `account_metadata_key` must not be mutated for the duration
+///   of the function call.
+/// - If `ufvk` is non-null, it must point to a null-terminated UTF-8 string.
+/// - `private_use_subject` must be non-null and valid for reads for `private_use_subject_len`
+///   bytes.
+/// - The memory referenced by `private_use_subject` must not be mutated for the duration
+///   of the function call.
+/// - The total size `private_use_subject_len` must be no larger than `isize::MAX`. See
+///   the safety documentation of `pointer::offset`.
+/// - Call `zcashlc_free_symmetric_keys` to free the memory associated with the returned
+///   pointer when done using it.
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_derive_private_use_metadata_key(
+    account_metadata_key: *const ffi::AccountMetadataKey,
+    ufvk: *const c_char,
+    private_use_subject: *const u8,
+    private_use_subject_len: usize,
+    network_id: u32,
+) -> *mut ffi::SymmetricKeys {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let account_metadata_key = unsafe { account_metadata_key.as_ref() }
+            .ok_or(anyhow!("An AccountMetadataKey is required"))?;
+        let ufvk_str = (!ufvk.is_null())
+            .then(|| unsafe { CStr::from_ptr(ufvk) }.to_str())
+            .transpose()?;
+        let private_use_subject =
+            unsafe { slice::from_raw_parts(private_use_subject, private_use_subject_len) };
+
+        let private_use_keys = match ufvk_str {
+            // For the inherent subtree, there is only ever one key.
+            None => vec![account_metadata_key
+                .inner
+                .derive_child_with_tag(ChildIndex::hardened(0), &[])
+                .derive_child_with_tag(ChildIndex::PRIVATE_USE, &private_use_subject)],
+            // For the external subtree, we derive keys from the UFVK's items.
+            Some(ufvk_string) => {
+                let (net, ufvk) =
+                    unified::Ufvk::decode(&ufvk_string).map_err(|e| anyhow!("{e}"))?;
+                let expected_net = network.network_type();
+                if net != expected_net {
+                    return Err(anyhow!(
+                        "UFVK is for network {:?} but we expected {:?}",
+                        net,
+                        expected_net,
+                    ));
+                }
+
+                // Any metadata should always be associated with the key derived from the
+                // most preferred FVK item. However, we don't know which FVK items the
+                // UFVK contained the last time we were asked to derive keys. So we derive
+                // every key and return them to the caller in preference order. If the
+                // caller finds data associated with an older FVK item, they will migrate
+                // it to the first key we return.
+                ufvk.items()
+                    .into_iter()
+                    .map(|fvk_item| {
+                        account_metadata_key
+                            .inner
+                            .derive_child_with_tag(ChildIndex::hardened(1), &[])
+                            .derive_child_with_tag(
+                                ChildIndex::hardened(0),
+                                &fvk_item.typed_encoding(),
+                            )
+                            .derive_child_with_tag(ChildIndex::PRIVATE_USE, &private_use_subject)
+                    })
+                    .collect()
+            }
+        };
+
+        Ok(ffi::SymmetricKeys::ptr_from_vec(
+            private_use_keys
+                .into_iter()
+                .map(|txid| *txid.data())
+                .collect(),
+        ))
     });
     unwrap_exc_or_null(res)
 }

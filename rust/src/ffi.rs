@@ -638,15 +638,32 @@ pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut BoxedSlice) {
 ///   by `ptr` must be no larger than isize::MAX. See the safety documentation of
 ///   `pointer::offset`.
 #[repr(C)]
-pub struct TxIds {
+pub struct SymmetricKeys {
     ptr: *mut [u8; 32],
     len: usize, // number of elems
 }
 
-impl TxIds {
+impl SymmetricKeys {
     pub fn ptr_from_vec(v: Vec<[u8; 32]>) -> *mut Self {
         let (ptr, len) = ptr_from_vec(v);
-        Box::into_raw(Box::new(TxIds { ptr, len }))
+        Box::into_raw(Box::new(SymmetricKeys { ptr, len }))
+    }
+}
+
+pub type TxIds = SymmetricKeys;
+
+/// Frees an array of `[u8; 32]` values.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of
+///   [`SymmetricKeys`]. See the safety documentation of [`SymmetricKeys`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_symmetric_keys(ptr: *mut SymmetricKeys) {
+    if !ptr.is_null() {
+        let s: Box<SymmetricKeys> = unsafe { Box::from_raw(ptr) };
+        free_ptr_from_vec(s.ptr, s.len);
+        drop(s);
     }
 }
 
@@ -658,11 +675,7 @@ impl TxIds {
 ///   See the safety documentation of [`TxIds`].
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_free_txids(ptr: *mut TxIds) {
-    if !ptr.is_null() {
-        let s: Box<TxIds> = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec(s.ptr, s.len);
-        drop(s);
-    }
+    unsafe { zcashlc_free_symmetric_keys(ptr) };
 }
 
 /// Metadata about the status of a transaction obtained by inspecting the chain state.
@@ -830,5 +843,29 @@ pub unsafe extern "C" fn zcashlc_free_ffi_address(ptr: *mut Address) {
             unsafe { zcashlc_string_free(ffi_address.address) }
         }
         drop(ffi_address);
+    }
+}
+
+/// A struct that contains a ZIP 325 Account Metadata Key.
+pub struct AccountMetadataKey {
+    pub(crate) inner: zip32::registered::SecretKey,
+}
+
+impl AccountMetadataKey {
+    pub(crate) fn new(inner: zip32::registered::SecretKey) -> *mut Self {
+        Box::into_raw(Box::new(AccountMetadataKey { inner }))
+    }
+}
+
+/// Frees an AccountMetadataKey value
+///
+/// # Safety
+///
+/// - `ptr` must either be null or point to a struct having the layout of [`AccountMetadataKey`].
+#[no_mangle]
+pub unsafe extern "C" fn zcashlc_free_account_metadata_key(ptr: *mut AccountMetadataKey) {
+    if !ptr.is_null() {
+        let key: Box<AccountMetadataKey> = unsafe { Box::from_raw(ptr) };
+        drop(key);
     }
 }
