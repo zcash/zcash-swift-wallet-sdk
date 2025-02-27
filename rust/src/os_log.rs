@@ -5,7 +5,7 @@ use std::{
 
 use tracing::Level;
 
-use crate::ffi::{
+use crate::ffi::sys::{
     os_log_create, os_log_t, os_log_type_t, os_log_type_t_OS_LOG_TYPE_DEBUG,
     os_log_type_t_OS_LOG_TYPE_ERROR, os_log_type_t_OS_LOG_TYPE_INFO, os_log_with_type_rs,
     os_release, os_signpost_id_t, os_signpost_interval_begin_rs, os_signpost_interval_end_rs,

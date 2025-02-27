@@ -40,14 +40,14 @@ use zcash_address::ZcashAddress;
 use zcash_client_backend::{
     address::Address,
     data_api::{
-        chain::{scan_cached_blocks, CommitmentTreeRoot, ScanSummary},
+        chain::{scan_cached_blocks, CommitmentTreeRoot},
         scanning::ScanPriority,
         wallet::{
             create_pczt_from_proposal, create_proposed_transactions, decrypt_and_store_transaction,
             input_selection::GreedyInputSelector, propose_shielding, propose_transfer,
         },
-        Account, AccountBalance, AccountBirthday, Balance, InputSource, SeedRelevance,
-        TransactionDataRequest, WalletCommitmentTrees, WalletRead, WalletSummary, WalletWrite,
+        Account, AccountBirthday, InputSource, SeedRelevance, TransactionDataRequest,
+        WalletCommitmentTrees, WalletRead, WalletWrite,
     },
     encoding::AddressCodec,
     fees::DustOutputPolicy,
@@ -319,109 +319,6 @@ pub unsafe extern "C" fn zcashlc_init_data_database(
     unwrap_exc_or(res, -1)
 }
 
-/// A struct that contains a 16-byte account uuid along with key derivation metadata for that
-/// account.
-///
-/// A returned value containing the all-zeros seed fingerprint and/or u32::MAX for the
-/// hd_account_index indicates that no derivation metadata is available.
-#[repr(C)]
-pub struct FfiAccount {
-    uuid_bytes: [u8; 16],
-    account_name: *mut c_char,
-    key_source: *mut c_char,
-    seed_fingerprint: [u8; 32],
-    hd_account_index: u32,
-}
-
-impl FfiAccount {
-    const NOT_FOUND: FfiAccount = FfiAccount {
-        uuid_bytes: [0u8; 16],
-        account_name: ptr::null_mut(),
-        key_source: ptr::null_mut(),
-        seed_fingerprint: [0u8; 32],
-        hd_account_index: u32::MAX,
-    };
-
-    fn from_account(
-        account: &impl zcash_client_backend::data_api::Account<AccountId = AccountUuid>,
-    ) -> Self {
-        let derivation = account.source().key_derivation();
-        FfiAccount {
-            uuid_bytes: account.id().expose_uuid().into_bytes(),
-            account_name: account.name().map_or(ptr::null_mut(), |name| {
-                CString::new(name).unwrap().into_raw()
-            }),
-            key_source: account
-                .source()
-                .key_source()
-                .map_or(ptr::null_mut(), |s| CString::new(s).unwrap().into_raw()),
-            seed_fingerprint: derivation.map_or([0u8; 32], |d| d.seed_fingerprint().to_bytes()),
-            hd_account_index: derivation.map_or(u32::MAX, |d| d.account_index().into()),
-        }
-    }
-}
-
-/// Frees a FfiAccount value
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiAccount`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_account(ptr: *mut FfiAccount) {
-    if !ptr.is_null() {
-        let account: Box<FfiAccount> = unsafe { Box::from_raw(ptr) };
-        if !(account.account_name.is_null()) {
-            unsafe { zcashlc_string_free(account.account_name) }
-        }
-        if !(account.key_source.is_null()) {
-            unsafe { zcashlc_string_free(account.key_source) }
-        }
-        drop(account);
-    }
-}
-
-/// A struct that contains a pointer to, and length information for, a heap-allocated
-/// slice of [`FfiUuid`] values.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FfiUuid>()`
-///   many bytes, and it must be properly aligned. This means in particular:
-///   - The entire memory range pointed to by `ptr` must be contained within a single allocated
-///     object. Slices can never span across multiple allocated objects.
-///   - `ptr` must be non-null and aligned even for zero-length slices.
-///   - `ptr` must point to `len` consecutive properly initialized values of type
-///     [`FfiUuid`].
-/// - The total size `len * mem::size_of::<FfiUuid>()` of the slice pointed to
-///   by `ptr` must be no larger than isize::MAX. See the safety documentation of pointer::offset.
-#[repr(C)]
-pub struct FfiAccounts {
-    ptr: *mut FfiUuid,
-    len: usize, // number of elems
-}
-
-impl FfiAccounts {
-    pub fn ptr_from_vec(v: Vec<FfiUuid>) -> *mut Self {
-        let (ptr, len) = ptr_from_vec(v);
-        Box::into_raw(Box::new(FfiAccounts { ptr, len }))
-    }
-}
-
-/// Frees an array of FfiAccounts values as allocated by `zcashlc_list_accounts`.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiAccounts`].
-///   See the safety documentation of [`FfiAccounts`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_accounts(ptr: *mut FfiAccounts) {
-    if !ptr.is_null() {
-        let s: Box<FfiAccounts> = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec(s.ptr, s.len);
-        drop(s);
-    }
-}
-
 /// Returns a list of the accounts in the wallet.
 ///
 /// # Safety
@@ -439,23 +336,23 @@ pub unsafe extern "C" fn zcashlc_list_accounts(
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
-) -> *mut FfiAccounts {
+) -> *mut ffi::Accounts {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        Ok(FfiAccounts::ptr_from_vec(
+        Ok(ffi::Accounts::ptr_from_vec(
             db_data
                 .get_account_ids()?
                 .into_iter()
-                .map(FfiUuid::new)
+                .map(ffi::Uuid::new)
                 .collect::<Vec<_>>(),
         ))
     });
     unwrap_exc_or_null(res)
 }
 
-/// Returns the account data for the specified account identifier, or the [`FfiAccount::NOT_FOUND`]
+/// Returns the account data for the specified account identifier, or the [`ffi::Account::NOT_FOUND`]
 /// sentinel value if the account id does not correspond to an account in the wallet.
 ///
 /// # Safety
@@ -478,7 +375,7 @@ pub unsafe extern "C" fn zcashlc_get_account(
     db_data_len: usize,
     network_id: u32,
     account_uuid_bytes: *const u8,
-) -> *mut FfiAccount {
+) -> *mut ffi::Account {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -487,51 +384,12 @@ pub unsafe extern "C" fn zcashlc_get_account(
         Ok(Box::into_raw(Box::new(
             db_data
                 .get_account(account_uuid)?
-                .map_or(FfiAccount::NOT_FOUND, |account| {
-                    FfiAccount::from_account(&account)
+                .map_or(ffi::Account::NOT_FOUND, |account| {
+                    ffi::Account::from_account(&account)
                 }),
         )))
     });
     unwrap_exc_or_null(res)
-}
-
-/// A struct that contains an account identifier along with a pointer to the binary encoding
-/// of an associated key.
-///
-/// # Safety
-///
-/// - `encoding` must be non-null and must point to an array of `encoding_len` bytes.
-#[repr(C)]
-pub struct FFIBinaryKey {
-    account_uuid: [u8; 16],
-    encoding: *mut u8,
-    encoding_len: usize,
-}
-
-impl FFIBinaryKey {
-    fn new(account_uuid: AccountUuid, key_bytes: Vec<u8>) -> Self {
-        let (encoding, encoding_len) = ptr_from_vec(key_bytes);
-        FFIBinaryKey {
-            account_uuid: account_uuid.expose_uuid().into_bytes(),
-            encoding,
-            encoding_len,
-        }
-    }
-}
-
-/// Frees a FFIBinaryKey value
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FFIBinaryKey`].
-///   See the safety documentation of [`FFIBinaryKey`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_binary_key(ptr: *mut FFIBinaryKey) {
-    if !ptr.is_null() {
-        let key: Box<FFIBinaryKey> = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec(key.encoding, key.encoding_len);
-        drop(key);
-    }
 }
 
 /// Adds the next available account-level spend authority, given the current set of [ZIP 316]
@@ -583,7 +441,7 @@ pub unsafe extern "C" fn zcashlc_create_account(
     network_id: u32,
     account_name: *const c_char,
     key_source: *const c_char,
-) -> *mut FFIBinaryKey {
+) -> *mut ffi::BinaryKey {
     use zcash_client_backend::data_api::BirthdayError;
 
     let res = catch_panic(|| {
@@ -615,39 +473,12 @@ pub unsafe extern "C" fn zcashlc_create_account(
             .map_err(|e| anyhow!("Error while initializing accounts: {}", e))?;
 
         let encoded = usk.to_bytes(Era::Orchard);
-        Ok(Box::into_raw(Box::new(FFIBinaryKey::new(
+        Ok(Box::into_raw(Box::new(ffi::BinaryKey::new(
             account_uuid,
             encoded,
         ))))
     });
     unwrap_exc_or_null(res)
-}
-
-/// A struct that contains a 16-byte account uuid.
-#[repr(C)]
-pub struct FfiUuid {
-    uuid_bytes: [u8; 16],
-}
-
-impl FfiUuid {
-    fn new(account_uuid: AccountUuid) -> Self {
-        FfiUuid {
-            uuid_bytes: account_uuid.expose_uuid().into_bytes(),
-        }
-    }
-}
-
-/// Frees a FfiUuid value
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiUuid`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_ffi_uuid(ptr: *mut FfiUuid) {
-    if !ptr.is_null() {
-        let key: Box<FfiUuid> = unsafe { Box::from_raw(ptr) };
-        drop(key);
-    }
 }
 
 /// Adds a new account to the wallet by importing the UFVK that will be used to detect incoming
@@ -693,7 +524,7 @@ pub unsafe extern "C" fn zcashlc_import_account_ufvk(
     key_source: *const c_char,
     seed_fingerprint: *const u8,
     hd_account_index_raw: u32,
-) -> *mut FfiUuid {
+) -> *mut ffi::Uuid {
     use zcash_client_backend::data_api::BirthdayError;
 
     let res = catch_panic(|| {
@@ -756,7 +587,7 @@ pub unsafe extern "C" fn zcashlc_import_account_ufvk(
             .import_account_ufvk(account_name, &ufvk, &birthday, purpose, key_source)
             .map_err(|e| anyhow!("Error while initializing accounts: {}", e))?;
 
-        Ok(Box::into_raw(Box::new(FfiUuid::new(account.id()))))
+        Ok(Box::into_raw(Box::new(ffi::Uuid::new(account.id()))))
     });
     unwrap_exc_or_null(res)
 }
@@ -801,70 +632,6 @@ pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_any_derived_account(
         })
     });
     unwrap_exc_or(res, -1)
-}
-
-/// A struct that contains an account identifier along with a pointer to the string encoding
-/// of an associated key.
-///
-/// # Safety
-///
-/// - `encoding` must be non-null and must point to a null-terminated UTF-8 string.
-#[repr(C)]
-pub struct FFIEncodedKey {
-    account_uuid: [u8; 16],
-    encoding: *mut c_char,
-}
-
-impl FFIEncodedKey {
-    fn new(account_uuid: AccountUuid, key_str: &str) -> Self {
-        FFIEncodedKey {
-            account_uuid: account_uuid.expose_uuid().into_bytes(),
-            encoding: CString::new(key_str).unwrap().into_raw(),
-        }
-    }
-}
-
-/// A struct that contains a pointer to, and length information for, a heap-allocated
-/// slice of [`FFIEncodedKey`] values.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FFIEncodedKey>()`
-///   many bytes, and it must be properly aligned. This means in particular:
-///   - The entire memory range pointed to by `ptr` must be contained within a single allocated
-///     object. Slices can never span across multiple allocated objects.
-///   - `ptr` must be non-null and aligned even for zero-length slices.
-///   - `ptr` must point to `len` consecutive properly initialized values of type
-///     [`FFIEncodedKey`].
-/// - The total size `len * mem::size_of::<FFIEncodedKey>()` of the slice pointed to
-///   by `ptr` must be no larger than isize::MAX. See the safety documentation of pointer::offset.
-/// - See the safety documentation of [`FFIEncodedKey`]
-#[repr(C)]
-pub struct FFIEncodedKeys {
-    ptr: *mut FFIEncodedKey,
-    len: usize, // number of elems
-}
-
-impl FFIEncodedKeys {
-    pub fn ptr_from_vec(v: Vec<FFIEncodedKey>) -> *mut Self {
-        let (ptr, len) = ptr_from_vec(v);
-        Box::into_raw(Box::new(FFIEncodedKeys { ptr, len }))
-    }
-}
-
-/// Frees an array of `FFIEncodedKeys` values as allocated by `zcashlc_list_transparent_receivers`.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FFIEncodedKeys`].
-///   See the safety documentation of [`FFIEncodedKeys`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut FFIEncodedKeys) {
-    if !ptr.is_null() {
-        let s: Box<FFIEncodedKeys> = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec_with(s.ptr, s.len, |k| unsafe { zcashlc_string_free(k.encoding) });
-        drop(s);
-    }
 }
 
 /// A private utility function to reduce duplication across functions that take an USK
@@ -1006,7 +773,7 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
     db_data_len: usize,
     account_uuid_bytes: *const u8,
     network_id: u32,
-) -> *mut FFIEncodedKeys {
+) -> *mut ffi::EncodedKeys {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -1018,11 +785,11 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
                     .keys()
                     .map(|receiver| {
                         let address_str = receiver.encode(&network);
-                        FFIEncodedKey::new(account_uuid, &address_str)
+                        ffi::EncodedKey::new(account_uuid, &address_str)
                     })
                     .collect::<Vec<_>>();
 
-                Ok(FFIEncodedKeys::ptr_from_vec(keys))
+                Ok(ffi::EncodedKeys::ptr_from_vec(keys))
             }
             Err(e) => Err(anyhow!("Error while fetching transparent receivers: {}", e)),
         }
@@ -1414,43 +1181,6 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
     unwrap_exc_or(res, -1)
 }
 
-/// A struct that contains a subtree root.
-///
-/// # Safety
-///
-/// - `root_hash_ptr` must be non-null and must be valid for reads for `root_hash_ptr_len`
-///   bytes, and it must have an alignment of `1`.
-/// - The total size `root_hash_ptr_len` of the slice pointed to by `root_hash_ptr` must
-///   be no larger than `isize::MAX`. See the safety documentation of `pointer::offset`.
-#[repr(C)]
-pub struct FfiSubtreeRoot {
-    root_hash_ptr: *mut u8,
-    root_hash_ptr_len: usize,
-    completing_block_height: u32,
-}
-
-/// A struct that contains a pointer to, and length information for, a heap-allocated
-/// slice of [`FfiSubtreeRoot`] values.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FfiSubtreeRoot>()`
-///   many bytes, and it must be properly aligned. This means in particular:
-///   - The entire memory range pointed to by `ptr` must be contained within a single
-///     allocated object. Slices can never span across multiple allocated objects.
-///   - `ptr` must be non-null and aligned even for zero-length slices.
-///   - `ptr` must point to `len` consecutive properly initialized values of type
-///     [`FfiSubtreeRoot`].
-/// - The total size `len * mem::size_of::<FfiSubtreeRoot>()` of the slice pointed to
-///   by `ptr` must be no larger than isize::MAX. See the safety documentation of
-///   `pointer::offset`.
-/// - See the safety documentation of [`FfiSubtreeRoot`]
-#[repr(C)]
-pub struct FfiSubtreeRoots {
-    ptr: *mut FfiSubtreeRoot,
-    len: usize, // number of elems
-}
-
 /// Adds a sequence of Sapling subtree roots to the data store.
 ///
 /// Returns true if the subtrees could be stored, false otherwise. When false is returned,
@@ -1471,7 +1201,7 @@ pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
     db_data: *const u8,
     db_data_len: usize,
     start_index: u64,
-    roots: *const FfiSubtreeRoots,
+    roots: *const ffi::SubtreeRoots,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
@@ -1479,7 +1209,8 @@ pub unsafe extern "C" fn zcashlc_put_sapling_subtree_roots(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let roots = unsafe { roots.as_ref().unwrap() };
-        let roots_slice: &[FfiSubtreeRoot] = unsafe { slice::from_raw_parts(roots.ptr, roots.len) };
+        let roots_slice: &[ffi::SubtreeRoot] =
+            unsafe { slice::from_raw_parts(roots.ptr, roots.len) };
 
         let roots = roots_slice
             .iter()
@@ -1523,7 +1254,7 @@ pub unsafe extern "C" fn zcashlc_put_orchard_subtree_roots(
     db_data: *const u8,
     db_data_len: usize,
     start_index: u64,
-    roots: *const FfiSubtreeRoots,
+    roots: *const ffi::SubtreeRoots,
     network_id: u32,
 ) -> bool {
     let res = catch_panic(|| {
@@ -1531,7 +1262,8 @@ pub unsafe extern "C" fn zcashlc_put_orchard_subtree_roots(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let roots = unsafe { roots.as_ref().unwrap() };
-        let roots_slice: &[FfiSubtreeRoot] = unsafe { slice::from_raw_parts(roots.ptr, roots.len) };
+        let roots_slice: &[ffi::SubtreeRoot] =
+            unsafe { slice::from_raw_parts(roots.ptr, roots.len) };
 
         let roots = roots_slice
             .iter()
@@ -1668,167 +1400,6 @@ pub unsafe extern "C" fn zcashlc_max_scanned_height(
     unwrap_exc_or(res, -2)
 }
 
-/// Balance information for a value within a single pool in an account.
-#[repr(C)]
-pub struct FfiBalance {
-    /// The value in the account that may currently be spent; it is possible to compute witnesses
-    /// for all the notes that comprise this value, and all of this value is confirmed to the
-    /// required confirmation depth.
-    spendable_value: i64,
-
-    /// The value in the account of shielded change notes that do not yet have sufficient
-    /// confirmations to be spendable.
-    change_pending_confirmation: i64,
-
-    /// The value in the account of all remaining received notes that either do not have sufficient
-    /// confirmations to be spendable, or for which witnesses cannot yet be constructed without
-    /// additional scanning.
-    value_pending_spendability: i64,
-}
-
-impl FfiBalance {
-    fn new(balance: &Balance) -> Self {
-        Self {
-            spendable_value: ZatBalance::from(balance.spendable_value()).into(),
-            change_pending_confirmation: ZatBalance::from(balance.change_pending_confirmation())
-                .into(),
-            value_pending_spendability: ZatBalance::from(balance.value_pending_spendability())
-                .into(),
-        }
-    }
-}
-
-/// Balance information for a single account.
-///
-/// The sum of this struct's fields is the total balance of the account.
-#[repr(C)]
-pub struct FfiAccountBalance {
-    account_uuid: [u8; 16],
-
-    /// The value of unspent Sapling outputs belonging to the account.
-    sapling_balance: FfiBalance,
-
-    /// The value of unspent Orchard outputs belonging to the account.
-    orchard_balance: FfiBalance,
-
-    /// The value of all unspent transparent outputs belonging to the account,
-    /// irrespective of confirmation depth.
-    ///
-    /// Unshielded balances are not subject to confirmation-depth constraints, because the
-    /// only possible operation on a transparent balance is to shield it, it is possible
-    /// to create a zero-conf transaction to perform that shielding, and the resulting
-    /// shielded notes will be subject to normal confirmation rules.
-    unshielded: i64,
-}
-
-impl FfiAccountBalance {
-    fn new((account_uuid, balance): (&AccountUuid, &AccountBalance)) -> Self {
-        Self {
-            account_uuid: account_uuid.expose_uuid().into_bytes(),
-            sapling_balance: FfiBalance::new(balance.sapling_balance()),
-            orchard_balance: FfiBalance::new(balance.orchard_balance()),
-            unshielded: ZatBalance::from(balance.unshielded_balance().total()).into(),
-        }
-    }
-}
-
-/// A struct that contains details about scan progress.
-///
-/// When `denominator` is zero, the numerator encodes a non-progress indicator:
-/// - 0: progress is unknown.
-/// - 1: an error occurred.
-#[repr(C)]
-pub struct FfiScanProgress {
-    numerator: u64,
-    denominator: u64,
-}
-
-/// A type representing the potentially-spendable value of unspent outputs in the wallet.
-///
-/// The balances reported using this data structure may overestimate the total spendable
-/// value of the wallet, in the case that the spend of a previously received shielded note
-/// has not yet been detected by the process of scanning the chain. The balances reported
-/// using this data structure can only be certain to be unspent in the case that
-/// [`Self::is_synced`] is true, and even in this circumstance it is possible that a newly
-/// created transaction could conflict with a not-yet-mined transaction in the mempool.
-///
-/// # Safety
-///
-/// - `account_balances` must be non-null and must be valid for reads for
-///   `account_balances_len * mem::size_of::<FfiAccountBalance>()` many bytes, and it must
-///   be properly aligned. This means in particular:
-///   - The entire memory range pointed to by `account_balances` must be contained within
-///     a single allocated object. Slices can never span across multiple allocated objects.
-///   - `account_balances` must be non-null and aligned even for zero-length slices.
-///   - `account_balances` must point to `len` consecutive properly initialized values of
-///     type [`FfiAccountBalance`].
-/// - The total size `account_balances_len * mem::size_of::<FfiAccountBalance>()` of the
-///   slice pointed to by `account_balances` must be no larger than `isize::MAX`. See the
-///   safety documentation of `pointer::offset`.
-/// - `scan_progress` must, if non-null, point to a struct having the layout of
-///   [`FfiScanProgress`].
-#[repr(C)]
-pub struct FfiWalletSummary {
-    account_balances: *mut FfiAccountBalance,
-    account_balances_len: usize,
-    chain_tip_height: i32,
-    fully_scanned_height: i32,
-    scan_progress: *mut FfiScanProgress,
-    next_sapling_subtree_index: u64,
-    next_orchard_subtree_index: u64,
-}
-
-impl FfiWalletSummary {
-    fn some(summary: WalletSummary<AccountUuid>) -> anyhow::Result<*mut Self> {
-        let (account_balances, account_balances_len) = {
-            let account_balances: Vec<FfiAccountBalance> = summary
-                .account_balances()
-                .iter()
-                .map(|(account_uuid, balance)| {
-                    Ok::<_, anyhow::Error>(FfiAccountBalance::new((account_uuid, balance)))
-                })
-                .collect::<Result<_, _>>()?;
-
-            ptr_from_vec(account_balances)
-        };
-
-        let scan_progress = if let Some(recovery_progress) = summary.progress().recovery() {
-            Box::into_raw(Box::new(FfiScanProgress {
-                numerator: *summary.progress().scan().numerator() + *recovery_progress.numerator(),
-                denominator: *summary.progress().scan().denominator()
-                    + *recovery_progress.denominator(),
-            }))
-        } else {
-            Box::into_raw(Box::new(FfiScanProgress {
-                numerator: *summary.progress().scan().numerator(),
-                denominator: *summary.progress().scan().denominator(),
-            }))
-        };
-
-        Ok(Box::into_raw(Box::new(Self {
-            account_balances,
-            account_balances_len,
-            chain_tip_height: u32::from(summary.chain_tip_height()) as i32,
-            fully_scanned_height: u32::from(summary.fully_scanned_height()) as i32,
-            scan_progress,
-            next_sapling_subtree_index: summary.next_sapling_subtree_index(),
-            next_orchard_subtree_index: summary.next_orchard_subtree_index(),
-        })))
-    }
-
-    fn none() -> *mut Self {
-        Box::into_raw(Box::new(Self {
-            account_balances: ptr::null_mut(),
-            account_balances_len: 0,
-            chain_tip_height: 0,
-            fully_scanned_height: -1,
-            scan_progress: ptr::null_mut(),
-            next_sapling_subtree_index: 0,
-            next_orchard_subtree_index: 0,
-        }))
-    }
-}
-
 /// Returns the account balances and sync status given the specified minimum number of
 /// confirmations.
 ///
@@ -1849,7 +1420,7 @@ pub unsafe extern "C" fn zcashlc_get_wallet_summary(
     db_data_len: usize,
     network_id: u32,
     min_confirmations: u32,
-) -> *mut FfiWalletSummary {
+) -> *mut ffi::WalletSummary {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -1858,82 +1429,11 @@ pub unsafe extern "C" fn zcashlc_get_wallet_summary(
             .get_wallet_summary(min_confirmations)
             .map_err(|e| anyhow!("Error while fetching wallet summary: {}", e))?
         {
-            Some(summary) => FfiWalletSummary::some(summary),
-            None => Ok(FfiWalletSummary::none()),
+            Some(summary) => ffi::WalletSummary::some(summary),
+            None => Ok(ffi::WalletSummary::none()),
         }
     });
     unwrap_exc_or(res, ptr::null_mut())
-}
-
-/// Frees an [`FfiWalletSummary`] value.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiWalletSummary`].
-///   See the safety documentation of [`FfiWalletSummary`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_wallet_summary(ptr: *mut FfiWalletSummary) {
-    if !ptr.is_null() {
-        let summary = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec(summary.account_balances, summary.account_balances_len);
-        if !summary.scan_progress.is_null() {
-            let progress = unsafe { Box::from_raw(summary.scan_progress) };
-            drop(progress);
-        }
-        drop(summary);
-    }
-}
-
-/// A struct that contains the start (inclusive) and end (exclusive) of a range of blocks
-/// to scan.
-#[repr(C)]
-pub struct FfiScanRange {
-    start: i32,
-    end: i32,
-    priority: u8,
-}
-
-/// A struct that contains a pointer to, and length information for, a heap-allocated
-/// slice of [`FfiScanRange`] values.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FfiScanRange>()`
-///   many bytes, and it must be properly aligned. This means in particular:
-///   - The entire memory range pointed to by `ptr` must be contained within a single
-///     allocated object. Slices can never span across multiple allocated objects.
-///   - `ptr` must be non-null and aligned even for zero-length slices.
-///   - `ptr` must point to `len` consecutive properly initialized values of type
-///     [`FfiScanRange`].
-/// - The total size `len * mem::size_of::<FfiScanRange>()` of the slice pointed to
-///   by `ptr` must be no larger than isize::MAX. See the safety documentation of
-///   `pointer::offset`.
-#[repr(C)]
-pub struct FfiScanRanges {
-    ptr: *mut FfiScanRange,
-    len: usize, // number of elems
-}
-
-impl FfiScanRanges {
-    pub fn ptr_from_vec(v: Vec<FfiScanRange>) -> *mut Self {
-        let (ptr, len) = ptr_from_vec(v);
-        Box::into_raw(Box::new(FfiScanRanges { ptr, len }))
-    }
-}
-
-/// Frees an array of `FfiScanRanges` values as allocated by `zcashlc_suggest_scan_ranges`.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiScanRanges`].
-///   See the safety documentation of [`FfiScanRanges`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_scan_ranges(ptr: *mut FfiScanRanges) {
-    if !ptr.is_null() {
-        let s: Box<FfiScanRanges> = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec(s.ptr, s.len);
-        drop(s);
-    }
 }
 
 /// Returns a list of suggested scan ranges based upon the current wallet state.
@@ -1959,7 +1459,7 @@ pub unsafe extern "C" fn zcashlc_suggest_scan_ranges(
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
-) -> *mut FfiScanRanges {
+) -> *mut ffi::ScanRanges {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -1970,7 +1470,7 @@ pub unsafe extern "C" fn zcashlc_suggest_scan_ranges(
 
         let ffi_ranges = ranges
             .into_iter()
-            .map(|scan_range| FfiScanRange {
+            .map(|scan_range| ffi::ScanRange {
                 start: u32::from(scan_range.block_range().start) as i32,
                 end: u32::from(scan_range.block_range().end) as i32,
                 priority: match scan_range.priority() {
@@ -1985,32 +1485,9 @@ pub unsafe extern "C" fn zcashlc_suggest_scan_ranges(
             })
             .collect::<Vec<_>>();
 
-        Ok(FfiScanRanges::ptr_from_vec(ffi_ranges))
+        Ok(ffi::ScanRanges::ptr_from_vec(ffi_ranges))
     });
     unwrap_exc_or_null(res)
-}
-
-/// Metadata about modifications to the wallet state made in the course of scanning a set
-/// of blocks.
-#[repr(C)]
-pub struct FfiScanSummary {
-    scanned_start: i32,
-    scanned_end: i32,
-    spent_sapling_note_count: u64,
-    received_sapling_note_count: u64,
-}
-
-impl FfiScanSummary {
-    fn new(scan_summary: ScanSummary) -> *mut Self {
-        let scanned_range = scan_summary.scanned_range();
-
-        Box::into_raw(Box::new(Self {
-            scanned_start: u32::from(scanned_range.start) as i32,
-            scanned_end: u32::from(scanned_range.end) as i32,
-            spent_sapling_note_count: scan_summary.spent_sapling_note_count() as u64,
-            received_sapling_note_count: scan_summary.received_sapling_note_count() as u64,
-        }))
-    }
 }
 
 /// Scans new blocks added to the cache for any transactions received by the tracked
@@ -2055,7 +1532,7 @@ pub unsafe extern "C" fn zcashlc_scan_blocks(
     from_state_len: usize,
     scan_limit: u32,
     network_id: u32,
-) -> *mut FfiScanSummary {
+) -> *mut ffi::ScanSummary {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let block_db = block_db(fs_block_cache_root, fs_block_cache_root_len)?;
@@ -2074,24 +1551,11 @@ pub unsafe extern "C" fn zcashlc_scan_blocks(
             &from_state,
             limit,
         ) {
-            Ok(scan_summary) => Ok(FfiScanSummary::new(scan_summary)),
+            Ok(scan_summary) => Ok(ffi::ScanSummary::new(scan_summary)),
             Err(e) => Err(anyhow!("Error while scanning blocks: {}", e)),
         }
     });
     unwrap_exc_or_null(res)
-}
-
-/// Frees an [`FfiScanSummary`] value.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiScanSummary`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_scan_summary(ptr: *mut FfiScanSummary) {
-    if !ptr.is_null() {
-        let summary = unsafe { Box::from_raw(ptr) };
-        drop(summary);
-    }
 }
 
 /// Inserts a UTXO into the wallet database.
@@ -2165,29 +1629,6 @@ pub unsafe extern "C" fn zcashlc_put_utxo(
 // FsBlock Interfaces
 //
 
-#[repr(C)]
-pub struct FFIBlocksMeta {
-    ptr: *mut FFIBlockMeta,
-    len: usize, // number of elems
-}
-
-impl FFIBlocksMeta {
-    pub fn ptr_from_vec(v: Vec<FFIBlockMeta>) -> *mut Self {
-        let (ptr, len) = ptr_from_vec(v);
-        Box::into_raw(Box::new(FFIBlocksMeta { ptr, len }))
-    }
-}
-
-#[repr(C)]
-pub struct FFIBlockMeta {
-    height: u32,
-    block_hash_ptr: *mut u8,
-    block_hash_ptr_len: usize,
-    block_time: u32,
-    sapling_outputs_count: u32,
-    orchard_actions_count: u32,
-}
-
 /// # Safety
 /// Initializes the `FsBlockDb` sqlite database. Does nothing if already created
 ///
@@ -2237,14 +1678,14 @@ pub unsafe extern "C" fn zcashlc_init_block_metadata_db(
 pub unsafe extern "C" fn zcashlc_write_block_metadata(
     fs_block_db_root: *const u8,
     fs_block_db_root_len: usize,
-    blocks_meta: *mut FFIBlocksMeta,
+    blocks_meta: *mut ffi::BlocksMeta,
 ) -> bool {
     let res = catch_panic(|| {
         let block_db = block_db(fs_block_db_root, fs_block_db_root_len)?;
 
-        let blocks_meta: Box<FFIBlocksMeta> = unsafe { Box::from_raw(blocks_meta) };
+        let blocks_meta: Box<ffi::BlocksMeta> = unsafe { Box::from_raw(blocks_meta) };
 
-        let blocks_metadata_slice: &mut [FFIBlockMeta] =
+        let blocks_metadata_slice: &mut [ffi::BlockMeta] =
             unsafe { slice::from_raw_parts_mut(blocks_meta.ptr, blocks_meta.len) };
 
         let mut blocks = Vec::with_capacity(blocks_metadata_slice.len());
@@ -2426,55 +1867,6 @@ fn zip317_helper<DbT>(
     )
 }
 
-/// A struct that optionally contains a pointer to, and length information for, a
-/// heap-allocated boxed slice.
-///
-/// This is an FFI representation of `Option<Box<[u8]>>`.
-///
-/// # Safety
-///
-/// - If `ptr` is non-null, it must be valid for reads for `len` bytes, and it must have
-///   an alignment of `1`.
-/// - The memory referenced by `ptr` must not be mutated for the lifetime of the struct
-///   (up until [`zcashlc_free_boxed_slice`] is called with it).
-/// - The total size `len` must be no larger than `isize::MAX`. See the safety
-///   documentation of `pointer::offset`.
-///   - When `ptr` is null, `len` should be zero.
-#[repr(C)]
-pub struct FfiBoxedSlice {
-    ptr: *mut u8,
-    len: usize,
-}
-
-impl FfiBoxedSlice {
-    fn some(v: Vec<u8>) -> *mut Self {
-        let (ptr, len) = ptr_from_vec(v);
-        Box::into_raw(Box::new(FfiBoxedSlice { ptr, len }))
-    }
-
-    fn none() -> *mut Self {
-        Box::into_raw(Box::new(Self {
-            ptr: ptr::null_mut(),
-            len: 0,
-        }))
-    }
-}
-
-/// Frees an [`FfiBoxedSlice`].
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of
-///   [`FfiBoxedSlice`]. See the safety documentation of [`FfiBoxedSlice`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut FfiBoxedSlice) {
-    if !ptr.is_null() {
-        let s: Box<FfiBoxedSlice> = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec(s.ptr, s.len);
-        drop(s);
-    }
-}
-
 /// Select transaction inputs, compute fees, and construct a proposal for a transaction
 /// that can then be authorized and made ready for submission to the network with
 /// `zcashlc_create_proposed_transaction`.
@@ -2506,7 +1898,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
     memo: *const u8,
     network_id: u32,
     min_confirmations: u32,
-) -> *mut FfiBoxedSlice {
+) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let min_confirmations = NonZeroU32::new(min_confirmations)
@@ -2551,7 +1943,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 
         let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
-        Ok(FfiBoxedSlice::some(encoded))
+        Ok(ffi::BoxedSlice::some(encoded))
     });
     unwrap_exc_or_null(res)
 }
@@ -2586,7 +1978,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
     payment_uri: *const c_char,
     network_id: u32,
     min_confirmations: u32,
-) -> *mut FfiBoxedSlice {
+) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let min_confirmations = NonZeroU32::new(min_confirmations)
@@ -2614,7 +2006,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
 
         let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
-        Ok(FfiBoxedSlice::some(encoded))
+        Ok(ffi::BoxedSlice::some(encoded))
     });
     unwrap_exc_or_null(res)
 }
@@ -2673,7 +2065,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
     transparent_receiver: *const c_char,
     network_id: u32,
     min_confirmations: u32,
-) -> *mut FfiBoxedSlice {
+) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -2749,7 +2141,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             [addr]
         } else {
             // There are no transparent funds to shield; don't create a proposal.
-            return Ok(FfiBoxedSlice::none());
+            return Ok(ffi::BoxedSlice::none());
         };
 
         let (change_strategy, input_selector) = zip317_helper(Some(memo_bytes));
@@ -2768,52 +2160,9 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
 
         let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
 
-        Ok(FfiBoxedSlice::some(encoded))
+        Ok(ffi::BoxedSlice::some(encoded))
     });
     unwrap_exc_or_null(res)
-}
-
-/// A struct that contains a pointer to, and length information for, a heap-allocated
-/// slice of `[u8; 32]` arrays.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<[u8; 32]>()`
-///   many bytes, and it must be properly aligned. This means in particular:
-///   - The entire memory range pointed to by `ptr` must be contained within a single
-///     allocated object. Slices can never span across multiple allocated objects.
-///   - `ptr` must be non-null and aligned even for zero-length slices.
-///   - `ptr` must point to `len` consecutive properly initialized values of type
-///     `[u8; 32]`.
-/// - The total size `len * mem::size_of::<[u8; 32]>()` of the slice pointed to
-///   by `ptr` must be no larger than isize::MAX. See the safety documentation of
-///   `pointer::offset`.
-#[repr(C)]
-pub struct FfiTxIds {
-    ptr: *mut [u8; 32],
-    len: usize, // number of elems
-}
-
-impl FfiTxIds {
-    pub fn ptr_from_vec(v: Vec<[u8; 32]>) -> *mut Self {
-        let (ptr, len) = ptr_from_vec(v);
-        Box::into_raw(Box::new(FfiTxIds { ptr, len }))
-    }
-}
-
-/// Frees an array of FfiTxIds values as allocated by `zcashlc_create_proposed_transactions`.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must point to a struct having the layout of [`FfiTxIds`].
-///   See the safety documentation of [`FfiTxIds`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_txids(ptr: *mut FfiTxIds) {
-    if !ptr.is_null() {
-        let s: Box<FfiTxIds> = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec(s.ptr, s.len);
-        drop(s);
-    }
 }
 
 /// Creates a transaction from the given proposal.
@@ -2880,7 +2229,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
     output_params: *const u8,
     output_params_len: usize,
     network_id: u32,
-) -> *mut FfiTxIds {
+) -> *mut ffi::TxIds {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -2910,7 +2259,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
-        Ok(FfiTxIds::ptr_from_vec(
+        Ok(ffi::TxIds::ptr_from_vec(
             txids.into_iter().map(|txid| *txid.as_ref()).collect(),
         ))
     });
@@ -2960,7 +2309,7 @@ pub unsafe extern "C" fn zcashlc_create_pczt_from_proposal(
     proposal_ptr: *const u8,
     proposal_len: usize,
     account_uuid_bytes: *const u8,
-) -> *mut FfiBoxedSlice {
+) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -2982,7 +2331,7 @@ pub unsafe extern "C" fn zcashlc_create_pczt_from_proposal(
             )
             .map_err(|e| anyhow!("Error creating PCZT from single-step proposal: {}", e))?;
 
-            Ok(FfiBoxedSlice::some(pczt.serialize()))
+            Ok(ffi::BoxedSlice::some(pczt.serialize()))
         } else {
             Err(anyhow!(
                 "Multi-step proposals are not yet supported for PCZT generation."
@@ -3015,7 +2364,7 @@ pub unsafe extern "C" fn zcashlc_create_pczt_from_proposal(
 pub unsafe extern "C" fn zcashlc_redact_pczt_for_signer(
     pczt_ptr: *const u8,
     pczt_len: usize,
-) -> *mut FfiBoxedSlice {
+) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let pczt_bytes = unsafe { slice::from_raw_parts(pczt_ptr, pczt_len) };
         let pczt = Pczt::parse(pczt_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
@@ -3041,7 +2390,7 @@ pub unsafe extern "C" fn zcashlc_redact_pczt_for_signer(
             })
             .finish();
 
-        Ok(FfiBoxedSlice::some(redacted_pczt.serialize()))
+        Ok(ffi::BoxedSlice::some(redacted_pczt.serialize()))
     });
     unwrap_exc_or_null(res)
 }
@@ -3128,7 +2477,7 @@ pub unsafe extern "C" fn zcashlc_add_proofs_to_pczt(
     spend_params_len: usize,
     output_params: *const u8,
     output_params_len: usize,
-) -> *mut FfiBoxedSlice {
+) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let pczt_bytes = unsafe { slice::from_raw_parts(pczt_ptr, pczt_len) };
         let pczt = Pczt::parse(pczt_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
@@ -3166,7 +2515,7 @@ pub unsafe extern "C" fn zcashlc_add_proofs_to_pczt(
 
         let pczt_with_proofs = prover.finish();
 
-        Ok(FfiBoxedSlice::some(pczt_with_proofs.serialize()))
+        Ok(ffi::BoxedSlice::some(pczt_with_proofs.serialize()))
     });
     unwrap_exc_or_null(res)
 }
@@ -3239,7 +2588,7 @@ pub unsafe extern "C" fn zcashlc_extract_and_store_from_pczt(
     spend_params_len: usize,
     output_params: *const u8,
     output_params_len: usize,
-) -> *mut FfiBoxedSlice {
+) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -3277,23 +2626,9 @@ pub unsafe extern "C" fn zcashlc_extract_and_store_from_pczt(
         )
         .map_err(|e| anyhow!("Failed to extract transaction from PCZT: {:?}", e))?;
 
-        Ok(FfiBoxedSlice::some(txid.as_ref().to_vec()))
+        Ok(ffi::BoxedSlice::some(txid.as_ref().to_vec()))
     });
     unwrap_exc_or_null(res)
-}
-
-/// Metadata about the status of a transaction obtained by inspecting the chain state.
-#[repr(C, u8)]
-pub enum FfiTransactionStatus {
-    /// The requested transaction ID was not recognized by the node.
-    TxidNotRecognized,
-    /// The requested transaction ID corresponds to a transaction that is recognized by the node,
-    /// but is in the mempool or is otherwise not mined in the main chain (but may have been mined
-    /// on a fork that was reorged away).
-    NotInMainChain,
-    /// The requested transaction ID corresponds to a transaction that has been included in the
-    /// block at the provided height.
-    Mined(u32),
 }
 
 /// Sets the transaction status to the provided value.
@@ -3320,7 +2655,7 @@ pub unsafe extern "C" fn zcashlc_set_transaction_status(
     network_id: u32,
     txid_bytes: *const u8,
     txid_bytes_len: usize,
-    status: FfiTransactionStatus,
+    status: ffi::TransactionStatus,
 ) {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -3330,9 +2665,9 @@ pub unsafe extern "C" fn zcashlc_set_transaction_status(
         let txid = TxId::read(txid_bytes)?;
 
         let status = match status {
-            FfiTransactionStatus::TxidNotRecognized => TransactionStatus::TxidNotRecognized,
-            FfiTransactionStatus::NotInMainChain => TransactionStatus::NotInMainChain,
-            FfiTransactionStatus::Mined(h) => TransactionStatus::Mined(BlockHeight::from(h)),
+            ffi::TransactionStatus::TxidNotRecognized => TransactionStatus::TxidNotRecognized,
+            ffi::TransactionStatus::NotInMainChain => TransactionStatus::NotInMainChain,
+            ffi::TransactionStatus::Mined(h) => TransactionStatus::Mined(BlockHeight::from(h)),
         };
 
         db_data
@@ -3341,106 +2676,6 @@ pub unsafe extern "C" fn zcashlc_set_transaction_status(
     });
 
     unwrap_exc_or(res, ())
-}
-
-/// A request for transaction data enhancement, spentness check, or discovery
-/// of spends from a given transparent address within a specific block range.
-#[repr(C, u8)]
-pub enum FfiTransactionDataRequest {
-    /// Information about the chain's view of a transaction is requested.
-    ///
-    /// The caller evaluating this request on behalf of the wallet backend should respond to this
-    /// request by determining the status of the specified transaction with respect to the main
-    /// chain; if using `lightwalletd` for access to chain data, this may be obtained by
-    /// interpreting the results of the [`GetTransaction`] RPC method. It should then call
-    /// [`WalletWrite::set_transaction_status`] to provide the resulting transaction status
-    /// information to the wallet backend.
-    ///
-    /// [`GetTransaction`]: crate::proto::service::compact_tx_streamer_client::CompactTxStreamerClient::get_transaction
-    GetStatus([u8; 32]),
-    /// Transaction enhancement (download of complete raw transaction data) is requested.
-    ///
-    /// The caller evaluating this request on behalf of the wallet backend should respond to this
-    /// request by providing complete data for the specified transaction to
-    /// [`wallet::decrypt_and_store_transaction`]; if using `lightwalletd` for access to chain
-    /// state, this may be obtained via the [`GetTransaction`] RPC method. If no data is available
-    /// for the specified transaction, this should be reported to the backend using
-    /// [`WalletWrite::set_transaction_status`]. A [`TransactionDataRequest::Enhancement`] request
-    /// subsumes any previously existing [`TransactionDataRequest::GetStatus`] request.
-    ///
-    /// [`GetTransaction`]: crate::proto::service::compact_tx_streamer_client::CompactTxStreamerClient::get_transaction
-    Enhancement([u8; 32]),
-    /// Information about transactions that receive or spend funds belonging to the specified
-    /// transparent address is requested.
-    ///
-    /// Fully transparent transactions, and transactions that do not contain either shielded inputs
-    /// or shielded outputs belonging to the wallet, may not be discovered by the process of chain
-    /// scanning; as a consequence, the wallet must actively query to find transactions that spend
-    /// such funds. Ideally we'd be able to query by [`OutPoint`] but this is not currently
-    /// functionality that is supported by the light wallet server.
-    ///
-    /// The caller evaluating this request on behalf of the wallet backend should respond to this
-    /// request by detecting transactions involving the specified address within the provided block
-    /// range; if using `lightwalletd` for access to chain data, this may be performed using the
-    /// [`GetTaddressTxids`] RPC method. It should then call [`wallet::decrypt_and_store_transaction`]
-    /// for each transaction so detected.
-    ///
-    /// [`GetTaddressTxids`]: crate::proto::service::compact_tx_streamer_client::CompactTxStreamerClient::get_taddress_txids
-    SpendsFromAddress {
-        address: *mut c_char,
-        block_range_start: u32,
-        /// An optional end height; no end height is represented as `-1`
-        block_range_end: i64,
-    },
-}
-
-/// A struct that contains a pointer to, and length information for, a heap-allocated
-/// slice of [`FfiTransactionDataRequest`] values.
-///
-/// # Safety
-///
-/// - `ptr` must be non-null and must be valid for reads for `len * mem::size_of::<FfiTransactionDataRequest>()`
-///   many bytes, and it must be properly aligned. This means in particular:
-///   - The entire memory range pointed to by `ptr` must be contained within a single allocated
-///     object. Slices can never span across multiple allocated objects.
-///   - `ptr` must be non-null and aligned even for zero-length slices.
-///   - `ptr` must point to `len` consecutive properly initialized values of type
-///     [`FfiTransactionDataRequest`].
-/// - The total size `len * mem::size_of::<FfiTransactionDataRequest>()` of the slice pointed to
-///   by `ptr` must be no larger than isize::MAX. See the safety documentation of pointer::offset.
-/// - See the safety documentation of [`FfiTransactionDataRequest`]
-#[repr(C)]
-pub struct FfiTransactionDataRequests {
-    ptr: *mut FfiTransactionDataRequest,
-    len: usize, // number of elems
-}
-
-impl FfiTransactionDataRequests {
-    pub fn ptr_from_vec(v: Vec<FfiTransactionDataRequest>) -> *mut Self {
-        let (ptr, len) = ptr_from_vec(v);
-        Box::into_raw(Box::new(FfiTransactionDataRequests { ptr, len }))
-    }
-}
-
-/// Frees an array of FfiTransactionDataRequest values as allocated by `zcashlc_transaction_data_requests`.
-///
-/// # Safety
-///
-/// - `ptr` if `ptr` is non-null it must point to a struct having the layout of [`FfiTransactionDataRequests`].
-///   See the safety documentation of [`FfiTransactionDataRequests`].
-#[no_mangle]
-pub unsafe extern "C" fn zcashlc_free_transaction_data_requests(
-    ptr: *mut FfiTransactionDataRequests,
-) {
-    if !ptr.is_null() {
-        let s: Box<FfiTransactionDataRequests> = unsafe { Box::from_raw(ptr) };
-        free_ptr_from_vec_with(s.ptr, s.len, |req| {
-            if let FfiTransactionDataRequest::SpendsFromAddress { address, .. } = req {
-                unsafe { zcashlc_string_free(*address) }
-            }
-        });
-        drop(s);
-    }
 }
 
 /// Returns a list of transaction data requests that the network client should satisfy.
@@ -3460,27 +2695,27 @@ pub unsafe extern "C" fn zcashlc_transaction_data_requests(
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
-) -> *mut FfiTransactionDataRequests {
+) -> *mut ffi::TransactionDataRequests {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        Ok(FfiTransactionDataRequests::ptr_from_vec(
+        Ok(ffi::TransactionDataRequests::ptr_from_vec(
             db_data
                 .transaction_data_requests()?
                 .into_iter()
                 .map(|req| match req {
                     TransactionDataRequest::GetStatus(txid) => {
-                        FfiTransactionDataRequest::GetStatus(txid.into())
+                        ffi::TransactionDataRequest::GetStatus(txid.into())
                     }
                     TransactionDataRequest::Enhancement(txid) => {
-                        FfiTransactionDataRequest::Enhancement(txid.into())
+                        ffi::TransactionDataRequest::Enhancement(txid.into())
                     }
                     TransactionDataRequest::SpendsFromAddress {
                         address,
                         block_range_start,
                         block_range_end,
-                    } => FfiTransactionDataRequest::SpendsFromAddress {
+                    } => ffi::TransactionDataRequest::SpendsFromAddress {
                         address: CString::new(address.encode(&network)).unwrap().into_raw(),
                         block_range_start: block_range_start.into(),
                         block_range_end: block_range_end.map_or(-1, |h| u32::from(h).into()),
@@ -3548,24 +2783,6 @@ pub unsafe extern "C" fn zcashlc_free_tor_runtime(ptr: *mut TorRuntime) {
     }
 }
 
-/// A decimal suitable for converting into an `NSDecimalNumber`.
-#[repr(C)]
-pub struct Decimal {
-    mantissa: u64,
-    exponent: i16,
-    is_sign_negative: bool,
-}
-
-impl Decimal {
-    fn from_rust(d: rust_decimal::Decimal) -> Option<Self> {
-        d.mantissa().abs().try_into().ok().map(|mantissa| Self {
-            mantissa,
-            exponent: -(d.scale() as i16),
-            is_sign_negative: d.is_sign_negative(),
-        })
-    }
-}
-
 /// Fetches the current ZEC-USD exchange rate over Tor.
 ///
 /// The result is a [`Decimal`] struct containing the fields necessary to construct an
@@ -3579,7 +2796,9 @@ impl Decimal {
 ///   [`TorRuntime`].
 /// - `tor_runtime` must not be passed to two FFI calls at the same time.
 #[no_mangle]
-pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd(tor_runtime: *mut TorRuntime) -> Decimal {
+pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd(
+    tor_runtime: *mut TorRuntime,
+) -> ffi::Decimal {
     // SAFETY: We ensure unwind safety by:
     // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
@@ -3599,12 +2818,12 @@ pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd(tor_runtime: *mut TorRunt
                 .await
         })?;
 
-        Decimal::from_rust(rate)
+        ffi::Decimal::from_rust(rate)
             .ok_or_else(|| anyhow!("Exchange rate has too many significant figures: {}", rate))
     });
     unwrap_exc_or(
         res,
-        Decimal::from_rust(rust_decimal::Decimal::NEGATIVE_ONE).expect("fits"),
+        ffi::Decimal::from_rust(rust_decimal::Decimal::NEGATIVE_ONE).expect("fits"),
     )
 }
 
