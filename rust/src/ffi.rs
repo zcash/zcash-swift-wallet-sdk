@@ -24,6 +24,7 @@ pub struct Account {
     key_source: *mut c_char,
     seed_fingerprint: [u8; 32],
     hd_account_index: u32,
+    ufvk: *mut c_char,
 }
 
 impl Account {
@@ -33,10 +34,12 @@ impl Account {
         key_source: ptr::null_mut(),
         seed_fingerprint: [0u8; 32],
         hd_account_index: u32::MAX,
+        ufvk: ptr::null_mut(),
     };
 
     pub(crate) fn from_account(
         account: &impl zcash_client_backend::data_api::Account<AccountId = AccountUuid>,
+        params: &impl zcash_protocol::consensus::Parameters,
     ) -> Self {
         let derivation = account.source().key_derivation();
         Account {
@@ -50,6 +53,9 @@ impl Account {
                 .map_or(ptr::null_mut(), |s| CString::new(s).unwrap().into_raw()),
             seed_fingerprint: derivation.map_or([0u8; 32], |d| d.seed_fingerprint().to_bytes()),
             hd_account_index: derivation.map_or(u32::MAX, |d| d.account_index().into()),
+            ufvk: account.ufvk().map_or(ptr::null_mut(), |ufvk| {
+                CString::new(ufvk.encode(params)).unwrap().into_raw()
+            }),
         }
     }
 }
@@ -68,6 +74,9 @@ pub unsafe extern "C" fn zcashlc_free_account(ptr: *mut Account) {
         }
         if !(account.key_source.is_null()) {
             unsafe { zcashlc_string_free(account.key_source) }
+        }
+        if !(account.ufvk.is_null()) {
+            unsafe { zcashlc_string_free(account.ufvk) }
         }
         drop(account);
     }

@@ -385,7 +385,7 @@ pub unsafe extern "C" fn zcashlc_get_account(
             db_data
                 .get_account(account_uuid)?
                 .map_or(ffi::Account::NOT_FOUND, |account| {
-                    ffi::Account::from_account(&account)
+                    ffi::Account::from_account(&account, &network)
                 }),
         )))
     });

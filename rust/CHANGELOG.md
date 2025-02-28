@@ -24,6 +24,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - MSRV is now 1.84.
+- `FfiAccount` now has a `ufvk` string field.
 
 ## 0.12.0 - 2024-12-16
 
