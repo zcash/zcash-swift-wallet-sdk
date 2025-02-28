@@ -2927,14 +2927,17 @@ pub unsafe extern "C" fn zcashlc_free_tor_lwd_conn(ptr: *mut tor::LwdConn) {
 /// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
 ///   return type `*mut tor::LwdConn` that has not previously been freed.
 /// - `lwd_conn` must not be passed to two FFI calls at the same time.
-/// - `txid_bytes` must be non-null and valid for reads for 32 bytes, and it must have an alignment
-///   of `1`.
+/// - `txid_bytes` must be non-null and valid for reads for 32 bytes, and it must have an
+///   alignment of `1`.
+/// - `height_ret` must be non-null and valid for writes for 8 bytes, and it must have an
+///   alignment of `1`.
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
 #[no_mangle]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
     lwd_conn: *mut tor::LwdConn,
     txid_bytes: *const u8,
+    height_ret: *mut u64,
 ) -> *mut ffi::BoxedSlice {
     // SAFETY: We ensure unwind safety by:
     // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
@@ -2949,7 +2952,13 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
         let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, 32) };
         let txid = TxId::from_bytes(txid_bytes.try_into().unwrap());
 
-        let tx = lwd_conn.get_transaction(txid)?;
+        let height_ret = unsafe { height_ret.as_mut() }.ok_or_else(|| {
+            anyhow!("A mutable pointer to a UInt64 is required to return the height")
+        })?;
+
+        let (tx, height) = lwd_conn.get_transaction(txid)?;
+
+        *height_ret = height;
 
         Ok(ffi::BoxedSlice::some(tx))
     });

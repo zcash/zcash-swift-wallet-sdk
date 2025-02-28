@@ -82,7 +82,7 @@ pub struct LwdConn {
 
 impl LwdConn {
     /// Fetches the transaction with the given ID.
-    pub(crate) fn get_transaction(&mut self, txid: TxId) -> anyhow::Result<Vec<u8>> {
+    pub(crate) fn get_transaction(&mut self, txid: TxId) -> anyhow::Result<(Vec<u8>, u64)> {
         let request = service::TxFilter {
             hash: txid.as_ref().to_vec(),
             ..Default::default()
@@ -94,7 +94,7 @@ impl LwdConn {
             .block_on(async { self.conn.get_transaction(request).await })?
             .into_inner();
 
-        Ok(response.data)
+        Ok((response.data, response.height))
     }
 
     /// Submits a transaction to the Zcash network.
