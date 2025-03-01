@@ -6,6 +6,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- `zcashlc_tor_lwd_conn_get_info`
+- `zcashlc_tor_lwd_conn_get_tree_state`
+- `zcashlc_tor_lwd_conn_latest_block`
+
 ## 0.14.2 - 2025-04-02
 
 ### Fixed
