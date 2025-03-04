@@ -2396,7 +2396,7 @@ pub unsafe extern "C" fn zcashlc_redact_pczt_for_signer(
 }
 
 /// Returns `true` if this PCZT requires Sapling proofs (and thus the caller needs to have
-/// downloaded them).
+/// downloaded them). If the PCZT is invalid, `false` will be returned.
 ///
 /// # Parameters
 /// - `pczt_ptr`: A pointer to a byte array containing the encoded partially-constructed
@@ -2807,7 +2807,7 @@ pub unsafe extern "C" fn zcashlc_free_tor_runtime(ptr: *mut TorRuntime) {
 pub unsafe extern "C" fn zcashlc_tor_isolated_client(
     tor_runtime: *mut TorRuntime,
 ) -> *mut TorRuntime {
-    // SAFETY: We ensure unwind safety by:
+    // SAFETY: Callers would have to do the following for unwind safety (#194):
     // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
     // - discarding the `TorRuntime` whenever we get an error that is due to a panic.
@@ -2840,7 +2840,7 @@ pub unsafe extern "C" fn zcashlc_tor_isolated_client(
 pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd(
     tor_runtime: *mut TorRuntime,
 ) -> ffi::Decimal {
-    // SAFETY: We ensure unwind safety by:
+    // SAFETY: Callers would have to do the following for unwind safety (#194):
     // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
     // - discarding the `TorRuntime` whenever we get an error that is due to a panic.
@@ -2885,7 +2885,7 @@ pub unsafe extern "C" fn zcashlc_tor_connect_to_lightwalletd(
     tor_runtime: *mut TorRuntime,
     endpoint: *const c_char,
 ) -> *mut tor::LwdConn {
-    // SAFETY: We ensure unwind safety by:
+    // SAFETY: Callers would have to do the following for unwind safety (#194):
     // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
     // - discarding the `TorRuntime` whenever we get an error that is due to a panic.
@@ -2939,7 +2939,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
     txid_bytes: *const u8,
     height_ret: *mut u64,
 ) -> *mut ffi::BoxedSlice {
-    // SAFETY: We ensure unwind safety by:
+    // SAFETY: Callers would have to do the following for unwind safety (#194):
     // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
     // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
@@ -2983,7 +2983,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_submit_transaction(
     tx: *const u8,
     tx_len: usize,
 ) -> bool {
-    // SAFETY: We ensure unwind safety by:
+    // SAFETY: Callers would have to do the following for unwind safety (#194):
     // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
     // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
