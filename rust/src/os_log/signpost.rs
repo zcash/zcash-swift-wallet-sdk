@@ -3,8 +3,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tracing::{span, Subscriber};
-use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
+use tracing::{Subscriber, span};
+use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 use crate::ffi::sys::{os_signpost_id_generate, os_signpost_id_t};
 
