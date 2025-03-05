@@ -29,12 +29,16 @@ use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
-use zcash_client_backend::data_api::wallet::extract_and_store_transaction_from_pczt;
-use zcash_client_backend::data_api::{AccountPurpose, TransactionStatus, Zip32Derivation};
-use zcash_client_backend::fees::zip317::MultiOutputChangeStrategy;
-use zcash_client_backend::fees::{SplitPolicy, StandardFeeRule};
-use zcash_client_backend::keys::UnifiedFullViewingKey;
-use zcash_client_sqlite::error::SqliteClientError;
+use zcash_client_backend::{
+    data_api::{
+        AccountPurpose, TransactionStatus, Zip32Derivation,
+        wallet::extract_and_store_transaction_from_pczt,
+    },
+    fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
+    keys::UnifiedAddressRequest,
+    keys::UnifiedFullViewingKey,
+};
+use zcash_client_sqlite::{error::SqliteClientError, util::SystemClock};
 
 use zcash_address::ZcashAddress;
 use zcash_client_backend::{
@@ -119,11 +123,11 @@ unsafe fn wallet_db(
     db_data: *const u8,
     db_data_len: usize,
     network: Network,
-) -> anyhow::Result<WalletDb<rusqlite::Connection, Network>> {
+) -> anyhow::Result<WalletDb<rusqlite::Connection, Network, SystemClock>> {
     let db_data = Path::new(OsStr::from_bytes(unsafe {
         slice::from_raw_parts(db_data, db_data_len)
     }));
-    WalletDb::for_path(db_data, network)
+    WalletDb::for_path(db_data, network, SystemClock)
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))
 }
 
@@ -693,7 +697,10 @@ pub unsafe extern "C" fn zcashlc_get_current_address(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
-        match db_data.get_current_address(account_uuid) {
+        match db_data.get_last_generated_address_matching(
+            account_uuid,
+            UnifiedAddressRequest::AllAvailableKeys,
+        ) {
             Ok(Some(ua)) => {
                 let address_str = ua.encode(&network);
                 Ok(CString::new(address_str).unwrap().into_raw())
@@ -737,8 +744,10 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
-        match db_data.get_next_available_address(account_uuid, None) {
-            Ok(Some(ua)) => {
+        match db_data
+            .get_next_available_address(account_uuid, UnifiedAddressRequest::AllAvailableKeys)
+        {
+            Ok(Some((ua, _))) => {
                 let address_str = ua.encode(&network);
                 Ok(CString::new(address_str).unwrap().into_raw())
             }
@@ -781,7 +790,9 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
-        match db_data.get_transparent_receivers(account_uuid) {
+        // This API is documented as returning the transparent receivers for allocated
+        // diversified UAs, which means change taddrs are excluded.
+        match db_data.get_transparent_receivers(account_uuid, false) {
             Ok(receivers) => {
                 let keys = receivers
                     .keys()
@@ -890,7 +901,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
             })
             .and_then(|target| {
                 db_data
-                    .get_transparent_receivers(account_uuid)
+                    .get_transparent_receivers(account_uuid, true)
                     .map_err(|e| {
                         anyhow!(
                             "Error while fetching transparent receivers for {:?}: {}",
@@ -2099,7 +2110,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                     }
                     Address::Transparent(addr) => {
                         if db_data
-                            .get_transparent_receivers(account_uuid)?
+                            .get_transparent_receivers(account_uuid, true)?
                             .contains_key(&addr)
                         {
                             Ok(Some(addr))
@@ -2564,14 +2575,14 @@ pub unsafe extern "C" fn zcashlc_add_proofs_to_pczt(
 ///   function call.
 /// - The total size `pczt_with_sigs_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of `pointer::offset`.
-/// - `spend_params` must be non-null and valid for reads for `spend_params_len` bytes, and it must
-///   have an alignment of `1`.
+/// - `spend_params` must either be null, or it must be valid for reads for `spend_params_len` bytes
+///   and have an alignment of `1`.
 /// - The memory referenced by `spend_params` must not be mutated for the duration of the function
 ///   call.
 /// - The total size `spend_params_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of `pointer::offset`.
-/// - `output_params` must be non-null and valid for reads for `output_params_len` bytes, and it
-///   must have an alignment of `1`.
+/// - `output_params` must either be null, or it must be valid for reads for `output_params_len`
+///   bytes and have an alignment of `1`.
 /// - The memory referenced by `output_params` must not be mutated for the duration of the function
 ///   call.
 /// - The total size `output_params_len` must be no larger than `isize::MAX`. See the safety
@@ -2606,15 +2617,17 @@ pub unsafe extern "C" fn zcashlc_extract_and_store_from_pczt(
         let pczt_with_sigs =
             Pczt::parse(pczt_with_sigs_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
 
-        let spend_params = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(spend_params, spend_params_len)
-        }));
-        let output_params = Path::new(OsStr::from_bytes(unsafe {
-            slice::from_raw_parts(output_params, output_params_len)
-        }));
+        let sapling_vk = (!spend_params.is_null() && !output_params.is_null()).then(|| {
+            let spend_params = Path::new(OsStr::from_bytes(unsafe {
+                slice::from_raw_parts(spend_params, spend_params_len)
+            }));
+            let output_params = Path::new(OsStr::from_bytes(unsafe {
+                slice::from_raw_parts(output_params, output_params_len)
+            }));
 
-        let prover = LocalTxProver::new(spend_params, output_params);
-        let (spend_vk, output_vk) = prover.verifying_keys();
+            let prover = LocalTxProver::new(spend_params, output_params);
+            prover.verifying_keys()
+        });
 
         let pczt = Combiner::new(vec![pczt_with_proofs, pczt_with_sigs])
             .combine()
@@ -2623,9 +2636,8 @@ pub unsafe extern "C" fn zcashlc_extract_and_store_from_pczt(
         let txid = extract_and_store_transaction_from_pczt::<_, ()>(
             &mut db_data,
             pczt,
-            &spend_vk,
-            &output_vk,
-            &orchard::circuit::VerifyingKey::build(),
+            sapling_vk.as_ref().map(|(s, o)| (s, o)),
+            None,
         )
         .map_err(|e| anyhow!("Failed to extract transaction from PCZT: {:?}", e))?;
 

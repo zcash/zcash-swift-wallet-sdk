@@ -9,7 +9,7 @@ use std::os::raw::c_char;
 use std::slice;
 
 use zcash_address::unified::Item as _;
-use zcash_client_backend::keys::UnifiedIncomingViewingKey;
+use zcash_client_backend::keys::{UnifiedAddressRequest, UnifiedIncomingViewingKey};
 use zcash_primitives::consensus::NetworkConstants;
 use zcash_protocol::consensus::{NetworkType, Parameters};
 use zip32::{ChainCode, ChildIndex, DiversifierIndex, arbitrary, registered::PathElement};
@@ -406,12 +406,12 @@ pub unsafe extern "C" fn zcashlc_derive_address_from_ufvk(
         })?;
 
         let (ua, di) = if diversifier_index_bytes.is_null() {
-            ufvk.default_address(None)
+            ufvk.default_address(UnifiedAddressRequest::AllAvailableKeys)
         } else {
             let j = DiversifierIndex::from(<[u8; 11]>::try_from(unsafe {
                 slice::from_raw_parts(diversifier_index_bytes, 11)
             })?);
-            ufvk.find_address(j, None)
+            ufvk.find_address(j, UnifiedAddressRequest::AllAvailableKeys)
         }?;
 
         Ok(Box::into_raw(Box::new(ffi::Address::new(&network, ua, di))))
@@ -449,12 +449,12 @@ pub unsafe extern "C" fn zcashlc_derive_address_from_uivk(
         })?;
 
         let (ua, di) = if diversifier_index_bytes.is_null() {
-            uivk.default_address(None)
+            uivk.default_address(UnifiedAddressRequest::AllAvailableKeys)
         } else {
             let j = DiversifierIndex::from(<[u8; 11]>::try_from(unsafe {
                 slice::from_raw_parts(diversifier_index_bytes, 11)
             })?);
-            uivk.find_address(j, None)
+            uivk.find_address(j, UnifiedAddressRequest::AllAvailableKeys)
         }?;
 
         Ok(Box::into_raw(Box::new(ffi::Address::new(&network, ua, di))))
