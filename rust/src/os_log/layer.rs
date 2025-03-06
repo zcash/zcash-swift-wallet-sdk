@@ -7,7 +7,7 @@ use tracing_subscriber::{
     registry::LookupSpan,
 };
 
-use super::{signpost::OsSignpost, writer::AppleOsLogMakeWriter, OsLog};
+use super::{OsLog, signpost::OsSignpost, writer::AppleOsLogMakeWriter};
 
 pub(crate) type Layer<S, N = format::DefaultFields, E = format::Full> =
     fmt::Layer<S, N, format::Format<E, ()>, AppleOsLogMakeWriter>;

@@ -65,7 +65,7 @@ impl Account {
 /// # Safety
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of [`Account`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_account(ptr: *mut Account) {
     if !ptr.is_null() {
         let account: Box<Account> = unsafe { Box::from_raw(ptr) };
@@ -101,7 +101,7 @@ impl Uuid {
 /// # Safety
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of [`Uuid`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_ffi_uuid(ptr: *mut Uuid) {
     if !ptr.is_null() {
         let key: Box<Uuid> = unsafe { Box::from_raw(ptr) };
@@ -142,7 +142,7 @@ impl Accounts {
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of [`Accounts`].
 ///   See the safety documentation of [`Accounts`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_accounts(ptr: *mut Accounts) {
     if !ptr.is_null() {
         let s: Box<Accounts> = unsafe { Box::from_raw(ptr) };
@@ -181,7 +181,7 @@ impl BinaryKey {
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of [`BinaryKey`].
 ///   See the safety documentation of [`BinaryKey`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_binary_key(ptr: *mut BinaryKey) {
     if !ptr.is_null() {
         let key: Box<BinaryKey> = unsafe { Box::from_raw(ptr) };
@@ -245,7 +245,7 @@ impl EncodedKeys {
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of [`EncodedKeys`].
 ///   See the safety documentation of [`EncodedKeys`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_keys(ptr: *mut EncodedKeys) {
     if !ptr.is_null() {
         let s: Box<EncodedKeys> = unsafe { Box::from_raw(ptr) };
@@ -458,7 +458,7 @@ impl WalletSummary {
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of [`WalletSummary`].
 ///   See the safety documentation of [`WalletSummary`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_wallet_summary(ptr: *mut WalletSummary) {
     if !ptr.is_null() {
         let summary = unsafe { Box::from_raw(ptr) };
@@ -514,7 +514,7 @@ impl ScanRanges {
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of [`ScanRanges`].
 ///   See the safety documentation of [`ScanRanges`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_scan_ranges(ptr: *mut ScanRanges) {
     if !ptr.is_null() {
         let s: Box<ScanRanges> = unsafe { Box::from_raw(ptr) };
@@ -551,7 +551,7 @@ impl ScanSummary {
 /// # Safety
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of [`ScanSummary`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_scan_summary(ptr: *mut ScanSummary) {
     if !ptr.is_null() {
         let summary = unsafe { Box::from_raw(ptr) };
@@ -622,7 +622,7 @@ impl BoxedSlice {
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of
 ///   [`BoxedSlice`]. See the safety documentation of [`BoxedSlice`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_boxed_slice(ptr: *mut BoxedSlice) {
     if !ptr.is_null() {
         let s: Box<BoxedSlice> = unsafe { Box::from_raw(ptr) };
@@ -667,7 +667,7 @@ pub type TxIds = SymmetricKeys;
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of
 ///   [`SymmetricKeys`]. See the safety documentation of [`SymmetricKeys`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_symmetric_keys(ptr: *mut SymmetricKeys) {
     if !ptr.is_null() {
         let s: Box<SymmetricKeys> = unsafe { Box::from_raw(ptr) };
@@ -682,7 +682,7 @@ pub unsafe extern "C" fn zcashlc_free_symmetric_keys(ptr: *mut SymmetricKeys) {
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of [`TxIds`].
 ///   See the safety documentation of [`TxIds`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_txids(ptr: *mut TxIds) {
     unsafe { zcashlc_free_symmetric_keys(ptr) };
 }
@@ -786,7 +786,7 @@ impl TransactionDataRequests {
 ///
 /// - `ptr` if `ptr` is non-null it must point to a struct having the layout of [`TransactionDataRequests`].
 ///   See the safety documentation of [`TransactionDataRequests`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_transaction_data_requests(ptr: *mut TransactionDataRequests) {
     if !ptr.is_null() {
         let s: Box<TransactionDataRequests> = unsafe { Box::from_raw(ptr) };
@@ -844,7 +844,7 @@ impl Address {
 /// # Safety
 ///
 /// - `ptr` must be non-null and must point to a struct having the layout of [`Address`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_ffi_address(ptr: *mut Address) {
     if !ptr.is_null() {
         let ffi_address: Box<Address> = unsafe { Box::from_raw(ptr) };
@@ -871,7 +871,7 @@ impl AccountMetadataKey {
 /// # Safety
 ///
 /// - `ptr` must either be null or point to a struct having the layout of [`AccountMetadataKey`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_account_metadata_key(ptr: *mut AccountMetadataKey) {
     if !ptr.is_null() {
         let key: Box<AccountMetadataKey> = unsafe { Box::from_raw(ptr) };
