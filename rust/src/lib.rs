@@ -792,7 +792,7 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
 
         // This API is documented as returning the transparent receivers for allocated
         // diversified UAs, which means change taddrs are excluded.
-        match db_data.get_transparent_receivers(account_uuid, false) {
+        match db_data.get_transparent_receivers(account_uuid, true) {
             Ok(receivers) => {
                 let keys = receivers
                     .keys()
@@ -2142,24 +2142,25 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                     })
             })?;
 
-        let from_addrs = match transparent_receiver.map_or_else(||
-            if account_receivers.len() > 1 {
-                Err(anyhow!(
-                    "Account has more than one transparent receiver with funds to shield; this is not yet supported by the SDK. Provide a specific transparent receiver to shield funds from."
-                ))
-            } else {
-                Ok(account_receivers.iter().next().map(|(a, v)| (*a, *v)))
-            },
-            |addr| Ok(account_receivers.get(&addr).map(|value| (addr, *value)))
-        )?.filter(|(_, value)| *value >= shielding_threshold) { Some((addr, _)) => {
-            [addr]
-        } _ => {
-            // There are no transparent funds to shield; don't create a proposal.
+        // If a specific receiver is specified, select only value for that receiver; otherwise,
+        // select value for all receivers.
+        let from_addrs: Vec<TransparentAddress> = match transparent_receiver {
+            Some(addr) => account_receivers
+                .get(&addr)
+                .into_iter()
+                .filter_map(|v| (*v >= shielding_threshold).then_some(addr))
+                .collect(),
+            None => account_receivers
+                .into_iter()
+                .filter_map(|(a, v)| (v >= shielding_threshold).then_some(a))
+                .collect(),
+        };
+
+        if from_addrs.is_empty() {
             return Ok(ffi::BoxedSlice::none());
-        }};
+        };
 
         let (change_strategy, input_selector) = zip317_helper(Some(memo_bytes));
-
         let proposal = propose_shielding::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
