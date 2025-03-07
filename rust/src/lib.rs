@@ -761,8 +761,9 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
     unwrap_exc_or_null(res)
 }
 
-/// Returns a list of the transparent receivers for the diversified unified addresses that have
-/// been allocated for the provided account.
+/// Returns a list of the transparent addresses that have been allocated for the provided account,
+/// including potentially-unrevealed public-scope and private-scope (change) addresses within the
+/// gap limit, which is currently set to 10 for public-scope addresses and 5 for change addresses.
 ///
 /// # Safety
 ///
@@ -790,8 +791,6 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
-        // This API is documented as returning the transparent receivers for allocated
-        // diversified UAs, which means change taddrs are excluded.
         match db_data.get_transparent_receivers(account_uuid, true) {
             Ok(receivers) => {
                 let keys = receivers
@@ -2054,6 +2053,27 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// transaction that can then be authorized and made ready for submission to the network
 /// with `zcashlc_create_proposed_transaction`.
 ///
+/// # Parameters
+///
+/// - db_data: A string represented as a sequence of UTF-8 bytes.
+/// - db_data_len: The length of `db_data`, in bytes.
+/// - account_uuid_bytes: a 16-byte array representing the UUID for an account
+/// - memo: `null` to represent "no memo", or a pointer to an array containing exactly 512 bytes.
+/// - shielding_threshold: the minimum value to be shielded; if insufficient value is available,
+///   this will fail with an error.
+/// - transparent_receiver: `null` to represent "all receivers with shieldable funds", or a single
+///   transparent address for which to shield funds. WARNING: Note that calling this with `null`
+///   will leak the fact that all the addresses from which funds are drawn in the shielding
+///   transaction belong to the same wallet *ON CHAIN*. This immutably reveals the shared ownership
+///   of these addresses to all blockchain observers. If a caller wishes to avoid such linkability,
+///   they should not pass `null` for this parameter; however, note that temporal correlations can
+///   also heuristically be used to link addresses on-chain if funds from multiple addresses are
+///   individually shielded in transactions that may be temporally clustered. Keeping transparent
+///   activity private is very difficult; caveat emptor.
+/// - network_id: The identifier for the network in use: 0 for testnet, 1 for mainnet.
+/// - min_confirmations: The number of confirmations that are required for a UTXO to be considered
+///   for shielding.
+///
 /// # Safety
 ///
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
@@ -2143,7 +2163,9 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             })?;
 
         // If a specific receiver is specified, select only value for that receiver; otherwise,
-        // select value for all receivers.
+        // select value for all receivers. See the warnings associated with the documentation
+        // of the `transparent_receiver` argument in the method documentation for privacy
+        // considerations.
         let from_addrs: Vec<TransparentAddress> = match transparent_receiver {
             Some(addr) => account_receivers
                 .get(&addr)
