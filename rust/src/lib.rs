@@ -2051,7 +2051,9 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 
 /// Select transaction inputs, compute fees, and construct a proposal for a shielding
 /// transaction that can then be authorized and made ready for submission to the network
-/// with `zcashlc_create_proposed_transaction`.
+/// with `zcashlc_create_proposed_transaction`. If there are no receivers (as selected
+/// by `transparent_receiver`) for which at least `shielding_threshold` of value is
+/// available to shield, fail with an error.
 ///
 /// # Parameters
 ///
@@ -2059,8 +2061,7 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - db_data_len: The length of `db_data`, in bytes.
 /// - account_uuid_bytes: a 16-byte array representing the UUID for an account
 /// - memo: `null` to represent "no memo", or a pointer to an array containing exactly 512 bytes.
-/// - shielding_threshold: the minimum value to be shielded; if insufficient value is available,
-///   this will fail with an error.
+/// - shielding_threshold: the minimum value to be shielded for each receiver.
 /// - transparent_receiver: `null` to represent "all receivers with shieldable funds", or a single
 ///   transparent address for which to shield funds. WARNING: Note that calling this with `null`
 ///   will leak the fact that all the addresses from which funds are drawn in the shielding
