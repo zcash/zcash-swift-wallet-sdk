@@ -761,8 +761,9 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
     unwrap_exc_or_null(res)
 }
 
-/// Returns a list of the transparent receivers for the diversified unified addresses that have
-/// been allocated for the provided account.
+/// Returns a list of the transparent addresses that have been allocated for the provided account,
+/// including potentially-unrevealed public-scope and private-scope (change) addresses within the
+/// gap limit, which is currently set to 10 for public-scope addresses and 5 for change addresses.
 ///
 /// # Safety
 ///
@@ -790,9 +791,7 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
-        // This API is documented as returning the transparent receivers for allocated
-        // diversified UAs, which means change taddrs are excluded.
-        match db_data.get_transparent_receivers(account_uuid, false) {
+        match db_data.get_transparent_receivers(account_uuid, true) {
             Ok(receivers) => {
                 let keys = receivers
                     .keys()
@@ -2052,7 +2051,29 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 
 /// Select transaction inputs, compute fees, and construct a proposal for a shielding
 /// transaction that can then be authorized and made ready for submission to the network
-/// with `zcashlc_create_proposed_transaction`.
+/// with `zcashlc_create_proposed_transaction`. If there are no receivers (as selected
+/// by `transparent_receiver`) for which at least `shielding_threshold` of value is
+/// available to shield, fail with an error.
+///
+/// # Parameters
+///
+/// - db_data: A string represented as a sequence of UTF-8 bytes.
+/// - db_data_len: The length of `db_data`, in bytes.
+/// - account_uuid_bytes: a 16-byte array representing the UUID for an account
+/// - memo: `null` to represent "no memo", or a pointer to an array containing exactly 512 bytes.
+/// - shielding_threshold: the minimum value to be shielded for each receiver.
+/// - transparent_receiver: `null` to represent "all receivers with shieldable funds", or a single
+///   transparent address for which to shield funds. WARNING: Note that calling this with `null`
+///   will leak the fact that all the addresses from which funds are drawn in the shielding
+///   transaction belong to the same wallet *ON CHAIN*. This immutably reveals the shared ownership
+///   of these addresses to all blockchain observers. If a caller wishes to avoid such linkability,
+///   they should not pass `null` for this parameter; however, note that temporal correlations can
+///   also heuristically be used to link addresses on-chain if funds from multiple addresses are
+///   individually shielded in transactions that may be temporally clustered. Keeping transparent
+///   activity private is very difficult; caveat emptor.
+/// - network_id: The identifier for the network in use: 0 for testnet, 1 for mainnet.
+/// - min_confirmations: The number of confirmations that are required for a UTXO to be considered
+///   for shielding.
 ///
 /// # Safety
 ///
@@ -2142,24 +2163,27 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                     })
             })?;
 
-        let from_addrs = match transparent_receiver.map_or_else(||
-            if account_receivers.len() > 1 {
-                Err(anyhow!(
-                    "Account has more than one transparent receiver with funds to shield; this is not yet supported by the SDK. Provide a specific transparent receiver to shield funds from."
-                ))
-            } else {
-                Ok(account_receivers.iter().next().map(|(a, v)| (*a, *v)))
-            },
-            |addr| Ok(account_receivers.get(&addr).map(|value| (addr, *value)))
-        )?.filter(|(_, value)| *value >= shielding_threshold) { Some((addr, _)) => {
-            [addr]
-        } _ => {
-            // There are no transparent funds to shield; don't create a proposal.
+        // If a specific receiver is specified, select only value for that receiver; otherwise,
+        // select value for all receivers. See the warnings associated with the documentation
+        // of the `transparent_receiver` argument in the method documentation for privacy
+        // considerations.
+        let from_addrs: Vec<TransparentAddress> = match transparent_receiver {
+            Some(addr) => account_receivers
+                .get(&addr)
+                .into_iter()
+                .filter_map(|v| (*v >= shielding_threshold).then_some(addr))
+                .collect(),
+            None => account_receivers
+                .into_iter()
+                .filter_map(|(a, v)| (v >= shielding_threshold).then_some(a))
+                .collect(),
+        };
+
+        if from_addrs.is_empty() {
             return Ok(ffi::BoxedSlice::none());
-        }};
+        };
 
         let (change_strategy, input_selector) = zip317_helper(Some(memo_bytes));
-
         let proposal = propose_shielding::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
