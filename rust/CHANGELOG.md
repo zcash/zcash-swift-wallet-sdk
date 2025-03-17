@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- `zcashlc_fix_witnesses`
+
 ### Changed
 - MSRV is now 1.85.
 

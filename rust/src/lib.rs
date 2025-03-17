@@ -2,6 +2,7 @@
 
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
+use nonempty::NonEmpty;
 use pczt::{
     Pczt,
     roles::{combiner::Combiner, prover::Prover, redactor::Redactor},
@@ -2772,6 +2773,29 @@ pub unsafe extern "C" fn zcashlc_transaction_data_requests(
                 })
                 .collect(),
         ))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Detects notes with corrupt witnesses, and adds the block ranges corresponding to the corrupt
+/// ranges to the scan queue so that the ordinary scanning process will re-scan these ranges to fix
+/// the corruption in question.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_fix_witnesses(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+) {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let corrupt_ranges = db_data.check_witnesses()?;
+        if let Some(nel_ranges) = NonEmpty::from_vec(corrupt_ranges) {
+            db_data.queue_rescans(nel_ranges, ScanPriority::FoundNote)?;
+        }
+
+        Ok(())
     });
     unwrap_exc_or_null(res)
 }

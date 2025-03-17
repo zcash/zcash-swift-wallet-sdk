@@ -2354,6 +2354,7 @@ dependencies = [
  "ffi_helpers",
  "fs-mistrust",
  "log-panics",
+ "nonempty",
  "once_cell",
  "orchard",
  "pczt",
