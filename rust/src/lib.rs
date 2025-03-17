@@ -7,6 +7,7 @@ use pczt::{
     roles::{combiner::Combiner, prover::Prover, redactor::Redactor},
 };
 use prost::Message;
+use rand::rngs::OsRng;
 use secrecy::Secret;
 use transparent::{
     address::TransparentAddress,
@@ -31,12 +32,11 @@ use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 use zcash_client_backend::{
     data_api::{
-        AccountPurpose, TransactionStatus, Zip32Derivation,
+        AccountPurpose, OutputStatusFilter, TransactionStatus, Zip32Derivation,
         wallet::extract_and_store_transaction_from_pczt,
     },
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
-    keys::UnifiedAddressRequest,
-    keys::UnifiedFullViewingKey,
+    keys::{UnifiedAddressRequest, UnifiedFullViewingKey},
 };
 use zcash_client_sqlite::{error::SqliteClientError, util::SystemClock};
 
@@ -123,11 +123,11 @@ unsafe fn wallet_db(
     db_data: *const u8,
     db_data_len: usize,
     network: Network,
-) -> anyhow::Result<WalletDb<rusqlite::Connection, Network, SystemClock>> {
+) -> anyhow::Result<WalletDb<rusqlite::Connection, Network, SystemClock, OsRng>> {
     let db_data = Path::new(OsStr::from_bytes(unsafe {
         slice::from_raw_parts(db_data, db_data_len)
     }));
-    WalletDb::for_path(db_data, network, SystemClock)
+    WalletDb::for_path(db_data, network, SystemClock, OsRng)
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))
 }
 
@@ -2743,22 +2743,32 @@ pub unsafe extern "C" fn zcashlc_transaction_data_requests(
             db_data
                 .transaction_data_requests()?
                 .into_iter()
-                .map(|req| match req {
+                .filter_map(|req| match req {
                     TransactionDataRequest::GetStatus(txid) => {
-                        ffi::TransactionDataRequest::GetStatus(txid.into())
+                        Some(ffi::TransactionDataRequest::GetStatus(txid.into()))
                     }
                     TransactionDataRequest::Enhancement(txid) => {
-                        ffi::TransactionDataRequest::Enhancement(txid.into())
+                        Some(ffi::TransactionDataRequest::Enhancement(txid.into()))
                     }
-                    TransactionDataRequest::SpendsFromAddress {
+                    TransactionDataRequest::TransactionsInvolvingAddress {
                         address,
                         block_range_start,
                         block_range_end,
-                    } => ffi::TransactionDataRequest::SpendsFromAddress {
+                        output_status_filter: OutputStatusFilter::All,
+                        ..
+                    } => Some(ffi::TransactionDataRequest::SpendsFromAddress {
                         address: CString::new(address.encode(&network)).unwrap().into_raw(),
                         block_range_start: block_range_start.into(),
                         block_range_end: block_range_end.map_or(-1, |h| u32::from(h).into()),
-                    },
+                    }),
+                    TransactionDataRequest::TransactionsInvolvingAddress {
+                        output_status_filter: OutputStatusFilter::Unspent,
+                        ..
+                    } => {
+                        // UTXO retreieval via the transaction data request queue is not yet
+                        // supported; support will be added in a future release.
+                        None
+                    }
                 })
                 .collect(),
         ))
