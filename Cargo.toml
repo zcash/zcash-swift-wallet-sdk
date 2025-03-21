@@ -1,6 +1,6 @@
 [package]
 name = "libzcashlc"
-version = "0.13.0"
+version = "0.14.0"
 authors = [
     "Jack Grigg <jack@electriccoin.co>",
     "Francisco Gindre",
@@ -18,7 +18,7 @@ orchard = "0.11"
 sapling = { package = "sapling-crypto", version = "0.5", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.2", default-features = false }
 zcash_address = { version = "0.7" }
-zcash_client_backend = { version = "0.17", features = [
+zcash_client_backend = { version = "0.18", features = [
     "lightwalletd-tonic-tls-webpki-roots",
     "orchard",
     "pczt",
@@ -26,7 +26,7 @@ zcash_client_backend = { version = "0.17", features = [
     "transparent-inputs",
     "unstable",
 ] }
-zcash_client_sqlite = { version = "0.15", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.16", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.22"
 zcash_proofs = "0.22"
@@ -79,13 +79,3 @@ crate-type = ["staticlib"]
 
 [profile.release]
 lto = true
-
-[patch.crates-io]
-pczt = { git = "https://github.com/zcash/librustzcash.git", rev = "4130409eb04d30fb1dd9d516a7ce98dd1924c99a" }
-transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "4130409eb04d30fb1dd9d516a7ce98dd1924c99a" }
-zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "4130409eb04d30fb1dd9d516a7ce98dd1924c99a" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "4130409eb04d30fb1dd9d516a7ce98dd1924c99a" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "4130409eb04d30fb1dd9d516a7ce98dd1924c99a" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "4130409eb04d30fb1dd9d516a7ce98dd1924c99a" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "4130409eb04d30fb1dd9d516a7ce98dd1924c99a" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "4130409eb04d30fb1dd9d516a7ce98dd1924c99a" }
