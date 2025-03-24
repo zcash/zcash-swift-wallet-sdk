@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.14.0 - 2025-03-21
+
+### Added
+- `zcashlc_fix_witnesses`
+
+### Changed
+- MSRV is now 1.85.
+- Updated to `zcash_client_backend 0.18`, `zcash_client_sqlite 0.16`.
+- Added support for gap-limit-based discovery of transparent wallet addresses.
+
 ## 0.13.0 - 2025-03-04
 
 ### Added

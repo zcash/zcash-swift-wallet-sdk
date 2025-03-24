@@ -1,14 +1,14 @@
 [package]
 name = "libzcashlc"
-version = "0.13.0"
+version = "0.14.0"
 authors = [
     "Jack Grigg <jack@electriccoin.co>",
     "Francisco Gindre",
     "Lukas Korba <lukas@tangiblecodes.com>",
 ]
 license = "MIT"
-edition = "2021"
-rust-version = "1.84"
+edition = "2024"
+rust-version = "1.85"
 build = "rust/build.rs"
 
 [dependencies]
@@ -18,7 +18,7 @@ orchard = "0.11"
 sapling = { package = "sapling-crypto", version = "0.5", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.2", default-features = false }
 zcash_address = { version = "0.7" }
-zcash_client_backend = { version = "0.17", features = [
+zcash_client_backend = { version = "0.18", features = [
     "lightwalletd-tonic-tls-webpki-roots",
     "orchard",
     "pczt",
@@ -26,7 +26,7 @@ zcash_client_backend = { version = "0.17", features = [
     "transparent-inputs",
     "unstable",
 ] }
-zcash_client_sqlite = { version = "0.15", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.16", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.22"
 zcash_proofs = "0.22"
@@ -38,6 +38,8 @@ pczt = { version = "0.2", features = ["prover"] }
 prost = "0.13"
 rusqlite = "0.32"
 secrecy = "0.8"
+rand = "0.8"
+nonempty = "0.11"
 
 # FFI
 anyhow = "1.0"
@@ -67,7 +69,7 @@ xz2 = { version = "0.1", features = ["static"] }
 
 [build-dependencies]
 bindgen = "0.71"
-cbindgen = "0.27"
+cbindgen = "0.28"
 cc = "1.0"
 
 [lib]

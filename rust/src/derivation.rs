@@ -9,14 +9,14 @@ use std::os::raw::c_char;
 use std::slice;
 
 use zcash_address::unified::Item as _;
-use zcash_client_backend::keys::UnifiedIncomingViewingKey;
+use zcash_client_backend::keys::{UnifiedAddressRequest, UnifiedIncomingViewingKey};
 use zcash_primitives::consensus::NetworkConstants;
 use zcash_protocol::consensus::{NetworkType, Parameters};
-use zip32::{arbitrary, registered::PathElement, ChainCode, ChildIndex, DiversifierIndex};
+use zip32::{ChainCode, ChildIndex, DiversifierIndex, arbitrary, registered::PathElement};
 
 use zcash_address::{
-    unified::{self, Container, Encoding},
     ConversionError, ToAddress, TryFromAddress, ZcashAddress,
+    unified::{self, Container, Encoding},
 };
 use zcash_client_backend::{
     address::UnifiedAddress,
@@ -130,7 +130,7 @@ fn zip32_account_index(account: i32) -> anyhow::Result<zip32::AccountId> {
 ///
 /// - `address` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `address` must not be mutated for the duration of the function call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_get_address_metadata(
     address: *const c_char,
     network_id_ret: *mut u32,
@@ -185,7 +185,7 @@ pub unsafe extern "C" fn zcashlc_get_address_metadata(
 /// - The memory referenced by `ua` must not be mutated for the duration of the function call.
 /// - Call [`zcashlc_free_typecodes`] to free the memory associated with the returned
 ///   pointer when done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_get_typecodes_for_unified_address_receivers(
     ua: *const c_char,
     len_ret: *mut usize,
@@ -224,7 +224,7 @@ pub unsafe extern "C" fn zcashlc_get_typecodes_for_unified_address_receivers(
 ///
 /// - `data` and `len` must have been obtained from
 ///   [`zcashlc_get_typecodes_for_unified_address_receivers`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_free_typecodes(data: *mut u32, len: usize) {
     free_ptr_from_vec(data, len);
 }
@@ -236,7 +236,7 @@ pub unsafe extern "C" fn zcashlc_free_typecodes(data: *mut u32, len: usize) {
 ///
 /// - `extsk` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `extsk` must not be mutated for the duration of the function call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_is_valid_sapling_extended_spending_key(
     extsk: *const c_char,
     network_id: u32,
@@ -260,7 +260,7 @@ pub unsafe extern "C" fn zcashlc_is_valid_sapling_extended_spending_key(
 ///
 /// - `key` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `key` must not be mutated for the duration of the function call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_is_valid_viewing_key(key: *const c_char, network_id: u32) -> bool {
     let res =
         catch_panic(|| {
@@ -284,7 +284,7 @@ pub unsafe extern "C" fn zcashlc_is_valid_viewing_key(key: *const c_char, networ
 /// - `ufvk` must be non-null and must point to a null-terminated UTF-8 string.
 /// - The memory referenced by `ufvk` must not be mutated for the duration of the
 ///   function call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_is_valid_unified_full_viewing_key(
     ufvk: *const c_char,
     network_id: u32,
@@ -311,7 +311,7 @@ pub unsafe extern "C" fn zcashlc_is_valid_unified_full_viewing_key(
 ///   of `pointer::offset`.
 /// - Call `zcashlc_free_binary_key` to free the memory associated with the returned pointer when
 ///   you are finished using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_derive_spending_key(
     seed: *const u8,
     seed_len: usize,
@@ -346,7 +346,7 @@ pub unsafe extern "C" fn zcashlc_derive_spending_key(
 ///   of `pointer::offset`.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when you are done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_spending_key_to_full_viewing_key(
     usk_ptr: *const u8,
     usk_len: usize,
@@ -388,7 +388,7 @@ impl zcash_address::TryFromRawAddress for UnifiedAddressParser {
 ///   alignment of `1`.
 /// - Call [`zcashlc_free_ffi_address`] to free the memory associated with the returned pointer
 ///   when done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_derive_address_from_ufvk(
     network_id: u32,
     ufvk: *const c_char,
@@ -406,12 +406,12 @@ pub unsafe extern "C" fn zcashlc_derive_address_from_ufvk(
         })?;
 
         let (ua, di) = if diversifier_index_bytes.is_null() {
-            ufvk.default_address(None)
+            ufvk.default_address(UnifiedAddressRequest::AllAvailableKeys)
         } else {
             let j = DiversifierIndex::from(<[u8; 11]>::try_from(unsafe {
                 slice::from_raw_parts(diversifier_index_bytes, 11)
             })?);
-            ufvk.find_address(j, None)
+            ufvk.find_address(j, UnifiedAddressRequest::AllAvailableKeys)
         }?;
 
         Ok(Box::into_raw(Box::new(ffi::Address::new(&network, ua, di))))
@@ -431,7 +431,7 @@ pub unsafe extern "C" fn zcashlc_derive_address_from_ufvk(
 ///   alignment of `1`.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_derive_address_from_uivk(
     network_id: u32,
     uivk: *const c_char,
@@ -449,12 +449,12 @@ pub unsafe extern "C" fn zcashlc_derive_address_from_uivk(
         })?;
 
         let (ua, di) = if diversifier_index_bytes.is_null() {
-            uivk.default_address(None)
+            uivk.default_address(UnifiedAddressRequest::AllAvailableKeys)
         } else {
             let j = DiversifierIndex::from(<[u8; 11]>::try_from(unsafe {
                 slice::from_raw_parts(diversifier_index_bytes, 11)
             })?);
-            uivk.find_address(j, None)
+            uivk.find_address(j, UnifiedAddressRequest::AllAvailableKeys)
         }?;
 
         Ok(Box::into_raw(Box::new(ffi::Address::new(&network, ua, di))))
@@ -470,7 +470,7 @@ pub unsafe extern "C" fn zcashlc_derive_address_from_uivk(
 /// - The memory referenced by `ua` must not be mutated for the duration of the function call.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
     ua: *const c_char,
 ) -> *mut c_char {
@@ -512,7 +512,7 @@ pub unsafe extern "C" fn zcashlc_get_transparent_receiver_for_unified_address(
 /// - The memory referenced by `ua` must not be mutated for the duration of the function call.
 /// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
 ///   when done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_get_sapling_receiver_for_unified_address(
     ua: *const c_char,
 ) -> *mut c_char {
@@ -552,7 +552,7 @@ pub unsafe extern "C" fn zcashlc_get_sapling_receiver_for_unified_address(
 ///   call.
 /// - Call [`zcashlc_free_account_metadata_key`] to free the memory associated with the returned
 ///   pointer when done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_account_metadata_key_from_parts(
     sk: *const u8,
     chain_code: *const u8,
@@ -582,7 +582,7 @@ pub unsafe extern "C" fn zcashlc_account_metadata_key_from_parts(
 ///   of `pointer::offset`.
 /// - Call [`zcashlc_free_account_metadata_key`] to free the memory associated with the returned
 ///   pointer when done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_derive_account_metadata_key(
     seed: *const u8,
     seed_len: usize,
@@ -644,7 +644,7 @@ pub unsafe extern "C" fn zcashlc_derive_account_metadata_key(
 ///   the safety documentation of `pointer::offset`.
 /// - Call `zcashlc_free_symmetric_keys` to free the memory associated with the returned
 ///   pointer when done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_derive_private_use_metadata_key(
     account_metadata_key: *const ffi::AccountMetadataKey,
     ufvk: *const c_char,
@@ -664,14 +664,15 @@ pub unsafe extern "C" fn zcashlc_derive_private_use_metadata_key(
 
         let private_use_keys = match ufvk_str {
             // For the inherent subtree, there is only ever one key.
-            None => vec![account_metadata_key
-                .inner
-                .derive_child_with_tag(ChildIndex::hardened(0), &[])
-                .derive_child_with_tag(ChildIndex::PRIVATE_USE, &private_use_subject)],
+            None => vec![
+                account_metadata_key
+                    .inner
+                    .derive_child_with_tag(ChildIndex::hardened(0), &[])
+                    .derive_child_with_tag(ChildIndex::PRIVATE_USE, private_use_subject),
+            ],
             // For the external subtree, we derive keys from the UFVK's items.
             Some(ufvk_string) => {
-                let (net, ufvk) =
-                    unified::Ufvk::decode(&ufvk_string).map_err(|e| anyhow!("{e}"))?;
+                let (net, ufvk) = unified::Ufvk::decode(ufvk_string).map_err(|e| anyhow!("{e}"))?;
                 let expected_net = network.network_type();
                 if net != expected_net {
                     return Err(anyhow!(
@@ -697,7 +698,7 @@ pub unsafe extern "C" fn zcashlc_derive_private_use_metadata_key(
                                 ChildIndex::hardened(0),
                                 &fvk_item.typed_encoding(),
                             )
-                            .derive_child_with_tag(ChildIndex::PRIVATE_USE, &private_use_subject)
+                            .derive_child_with_tag(ChildIndex::PRIVATE_USE, private_use_subject)
                     })
                     .collect()
             }
@@ -736,7 +737,7 @@ pub unsafe extern "C" fn zcashlc_derive_private_use_metadata_key(
 ///   of `pointer::offset`.
 /// - Call `zcashlc_free_boxed_slice` to free the memory associated with the returned
 ///   pointer when done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_derive_arbitrary_wallet_key(
     context_string: *const u8,
     context_string_len: usize,
@@ -772,7 +773,7 @@ pub unsafe extern "C" fn zcashlc_derive_arbitrary_wallet_key(
 ///   of `pointer::offset`.
 /// - Call `zcashlc_free_boxed_slice` to free the memory associated with the returned
 ///   pointer when done using it.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_derive_arbitrary_account_key(
     context_string: *const u8,
     context_string_len: usize,
