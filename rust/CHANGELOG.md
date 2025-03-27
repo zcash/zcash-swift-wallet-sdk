@@ -6,6 +6,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.14.1 - 2025-03-27
+
+### Fixed
+- This fixes an error in the `transparent_gap_limit_handling` migration,
+  whereby wallets that received Orchard outputs at diversifier indices for
+  which no Sapling receivers could exist would incorrectly attempt to
+  derive UAs containing sapling receivers at those indices.
+
 ## 0.14.0 - 2025-03-21
 
 ### Added
