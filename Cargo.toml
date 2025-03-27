@@ -1,6 +1,6 @@
 [package]
 name = "libzcashlc"
-version = "0.14.0"
+version = "0.14.1"
 authors = [
     "Jack Grigg <jack@electriccoin.co>",
     "Francisco Gindre",
