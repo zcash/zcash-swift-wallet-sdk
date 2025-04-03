@@ -1,6 +1,6 @@
 [package]
 name = "libzcashlc"
-version = "0.14.0"
+version = "0.14.2"
 authors = [
     "Jack Grigg <jack@electriccoin.co>",
     "Francisco Gindre",
@@ -16,7 +16,7 @@ build = "rust/build.rs"
 # Zcash
 orchard = "0.11"
 sapling = { package = "sapling-crypto", version = "0.5", default-features = false }
-transparent = { package = "zcash_transparent", version = "0.2", default-features = false }
+transparent = { package = "zcash_transparent", version = "0.2.2", default-features = false }
 zcash_address = { version = "0.7" }
 zcash_client_backend = { version = "0.18", features = [
     "lightwalletd-tonic-tls-webpki-roots",
@@ -26,7 +26,7 @@ zcash_client_backend = { version = "0.18", features = [
     "transparent-inputs",
     "unstable",
 ] }
-zcash_client_sqlite = { version = "0.16.1", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.16.2", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.22"
 zcash_proofs = "0.22"
