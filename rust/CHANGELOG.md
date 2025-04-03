@@ -6,6 +6,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.14.2 - 2025-04-02
+
+### Fixed
+- This fixes an error in the `transparent_gap_limit_handling` migration,
+  whereby wallets having received transparent outputs at child indices below
+  the index of the default address could cause the migration to fail.
+
 ## 0.14.1 - 2025-03-27
 
 ### Fixed
