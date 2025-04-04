@@ -3104,7 +3104,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
 
         Ok(ffi::BoxedSlice::some(tx))
     });
-    unwrap_exc_or(res, ffi::BoxedSlice::none())
+    unwrap_exc_or(res, ptr::null_mut())
 }
 
 /// Submits a transaction to the Zcash network via the given lightwalletd connection.
