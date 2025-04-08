@@ -10,7 +10,7 @@ use zcash_client_backend::{
     tor::Client,
 };
 use zcash_primitives::block::BlockHash;
-use zcash_protocol::{consensus::BlockHeight, TxId};
+use zcash_protocol::{TxId, consensus::BlockHeight};
 
 pub struct TorRuntime {
     runtime: PreferredRuntime,
@@ -87,7 +87,7 @@ impl LwdConn {
         Ok(self
             .runtime
             .clone()
-            .block_on(async { self.conn.get_lightd_info(service::Empty {}).await })?
+            .block_on(self.conn.get_lightd_info(service::Empty {}))?
             .into_inner())
     }
 
@@ -96,7 +96,7 @@ impl LwdConn {
         let response = self
             .runtime
             .clone()
-            .block_on(async { self.conn.get_latest_block(service::ChainSpec {}).await })?
+            .block_on(self.conn.get_latest_block(service::ChainSpec {}))?
             .into_inner();
 
         Ok((
@@ -120,7 +120,7 @@ impl LwdConn {
         let response = self
             .runtime
             .clone()
-            .block_on(async { self.conn.get_transaction(request).await })?
+            .block_on(self.conn.get_transaction(request))?
             .into_inner();
 
         Ok((response.data, response.height))
@@ -136,7 +136,7 @@ impl LwdConn {
         let response = self
             .runtime
             .clone()
-            .block_on(async { self.conn.send_transaction(request).await })?
+            .block_on(self.conn.send_transaction(request))?
             .into_inner();
 
         if response.error_code == 0 {
@@ -163,7 +163,7 @@ impl LwdConn {
         Ok(self
             .runtime
             .clone()
-            .block_on(async { self.conn.get_tree_state(request).await })?
+            .block_on(self.conn.get_tree_state(request))?
             .into_inner())
     }
 }
