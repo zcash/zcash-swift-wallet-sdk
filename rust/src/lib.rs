@@ -2993,6 +2993,75 @@ pub unsafe extern "C" fn zcashlc_free_tor_lwd_conn(ptr: *mut tor::LwdConn) {
     }
 }
 
+/// Returns information about this lightwalletd instance and the blockchain.
+///
+/// # Safety
+///
+/// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut tor::LwdConn` that has not previously been freed.
+/// - `lwd_conn` must not be passed to two FFI calls at the same time.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_info(
+    lwd_conn: *mut tor::LwdConn,
+) -> *mut ffi::BoxedSlice {
+    // SAFETY: We ensure unwind safety by:
+    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    let lwd_conn = AssertUnwindSafe(lwd_conn);
+
+    let res = catch_panic(|| {
+        let lwd_conn = unsafe { lwd_conn.as_mut() }
+            .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
+
+        let info = lwd_conn.get_lightd_info()?;
+
+        Ok(ffi::BoxedSlice::some(info.encode_to_vec()))
+    });
+    unwrap_exc_or(res, ptr::null_mut())
+}
+
+/// Fetches the height and hash of the block at the tip of the best chain.
+///
+/// # Safety
+///
+/// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut tor::LwdConn` that has not previously been freed.
+/// - `lwd_conn` must not be passed to two FFI calls at the same time.
+/// - `height_ret` must be non-null and valid for writes for 4 bytes, and it must have an
+///   alignment of `1`.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_tor_lwd_conn_latest_block(
+    lwd_conn: *mut tor::LwdConn,
+    height_ret: *mut u32,
+) -> *mut ffi::BoxedSlice {
+    // SAFETY: We ensure unwind safety by:
+    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    let lwd_conn = AssertUnwindSafe(lwd_conn);
+
+    let res = catch_panic(|| {
+        let lwd_conn = unsafe { lwd_conn.as_mut() }
+            .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
+
+        let height_ret = unsafe { height_ret.as_mut() }.ok_or_else(|| {
+            anyhow!("A mutable pointer to a UInt32 is required to return the height")
+        })?;
+
+        let (height, hash) = lwd_conn.get_latest_block()?;
+
+        *height_ret = height.into();
+
+        Ok(ffi::BoxedSlice::some(hash.0.to_vec()))
+    });
+    unwrap_exc_or(res, ptr::null_mut())
+}
+
 /// Fetches the transaction with the given ID.
 ///
 /// # Safety
@@ -3035,7 +3104,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
 
         Ok(ffi::BoxedSlice::some(tx))
     });
-    unwrap_exc_or(res, ffi::BoxedSlice::none())
+    unwrap_exc_or(res, ptr::null_mut())
 }
 
 /// Submits a transaction to the Zcash network via the given lightwalletd connection.
@@ -3073,6 +3142,39 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_submit_transaction(
         Ok(true)
     });
     unwrap_exc_or(res, false)
+}
+
+/// Fetches the note commitment tree state corresponding to the given block height.
+///
+/// # Safety
+///
+/// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut tor::LwdConn` that has not previously been freed.
+/// - `lwd_conn` must not be passed to two FFI calls at the same time.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_tree_state(
+    lwd_conn: *mut tor::LwdConn,
+    height: u32,
+) -> *mut ffi::BoxedSlice {
+    // SAFETY: We ensure unwind safety by:
+    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    let lwd_conn = AssertUnwindSafe(lwd_conn);
+
+    let res = catch_panic(|| {
+        let lwd_conn = unsafe { lwd_conn.as_mut() }
+            .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
+
+        let height = BlockHeight::from(height);
+
+        let treestate = lwd_conn.get_tree_state(height)?;
+
+        Ok(ffi::BoxedSlice::some(treestate.encode_to_vec()))
+    });
+    unwrap_exc_or(res, ptr::null_mut())
 }
 
 //
