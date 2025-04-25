@@ -390,6 +390,8 @@ pub struct ScanProgress {
 ///   safety documentation of `pointer::offset`.
 /// - `scan_progress` must, if non-null, point to a struct having the layout of
 ///   [`ScanProgress`].
+/// - `recovery_progress` must, if non-null, point to a struct having the layout of
+///   [`ScanProgress`].
 #[repr(C)]
 pub struct WalletSummary {
     account_balances: *mut AccountBalance,
@@ -397,6 +399,7 @@ pub struct WalletSummary {
     chain_tip_height: i32,
     fully_scanned_height: i32,
     scan_progress: *mut ScanProgress,
+    recovery_progress: *mut ScanProgress,
     next_sapling_subtree_index: u64,
     next_orchard_subtree_index: u64,
 }
@@ -415,17 +418,18 @@ impl WalletSummary {
             ptr_from_vec(account_balances)
         };
 
-        let scan_progress = if let Some(recovery_progress) = summary.progress().recovery() {
+        let scan_progress = Box::into_raw(Box::new(ScanProgress {
+            numerator: *summary.progress().scan().numerator(),
+            denominator: *summary.progress().scan().denominator(),
+        }));
+
+        let recovery_progress = if let Some(recovery_progress) = summary.progress().recovery() {
             Box::into_raw(Box::new(ScanProgress {
-                numerator: *summary.progress().scan().numerator() + *recovery_progress.numerator(),
-                denominator: *summary.progress().scan().denominator()
-                    + *recovery_progress.denominator(),
+                numerator: *recovery_progress.numerator(),
+                denominator: *recovery_progress.denominator(),
             }))
         } else {
-            Box::into_raw(Box::new(ScanProgress {
-                numerator: *summary.progress().scan().numerator(),
-                denominator: *summary.progress().scan().denominator(),
-            }))
+            ptr::null_mut()
         };
 
         Ok(Box::into_raw(Box::new(Self {
@@ -434,6 +438,7 @@ impl WalletSummary {
             chain_tip_height: u32::from(summary.chain_tip_height()) as i32,
             fully_scanned_height: u32::from(summary.fully_scanned_height()) as i32,
             scan_progress,
+            recovery_progress,
             next_sapling_subtree_index: summary.next_sapling_subtree_index(),
             next_orchard_subtree_index: summary.next_orchard_subtree_index(),
         })))
@@ -446,6 +451,7 @@ impl WalletSummary {
             chain_tip_height: 0,
             fully_scanned_height: -1,
             scan_progress: ptr::null_mut(),
+            recovery_progress: ptr::null_mut(),
             next_sapling_subtree_index: 0,
             next_orchard_subtree_index: 0,
         }))
@@ -465,6 +471,10 @@ pub unsafe extern "C" fn zcashlc_free_wallet_summary(ptr: *mut WalletSummary) {
         free_ptr_from_vec(summary.account_balances, summary.account_balances_len);
         if !summary.scan_progress.is_null() {
             let progress = unsafe { Box::from_raw(summary.scan_progress) };
+            drop(progress);
+        }
+        if !summary.recovery_progress.is_null() {
+            let progress = unsafe { Box::from_raw(summary.recovery_progress) };
             drop(progress);
         }
         drop(summary);

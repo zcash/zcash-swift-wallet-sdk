@@ -6,6 +6,25 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.15.0 - 2025-04-24
+
+### Added
+- `zcashlc_tor_lwd_conn_get_info`
+- `zcashlc_tor_lwd_conn_get_tree_state`
+- `zcashlc_tor_lwd_conn_latest_block`
+
+### Changed
+- `FfiWalletSummary` has a new field `recovery_progress`.
+- `FfiWalletSummary.scan_progress` now only tracks the progress of making
+  existing wallet balance spendable. In some cases (depending on how long a
+  wallet was offline since its last sync) it may also happen to include progress
+  of discovering new notes, but in general `FfiWalletSummary.recovery_progress`
+  now covers the discovery of historic wallet information.
+
+### Fixed
+- `zcashlc_tor_lwd_conn_fetch_transaction` now correctly returns `null` as the
+  error sentinel instead of a "none" `FfiBoxedSlice`.
+
 ## 0.14.2 - 2025-04-02
 
 ### Fixed

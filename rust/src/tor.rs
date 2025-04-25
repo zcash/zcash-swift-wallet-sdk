@@ -9,7 +9,8 @@ use zcash_client_backend::{
     proto::service::{self, compact_tx_streamer_client::CompactTxStreamerClient},
     tor::Client,
 };
-use zcash_protocol::TxId;
+use zcash_primitives::block::BlockHash;
+use zcash_protocol::{TxId, consensus::BlockHeight};
 
 pub struct TorRuntime {
     runtime: PreferredRuntime,
@@ -81,6 +82,34 @@ pub struct LwdConn {
 }
 
 impl LwdConn {
+    /// Returns information about this lightwalletd instance and the blockchain.
+    pub(crate) fn get_lightd_info(&mut self) -> anyhow::Result<service::LightdInfo> {
+        Ok(self
+            .runtime
+            .clone()
+            .block_on(self.conn.get_lightd_info(service::Empty {}))?
+            .into_inner())
+    }
+
+    /// Fetches the height and hash of the block at the tip of the best chain.
+    pub(crate) fn get_latest_block(&mut self) -> anyhow::Result<(BlockHeight, BlockHash)> {
+        let response = self
+            .runtime
+            .clone()
+            .block_on(self.conn.get_latest_block(service::ChainSpec {}))?
+            .into_inner();
+
+        Ok((
+            BlockHeight::from_u32(response.height.try_into()?),
+            BlockHash::try_from_slice(&response.hash).ok_or_else(|| {
+                anyhow!(
+                    "Returned block hash has invalid length {}",
+                    response.hash.len()
+                )
+            })?,
+        ))
+    }
+
     /// Fetches the transaction with the given ID.
     pub(crate) fn get_transaction(&mut self, txid: TxId) -> anyhow::Result<(Vec<u8>, u64)> {
         let request = service::TxFilter {
@@ -91,7 +120,7 @@ impl LwdConn {
         let response = self
             .runtime
             .clone()
-            .block_on(async { self.conn.get_transaction(request).await })?
+            .block_on(self.conn.get_transaction(request))?
             .into_inner();
 
         Ok((response.data, response.height))
@@ -107,7 +136,7 @@ impl LwdConn {
         let response = self
             .runtime
             .clone()
-            .block_on(async { self.conn.send_transaction(request).await })?
+            .block_on(self.conn.send_transaction(request))?
             .into_inner();
 
         if response.error_code == 0 {
@@ -119,5 +148,22 @@ impl LwdConn {
                 response.error_message
             ))
         }
+    }
+
+    /// Fetches the note commitment tree state corresponding to the given block.
+    pub(crate) fn get_tree_state(
+        &mut self,
+        height: BlockHeight,
+    ) -> anyhow::Result<service::TreeState> {
+        let request = service::BlockId {
+            height: u32::from(height).into(),
+            ..Default::default()
+        };
+
+        Ok(self
+            .runtime
+            .clone()
+            .block_on(self.conn.get_tree_state(request))?
+            .into_inner())
     }
 }
