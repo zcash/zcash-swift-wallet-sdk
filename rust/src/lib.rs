@@ -27,6 +27,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::ptr;
 use std::slice;
+use std::time::UNIX_EPOCH;
 
 use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
@@ -34,7 +35,7 @@ use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 use zcash_client_backend::{
     data_api::{
-        AccountPurpose, OutputStatusFilter, TransactionStatus, Zip32Derivation,
+        AccountPurpose, TransactionStatus, Zip32Derivation,
         wallet::extract_and_store_transaction_from_pczt,
     },
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
@@ -2800,32 +2801,36 @@ pub unsafe extern "C" fn zcashlc_transaction_data_requests(
             db_data
                 .transaction_data_requests()?
                 .into_iter()
-                .filter_map(|req| match req {
+                .map(|req| match req {
                     TransactionDataRequest::GetStatus(txid) => {
-                        Some(ffi::TransactionDataRequest::GetStatus(txid.into()))
+                        ffi::TransactionDataRequest::GetStatus(txid.into())
                     }
                     TransactionDataRequest::Enhancement(txid) => {
-                        Some(ffi::TransactionDataRequest::Enhancement(txid.into()))
+                        ffi::TransactionDataRequest::Enhancement(txid.into())
                     }
                     TransactionDataRequest::TransactionsInvolvingAddress {
                         address,
                         block_range_start,
                         block_range_end,
-                        output_status_filter: OutputStatusFilter::All,
-                        ..
-                    } => Some(ffi::TransactionDataRequest::SpendsFromAddress {
+                        request_at,
+                        tx_status_filter,
+                        output_status_filter,
+                    } => ffi::TransactionDataRequest::TransactionsInvolvingAddress {
                         address: CString::new(address.encode(&network)).unwrap().into_raw(),
                         block_range_start: block_range_start.into(),
                         block_range_end: block_range_end.map_or(-1, |h| u32::from(h).into()),
-                    }),
-                    TransactionDataRequest::TransactionsInvolvingAddress {
-                        output_status_filter: OutputStatusFilter::Unspent,
-                        ..
-                    } => {
-                        // UTXO retreieval via the transaction data request queue is not yet
-                        // supported; support will be added in a future release.
-                        None
-                    }
+                        request_at: request_at.map_or(-1, |t| {
+                            t.duration_since(UNIX_EPOCH)
+                                .expect("SystemTime should never be before the epoch")
+                                .as_secs()
+                                .try_into()
+                                .expect("we have time before a SystemTime overflows i64")
+                        }),
+                        tx_status_filter: ffi::TransactionStatusFilter::from_rust(tx_status_filter),
+                        output_status_filter: ffi::OutputStatusFilter::from_rust(
+                            output_status_filter,
+                        ),
+                    },
                 })
                 .collect(),
         ))

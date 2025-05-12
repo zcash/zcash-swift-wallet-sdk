@@ -711,6 +711,52 @@ pub enum TransactionStatus {
     Mined(u32),
 }
 
+/// A type describing the mined-ness of transactions that should be returned in response to a
+/// [`TransactionDataRequest`].
+///
+/// cbindgen:prefix-with-name
+#[repr(C)]
+pub enum TransactionStatusFilter {
+    /// Only mined transactions should be returned.
+    Mined,
+    /// Only mempool transactions should be returned.
+    Mempool,
+    /// Both mined transactions and transactions in the mempool should be returned.
+    All,
+}
+
+impl TransactionStatusFilter {
+    pub(crate) fn from_rust(filter: data_api::TransactionStatusFilter) -> Self {
+        match filter {
+            data_api::TransactionStatusFilter::Mined => Self::Mined,
+            data_api::TransactionStatusFilter::Mempool => Self::Mempool,
+            data_api::TransactionStatusFilter::All => Self::All,
+        }
+    }
+}
+
+/// A type used to filter transactions to be returned in response to a [`TransactionDataRequest`],
+/// in terms of the spentness of the transaction's transparent outputs.
+///
+/// cbindgen:prefix-with-name
+#[repr(C)]
+pub enum OutputStatusFilter {
+    /// Only transactions that have currently-unspent transparent outputs should be returned.
+    Unspent,
+    /// All transactions corresponding to the data request should be returned, irrespective of
+    /// whether or not those transactions produce transparent outputs that are currently unspent.
+    All,
+}
+
+impl OutputStatusFilter {
+    pub(crate) fn from_rust(filter: data_api::OutputStatusFilter) -> Self {
+        match filter {
+            data_api::OutputStatusFilter::Unspent => Self::Unspent,
+            data_api::OutputStatusFilter::All => Self::All,
+        }
+    }
+}
+
 /// A request for transaction data enhancement, spentness check, or discovery
 /// of spends from a given transparent address within a specific block range.
 #[repr(C, u8)]
@@ -754,11 +800,34 @@ pub enum TransactionDataRequest {
     /// for each transaction so detected.
     ///
     /// [`GetTaddressTxids`]: crate::proto::service::compact_tx_streamer_client::CompactTxStreamerClient::get_taddress_txids
-    SpendsFromAddress {
+    TransactionsInvolvingAddress {
+        /// The address to request transactions and/or UTXOs for.
         address: *mut c_char,
+        /// Only transactions mined at heights greater than or equal to this height should be
+        /// returned.
         block_range_start: u32,
-        /// An optional end height; no end height is represented as `-1`
+        /// Only transactions mined at heights less than this height should be returned.
+        ///
+        /// Either a `u32` value, or `-1` representing no end height.
         block_range_end: i64,
+        /// If `request_at` is non-negative, the caller evaluating this request should attempt to
+        /// retrieve transaction data related to the specified address at a time that is as close
+        /// as practical to the specified instant, and in a fashion that decorrelates this request
+        /// to a light wallet server from other requests made by the same caller.
+        ///
+        /// `-1` is the only negative value, meaning "unset".
+        ///
+        /// This may be ignored by callers that are able to satisfy the request without exposing
+        /// correlations between addresses to untrusted parties; for example, a wallet application
+        /// that uses a private, trusted-for-privacy supplier of chain data can safely ignore this
+        /// field.
+        request_at: i64,
+        /// The caller should respond to this request only with transactions that conform to the
+        /// specified transaction status filter.
+        tx_status_filter: TransactionStatusFilter,
+        /// The caller should respond to this request only with transactions containing outputs
+        /// that conform to the specified output status filter.
+        output_status_filter: OutputStatusFilter,
     },
 }
 
@@ -801,7 +870,7 @@ pub unsafe extern "C" fn zcashlc_free_transaction_data_requests(ptr: *mut Transa
     if !ptr.is_null() {
         let s: Box<TransactionDataRequests> = unsafe { Box::from_raw(ptr) };
         free_ptr_from_vec_with(s.ptr, s.len, |req| {
-            if let TransactionDataRequest::SpendsFromAddress { address, .. } = req {
+            if let TransactionDataRequest::TransactionsInvolvingAddress { address, .. } = req {
                 unsafe { zcashlc_string_free(*address) }
             }
         });
