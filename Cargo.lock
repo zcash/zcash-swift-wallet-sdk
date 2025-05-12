@@ -2350,6 +2350,7 @@ version = "0.15.0"
 dependencies = [
  "anyhow",
  "bindgen",
+ "bitflags 2.9.0",
  "cbindgen",
  "cc",
  "cfg-if",
