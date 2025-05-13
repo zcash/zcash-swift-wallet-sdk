@@ -6,6 +6,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- `zcashlc_get_next_available_address` now takes an additional `receiver_flags`
+  argument that permits the caller to specify which receivers should be
+  included in the generated unified address.
+
 ## 0.15.0 - 2025-04-24
 
 ### Added
