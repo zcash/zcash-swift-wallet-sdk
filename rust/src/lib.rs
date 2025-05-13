@@ -1,6 +1,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use anyhow::anyhow;
+use bitflags::bitflags;
 use ffi_helpers::panic::catch_panic;
 use nonempty::NonEmpty;
 use pczt::{
@@ -26,6 +27,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::ptr;
 use std::slice;
+use std::time::UNIX_EPOCH;
 
 use tor_rtcompat::BlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
@@ -33,11 +35,11 @@ use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 use zcash_client_backend::{
     data_api::{
-        AccountPurpose, OutputStatusFilter, TransactionStatus, Zip32Derivation,
+        AccountPurpose, TransactionStatus, Zip32Derivation,
         wallet::extract_and_store_transaction_from_pczt,
     },
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
-    keys::{UnifiedAddressRequest, UnifiedFullViewingKey},
+    keys::{ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey},
 };
 use zcash_client_sqlite::{error::SqliteClientError, util::SystemClock};
 
@@ -716,8 +718,56 @@ pub unsafe extern "C" fn zcashlc_get_current_address(
     unwrap_exc_or_null(res)
 }
 
+bitflags! {
+    /// A set of bitflags used to specify the types of receivers a unified address can contain. The
+    /// flag bits chosen here for each receiver type are incidentally the same as those used for
+    /// serialization in `zcash_client_sqlite`; consistency here isn't really meaningful but is
+    /// less confusing than letting them diverge.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct ReceiverFlags: u32 {
+        /// The requested address can receive transparent p2pkh outputs.
+        const P2PKH = 0b00000001;
+        /// The requested address can receive Sapling outputs.
+        const SAPLING = 0b00000100;
+        /// The requested address can receive Orchard outputs.
+        const ORCHARD = 0b00001000;
+    }
+}
+
+impl ReceiverFlags {
+    fn to_address_request(&self) -> Result<UnifiedAddressRequest, ()> {
+        UnifiedAddressRequest::custom(
+            if self.contains(ReceiverFlags::ORCHARD) {
+                ReceiverRequirement::Require
+            } else {
+                ReceiverRequirement::Omit
+            },
+            if self.contains(ReceiverFlags::SAPLING) {
+                ReceiverRequirement::Require
+            } else {
+                ReceiverRequirement::Omit
+            },
+            if self.contains(ReceiverFlags::P2PKH) {
+                ReceiverRequirement::Require
+            } else {
+                ReceiverRequirement::Omit
+            },
+        )
+    }
+}
+
 /// Returns a newly-generated unified payment address for the specified account, with the next
-/// available diversifier.
+/// available diversifier and the specified set of receivers.
+///
+/// The set of receivers to include in the generated address is specified by a byte which may have
+/// any of the following bits set:
+/// * P2PKH = 0b00000001
+/// * SAPLING = 0b00000100
+/// * ORCHARD = 0b00001000
+///
+/// For each bit set, a corresponding receiver will be required to be generated. If no
+/// corresponding viewing key exists in the wallet for a required receiver, this will return an
+/// error. At present, p2pkh-only unified addresses are not supported.
 ///
 /// # Safety
 ///
@@ -739,15 +789,22 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
     db_data_len: usize,
     account_uuid_bytes: *const u8,
     network_id: u32,
+    receiver_flags: u32,
 ) -> *mut c_char {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
+        let receiver_flags = ReceiverFlags::from_bits(receiver_flags)
+            .ok_or_else(|| anyhow!("Invalid unified address receiver flags {}", receiver_flags))?;
+        let address_request = receiver_flags.to_address_request().map_err(|_| {
+            anyhow!(
+                "Could not generate a valid unified address for flags {}",
+                receiver_flags.bits()
+            )
+        })?;
 
-        match db_data
-            .get_next_available_address(account_uuid, UnifiedAddressRequest::AllAvailableKeys)
-        {
+        match db_data.get_next_available_address(account_uuid, address_request) {
             Ok(Some((ua, _))) => {
                 let address_str = ua.encode(&network);
                 Ok(CString::new(address_str).unwrap().into_raw())
@@ -2744,32 +2801,36 @@ pub unsafe extern "C" fn zcashlc_transaction_data_requests(
             db_data
                 .transaction_data_requests()?
                 .into_iter()
-                .filter_map(|req| match req {
+                .map(|req| match req {
                     TransactionDataRequest::GetStatus(txid) => {
-                        Some(ffi::TransactionDataRequest::GetStatus(txid.into()))
+                        ffi::TransactionDataRequest::GetStatus(txid.into())
                     }
                     TransactionDataRequest::Enhancement(txid) => {
-                        Some(ffi::TransactionDataRequest::Enhancement(txid.into()))
+                        ffi::TransactionDataRequest::Enhancement(txid.into())
                     }
                     TransactionDataRequest::TransactionsInvolvingAddress {
                         address,
                         block_range_start,
                         block_range_end,
-                        output_status_filter: OutputStatusFilter::All,
-                        ..
-                    } => Some(ffi::TransactionDataRequest::SpendsFromAddress {
+                        request_at,
+                        tx_status_filter,
+                        output_status_filter,
+                    } => ffi::TransactionDataRequest::TransactionsInvolvingAddress {
                         address: CString::new(address.encode(&network)).unwrap().into_raw(),
                         block_range_start: block_range_start.into(),
                         block_range_end: block_range_end.map_or(-1, |h| u32::from(h).into()),
-                    }),
-                    TransactionDataRequest::TransactionsInvolvingAddress {
-                        output_status_filter: OutputStatusFilter::Unspent,
-                        ..
-                    } => {
-                        // UTXO retreieval via the transaction data request queue is not yet
-                        // supported; support will be added in a future release.
-                        None
-                    }
+                        request_at: request_at.map_or(-1, |t| {
+                            t.duration_since(UNIX_EPOCH)
+                                .expect("SystemTime should never be before the epoch")
+                                .as_secs()
+                                .try_into()
+                                .expect("we have time before a SystemTime overflows i64")
+                        }),
+                        tx_status_filter: ffi::TransactionStatusFilter::from_rust(tx_status_filter),
+                        output_status_filter: ffi::OutputStatusFilter::from_rust(
+                            output_status_filter,
+                        ),
+                    },
                 })
                 .collect(),
         ))

@@ -2346,10 +2346,11 @@ dependencies = [
 
 [[package]]
 name = "libzcashlc"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "bindgen",
+ "bitflags 2.9.0",
  "cbindgen",
  "cc",
  "cfg-if",

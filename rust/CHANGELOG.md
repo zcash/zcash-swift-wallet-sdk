@@ -6,6 +6,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.16.0 - 2025-05-13
+
+### Added
+- `OutputStatusFilter`
+- `TransactionStatusFilter`
+
+### Changed
+- `zcashlc_get_next_available_address` now takes an additional `receiver_flags`
+  argument that permits the caller to specify which receivers should be
+  included in the generated unified address.
+- `FfiTransactionDataRequest` variant `SpendsFromAddress` has been renamed to
+  `TransactionsInvolvingAddress` and has new fields.
+
 ## 0.15.0 - 2025-04-24
 
 ### Added
