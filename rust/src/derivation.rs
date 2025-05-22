@@ -364,10 +364,11 @@ pub unsafe extern "C" fn zcashlc_spending_key_to_full_viewing_key(
 
 struct UnifiedAddressParser(UnifiedAddress);
 
-impl zcash_address::TryFromRawAddress for UnifiedAddressParser {
+impl zcash_address::TryFromAddress for UnifiedAddressParser {
     type Error = anyhow::Error;
 
-    fn try_from_raw_unified(
+    fn try_from_unified(
+        _net: NetworkType,
         data: zcash_address::unified::Address,
     ) -> Result<Self, zcash_address::ConversionError<Self::Error>> {
         data.try_into()
