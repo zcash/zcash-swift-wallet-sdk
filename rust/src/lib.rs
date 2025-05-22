@@ -735,7 +735,7 @@ bitflags! {
 }
 
 impl ReceiverFlags {
-    fn to_address_request(&self) -> Result<UnifiedAddressRequest, ()> {
+    fn to_address_request(self) -> Result<UnifiedAddressRequest, ()> {
         UnifiedAddressRequest::custom(
             if self.contains(ReceiverFlags::ORCHARD) {
                 ReceiverRequirement::Require
@@ -1950,12 +1950,12 @@ fn zip317_helper<DbT>(
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+///   of `1`.
 /// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
 ///   function call.
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
-///    512-byte array.
+///   512-byte array.
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
 #[unsafe(no_mangle)]
@@ -2032,7 +2032,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+///   of `1`.
 /// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
 ///   function call.
 /// - `payment_uri` must be non-null and must point to a null-terminated UTF-8 string.
@@ -2142,7 +2142,7 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+///   of `1`.
 /// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
 ///   function call.
 /// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
@@ -2841,6 +2841,15 @@ pub unsafe extern "C" fn zcashlc_transaction_data_requests(
 /// Detects notes with corrupt witnesses, and adds the block ranges corresponding to the corrupt
 /// ranges to the scan queue so that the ordinary scanning process will re-scan these ranges to fix
 /// the corruption in question.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_fix_witnesses(
     db_data: *const u8,
