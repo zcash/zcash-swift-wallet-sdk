@@ -8,7 +8,7 @@ authors = [
 ]
 license = "MIT"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 build = "rust/build.rs"
 
 [dependencies]
@@ -70,7 +70,7 @@ xz2 = { version = "0.1", features = ["static"] }
 
 [build-dependencies]
 bindgen = "0.71"
-cbindgen = "0.28"
+cbindgen = "0.29"
 cc = "1.0"
 
 [lib]

@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- MSRV is now 1.87.
+
 ## 0.16.0 - 2025-05-13
 
 ### Added
