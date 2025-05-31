@@ -878,6 +878,16 @@ pub unsafe extern "C" fn zcashlc_free_transaction_data_requests(ptr: *mut Transa
     }
 }
 
+/// What level of sleep to put a Tor client into.
+#[repr(C)]
+pub enum TorDormantMode {
+    /// The client functions as normal, and background tasks run periodically.
+    Normal,
+    /// Background tasks are suspended, conserving CPU usage. Attempts to use the client will
+    /// wake it back up again.
+    Soft,
+}
+
 /// A decimal suitable for converting into an `NSDecimalNumber`.
 #[repr(C)]
 pub struct Decimal {

@@ -2967,6 +2967,41 @@ pub unsafe extern "C" fn zcashlc_tor_isolated_client(
     unwrap_exc_or_null(res)
 }
 
+/// Changes the client's current dormant mode, putting background tasks to sleep or waking
+/// them up as appropriate.
+///
+/// This can be used to conserve CPU usage if you aren’t planning on using the client for
+/// a while, especially on mobile platforms.
+///
+/// See the [`ffi::TorDormantMode`] documentation for more details.
+///
+/// # Safety
+///
+/// - `tor_runtime` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut TorRuntime` that has not previously been freed.
+/// - `tor_runtime` must not be passed to two FFI calls at the same time.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_tor_set_dormant(
+    tor_runtime: *mut TorRuntime,
+    mode: ffi::TorDormantMode,
+) -> bool {
+    // SAFETY: Callers would have to do the following for unwind safety (#194):
+    // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `TorRuntime` whenever we get an error that is due to a panic.
+    let tor_runtime = AssertUnwindSafe(tor_runtime);
+
+    let res = catch_panic(|| {
+        let tor_runtime =
+            unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
+
+        tor_runtime.set_dormant(mode);
+
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
+}
+
 /// Fetches the current ZEC-USD exchange rate over Tor.
 ///
 /// The result is a [`Decimal`] struct containing the fields necessary to construct an

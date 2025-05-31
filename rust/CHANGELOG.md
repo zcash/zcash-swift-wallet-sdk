@@ -6,8 +6,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- `TorDormantMode`
+- `zcashlc_tor_set_dormant`
+
 ### Changed
 - MSRV is now 1.87.
+- Updated to `zcash_client_backend 0.19`, `zcash_client_sqlite 0.17`.
 
 ## 0.16.0 - 2025-05-13
 
