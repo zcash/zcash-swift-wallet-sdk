@@ -3,6 +3,7 @@
 use anyhow::anyhow;
 use bitflags::bitflags;
 use ffi_helpers::panic::catch_panic;
+use http_body_util::BodyExt;
 use nonempty::NonEmpty;
 use pczt::{
     Pczt,
@@ -40,6 +41,7 @@ use zcash_client_backend::{
     },
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
     keys::{ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey},
+    tor::http::HttpError,
 };
 use zcash_client_sqlite::{error::SqliteClientError, util::SystemClock};
 
@@ -735,7 +737,7 @@ bitflags! {
 }
 
 impl ReceiverFlags {
-    fn to_address_request(&self) -> Result<UnifiedAddressRequest, ()> {
+    fn to_address_request(self) -> Result<UnifiedAddressRequest, ()> {
         UnifiedAddressRequest::custom(
             if self.contains(ReceiverFlags::ORCHARD) {
                 ReceiverRequirement::Require
@@ -1950,12 +1952,12 @@ fn zip317_helper<DbT>(
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+///   of `1`.
 /// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
 ///   function call.
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
-///    512-byte array.
+///   512-byte array.
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
 #[unsafe(no_mangle)]
@@ -2032,7 +2034,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+///   of `1`.
 /// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
 ///   function call.
 /// - `payment_uri` must be non-null and must point to a null-terminated UTF-8 string.
@@ -2142,7 +2144,7 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 /// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
-///    of `1`.
+///   of `1`.
 /// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
 ///   function call.
 /// - `shielding_threshold` a non-negative shielding threshold amount in zatoshi
@@ -2841,6 +2843,15 @@ pub unsafe extern "C" fn zcashlc_transaction_data_requests(
 /// Detects notes with corrupt witnesses, and adds the block ranges corresponding to the corrupt
 /// ranges to the scan queue so that the ordinary scanning process will re-scan these ranges to fix
 /// the corruption in question.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_fix_witnesses(
     db_data: *const u8,
@@ -2956,6 +2967,218 @@ pub unsafe extern "C" fn zcashlc_tor_isolated_client(
         Ok(Box::into_raw(Box::new(isolated_client)))
     });
     unwrap_exc_or_null(res)
+}
+
+/// Changes the client's current dormant mode, putting background tasks to sleep or waking
+/// them up as appropriate.
+///
+/// This can be used to conserve CPU usage if you aren’t planning on using the client for
+/// a while, especially on mobile platforms.
+///
+/// See the [`ffi::TorDormantMode`] documentation for more details.
+///
+/// # Safety
+///
+/// - `tor_runtime` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut TorRuntime` that has not previously been freed.
+/// - `tor_runtime` must not be passed to two FFI calls at the same time.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_tor_set_dormant(
+    tor_runtime: *mut TorRuntime,
+    mode: ffi::TorDormantMode,
+) -> bool {
+    // SAFETY: Callers would have to do the following for unwind safety (#194):
+    // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `TorRuntime` whenever we get an error that is due to a panic.
+    let tor_runtime = AssertUnwindSafe(tor_runtime);
+
+    let res = catch_panic(|| {
+        let tor_runtime =
+            unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
+
+        tor_runtime.set_dormant(mode);
+
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
+}
+
+/// Makes an HTTP GET request over Tor.
+///
+/// `retry_limit` is the maximum number of times that a failed request should be retried.
+/// You can disable retries by setting this to 0.
+///
+/// # Safety
+///
+/// - `tor_runtime` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut TorRuntime` that has not previously been freed.
+/// - `tor_runtime` must not be passed to two FFI calls at the same time.
+/// - `url` must be non-null and must point to a null-terminated UTF-8 string.
+/// - `headers` must be non-null and valid for reads for
+///   `headers_len * size_of::<ffi::HttpRequestHeader>()` bytes, and it must be properly
+///   aligned. This means in particular:
+///   - The entire memory range of this slice must be contained within a single allocated
+///     object! Slices can never span across multiple allocated objects.
+///   - `headers` must be non-null and aligned even for zero-length slices.
+/// - `headers` must point to `headers_len` consecutive properly initialized values of
+///   type `ffi::HttpRequestHeader`.
+/// - The memory referenced by `headers` must not be mutated for the duration of the function
+///   call.
+/// - The total size `headers_len * size_of::<ffi::HttpRequestHeader>()` of the slice must
+///   be no larger than `isize::MAX`, and adding that size to `headers` must not "wrap
+///   around" the address space.  See the safety documentation of pointer::offset.
+/// - Call [`zcashlc_free_http_response_bytes`] to free the memory associated with the
+///   returned pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_tor_http_get(
+    tor_runtime: *mut TorRuntime,
+    url: *const c_char,
+    headers: *const ffi::HttpRequestHeader,
+    headers_len: usize,
+    retry_limit: u8,
+) -> *mut ffi::HttpResponseBytes {
+    // SAFETY: Callers would have to do the following for unwind safety (#194):
+    // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `TorRuntime` whenever we get an error that is due to a panic.
+    let tor_runtime = AssertUnwindSafe(tor_runtime);
+
+    let res = catch_panic(|| {
+        let tor_runtime =
+            unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
+
+        let url = unsafe { CStr::from_ptr(url).to_str()? }
+            .try_into()
+            .map_err(|e| anyhow!("Invalid URL: {e}"))?;
+
+        let headers = unsafe { slice::from_raw_parts(headers, headers_len) }
+            .iter()
+            .map(|header| {
+                anyhow::Ok((
+                    unsafe { CStr::from_ptr(header.name) }.to_str()?,
+                    unsafe { CStr::from_ptr(header.value) }.to_str()?,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let response = tor_runtime.runtime().block_on(async {
+            tor_runtime
+                .client()
+                .http_get(
+                    url,
+                    |builder| {
+                        headers.iter().fold(builder, |builder, (key, value)| {
+                            builder.header(*key, *value)
+                        })
+                    },
+                    |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
+                    retry_limit,
+                    |res| {
+                        res.is_err()
+                            .then_some(zcash_client_backend::tor::http::Retry::Same)
+                    },
+                )
+                .await
+        })?;
+
+        ffi::HttpResponseBytes::from_rust(response)
+    });
+    unwrap_exc_or(res, ptr::null_mut())
+}
+
+/// Makes an HTTP POST request over Tor.
+///
+/// `retry_limit` is the maximum number of times that a failed request should be retried.
+/// You can disable retries by setting this to 0.
+///
+/// # Safety
+///
+/// - `tor_runtime` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut TorRuntime` that has not previously been freed.
+/// - `tor_runtime` must not be passed to two FFI calls at the same time.
+/// - `url` must be non-null and must point to a null-terminated UTF-8 string.
+/// - `headers` must be non-null and valid for reads for
+///   `headers_len * size_of::<ffi::HttpRequestHeader>()` bytes, and it must be properly
+///   aligned. This means in particular:
+///   - The entire memory range of this slice must be contained within a single allocated
+///     object! Slices can never span across multiple allocated objects.
+///   - `headers` must be non-null and aligned even for zero-length slices.
+/// - `headers` must point to `headers_len` consecutive properly initialized values of
+///   type `ffi::HttpRequestHeader`.
+/// - The memory referenced by `headers` must not be mutated for the duration of the function
+///   call.
+/// - The total size `headers_len * size_of::<ffi::HttpRequestHeader>()` of the slice must
+///   be no larger than `isize::MAX`, and adding that size to `headers` must not "wrap
+///   around" the address space.  See the safety documentation of pointer::offset.
+/// - `body` must be non-null and valid for reads for `body_len` bytes, and it must have
+///   an alignment of `1`.
+/// - The memory referenced by `body` must not be mutated for the duration of the function
+///   call.
+/// - The total size `body_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_http_response_bytes`] to free the memory associated with the
+///   returned pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_tor_http_post(
+    tor_runtime: *mut TorRuntime,
+    url: *const c_char,
+    headers: *const ffi::HttpRequestHeader,
+    headers_len: usize,
+    body: *const u8,
+    body_len: usize,
+    retry_limit: u8,
+) -> *mut ffi::HttpResponseBytes {
+    // SAFETY: Callers would have to do the following for unwind safety (#194):
+    // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `TorRuntime` whenever we get an error that is due to a panic.
+    let tor_runtime = AssertUnwindSafe(tor_runtime);
+
+    let res = catch_panic(|| {
+        let tor_runtime =
+            unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
+
+        let url = unsafe { CStr::from_ptr(url).to_str()? }
+            .try_into()
+            .map_err(|e| anyhow!("Invalid URL: {e}"))?;
+
+        let headers = unsafe { slice::from_raw_parts(headers, headers_len) }
+            .iter()
+            .map(|header| {
+                anyhow::Ok((
+                    unsafe { CStr::from_ptr(header.name) }.to_str()?,
+                    unsafe { CStr::from_ptr(header.value) }.to_str()?,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let body = unsafe { slice::from_raw_parts(body, body_len) };
+
+        let response = tor_runtime.runtime().block_on(async {
+            tor_runtime
+                .client()
+                .http_post(
+                    url,
+                    |builder| {
+                        headers.iter().fold(builder, |builder, (key, value)| {
+                            builder.header(*key, *value)
+                        })
+                    },
+                    http_body_util::Full::new(body),
+                    |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
+                    retry_limit,
+                    |res| {
+                        res.is_err()
+                            .then_some(zcash_client_backend::tor::http::Retry::Same)
+                    },
+                )
+                .await
+        })?;
+
+        ffi::HttpResponseBytes::from_rust(response)
+    });
+    unwrap_exc_or(res, ptr::null_mut())
 }
 
 /// Fetches the current ZEC-USD exchange rate over Tor.

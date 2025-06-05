@@ -3,6 +3,8 @@ use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ptr;
 
+use anyhow::anyhow;
+use bytes::Bytes;
 use zcash_client_backend::{address::UnifiedAddress, data_api};
 use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::{consensus::Network, value::ZatBalance};
@@ -878,6 +880,16 @@ pub unsafe extern "C" fn zcashlc_free_transaction_data_requests(ptr: *mut Transa
     }
 }
 
+/// What level of sleep to put a Tor client into.
+#[repr(C)]
+pub enum TorDormantMode {
+    /// The client functions as normal, and background tasks run periodically.
+    Normal,
+    /// Background tasks are suspended, conserving CPU usage. Attempts to use the client will
+    /// wake it back up again.
+    Soft,
+}
+
 /// A decimal suitable for converting into an `NSDecimalNumber`.
 #[repr(C)]
 pub struct Decimal {
@@ -955,5 +967,117 @@ pub unsafe extern "C" fn zcashlc_free_account_metadata_key(ptr: *mut AccountMeta
     if !ptr.is_null() {
         let key: Box<AccountMetadataKey> = unsafe { Box::from_raw(ptr) };
         drop(key);
+    }
+}
+
+/// An HTTP header for a request.
+///
+/// Memory is managed by Swift.
+#[repr(C)]
+pub struct HttpRequestHeader {
+    /// The header name as a C string.
+    pub(crate) name: *const c_char,
+
+    /// The header value as a C string.
+    pub(crate) value: *const c_char,
+}
+
+/// An HTTP header from a response.
+///
+/// Memory is managed by Rust.
+#[repr(C)]
+pub struct HttpResponseHeader {
+    /// The header name as a C string.
+    name: *mut c_char,
+
+    /// The header value as a C string.
+    value: *mut c_char,
+}
+
+/// A struct that contains an HTTP response.
+#[repr(C)]
+pub struct HttpResponseBytes {
+    /// The response's status.
+    status: u16,
+
+    /// The response's version.
+    version: *mut c_char,
+
+    /// A pointer to a list of the response's headers.
+    headers_ptr: *mut HttpResponseHeader,
+
+    /// The length of the data in `headers_ptr`.
+    headers_len: usize,
+
+    /// A pointer to the HTTP body bytes.
+    body_ptr: *mut u8,
+
+    /// The length of the data in `body_ptr`.
+    body_len: usize,
+}
+
+impl HttpResponseBytes {
+    pub(crate) fn from_rust(response: http::Response<Bytes>) -> anyhow::Result<*mut Self> {
+        let (parts, body) = response.into_parts();
+
+        let headers = parts
+            .headers
+            .into_iter()
+            .scan(None, |cur_name, (name, value)| {
+                // Update the current header name in the iterator.
+                if name.is_some() {
+                    *cur_name = name;
+                }
+
+                Some(value.to_str().map_err(|e| anyhow!(e)).and_then(|value| {
+                    Ok((
+                        CString::new(cur_name.as_ref().expect("present").as_str().to_owned())?,
+                        CString::new(value.to_owned())?,
+                    ))
+                }))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let (headers_ptr, headers_len) = ptr_from_vec(
+            headers
+                .into_iter()
+                .map(|(name, value)| HttpResponseHeader {
+                    name: name.into_raw(),
+                    value: value.into_raw(),
+                })
+                .collect(),
+        );
+
+        let (body_ptr, body_len) = ptr_from_vec(body.to_vec());
+
+        Ok(Box::into_raw(Box::new(HttpResponseBytes {
+            status: parts.status.as_u16(),
+            version: CString::new(format!("{:?}", parts.version))
+                .unwrap()
+                .into_raw(),
+            headers_ptr,
+            headers_len,
+            body_ptr,
+            body_len,
+        })))
+    }
+}
+
+/// Frees an HttpResponseBytes value
+///
+/// # Safety
+///
+/// - `ptr` must either be null or point to a struct having the layout of [`HttpResponseBytes`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_free_http_response_bytes(ptr: *mut HttpResponseBytes) {
+    if !ptr.is_null() {
+        let response: Box<HttpResponseBytes> = unsafe { Box::from_raw(ptr) };
+        unsafe { zcashlc_string_free(response.version) }
+        free_ptr_from_vec_with(response.headers_ptr, response.headers_len, |header| {
+            unsafe { zcashlc_string_free(header.name) };
+            unsafe { zcashlc_string_free(header.value) };
+        });
+        free_ptr_from_vec(response.body_ptr, response.body_len);
+        drop(response);
     }
 }

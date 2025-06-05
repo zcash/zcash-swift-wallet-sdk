@@ -1,6 +1,6 @@
 [package]
 name = "libzcashlc"
-version = "0.16.0"
+version = "0.17.0"
 authors = [
     "Jack Grigg <jack@electriccoin.co>",
     "Francisco Gindre",
@@ -8,7 +8,7 @@ authors = [
 ]
 license = "MIT"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 build = "rust/build.rs"
 
 [dependencies]
@@ -16,9 +16,9 @@ build = "rust/build.rs"
 # Zcash
 orchard = "0.11"
 sapling = { package = "sapling-crypto", version = "0.5", default-features = false }
-transparent = { package = "zcash_transparent", version = "0.2.2", default-features = false }
-zcash_address = { version = "0.7" }
-zcash_client_backend = { version = "0.18", features = [
+transparent = { package = "zcash_transparent", version = "0.3", default-features = false }
+zcash_address = { version = "0.8" }
+zcash_client_backend = { version = "0.19", features = [
     "lightwalletd-tonic-tls-webpki-roots",
     "orchard",
     "pczt",
@@ -26,13 +26,13 @@ zcash_client_backend = { version = "0.18", features = [
     "transparent-inputs",
     "unstable",
 ] }
-zcash_client_sqlite = { version = "0.16.2", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.17", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
-zcash_primitives = "0.22"
-zcash_proofs = "0.22"
+zcash_primitives = "0.23"
+zcash_proofs = "0.23"
 zcash_protocol = "0.5"
 zip32 = "0.2"
-pczt = { version = "0.2", features = ["prover"] }
+pczt = { version = "0.3", features = ["prover"] }
 
 # Infrastructure
 prost = "0.13"
@@ -47,12 +47,17 @@ ffi_helpers = "0.3"
 uuid = "1.1"
 bitflags = "2"
 
+# HTTP
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+
 # Initialization
 cfg-if = "1.0"
 rayon = "1.7"
 
 # lightwalletd
-tonic = "0.12"
+tonic = "0.13"
 
 # Logging
 log-panics = "2.0"
@@ -62,15 +67,15 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Tor
-fs-mistrust = "0.8"
-tor-rtcompat = "0.23"
+fs-mistrust = "0.9"
+tor-rtcompat = "0.28"
 rust_decimal = { version = "1", default-features = false, features = ["c-repr"] }
 # - The "static" feature is required for the "compression" default feature of arti-client.
 xz2 = { version = "0.1", features = ["static"] }
 
 [build-dependencies]
 bindgen = "0.71"
-cbindgen = "0.28"
+cbindgen = "0.29"
 cc = "1.0"
 
 [lib]

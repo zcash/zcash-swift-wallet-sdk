@@ -6,6 +6,22 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.17.0 - 2025-06-04
+
+### Added
+- `FfiHttpRequestHeader`
+- `FfiHttpResponseBytes`
+- `FfiHttpResponseHeader`
+- `TorDormantMode`
+- `zcashlc_free_http_response_bytes`
+- `zcashlc_tor_http_get`
+- `zcashlc_tor_http_post`
+- `zcashlc_tor_set_dormant`
+
+### Changed
+- MSRV is now 1.87.
+- Updated to `zcash_client_backend 0.19`, `zcash_client_sqlite 0.17`.
+
 ## 0.16.0 - 2025-05-13
 
 ### Added
