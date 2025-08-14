@@ -2810,29 +2810,30 @@ pub unsafe extern "C" fn zcashlc_transaction_data_requests(
                     TransactionDataRequest::Enhancement(txid) => {
                         ffi::TransactionDataRequest::Enhancement(txid.into())
                     }
-                    TransactionDataRequest::TransactionsInvolvingAddress {
-                        address,
-                        block_range_start,
-                        block_range_end,
-                        request_at,
-                        tx_status_filter,
-                        output_status_filter,
-                    } => ffi::TransactionDataRequest::TransactionsInvolvingAddress {
-                        address: CString::new(address.encode(&network)).unwrap().into_raw(),
-                        block_range_start: block_range_start.into(),
-                        block_range_end: block_range_end.map_or(-1, |h| u32::from(h).into()),
-                        request_at: request_at.map_or(-1, |t| {
-                            t.duration_since(UNIX_EPOCH)
-                                .expect("SystemTime should never be before the epoch")
-                                .as_secs()
-                                .try_into()
-                                .expect("we have time before a SystemTime overflows i64")
-                        }),
-                        tx_status_filter: ffi::TransactionStatusFilter::from_rust(tx_status_filter),
-                        output_status_filter: ffi::OutputStatusFilter::from_rust(
-                            output_status_filter,
-                        ),
-                    },
+                    TransactionDataRequest::TransactionsInvolvingAddress(v) => {
+                        ffi::TransactionDataRequest::TransactionsInvolvingAddress {
+                            address: CString::new(v.address().encode(&network))
+                                .unwrap()
+                                .into_raw(),
+                            block_range_start: v.block_range_start().into(),
+                            block_range_end: v
+                                .block_range_end()
+                                .map_or(-1, |h| u32::from(h).into()),
+                            request_at: v.request_at().map_or(-1, |t| {
+                                t.duration_since(UNIX_EPOCH)
+                                    .expect("SystemTime should never be before the epoch")
+                                    .as_secs()
+                                    .try_into()
+                                    .expect("we have time before a SystemTime overflows i64")
+                            }),
+                            tx_status_filter: ffi::TransactionStatusFilter::from_rust(
+                                v.tx_status_filter().clone(),
+                            ),
+                            output_status_filter: ffi::OutputStatusFilter::from_rust(
+                                v.output_status_filter().clone(),
+                            ),
+                        }
+                    }
                 })
                 .collect(),
         ))
