@@ -3,7 +3,7 @@ use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ptr;
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use bytes::Bytes;
 use zcash_client_backend::{address::UnifiedAddress, data_api};
 use zcash_client_sqlite::AccountUuid;
@@ -1079,5 +1079,52 @@ pub unsafe extern "C" fn zcashlc_free_http_response_bytes(ptr: *mut HttpResponse
         });
         free_ptr_from_vec(response.body_ptr, response.body_len);
         drop(response);
+    }
+}
+
+/// FFI proxy for [`ConfirmationsPolicy`].
+///
+/// TODO(schell): more documentation here about non-zero-ness and defaulting, etc.
+/// * copy the docs for ConfirmationsPolicy here because the SDKs need it.
+#[repr(C)]
+pub struct ConfirmationsPolicy {
+    /// NonZero, zero for default
+    pub(crate) trusted: u32,
+    /// NonZero, zero for default, zero must match `trusted`
+    pub(crate) untrusted: u32,
+    pub(crate) allow_zero_conf_shielding: bool,
+}
+
+impl TryFrom<ConfirmationsPolicy> for data_api::wallet::ConfirmationsPolicy {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ConfirmationsPolicy) -> Result<Self, Self::Error> {
+        // Ensure the confirmations are symmetrical in requesting a default
+        if value.trusted == 0 {
+            anyhow::ensure!(
+                value.untrusted == 0,
+                "Trusted and untrusted confirmations must both be zero to default properly"
+            );
+
+            let def = data_api::wallet::ConfirmationsPolicy::default();
+            data_api::wallet::ConfirmationsPolicy::new(
+                def.trusted(),
+                def.untrusted(),
+                value.allow_zero_conf_shielding,
+            )
+        } else {
+            data_api::wallet::ConfirmationsPolicy::new(
+                value
+                    .trusted
+                    .try_into()
+                    .context("Trusted confirmations must be non-zero")?,
+                value
+                    .untrusted
+                    .try_into()
+                    .context("Untrusted confirmations must be non-zero")?,
+                value.allow_zero_conf_shielding,
+            )
+        }
+        .map_err(|()| anyhow::anyhow!("Could not construct ConfirmationsPolicy"))
     }
 }
