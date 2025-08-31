@@ -87,11 +87,11 @@ crate-type = ["staticlib"]
 lto = true
 
 [patch.crates-io]
-pczt = { git = "https://github.com/zcash/librustzcash.git", rev = "dccd4efdc82e4a37bb75bc7114f80d5dcc9b4f58" }
-transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "dccd4efdc82e4a37bb75bc7114f80d5dcc9b4f58" }
-zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "dccd4efdc82e4a37bb75bc7114f80d5dcc9b4f58" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "dccd4efdc82e4a37bb75bc7114f80d5dcc9b4f58" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "dccd4efdc82e4a37bb75bc7114f80d5dcc9b4f58" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "dccd4efdc82e4a37bb75bc7114f80d5dcc9b4f58" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "dccd4efdc82e4a37bb75bc7114f80d5dcc9b4f58" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "dccd4efdc82e4a37bb75bc7114f80d5dcc9b4f58" }
+pczt = { git = "https://github.com/zcash/librustzcash.git", rev = "77602375034fe931efbbd6131cc2a77a263b6e6d" }
+transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "77602375034fe931efbbd6131cc2a77a263b6e6d" }
+zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "77602375034fe931efbbd6131cc2a77a263b6e6d" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "77602375034fe931efbbd6131cc2a77a263b6e6d" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "77602375034fe931efbbd6131cc2a77a263b6e6d" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "77602375034fe931efbbd6131cc2a77a263b6e6d" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "77602375034fe931efbbd6131cc2a77a263b6e6d" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "77602375034fe931efbbd6131cc2a77a263b6e6d" }
