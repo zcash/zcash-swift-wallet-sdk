@@ -6,6 +6,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.17.1 - 2025-08-29
+
+### Changed
+- Updated to `zcash_client_sqlite 0.17.3` (hotfix release).
+
+### Fixed
+- This release fixes a potential false-positive in the `expired_unmined` column
+  of the `v_transactions` view.
+
 ## 0.17.0 - 2025-06-04
 
 ### Added
