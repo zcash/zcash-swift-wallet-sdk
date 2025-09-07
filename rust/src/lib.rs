@@ -914,7 +914,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
 }
 
 /// Returns the verified transparent balance for `account`, which ignores utxos that have been
-/// received too recently and are not yet deemed spendable according to `min_confirmations`.
+/// received too recently and are not yet deemed spendable according to `confirmations_policy`.
 ///
 /// # Safety
 ///
@@ -934,7 +934,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
     db_data_len: usize,
     network_id: u32,
     account_uuid_bytes: *const u8,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -954,14 +954,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
                     e,
                 )
             })?;
-
-        let confirmations_policy = match NonZeroU32::new(min_confirmations) {
-            Some(min_confirmations) => {
-                wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false)
-            }
-            None => wallet::ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
-        };
-
+        let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
         let amount = receivers
             .keys()
             .map(|taddr| {

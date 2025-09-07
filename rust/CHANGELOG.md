@@ -13,8 +13,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - functions now take `confirmations_policy: ConfirmationsPolicy` instead of `min_confirmations: u32`:
+
   * `zcashlc_get_wallet_summary` 
   * `zcashlc_get_verified_transparent_balance`
+  * `zcashlc_get_verified_transparent_balance_for_account`
 
 ## 0.17.0 - 2025-06-04
 
