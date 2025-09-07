@@ -20,6 +20,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * `zcashlc_propose_transfer`
   * `zcashlc_propose_send_max_transfer`
   * `zcashlc_propose_transfer_from_uri`
+  * `zcashlc_propose_shielding`
 
 ## 0.17.0 - 2025-06-04
 

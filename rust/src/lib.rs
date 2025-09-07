@@ -2101,7 +2101,7 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 ///   individually shielded in transactions that may be temporally clustered. Keeping transparent
 ///   activity private is very difficult; caveat emptor.
 /// - network_id: The identifier for the network in use: 0 for testnet, 1 for mainnet.
-/// - min_confirmations: The number of confirmations that are required for a UTXO to be considered
+/// - confirmations_policy: The minimum number of confirmations that are required for a UTXO to be considered
 ///   for shielding.
 ///
 /// # Safety
@@ -2128,7 +2128,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
     shielding_threshold: u64,
     transparent_receiver: *const c_char,
     network_id: u32,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2172,12 +2172,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             }
         }?;
 
-        let confirmations_policy = match NonZeroU32::new(min_confirmations) {
-            Some(min_confirmations) => {
-                wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false)
-            }
-            None => wallet::ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
-        };
+        let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
 
         let account_receivers = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
