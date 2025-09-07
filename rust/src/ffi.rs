@@ -1082,10 +1082,18 @@ pub unsafe extern "C" fn zcashlc_free_http_response_bytes(ptr: *mut HttpResponse
     }
 }
 
-/// FFI proxy for [`ConfirmationsPolicy`].
+/// A description of the policy that is used to determine what notes are available for spending,
+/// based upon the number of confirmations (the number of blocks in the chain since and including
+/// the block in which a note was produced.)
 ///
-/// TODO(schell): more documentation here about non-zero-ness and defaulting, etc.
-/// * copy the docs for ConfirmationsPolicy here because the SDKs need it.
+/// See [`ZIP 315`] for details including the definitions of "trusted" and "untrusted" notes.
+///
+/// # Note
+///
+/// `trusted` and `untrusted` are both meant to be non-zero values.
+/// `0` will be treated as a request for a default value.
+///
+/// [`ZIP 315`]: https://zips.z.cash/zip-0315
 #[repr(C)]
 pub struct ConfirmationsPolicy {
     /// NonZero, zero for default
@@ -1093,6 +1101,26 @@ pub struct ConfirmationsPolicy {
     /// NonZero, zero for default, zero must match `trusted`
     pub(crate) untrusted: u32,
     pub(crate) allow_zero_conf_shielding: bool,
+}
+
+/// The default confirmations policy according to [`ZIP 315`].
+///
+/// * Require 3 confirmations for "trusted" transaction outputs (outputs produced by the wallet)
+/// * Require 10 confirmations for "untrusted" outputs (those sent to the wallet by external/third
+///   parties)
+/// * Allow zero-conf shielding of transparent UTXOs irrespective of their origin, but treat the
+///   resulting shielding transaction's outputs as though the original transparent UTXOs had
+///   instead been received as untrusted shielded outputs.
+///
+/// [`ZIP 315`]: https://zips.z.cash/zip-0315
+impl Default for ConfirmationsPolicy {
+    fn default() -> Self {
+        ConfirmationsPolicy {
+            trusted: 3,
+            untrusted: 10,
+            allow_zero_conf_shielding: true,
+        }
+    }
 }
 
 impl TryFrom<ConfirmationsPolicy> for data_api::wallet::ConfirmationsPolicy {
