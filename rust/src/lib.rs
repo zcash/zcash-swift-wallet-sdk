@@ -2010,7 +2010,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 ///   function call.
 /// - `payment_uri` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `network_id` a u32. 0 for Testnet and 1 for Mainnet
-/// - `min_confirmations` number of confirmations of the funds to spend
+/// - `confirmations_policy` number of trusted/untrusted confirmations of the funds to spend
 /// - `use_zip317_fees` `true` to use ZIP-317 fees.
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
@@ -2021,12 +2021,10 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
     account_uuid_bytes: *const u8,
     payment_uri: *const c_char,
     network_id: u32,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
-            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
@@ -2037,8 +2035,6 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
         let req = TransactionRequest::from_uri(payment_uri_str)
             .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        let confirmations_policy =
-            wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
@@ -2046,7 +2042,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
             &input_selector,
             &change_strategy,
             req,
-            confirmations_policy,
+            wallet::ConfirmationsPolicy::try_from(confirmations_policy)?,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
