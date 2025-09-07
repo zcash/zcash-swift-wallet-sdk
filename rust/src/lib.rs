@@ -870,7 +870,7 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
 }
 
 /// Returns the verified transparent balance for `address`, which ignores utxos that have been
-/// received too recently and are not yet deemed spendable according to `min_confirmations`.
+/// received too recently and are not yet deemed spendable according to `confirmations_policy`.
 ///
 /// # Safety
 ///
@@ -888,21 +888,18 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
     db_data_len: usize,
     address: *const c_char,
     network_id: u32,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
         let taddr = TransparentAddress::decode(&network, addr).unwrap();
-        let min_confirmations = NonZeroU32::new(min_confirmations)
-            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
+        let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
         let (target, _) = db_data
-            .get_target_and_anchor_heights(min_confirmations)
+            .get_target_and_anchor_heights(confirmations_policy.untrusted())
             .map_err(|e| anyhow!("Error while fetching target height: {}", e))?
             .context("Target height not available; scan required.")?;
-        let confirmations_policy =
-            wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
         let utxos = db_data
             .get_spendable_transparent_outputs(&taddr, target, confirmations_policy)
             .map_err(|e| anyhow!("Error while fetching verified transparent balance: {}", e))?;
