@@ -1474,18 +1474,12 @@ pub unsafe extern "C" fn zcashlc_get_wallet_summary(
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> *mut ffi::WalletSummary {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-
-        let confirmations_policy = match NonZeroU32::new(min_confirmations) {
-            Some(min_confirmations) => {
-                wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false)
-            }
-            None => wallet::ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
-        };
+        let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
 
         match db_data
             .get_wallet_summary(confirmations_policy)
