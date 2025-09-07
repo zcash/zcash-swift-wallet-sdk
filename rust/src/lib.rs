@@ -1942,12 +1942,10 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
     value: i64,
     memo: *const u8,
     network_id: u32,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
-            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
@@ -1976,8 +1974,6 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         ])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        let confirmations_policy =
-            wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
@@ -1985,7 +1981,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
             &input_selector,
             &change_strategy,
             req,
-            confirmations_policy,
+            wallet::ConfirmationsPolicy::try_from(confirmations_policy)?,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
