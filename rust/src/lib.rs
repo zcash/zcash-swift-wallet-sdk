@@ -957,16 +957,14 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
                     e,
                 )
             })?;
-        let (min_confirmations, allow_zero_conf_shielding) = if min_confirmations == 0 {
-            (NonZeroU32::MIN, true)
-        } else {
-            // UNWRAP: safe because we checked min_confirmations > 0
-            (NonZeroU32::new(min_confirmations).unwrap(), false)
+
+        let confirmations_policy = match NonZeroU32::new(min_confirmations) {
+            Some(min_confirmations) => {
+                wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false)
+            }
+            None => wallet::ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
         };
-        let confirmations_policy = wallet::ConfirmationsPolicy::new_symmetrical(
-            min_confirmations,
-            allow_zero_conf_shielding,
-        );
+
         let amount = receivers
             .keys()
             .map(|taddr| {
@@ -1076,8 +1074,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
             })?;
         let amount = balances
             .values()
-            // TODO(schell): check to see if `total` is the correct thing to use here
-            .map(|balance| balance.total())
+            .map(|balance| balance.spendable_value())
             .sum::<Option<Zatoshis>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
@@ -1483,17 +1480,13 @@ pub unsafe extern "C" fn zcashlc_get_wallet_summary(
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
-        // schell- if min_confirmations == 0 => min_conf 1, shielded true
-        let (min_confirmations, allow_zero_conf_shielding) = if min_confirmations == 0 {
-            (NonZeroU32::MIN, true)
-        } else {
-            // UNWRAP: safe because we checked min_confirmations > 0
-            (NonZeroU32::new(min_confirmations).unwrap(), false)
+        let confirmations_policy = match NonZeroU32::new(min_confirmations) {
+            Some(min_confirmations) => {
+                wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false)
+            }
+            None => wallet::ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
         };
-        let confirmations_policy = wallet::ConfirmationsPolicy::new_symmetrical(
-            min_confirmations,
-            allow_zero_conf_shielding,
-        );
+
         match db_data
             .get_wallet_summary(confirmations_policy)
             .map_err(|e| anyhow!("Error while fetching wallet summary: {}", e))?
@@ -1999,7 +1992,6 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         ])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        // TODO(schell): check if `false` is correct for `allow_zero_conf_shielding`
         let confirmations_policy =
             wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
@@ -2065,7 +2057,6 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
         let req = TransactionRequest::from_uri(payment_uri_str)
             .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        // TODO(schell): confirm `false` is ok for `allow_zero_conf_shielding`
         let confirmations_policy =
             wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
@@ -2205,16 +2196,12 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             }
         }?;
 
-        let (min_confirmations, allow_zero_conf_shielding) = if min_confirmations == 0 {
-            (NonZeroU32::MIN, true)
-        } else {
-            // UNWRAP: safe because we checked that min_confirmations > 0
-            (NonZeroU32::new(min_confirmations).unwrap(), false)
+        let confirmations_policy = match NonZeroU32::new(min_confirmations) {
+            Some(min_confirmations) => {
+                wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false)
+            }
+            None => wallet::ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
         };
-        let confirmations_policy = wallet::ConfirmationsPolicy::new_symmetrical(
-            min_confirmations,
-            allow_zero_conf_shielding,
-        );
 
         let account_receivers = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
