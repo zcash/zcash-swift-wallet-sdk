@@ -1074,7 +1074,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance_for_account(
             })?;
         let amount = balances
             .values()
-            .map(|balance| balance.spendable_value())
+            .map(|balance| balance.total())
             .sum::<Option<Zatoshis>>()
             .ok_or_else(|| anyhow!("Balance overflowed MAX_MONEY."))?;
 
