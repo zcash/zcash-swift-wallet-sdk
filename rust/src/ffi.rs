@@ -1096,10 +1096,14 @@ pub unsafe extern "C" fn zcashlc_free_http_response_bytes(ptr: *mut HttpResponse
 /// [`ZIP 315`]: https://zips.z.cash/zip-0315
 #[repr(C)]
 pub struct ConfirmationsPolicy {
-    /// NonZero, zero for default
+    /// The number of confirmations required before trusted notes may be spent. NonZero, set this
+    /// and `untrusted` to zero to accept the default value for each.
     pub(crate) trusted: u32,
-    /// NonZero, zero for default, zero must match `trusted`
+    /// The number of confirmations required before untrusted notes may be spent. NonZero, set this
+    /// and `trusted` both to zero to accept the default value for each.
     pub(crate) untrusted: u32,
+    /// A flag that enables selection of zero-conf transparent UTXOs for spends in shielding
+    /// transactions.
     pub(crate) allow_zero_conf_shielding: bool,
 }
 
