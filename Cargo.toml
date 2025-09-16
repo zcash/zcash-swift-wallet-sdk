@@ -74,7 +74,7 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 xz2 = { version = "0.1", features = ["static"] }
 
 [build-dependencies]
-bindgen = "0.71"
+bindgen = "0.72"
 cbindgen = "0.29"
 cc = "1.0"
 

@@ -870,7 +870,7 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
 }
 
 /// Returns the verified transparent balance for `address`, which ignores utxos that have been
-/// received too recently and are not yet deemed spendable according to `min_confirmations`.
+/// received too recently and are not yet deemed spendable according to `confirmations_policy`.
 ///
 /// # Safety
 ///
@@ -888,21 +888,18 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
     db_data_len: usize,
     address: *const c_char,
     network_id: u32,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
         let taddr = TransparentAddress::decode(&network, addr).unwrap();
-        let min_confirmations = NonZeroU32::new(min_confirmations)
-            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
+        let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
         let (target, _) = db_data
-            .get_target_and_anchor_heights(min_confirmations)
+            .get_target_and_anchor_heights(confirmations_policy.untrusted())
             .map_err(|e| anyhow!("Error while fetching target height: {}", e))?
             .context("Target height not available; scan required.")?;
-        let confirmations_policy =
-            wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
         let utxos = db_data
             .get_spendable_transparent_outputs(&taddr, target, confirmations_policy)
             .map_err(|e| anyhow!("Error while fetching verified transparent balance: {}", e))?;
@@ -917,7 +914,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
 }
 
 /// Returns the verified transparent balance for `account`, which ignores utxos that have been
-/// received too recently and are not yet deemed spendable according to `min_confirmations`.
+/// received too recently and are not yet deemed spendable according to `confirmations_policy`.
 ///
 /// # Safety
 ///
@@ -937,7 +934,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
     db_data_len: usize,
     network_id: u32,
     account_uuid_bytes: *const u8,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> i64 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -957,14 +954,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
                     e,
                 )
             })?;
-
-        let confirmations_policy = match NonZeroU32::new(min_confirmations) {
-            Some(min_confirmations) => {
-                wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false)
-            }
-            None => wallet::ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
-        };
-
+        let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
         let amount = receivers
             .keys()
             .map(|taddr| {
@@ -1474,18 +1464,12 @@ pub unsafe extern "C" fn zcashlc_get_wallet_summary(
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> *mut ffi::WalletSummary {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
-
-        let confirmations_policy = match NonZeroU32::new(min_confirmations) {
-            Some(min_confirmations) => {
-                wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false)
-            }
-            None => wallet::ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
-        };
+        let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
 
         match db_data
             .get_wallet_summary(confirmations_policy)
@@ -1958,12 +1942,10 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
     value: i64,
     memo: *const u8,
     network_id: u32,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
-            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
@@ -1992,8 +1974,6 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         ])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        let confirmations_policy =
-            wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
@@ -2001,7 +1981,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
             &input_selector,
             &change_strategy,
             req,
-            confirmations_policy,
+            wallet::ConfirmationsPolicy::try_from(confirmations_policy)?,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
@@ -2030,7 +2010,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 ///   function call.
 /// - `payment_uri` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `network_id` a u32. 0 for Testnet and 1 for Mainnet
-/// - `min_confirmations` number of confirmations of the funds to spend
+/// - `confirmations_policy` number of trusted/untrusted confirmations of the funds to spend
 /// - `use_zip317_fees` `true` to use ZIP-317 fees.
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
@@ -2041,12 +2021,10 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
     account_uuid_bytes: *const u8,
     payment_uri: *const c_char,
     network_id: u32,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
-            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
@@ -2057,8 +2035,6 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
         let req = TransactionRequest::from_uri(payment_uri_str)
             .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
-        let confirmations_policy =
-            wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
         let proposal = propose_transfer::<_, _, _, _, Infallible>(
             &mut db_data,
             &network,
@@ -2066,7 +2042,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
             &input_selector,
             &change_strategy,
             req,
-            confirmations_policy,
+            wallet::ConfirmationsPolicy::try_from(confirmations_policy)?,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
@@ -2125,7 +2101,7 @@ pub unsafe extern "C" fn zcashlc_string_free(s: *mut c_char) {
 ///   individually shielded in transactions that may be temporally clustered. Keeping transparent
 ///   activity private is very difficult; caveat emptor.
 /// - network_id: The identifier for the network in use: 0 for testnet, 1 for mainnet.
-/// - min_confirmations: The number of confirmations that are required for a UTXO to be considered
+/// - confirmations_policy: The minimum number of confirmations that are required for a UTXO to be considered
 ///   for shielding.
 ///
 /// # Safety
@@ -2152,7 +2128,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
     shielding_threshold: u64,
     transparent_receiver: *const c_char,
     network_id: u32,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2196,12 +2172,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             }
         }?;
 
-        let confirmations_policy = match NonZeroU32::new(min_confirmations) {
-            Some(min_confirmations) => {
-                wallet::ConfirmationsPolicy::new_symmetrical(min_confirmations, false)
-            }
-            None => wallet::ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
-        };
+        let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
 
         let account_receivers = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)

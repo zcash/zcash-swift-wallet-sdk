@@ -6,6 +6,22 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- `ConfirmationsPolicy`
+
+### Changed
+
+- functions now take `confirmations_policy: ConfirmationsPolicy` instead of `min_confirmations: u32`:
+
+  * `zcashlc_get_wallet_summary` 
+  * `zcashlc_get_verified_transparent_balance`
+  * `zcashlc_get_verified_transparent_balance_for_account`
+  * `zcashlc_propose_transfer`
+  * `zcashlc_propose_send_max_transfer`
+  * `zcashlc_propose_transfer_from_uri`
+  * `zcashlc_propose_shielding`
+
 ## 0.17.0 - 2025-06-04
 
 ### Added
