@@ -37,7 +37,7 @@ use uuid::Uuid;
 use zcash_client_backend::{
     data_api::{
         AccountPurpose, TransactionStatus, Zip32Derivation,
-        wallet::{self, extract_and_store_transaction_from_pczt},
+        wallet::{self, SpendingKeys, extract_and_store_transaction_from_pczt},
     },
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
     keys::{ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey},
@@ -851,7 +851,8 @@ pub unsafe extern "C" fn zcashlc_list_transparent_receivers(
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
 
-        match db_data.get_transparent_receivers(account_uuid, true) {
+        // Zashi does not support standalone keys, so we do not request standalone receivers.
+        match db_data.get_transparent_receivers(account_uuid, true, false) {
             Ok(receivers) => {
                 let keys = receivers
                     .keys()
@@ -945,8 +946,9 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
             .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching anchor height: {}", e))?
             .context("Target height not available; scan required.")?;
+        // Zashi does not support standalone keys, so we do not request standalone receivers.
         let receivers = db_data
-            .get_transparent_receivers(account_uuid, true)
+            .get_transparent_receivers(account_uuid, true, false)
             .map_err(|e| {
                 anyhow!(
                     "Error while fetching transparent receivers for {:?}: {}",
@@ -2159,8 +2161,9 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                         Err(anyhow!("Transparent receiver is not a transparent address"))
                     }
                     Address::Transparent(addr) => {
+                        // Zashi does not support standalone keys, so we do not request standalone receivers.
                         if db_data
-                            .get_transparent_receivers(account_uuid, true)?
+                            .get_transparent_receivers(account_uuid, true, false)?
                             .contains_key(&addr)
                         {
                             Ok(Some(addr))
@@ -2322,7 +2325,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
             &network,
             &prover,
             &prover,
-            &usk,
+            &SpendingKeys::from_unified_spending_key(usk),
             OvkPolicy::Sender,
             &proposal,
         )
