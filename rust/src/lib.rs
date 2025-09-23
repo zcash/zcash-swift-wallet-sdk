@@ -1846,6 +1846,8 @@ pub unsafe extern "C" fn zcashlc_latest_cached_block_height(
 /// - The memory referenced by `tx` must not be mutated for the duration of the function call.
 /// - The total size `tx_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - `txid_ret` must be non-null and valid for writes of 32 bytes with an alignment of 1.
+///   On successful execution this will contain the txid of the decrypted transaction.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
     db_data: *const u8,
@@ -1854,6 +1856,7 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
     tx_len: usize,
     mined_height: i64,
     network_id: u32,
+    txid_ret: *mut u8,
 ) -> i32 {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -1862,8 +1865,8 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
 
         // The consensus branch ID passed in here does not matter:
         // - v4 and below cache it internally, but all we do with this transaction while
-        //   it is in memory is decryption and serialization, neither of which use the
-        //   consensus branch ID.
+        //   it is in memory is decryption, serialization, and calculating the txid, none
+        //   of which use the consensus branch ID.
         // - v5 and above transactions ignore the argument, and parse the correct value
         //   from their encoding.
         let tx = Transaction::read(tx_bytes, BranchId::Sapling)?;
@@ -1886,7 +1889,10 @@ pub unsafe extern "C" fn zcashlc_decrypt_and_store_transaction(
         };
 
         match decrypt_and_store_transaction(&network, &mut db_data, &tx, mined_height) {
-            Ok(()) => Ok(1),
+            Ok(()) => {
+                unsafe { txid_ret.copy_from(tx.txid().as_ref().as_ptr(), 32) };
+                Ok(1)
+            }
             Err(e) => Err(anyhow!("Error while decrypting transaction: {}", e)),
         }
     });
