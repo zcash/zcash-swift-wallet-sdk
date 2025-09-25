@@ -16,6 +16,7 @@ use transparent::{
     address::TransparentAddress,
     bundle::{OutPoint, TxOut},
 };
+use zcash_script::script;
 
 use std::array::TryFromSliceError;
 use std::convert::{Infallible, TryFrom, TryInto};
@@ -1648,7 +1649,7 @@ pub unsafe extern "C" fn zcashlc_put_utxo(
         txid.copy_from_slice(txid_bytes);
 
         let script_bytes = unsafe { slice::from_raw_parts(script_bytes, script_bytes_len) };
-        let script_pubkey = transparent::address::Script(script_bytes.to_vec());
+        let script_pubkey = transparent::address::Script(script::Code(script_bytes.to_vec()));
 
         let output = WalletTransparentOutput::from_parts(
             OutPoint::new(txid, index as u32),

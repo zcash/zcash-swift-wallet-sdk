@@ -12,6 +12,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated to `zcash_client_backend 0.20`, `zcash_client_sqlite 0.18`.
 - functions now take `confirmations_policy: ConfirmationsPolicy` instead of `min_confirmations: u32`:
 
   * `zcashlc_get_wallet_summary` 
