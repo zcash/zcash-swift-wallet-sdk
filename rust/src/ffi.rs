@@ -3,7 +3,7 @@ use std::ffi::CString;
 use std::os::raw::c_char;
 use std::ptr;
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use bytes::Bytes;
 use zcash_client_backend::{address::UnifiedAddress, data_api};
 use zcash_client_sqlite::AccountUuid;
@@ -1079,5 +1079,84 @@ pub unsafe extern "C" fn zcashlc_free_http_response_bytes(ptr: *mut HttpResponse
         });
         free_ptr_from_vec(response.body_ptr, response.body_len);
         drop(response);
+    }
+}
+
+/// A description of the policy that is used to determine what notes are available for spending,
+/// based upon the number of confirmations (the number of blocks in the chain since and including
+/// the block in which a note was produced.)
+///
+/// See [`ZIP 315`] for details including the definitions of "trusted" and "untrusted" notes.
+///
+/// # Note
+///
+/// `trusted` and `untrusted` are both meant to be non-zero values.
+/// `0` will be treated as a request for a default value.
+///
+/// [`ZIP 315`]: https://zips.z.cash/zip-0315
+#[repr(C)]
+pub struct ConfirmationsPolicy {
+    /// The number of confirmations required before trusted notes may be spent. NonZero, set this
+    /// and `untrusted` to zero to accept the default value for each.
+    pub(crate) trusted: u32,
+    /// The number of confirmations required before untrusted notes may be spent. NonZero, set this
+    /// and `trusted` both to zero to accept the default value for each.
+    pub(crate) untrusted: u32,
+    /// A flag that enables selection of zero-conf transparent UTXOs for spends in shielding
+    /// transactions.
+    pub(crate) allow_zero_conf_shielding: bool,
+}
+
+/// The default confirmations policy according to [`ZIP 315`].
+///
+/// * Require 3 confirmations for "trusted" transaction outputs (outputs produced by the wallet)
+/// * Require 10 confirmations for "untrusted" outputs (those sent to the wallet by external/third
+///   parties)
+/// * Allow zero-conf shielding of transparent UTXOs irrespective of their origin, but treat the
+///   resulting shielding transaction's outputs as though the original transparent UTXOs had
+///   instead been received as untrusted shielded outputs.
+///
+/// [`ZIP 315`]: https://zips.z.cash/zip-0315
+impl Default for ConfirmationsPolicy {
+    fn default() -> Self {
+        ConfirmationsPolicy {
+            trusted: 3,
+            untrusted: 10,
+            allow_zero_conf_shielding: true,
+        }
+    }
+}
+
+impl TryFrom<ConfirmationsPolicy> for data_api::wallet::ConfirmationsPolicy {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ConfirmationsPolicy) -> Result<Self, Self::Error> {
+        // Ensure the confirmations are symmetrical in requesting a default
+        if value.trusted == 0 {
+            anyhow::ensure!(
+                value.untrusted == 0,
+                "Trusted and untrusted confirmations must both be zero to default properly"
+            );
+
+            let def = data_api::wallet::ConfirmationsPolicy::default();
+            data_api::wallet::ConfirmationsPolicy::new(
+                def.trusted(),
+                def.untrusted(),
+                value.allow_zero_conf_shielding,
+            )
+        } else {
+            data_api::wallet::ConfirmationsPolicy::new(
+                value
+                    .trusted
+                    .try_into()
+                    .context("Trusted confirmations must be non-zero")?,
+                value
+                    .untrusted
+                    .try_into()
+                    .context("Untrusted confirmations must be non-zero")?,
+                value.allow_zero_conf_shielding,
+            )
+        }
+        .map_err(|()| anyhow::anyhow!("Could not construct ConfirmationsPolicy"))
     }
 }

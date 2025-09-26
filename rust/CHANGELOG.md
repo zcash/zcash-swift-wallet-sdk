@@ -6,6 +6,25 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.18.0 - 2025-09-26
+
+### Added
+
+- `ConfirmationsPolicy`
+
+### Changed
+
+- Updated to `zcash_client_backend 0.20`, `zcash_client_sqlite 0.18`.
+- functions now take `confirmations_policy: ConfirmationsPolicy` instead of `min_confirmations: u32`:
+
+  * `zcashlc_get_wallet_summary` 
+  * `zcashlc_get_verified_transparent_balance`
+  * `zcashlc_get_verified_transparent_balance_for_account`
+  * `zcashlc_propose_transfer`
+  * `zcashlc_propose_send_max_transfer`
+  * `zcashlc_propose_transfer_from_uri`
+  * `zcashlc_propose_shielding`
+
 ## 0.17.1 - 2025-08-29
 
 ### Changed
