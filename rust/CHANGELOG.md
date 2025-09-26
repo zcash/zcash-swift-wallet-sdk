@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.18.0 - 2025-09-26
+
 ### Added
 
 - `ConfirmationsPolicy`
