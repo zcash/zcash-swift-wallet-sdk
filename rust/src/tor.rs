@@ -5,12 +5,17 @@ use std::path::Path;
 use anyhow::anyhow;
 use tonic::transport::{Channel, Uri};
 use tor_rtcompat::{BlockOn, PreferredRuntime};
+use transparent::address::TransparentAddress;
 use zcash_client_backend::{
+    encoding::AddressCodec as _,
     proto::service::{self, compact_tx_streamer_client::CompactTxStreamerClient},
     tor::{Client, DormantMode},
 };
 use zcash_primitives::block::BlockHash;
-use zcash_protocol::{TxId, consensus::BlockHeight};
+use zcash_protocol::{
+    TxId,
+    consensus::{self, BlockHeight},
+};
 
 use crate::ffi;
 
@@ -181,5 +186,48 @@ impl LwdConn {
             .clone()
             .block_on(self.conn.get_tree_state(request))?
             .into_inner())
+    }
+
+    /// Calls the given closure with the transactions corresponding to the given t-address
+    /// within the given block range, and the height of the main-chain block they are
+    /// mined in (if any).
+    pub(crate) fn with_taddress_transactions(
+        &mut self,
+        params: &impl consensus::Parameters,
+        address: TransparentAddress,
+        start: Option<BlockHeight>,
+        end: Option<BlockHeight>,
+        mut f: impl FnMut(Vec<u8>, Option<BlockHeight>) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let request = service::TransparentAddressBlockFilter {
+            address: address.encode(params),
+            range: (start.is_some() || end.is_some()).then(|| service::BlockRange {
+                start: start.map(|height| service::BlockId {
+                    height: u32::from(height).into(),
+                    ..Default::default()
+                }),
+                end: end.map(|height| service::BlockId {
+                    height: u32::from(height).into(),
+                    ..Default::default()
+                }),
+            }),
+        };
+
+        self.runtime.clone().block_on(async {
+            let mut txs = self.conn.get_taddress_txids(request).await?.into_inner();
+
+            while let Some(tx) = txs.message().await? {
+                let mined_height = match tx.height {
+                    0 => None,
+                    // TODO: Represent "not in main chain".
+                    0xffff_ffff_ffff_ffff => None,
+                    h => Some(BlockHeight::from_u32(h.try_into()?)),
+                };
+
+                f(tx.data, mined_height)?;
+            }
+
+            Ok(())
+        })
     }
 }

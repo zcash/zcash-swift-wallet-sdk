@@ -8,22 +8,21 @@ use std::mem::ManuallyDrop;
 use std::os::raw::c_char;
 use std::slice;
 
-use zcash_address::unified::Item as _;
-use zcash_client_backend::keys::{UnifiedAddressRequest, UnifiedIncomingViewingKey};
-use zcash_primitives::consensus::NetworkConstants;
-use zcash_protocol::consensus::{NetworkType, Parameters};
-use zip32::{ChainCode, ChildIndex, DiversifierIndex, arbitrary, registered::PathElement};
-
+use transparent::address::TransparentAddress;
 use zcash_address::{
     ConversionError, ToAddress, TryFromAddress, ZcashAddress,
-    unified::{self, Container, Encoding},
+    unified::{self, Container, Encoding, Item as _},
 };
 use zcash_client_backend::{
     address::UnifiedAddress,
     encoding::{decode_extended_full_viewing_key, decode_extended_spending_key},
-    keys::{Era, UnifiedFullViewingKey, UnifiedSpendingKey},
+    keys::{
+        Era, UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedIncomingViewingKey,
+        UnifiedSpendingKey,
+    },
 };
-use zcash_primitives::legacy::TransparentAddress;
+use zcash_protocol::consensus::{NetworkConstants, NetworkType, Parameters};
+use zip32::{ChainCode, ChildIndex, DiversifierIndex, arbitrary, registered::PathElement};
 
 use crate::{decode_usk, ffi, free_ptr_from_vec, parse_network, unwrap_exc_or, unwrap_exc_or_null};
 
