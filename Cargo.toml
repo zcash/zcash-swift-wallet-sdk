@@ -1,6 +1,6 @@
 [package]
 name = "libzcashlc"
-version = "0.18.0"
+version = "0.18.1"
 authors = [
     "Jack Grigg <jack@electriccoin.co>",
     "Francisco Gindre",
@@ -26,7 +26,7 @@ zcash_client_backend = { version = "0.20", features = [
     "transparent-inputs",
     "unstable",
 ] }
-zcash_client_sqlite = { version = "0.18", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.18.2", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.25"
 zcash_proofs = "0.25"
@@ -86,13 +86,3 @@ crate-type = ["staticlib"]
 
 [profile.release]
 lto = true
-
-[patch.crates-io]
-pczt = { git = "https://github.com/zcash/librustzcash.git", rev = "8b4484c82d9d00b2e089a2ab2054a0eedfe99469" }
-transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "8b4484c82d9d00b2e089a2ab2054a0eedfe99469" }
-zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "8b4484c82d9d00b2e089a2ab2054a0eedfe99469" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "8b4484c82d9d00b2e089a2ab2054a0eedfe99469" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "8b4484c82d9d00b2e089a2ab2054a0eedfe99469" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "8b4484c82d9d00b2e089a2ab2054a0eedfe99469" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "8b4484c82d9d00b2e089a2ab2054a0eedfe99469" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "8b4484c82d9d00b2e089a2ab2054a0eedfe99469" }

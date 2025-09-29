@@ -6,6 +6,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.18.1 - 2025-09-29
+
+### Fixed
+- Updated to `zcash_client_sqlite-0.18.2` to fix a problem with zero-conf shielding.
+
 ## 0.18.0 - 2025-09-26
 
 ### Added
