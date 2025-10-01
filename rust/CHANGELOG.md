@@ -6,6 +6,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.18.2 - 2025-10-01
+
+### Fixed
+- Updated to `zcash_client_sqlite-0.18.3` to fix a problem with display of
+  zero-conf-shielded fully transparent transactions.
+
 ## 0.18.1 - 2025-09-29
 
 ### Fixed

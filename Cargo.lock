@@ -2434,7 +2434,7 @@ dependencies = [
 
 [[package]]
 name = "libzcashlc"
-version = "0.18.1"
+version = "0.18.2"
 dependencies = [
  "anyhow",
  "bindgen",
