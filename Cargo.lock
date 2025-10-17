@@ -6216,9 +6216,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_sqlite"
-version = "0.18.6"
+version = "0.18.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "516ef482399a90e4a3898423afcc83571d1440e9b689be6ca9c17571024fd15e"
+checksum = "f7d522df4a90b10526083748296d82b78ebaa6804c7138193ba5ecc0fba295dd"
 dependencies = [
  "bip32",
  "bitflags 2.9.3",
