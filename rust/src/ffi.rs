@@ -699,6 +699,19 @@ pub unsafe extern "C" fn zcashlc_free_txids(ptr: *mut TxIds) {
     unsafe { zcashlc_free_symmetric_keys(ptr) };
 }
 
+/// Specifies how a "spend max" request should be evaluated.
+#[repr(C)]
+pub enum MaxSpendMode {
+    /// `MaxSpendable` will target to spend all _currently_ spendable funds where it
+    /// could be the case that the wallet has received other funds that are not
+    /// confirmed and therefore not spendable yet and the caller evaluates that as
+    /// an acceptable scenario.
+    MaxSpendable,
+    /// `Everything` will target to spend **all funds** and will fail if there are
+    /// unspendable funds in the wallet or if the wallet is not yet synced.
+    Everything,
+}
+
 /// Metadata about the status of a transaction obtained by inspecting the chain state.
 #[repr(C, u8)]
 pub enum TransactionStatus {

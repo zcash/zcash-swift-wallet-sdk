@@ -38,8 +38,10 @@ use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 use zcash_client_backend::{
     data_api::{
-        AccountPurpose, TransactionStatus, Zip32Derivation,
-        wallet::{self, SpendingKeys, extract_and_store_transaction_from_pczt},
+        AccountPurpose, MaxSpendMode, TransactionStatus, Zip32Derivation,
+        wallet::{
+            self, ConfirmationsPolicy, SpendingKeys, extract_and_store_transaction_from_pczt,
+        },
     },
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
     keys::{ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey},
@@ -58,7 +60,8 @@ use zcash_client_backend::{
         scanning::ScanPriority,
         wallet::{
             create_pczt_from_proposal, create_proposed_transactions, decrypt_and_store_transaction,
-            input_selection::GreedyInputSelector, propose_shielding, propose_transfer,
+            input_selection::GreedyInputSelector, propose_send_max_transfer, propose_shielding,
+            propose_transfer,
         },
     },
     encoding::AddressCodec,
@@ -2040,6 +2043,86 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
             &change_strategy,
             req,
             wallet::ConfirmationsPolicy::try_from(confirmations_policy)?,
+        )
+        .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
+
+        let encoded = Proposal::from_standard_proposal(&proposal).encode_to_vec();
+
+        Ok(ffi::BoxedSlice::some(encoded))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Selects all spendable transaction inputs, computes fees, and constructs a proposal for a transaction
+/// that can then be authorized and made ready for submission to the network with
+/// `zcashlc_create_proposed_transaction`.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `account_uuid_bytes` must be non-null and valid for reads for 16 bytes, and it must have an alignment
+///   of `1`.
+/// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
+///   function call.
+/// - `to` must be non-null and must point to a null-terminated UTF-8 string.
+/// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
+///   512-byte array.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_propose_send_max_transfer(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    account_uuid_bytes: *const u8,
+    to: *const c_char,
+    memo: *const u8,
+    mode: ffi::MaxSpendMode,
+    min_confirmations: u32,
+) -> *mut ffi::BoxedSlice {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let min_confirmations = NonZeroU32::new(min_confirmations)
+            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
+        let to = unsafe { CStr::from_ptr(to) }.to_str()?;
+
+        let to: ZcashAddress = to
+            .parse()
+            .map_err(|e| anyhow!("Can't parse recipient address: {}", e))?;
+
+        let memo = if memo.is_null() {
+            Ok(None)
+        } else {
+            MemoBytes::from_bytes(unsafe { slice::from_raw_parts(memo, 512) })
+                .map(Some)
+                .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))
+        }?;
+
+        let mode = match mode {
+            ffi::MaxSpendMode::MaxSpendable => MaxSpendMode::MaxSpendable,
+            ffi::MaxSpendMode::Everything => MaxSpendMode::Everything,
+        };
+
+        let confirmation_policy = ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
+
+        let proposal = propose_send_max_transfer::<_, _, _, Infallible>(
+            &mut db_data,
+            &network,
+            account_uuid,
+            &[ShieldedProtocol::Sapling, ShieldedProtocol::Orchard],
+            &StandardFeeRule::Zip317,
+            to,
+            memo,
+            mode,
+            confirmation_policy,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
