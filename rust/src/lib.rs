@@ -2078,10 +2078,11 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 pub unsafe extern "C" fn zcashlc_propose_send_max_transfer(
     db_data: *const u8,
     db_data_len: usize,
+    network_id: u32,
     account_uuid_bytes: *const u8,
     to: *const c_char,
     memo: *const u8,
-    network_id: u32,
+    mode: ffi::MaxSpendMode,
     min_confirmations: u32,
 ) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
@@ -2105,6 +2106,11 @@ pub unsafe extern "C" fn zcashlc_propose_send_max_transfer(
                 .map_err(|e| anyhow!("Invalid MemoBytes: {}", e))
         }?;
 
+        let mode = match mode {
+            ffi::MaxSpendMode::MaxSpendable => MaxSpendMode::MaxSpendable,
+            ffi::MaxSpendMode::Everything => MaxSpendMode::Everything,
+        };
+
         let confirmation_policy = ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
 
         let proposal = propose_send_max_transfer::<_, _, _, Infallible>(
@@ -2115,7 +2121,7 @@ pub unsafe extern "C" fn zcashlc_propose_send_max_transfer(
             &StandardFeeRule::Zip317,
             to,
             memo,
-            MaxSpendMode::MaxSpendable,
+            mode,
             confirmation_policy,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
