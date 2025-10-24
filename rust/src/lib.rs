@@ -39,9 +39,7 @@ use uuid::Uuid;
 use zcash_client_backend::{
     data_api::{
         AccountPurpose, MaxSpendMode, TransactionStatus, Zip32Derivation,
-        wallet::{
-            self, ConfirmationsPolicy, SpendingKeys, extract_and_store_transaction_from_pczt,
-        },
+        wallet::{self, SpendingKeys, extract_and_store_transaction_from_pczt},
     },
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
     keys::{ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey},
@@ -2083,12 +2081,10 @@ pub unsafe extern "C" fn zcashlc_propose_send_max_transfer(
     to: *const c_char,
     memo: *const u8,
     mode: ffi::MaxSpendMode,
-    min_confirmations: u32,
+    confirmations_policy: ffi::ConfirmationsPolicy,
 ) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
-        let min_confirmations = NonZeroU32::new(min_confirmations)
-            .ok_or(anyhow!("min_confirmations should be non-zero"))?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
@@ -2111,7 +2107,7 @@ pub unsafe extern "C" fn zcashlc_propose_send_max_transfer(
             ffi::MaxSpendMode::Everything => MaxSpendMode::Everything,
         };
 
-        let confirmation_policy = ConfirmationsPolicy::new_symmetrical(min_confirmations, false);
+        let confirmation_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
 
         let proposal = propose_send_max_transfer::<_, _, _, Infallible>(
             &mut db_data,
