@@ -3635,16 +3635,19 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
         // one day's worth of blocks.
-        let exposure_depth = (24 * 60 * 60) / 75;
+        let max_exposure_depth = (24 * 60 * 60) / 75;
         let addrs =
-            db_data.get_ephemeral_transparent_receivers(account_uuid, exposure_depth, true)?;
+            db_data.get_ephemeral_transparent_receivers(account_uuid, max_exposure_depth, true)?;
 
         // pick the address with the minimum check time that is less than or equal to now (or
         // absent)
         let now = SystemTime::now();
         let selected_addr_meta = addrs
             .into_iter()
-            .filter(|(_, meta)| meta.next_check_time().iter().all(|t| t <= &now))
+            .filter(|(_, meta)| {
+                meta.next_check_time().iter().all(|t| t <= &now)
+                    && matches!(meta.exposure(), Exposure::Exposed { .. })
+            })
             .min_by_key(|(_, meta)| meta.next_check_time());
 
         let cur_height = db_data
@@ -3656,8 +3659,13 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
             lwd_conn.with_taddress_transactions(
                 &network,
                 addr,
-                None,
-                None,
+                match meta.exposure() {
+                    Exposure::Exposed { at_height, .. } => Some(at_height),
+                    Exposure::Unknown | Exposure::CannotKnow => {
+                        panic!("unexposed addresses should have already been filtered out");
+                    }
+                },
+                Some(cur_height + 1),
                 |tx_data, mined_height| {
                     found = true;
                     let consensus_branch_id =
