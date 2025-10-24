@@ -6,6 +6,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- `zcashlc_get_single_use_taddr`
+- `zcashlc_tor_lwd_conn_check_single_use_taddr`
+
 ## 0.18.5 - 2025-10-23
 
 ### Changed
