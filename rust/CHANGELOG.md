@@ -10,6 +10,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zcashlc_get_single_use_taddr`
 - `zcashlc_tor_lwd_conn_check_single_use_taddr`
 
+### Changed
+- MSRV is now 1.90.
+
 ## 0.18.5 - 2025-10-23
 
 ### Changed

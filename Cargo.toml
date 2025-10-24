@@ -8,7 +8,7 @@ authors = [
 ]
 license = "MIT"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.90"
 build = "rust/build.rs"
 
 [dependencies]
