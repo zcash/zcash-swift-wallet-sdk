@@ -3590,7 +3590,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
             if !found {
                 let blocks_since_exposure = match meta.exposure() {
                     Exposure::Exposed { at_height, .. } => {
-                        f64::from(std::cmp::max(u32::from(cur_height - at_height), 1))
+                        f64::from(std::cmp::max(cur_height - at_height, 1))
                     }
                     Exposure::Unknown => 1.0,
                     Exposure::CannotKnow => 1.0,
