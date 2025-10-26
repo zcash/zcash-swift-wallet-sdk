@@ -27,7 +27,6 @@ use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
-use std::ptr;
 use std::slice;
 use std::time::UNIX_EPOCH;
 use std::{array::TryFromSliceError, time::SystemTime};
@@ -44,7 +43,7 @@ use zcash_client_backend::{
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
     keys::{ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey},
     tor::http::HttpError,
-    wallet::Exposure,
+    wallet::{Exposure, GapMetadata},
 };
 use zcash_client_sqlite::{error::SqliteClientError, util::SystemClock};
 
@@ -99,7 +98,10 @@ mod tor;
 #[cfg(target_vendor = "apple")]
 mod os_log;
 
-use crate::{ffi::AddressCheckResult, tor::TorRuntime};
+use crate::{
+    ffi::{AddressCheckResult, SingleUseTaddr},
+    tor::TorRuntime,
+};
 
 fn unwrap_exc_or<T>(exc: Result<T, ()>, def: T) -> T {
     match exc {
@@ -739,7 +741,7 @@ pub unsafe extern "C" fn zcashlc_get_current_address(
 ///   alignment of `1`.
 /// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
 ///   function call.
-/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+/// - Call [`zcashlc_free_single_use_address`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_get_single_use_taddr(
@@ -747,7 +749,7 @@ pub unsafe extern "C" fn zcashlc_get_single_use_taddr(
     db_data_len: usize,
     network_id: u32,
     account_uuid_bytes: *const u8,
-) -> *mut c_char {
+) -> *mut SingleUseTaddr {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -755,9 +757,25 @@ pub unsafe extern "C" fn zcashlc_get_single_use_taddr(
 
         match db_data.reserve_next_n_ephemeral_addresses(account_uuid, 1) {
             Ok(addrs) => {
-                if let Some((addr, _)) = addrs.first() {
+                if let Some((addr, meta)) = addrs.first() {
                     let address_str = addr.encode(&network);
-                    Ok(CString::new(address_str).unwrap().into_raw())
+                    match meta.exposure() {
+                        Exposure::Exposed {
+                            gap_metadata:
+                                GapMetadata::InGap {
+                                    gap_position,
+                                    gap_limit,
+                                },
+                            ..
+                        } => Ok(Box::into_raw(Box::new(SingleUseTaddr {
+                            address: CString::new(address_str).unwrap().into_raw(),
+                            gap_position,
+                            gap_limit,
+                        }))),
+                        _ => Err(anyhow!(
+                            "Exposure metadata invalid for a newly generated address."
+                        )),
+                    }
                 } else {
                     Err(anyhow!("Unable to reserve a new one-time-use address"))
                 }

@@ -1174,6 +1174,29 @@ impl TryFrom<ConfirmationsPolicy> for data_api::wallet::ConfirmationsPolicy {
     }
 }
 
+/// A single-use transparent address, along with metadata about the address's use within the
+/// wallet's ephemeral gap limit.
+#[repr(C)]
+pub struct SingleUseTaddr {
+    pub(crate) address: *mut c_char,
+    pub(crate) gap_position: u32,
+    pub(crate) gap_limit: u32,
+}
+
+/// Frees an [`SingleUseTaddr`] value.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`SingleUseTaddr`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_free_single_use_taddr(ptr: *mut SingleUseTaddr) {
+    if !ptr.is_null() {
+        let res = unsafe { Box::from_raw(ptr) };
+        unsafe { zcashlc_string_free(res.address) }
+        drop(res)
+    }
+}
+
 /// The result of checking for UTXOs received by an ephemeral address.
 ///
 /// cbindgen:prefix-with-name
