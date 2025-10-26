@@ -10,6 +10,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zcashlc_get_single_use_taddr`
 - `zcashlc_propose_send_max_transfer`
 - `zcashlc_tor_lwd_conn_check_single_use_taddr`
+- `ffi::AddressCheckResult`
+- `zcashlc_free_address_check_result`
 
 ### Changed
 - MSRV is now 1.90.

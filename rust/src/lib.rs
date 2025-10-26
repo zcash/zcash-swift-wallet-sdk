@@ -99,7 +99,7 @@ mod tor;
 #[cfg(target_vendor = "apple")]
 mod os_log;
 
-use crate::tor::TorRuntime;
+use crate::{ffi::AddressCheckResult, tor::TorRuntime};
 
 fn unwrap_exc_or<T>(exc: Result<T, ()>, def: T) -> T {
     match exc {
@@ -1512,6 +1512,8 @@ pub unsafe extern "C" fn zcashlc_max_scanned_height(
 ///   function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_wallet_summary`] to free the memory associated with the returned
+///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_get_wallet_summary(
     db_data: *const u8,
@@ -3608,6 +3610,8 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_tree_state(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_address_check_result`] to free the memory associated with the returned
+///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
     lwd_conn: *mut tor::LwdConn,
@@ -3615,7 +3619,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
     db_data_len: usize,
     network_id: u32,
     account_uuid_bytes: *const u8,
-) -> bool {
+) -> *mut ffi::AddressCheckResult {
     // SAFETY: We ensure unwind safety by:
     // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
@@ -3650,7 +3654,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
             .chain_height()?
             .ok_or(SqliteClientError::ChainHeightUnknown)?;
 
-        let mut found = false;
+        let mut found = None;
         if let Some((addr, meta)) = selected_addr_meta {
             lwd_conn.with_taddress_transactions(
                 &network,
@@ -3663,7 +3667,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
                 },
                 Some(cur_height + 1),
                 |tx_data, mined_height| {
-                    found = true;
+                    found = Some(addr);
                     let consensus_branch_id =
                         BranchId::for_height(&network, mined_height.unwrap_or(cur_height + 1));
 
@@ -3674,7 +3678,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
                 },
             )?;
 
-            if !found {
+            if found.is_none() {
                 let blocks_since_exposure = match meta.exposure() {
                     Exposure::Exposed { at_height, .. } => {
                         f64::from(std::cmp::max(cur_height - at_height, 1))
@@ -3693,9 +3697,20 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
             }
         }
 
-        Ok(found)
+        let res = match found {
+            None => AddressCheckResult::NotFound,
+            Some(addr) => {
+                let addr_str = addr.encode(&network);
+                AddressCheckResult::Found {
+                    address: CString::new(addr_str).unwrap().into_raw(),
+                }
+            }
+        };
+
+        Ok(Box::into_raw(Box::new(res)))
     });
-    unwrap_exc_or(res, false)
+
+    unwrap_exc_or_null(res)
 }
 
 //
@@ -3752,7 +3767,7 @@ fn free_ptr_from_vec<T>(ptr: *mut T, len: usize) {
 /// - `ptr` and `len` must have been returned from the same call to `ptr_from_vec`.
 fn free_ptr_from_vec_with<T>(ptr: *mut T, len: usize, f: impl Fn(&mut T)) {
     if !ptr.is_null() {
-        let mut s = unsafe { Box::from_raw(slice::from_raw_parts_mut(ptr, len)) };
+        let mut s = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
         for k in s.iter_mut() {
             f(k);
         }

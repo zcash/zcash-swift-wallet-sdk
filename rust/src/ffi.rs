@@ -1173,3 +1173,30 @@ impl TryFrom<ConfirmationsPolicy> for data_api::wallet::ConfirmationsPolicy {
         .map_err(|()| anyhow::anyhow!("Could not construct ConfirmationsPolicy"))
     }
 }
+
+/// The result of checking for UTXOs received by an ephemeral address.
+///
+/// cbindgen:prefix-with-name
+#[repr(C, u8)]
+pub enum AddressCheckResult {
+    /// No UTXOs were found as a result of the check.
+    NotFound,
+    /// UTXOs were found for the given address.
+    Found { address: *mut c_char },
+}
+
+/// Frees an [`AddressCheckResult`] value.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`AddressCheckResult`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_free_address_check_result(ptr: *mut AddressCheckResult) {
+    if !ptr.is_null() {
+        let res = unsafe { Box::from_raw(ptr) };
+        if let AddressCheckResult::Found { address } = *res {
+            unsafe { zcashlc_string_free(address) }
+        };
+        drop(res)
+    }
+}
