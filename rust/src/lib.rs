@@ -1534,7 +1534,7 @@ pub unsafe extern "C" fn zcashlc_get_wallet_summary(
             None => Ok(ffi::WalletSummary::none()),
         }
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Returns a list of suggested scan ranges based upon the current wallet state.
@@ -3214,7 +3214,7 @@ pub unsafe extern "C" fn zcashlc_tor_http_get(
 
         ffi::HttpResponseBytes::from_rust(response)
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Makes an HTTP POST request over Tor.
@@ -3308,7 +3308,7 @@ pub unsafe extern "C" fn zcashlc_tor_http_post(
 
         ffi::HttpResponseBytes::from_rust(response)
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Fetches the current ZEC-USD exchange rate over Tor.
@@ -3434,7 +3434,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_info(
 
         Ok(ffi::BoxedSlice::some(info.encode_to_vec()))
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Fetches the height and hash of the block at the tip of the best chain.
@@ -3473,7 +3473,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_latest_block(
 
         Ok(ffi::BoxedSlice::some(hash.0.to_vec()))
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Fetches the transaction with the given ID.
@@ -3518,7 +3518,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
 
         Ok(ffi::BoxedSlice::some(tx))
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Submits a transaction to the Zcash network via the given lightwalletd connection.
@@ -3588,7 +3588,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_tree_state(
 
         Ok(ffi::BoxedSlice::some(treestate.encode_to_vec()))
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Checks to find any single-use ephemeral addresses exposed in the past day that have not yet
