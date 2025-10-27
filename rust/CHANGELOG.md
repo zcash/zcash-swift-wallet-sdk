@@ -17,6 +17,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - MSRV is now 1.90.
+- Migrated to `zcash_client_backend 0.21`, `zcash_client_sqlite 0.19`.
 
 ## 0.18.5 - 2025-10-23
 

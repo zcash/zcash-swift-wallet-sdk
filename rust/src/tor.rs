@@ -4,7 +4,7 @@ use std::path::Path;
 
 use anyhow::anyhow;
 use tonic::transport::{Channel, Uri};
-use tor_rtcompat::{BlockOn, PreferredRuntime};
+use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
 use transparent::address::TransparentAddress;
 use zcash_client_backend::{
     encoding::AddressCodec as _,
