@@ -31,7 +31,7 @@ use std::slice;
 use std::time::UNIX_EPOCH;
 use std::{array::TryFromSliceError, time::SystemTime};
 
-use tor_rtcompat::BlockOn as _;
+use tor_rtcompat::ToplevelBlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
