@@ -27,7 +27,6 @@ use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
-use std::ptr;
 use std::slice;
 use std::time::UNIX_EPOCH;
 use std::{array::TryFromSliceError, time::SystemTime};
@@ -44,7 +43,7 @@ use zcash_client_backend::{
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
     keys::{ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey},
     tor::http::HttpError,
-    wallet::Exposure,
+    wallet::{Exposure, GapMetadata},
 };
 use zcash_client_sqlite::{error::SqliteClientError, util::SystemClock};
 
@@ -739,7 +738,7 @@ pub unsafe extern "C" fn zcashlc_get_current_address(
 ///   alignment of `1`.
 /// - The memory referenced by `account_uuid_bytes` must not be mutated for the duration of the
 ///   function call.
-/// - Call [`zcashlc_string_free`] to free the memory associated with the returned pointer
+/// - Call [`zcashlc_free_single_use_address`] to free the memory associated with the returned pointer
 ///   when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_get_single_use_taddr(
@@ -747,7 +746,7 @@ pub unsafe extern "C" fn zcashlc_get_single_use_taddr(
     db_data_len: usize,
     network_id: u32,
     account_uuid_bytes: *const u8,
-) -> *mut c_char {
+) -> *mut ffi::SingleUseTaddr {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -755,9 +754,25 @@ pub unsafe extern "C" fn zcashlc_get_single_use_taddr(
 
         match db_data.reserve_next_n_ephemeral_addresses(account_uuid, 1) {
             Ok(addrs) => {
-                if let Some((addr, _)) = addrs.first() {
-                    let address_str = addr.encode(&network);
-                    Ok(CString::new(address_str).unwrap().into_raw())
+                if let Some((addr, meta)) = addrs.first() {
+                    match meta.exposure() {
+                        Exposure::Exposed {
+                            gap_metadata:
+                                GapMetadata::InGap {
+                                    gap_position,
+                                    gap_limit,
+                                },
+                            ..
+                        } => Ok(ffi::SingleUseTaddr::from_rust(
+                            &network,
+                            addr,
+                            gap_position,
+                            gap_limit,
+                        )),
+                        _ => Err(anyhow!(
+                            "Exposure metadata invalid for a newly generated address."
+                        )),
+                    }
                 } else {
                     Err(anyhow!("Unable to reserve a new one-time-use address"))
                 }
@@ -1512,6 +1527,8 @@ pub unsafe extern "C" fn zcashlc_max_scanned_height(
 ///   function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_wallet_summary`] to free the memory associated with the returned
+///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_get_wallet_summary(
     db_data: *const u8,
@@ -1532,7 +1549,7 @@ pub unsafe extern "C" fn zcashlc_get_wallet_summary(
             None => Ok(ffi::WalletSummary::none()),
         }
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Returns a list of suggested scan ranges based upon the current wallet state.
@@ -3212,7 +3229,7 @@ pub unsafe extern "C" fn zcashlc_tor_http_get(
 
         ffi::HttpResponseBytes::from_rust(response)
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Makes an HTTP POST request over Tor.
@@ -3306,7 +3323,7 @@ pub unsafe extern "C" fn zcashlc_tor_http_post(
 
         ffi::HttpResponseBytes::from_rust(response)
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Fetches the current ZEC-USD exchange rate over Tor.
@@ -3432,7 +3449,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_info(
 
         Ok(ffi::BoxedSlice::some(info.encode_to_vec()))
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Fetches the height and hash of the block at the tip of the best chain.
@@ -3471,7 +3488,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_latest_block(
 
         Ok(ffi::BoxedSlice::some(hash.0.to_vec()))
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Fetches the transaction with the given ID.
@@ -3516,7 +3533,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
 
         Ok(ffi::BoxedSlice::some(tx))
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Submits a transaction to the Zcash network via the given lightwalletd connection.
@@ -3586,7 +3603,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_tree_state(
 
         Ok(ffi::BoxedSlice::some(treestate.encode_to_vec()))
     });
-    unwrap_exc_or(res, ptr::null_mut())
+    unwrap_exc_or_null(res)
 }
 
 /// Checks to find any single-use ephemeral addresses exposed in the past day that have not yet
@@ -3608,6 +3625,8 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_tree_state(
 /// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
 /// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_address_check_result`] to free the memory associated with the returned
+///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
     lwd_conn: *mut tor::LwdConn,
@@ -3615,7 +3634,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
     db_data_len: usize,
     network_id: u32,
     account_uuid_bytes: *const u8,
-) -> bool {
+) -> *mut ffi::AddressCheckResult {
     // SAFETY: We ensure unwind safety by:
     // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
@@ -3650,7 +3669,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
             .chain_height()?
             .ok_or(SqliteClientError::ChainHeightUnknown)?;
 
-        let mut found = false;
+        let mut found = None;
         if let Some((addr, meta)) = selected_addr_meta {
             lwd_conn.with_taddress_transactions(
                 &network,
@@ -3663,7 +3682,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
                 },
                 Some(cur_height + 1),
                 |tx_data, mined_height| {
-                    found = true;
+                    found = Some(addr);
                     let consensus_branch_id =
                         BranchId::for_height(&network, mined_height.unwrap_or(cur_height + 1));
 
@@ -3674,7 +3693,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
                 },
             )?;
 
-            if !found {
+            if found.is_none() {
                 let blocks_since_exposure = match meta.exposure() {
                     Exposure::Exposed { at_height, .. } => {
                         f64::from(std::cmp::max(cur_height - at_height, 1))
@@ -3693,9 +3712,10 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
             }
         }
 
-        Ok(found)
+        Ok(ffi::AddressCheckResult::from_rust(&network, found))
     });
-    unwrap_exc_or(res, false)
+
+    unwrap_exc_or_null(res)
 }
 
 //
@@ -3752,7 +3772,7 @@ fn free_ptr_from_vec<T>(ptr: *mut T, len: usize) {
 /// - `ptr` and `len` must have been returned from the same call to `ptr_from_vec`.
 fn free_ptr_from_vec_with<T>(ptr: *mut T, len: usize, f: impl Fn(&mut T)) {
     if !ptr.is_null() {
-        let mut s = unsafe { Box::from_raw(slice::from_raw_parts_mut(ptr, len)) };
+        let mut s = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
         for k in s.iter_mut() {
             f(k);
         }

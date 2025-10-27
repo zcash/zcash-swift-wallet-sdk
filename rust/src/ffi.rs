@@ -5,7 +5,8 @@ use std::ptr;
 
 use anyhow::{Context, anyhow};
 use bytes::Bytes;
-use zcash_client_backend::{address::UnifiedAddress, data_api};
+use transparent::address::TransparentAddress;
+use zcash_client_backend::{address::UnifiedAddress, data_api, encoding::AddressCodec as _};
 use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::{consensus::Network, value::ZatBalance};
 use zip32::DiversifierIndex;
@@ -1171,5 +1172,87 @@ impl TryFrom<ConfirmationsPolicy> for data_api::wallet::ConfirmationsPolicy {
             )
         }
         .map_err(|()| anyhow::anyhow!("Could not construct ConfirmationsPolicy"))
+    }
+}
+
+/// A single-use transparent address, along with metadata about the address's use within the
+/// wallet's ephemeral gap limit.
+#[repr(C)]
+pub struct SingleUseTaddr {
+    pub(crate) address: *mut c_char,
+    pub(crate) gap_position: u32,
+    pub(crate) gap_limit: u32,
+}
+
+impl SingleUseTaddr {
+    pub(crate) fn from_rust(
+        network: &Network,
+        address: &TransparentAddress,
+        gap_position: u32,
+        gap_limit: u32,
+    ) -> *mut Self {
+        let address_str = address.encode(&network);
+        Box::into_raw(Box::new(SingleUseTaddr {
+            address: CString::new(address_str).unwrap().into_raw(),
+            gap_position,
+            gap_limit,
+        }))
+    }
+}
+
+/// Frees an [`SingleUseTaddr`] value.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`SingleUseTaddr`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_free_single_use_taddr(ptr: *mut SingleUseTaddr) {
+    if !ptr.is_null() {
+        let res = unsafe { Box::from_raw(ptr) };
+        unsafe { zcashlc_string_free(res.address) }
+        drop(res)
+    }
+}
+
+/// The result of checking for UTXOs received by an ephemeral address.
+///
+/// cbindgen:prefix-with-name
+#[repr(C, u8)]
+pub enum AddressCheckResult {
+    /// No UTXOs were found as a result of the check.
+    NotFound,
+    /// UTXOs were found for the given address.
+    Found { address: *mut c_char },
+}
+
+impl AddressCheckResult {
+    pub(crate) fn from_rust(network: &Network, found: Option<TransparentAddress>) -> *mut Self {
+        let res = match found {
+            None => AddressCheckResult::NotFound,
+            Some(addr) => {
+                let addr_str = addr.encode(&network);
+                AddressCheckResult::Found {
+                    address: CString::new(addr_str).unwrap().into_raw(),
+                }
+            }
+        };
+
+        Box::into_raw(Box::new(res))
+    }
+}
+
+/// Frees an [`AddressCheckResult`] value.
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of [`AddressCheckResult`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_free_address_check_result(ptr: *mut AddressCheckResult) {
+    if !ptr.is_null() {
+        let res = unsafe { Box::from_raw(ptr) };
+        if let AddressCheckResult::Found { address } = *res {
+            unsafe { zcashlc_string_free(address) }
+        };
+        drop(res)
     }
 }
