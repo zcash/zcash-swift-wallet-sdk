@@ -98,10 +98,7 @@ mod tor;
 #[cfg(target_vendor = "apple")]
 mod os_log;
 
-use crate::{
-    ffi::{AddressCheckResult, SingleUseTaddr},
-    tor::TorRuntime,
-};
+use crate::tor::TorRuntime;
 
 fn unwrap_exc_or<T>(exc: Result<T, ()>, def: T) -> T {
     match exc {
@@ -749,7 +746,7 @@ pub unsafe extern "C" fn zcashlc_get_single_use_taddr(
     db_data_len: usize,
     network_id: u32,
     account_uuid_bytes: *const u8,
-) -> *mut SingleUseTaddr {
+) -> *mut ffi::SingleUseTaddr {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -758,7 +755,6 @@ pub unsafe extern "C" fn zcashlc_get_single_use_taddr(
         match db_data.reserve_next_n_ephemeral_addresses(account_uuid, 1) {
             Ok(addrs) => {
                 if let Some((addr, meta)) = addrs.first() {
-                    let address_str = addr.encode(&network);
                     match meta.exposure() {
                         Exposure::Exposed {
                             gap_metadata:
@@ -767,11 +763,12 @@ pub unsafe extern "C" fn zcashlc_get_single_use_taddr(
                                     gap_limit,
                                 },
                             ..
-                        } => Ok(Box::into_raw(Box::new(SingleUseTaddr {
-                            address: CString::new(address_str).unwrap().into_raw(),
+                        } => Ok(ffi::SingleUseTaddr::from_rust(
+                            &network,
+                            addr,
                             gap_position,
                             gap_limit,
-                        }))),
+                        )),
                         _ => Err(anyhow!(
                             "Exposure metadata invalid for a newly generated address."
                         )),
@@ -3715,17 +3712,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
             }
         }
 
-        let res = match found {
-            None => AddressCheckResult::NotFound,
-            Some(addr) => {
-                let addr_str = addr.encode(&network);
-                AddressCheckResult::Found {
-                    address: CString::new(addr_str).unwrap().into_raw(),
-                }
-            }
-        };
-
-        Ok(Box::into_raw(Box::new(res)))
+        Ok(ffi::AddressCheckResult::from_rust(&network, found))
     });
 
     unwrap_exc_or_null(res)

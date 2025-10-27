@@ -5,7 +5,8 @@ use std::ptr;
 
 use anyhow::{Context, anyhow};
 use bytes::Bytes;
-use zcash_client_backend::{address::UnifiedAddress, data_api};
+use transparent::address::TransparentAddress;
+use zcash_client_backend::{address::UnifiedAddress, data_api, encoding::AddressCodec as _};
 use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::{consensus::Network, value::ZatBalance};
 use zip32::DiversifierIndex;
@@ -1183,6 +1184,22 @@ pub struct SingleUseTaddr {
     pub(crate) gap_limit: u32,
 }
 
+impl SingleUseTaddr {
+    pub(crate) fn from_rust(
+        network: &Network,
+        address: &TransparentAddress,
+        gap_position: u32,
+        gap_limit: u32,
+    ) -> *mut Self {
+        let address_str = address.encode(&network);
+        Box::into_raw(Box::new(SingleUseTaddr {
+            address: CString::new(address_str).unwrap().into_raw(),
+            gap_position,
+            gap_limit,
+        }))
+    }
+}
+
 /// Frees an [`SingleUseTaddr`] value.
 ///
 /// # Safety
@@ -1206,6 +1223,22 @@ pub enum AddressCheckResult {
     NotFound,
     /// UTXOs were found for the given address.
     Found { address: *mut c_char },
+}
+
+impl AddressCheckResult {
+    pub(crate) fn from_rust(network: &Network, found: Option<TransparentAddress>) -> *mut Self {
+        let res = match found {
+            None => AddressCheckResult::NotFound,
+            Some(addr) => {
+                let addr_str = addr.encode(&network);
+                AddressCheckResult::Found {
+                    address: CString::new(addr_str).unwrap().into_raw(),
+                }
+            }
+        };
+
+        Box::into_raw(Box::new(res))
+    }
 }
 
 /// Frees an [`AddressCheckResult`] value.
