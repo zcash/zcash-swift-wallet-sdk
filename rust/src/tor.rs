@@ -195,15 +195,15 @@ impl LwdConn {
         &mut self,
         params: &impl consensus::Parameters,
         address: TransparentAddress,
-        start: Option<BlockHeight>,
+        start: BlockHeight,
         end: Option<BlockHeight>,
         mut f: impl FnMut(Vec<u8>, Option<BlockHeight>) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
         let request = service::TransparentAddressBlockFilter {
             address: address.encode(params),
-            range: (start.is_some() || end.is_some()).then(|| service::BlockRange {
-                start: start.map(|height| service::BlockId {
-                    height: u32::from(height).into(),
+            range: Some(service::BlockRange {
+                start: Some(service::BlockId {
+                    height: u32::from(start).into(),
                     ..Default::default()
                 }),
                 end: end.map(|height| service::BlockId {

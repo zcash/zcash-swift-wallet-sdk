@@ -961,7 +961,7 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        let taddr = TransparentAddress::decode(&network, addr).unwrap();
+        let taddr = TransparentAddress::decode(&network, addr)?;
         let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
         let (target, _) = db_data
             .get_target_and_anchor_heights(confirmations_policy.untrusted())
@@ -1067,7 +1067,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
         let network = parse_network(network_id)?;
         let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
         let addr = unsafe { CStr::from_ptr(address).to_str()? };
-        let taddr = TransparentAddress::decode(&network, addr).unwrap();
+        let taddr = TransparentAddress::decode(&network, addr)?;
         let (target, _) = db_data
             .get_target_and_anchor_heights(NonZeroU32::MIN)
             .map_err(|e| anyhow!("Error while fetching target height: {}", e))?
@@ -3606,13 +3606,92 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_tree_state(
     unwrap_exc_or_null(res)
 }
 
+/// Finds all transactions associated with the given transparent address within the given block
+/// range, and calls [`decrypt_and_store_transaction`] with each such transaction.
+///
+/// The query to the light wallet server will cover the provided block range. The end height is
+/// optional; to omit the end height for the query range use the sentinel value `-1`. If any other
+/// value is specified, it must be in the range of a valid u32. Note that older versions of
+/// `lightwalletd` will return an error if the end height is not specified.
+///
+/// Returns an [`ffi::AddressCheckResult`] if successful, or a null pointer in the case of an
+/// error.
+///
+/// # Safety
+///
+/// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut tor::LwdConn` that has not previously been freed.
+/// - `lwd_conn` must not be passed to two FFI calls at the same time.
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_address_check_result`] to free the memory associated with the returned
+///   pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_tor_lwd_conn_update_transparent_address_transactions(
+    lwd_conn: *mut tor::LwdConn,
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    address: *const c_char,
+    start: u32,
+    end: i64,
+) -> *mut ffi::AddressCheckResult {
+    // SAFETY: We ensure unwind safety by:
+    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    let lwd_conn = AssertUnwindSafe(lwd_conn);
+
+    let res = catch_panic(|| {
+        let lwd_conn = unsafe { lwd_conn.as_mut() }
+            .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
+
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let addr_str = unsafe { CStr::from_ptr(address).to_str()? };
+        let addr = TransparentAddress::decode(&network, addr_str)?;
+
+        let cur_height = db_data
+            .chain_height()?
+            .ok_or(SqliteClientError::ChainHeightUnknown)?;
+
+        let mut found = None;
+        lwd_conn.with_taddress_transactions(
+            &network,
+            addr,
+            BlockHeight::from(start),
+            ffi::parse_optional_height(end)?,
+            |tx_data, mined_height| {
+                found = Some(addr);
+                let consensus_branch_id =
+                    BranchId::for_height(&network, mined_height.unwrap_or(cur_height + 1));
+
+                let tx = Transaction::read(&tx_data[..], consensus_branch_id)?;
+                decrypt_and_store_transaction(&network, &mut db_data, &tx, mined_height)?;
+
+                Ok(())
+            },
+        )?;
+
+        Ok(ffi::AddressCheckResult::from_rust(&network, found))
+    });
+
+    unwrap_exc_or_null(res)
+}
+
 /// Checks to find any single-use ephemeral addresses exposed in the past day that have not yet
 /// received funds, excluding any whose next check time is in the future. This will then choose the
 /// address that is most overdue for checking, retrieve any UTXOs for that address over Tor, and
 /// add them to the wallet database. If no such UTXOs are found, the check will be rescheduled
 /// following an expoential-backoff-with-jitter algorithm.
 ///
-/// Returns `true` if UTXOs were added to the wallet, `false` otherwise.
+/// Returns an [`ffi::AddressCheckResult`] if successful, or a null pointer in the case of an
+/// error.
 ///
 /// # Safety
 ///
@@ -3675,7 +3754,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
                 &network,
                 addr,
                 match meta.exposure() {
-                    Exposure::Exposed { at_height, .. } => Some(at_height),
+                    Exposure::Exposed { at_height, .. } => at_height,
                     Exposure::Unknown | Exposure::CannotKnow => {
                         panic!("unexposed addresses should have already been filtered out");
                     }
