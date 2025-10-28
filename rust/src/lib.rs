@@ -3684,6 +3684,79 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_update_transparent_address_transac
     unwrap_exc_or_null(res)
 }
 
+/// Checks to find any UTXOs associated with the given transparent address.
+///
+/// This check will cover the block range starting at the exposure height for that address, if
+/// known, or otherwise at the birthday height of the specified account.
+///
+/// Returns an [`ffi::AddressCheckResult`] if successful, or a null pointer in the case of an
+/// error.
+///
+/// # Safety
+///
+/// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut tor::LwdConn` that has not previously been freed.
+/// - `lwd_conn` must not be passed to two FFI calls at the same time.
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - Call [`zcashlc_free_address_check_result`] to free the memory associated with the returned
+///   pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_utxos_by_address(
+    lwd_conn: *mut tor::LwdConn,
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    account_uuid_bytes: *const u8,
+    address: *const c_char,
+) -> *mut ffi::AddressCheckResult {
+    // SAFETY: We ensure unwind safety by:
+    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    let lwd_conn = AssertUnwindSafe(lwd_conn);
+
+    let res = catch_panic(|| {
+        let lwd_conn = unsafe { lwd_conn.as_mut() }
+            .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
+
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
+
+        let addr_str = unsafe { CStr::from_ptr(address).to_str()? };
+        let addr = TransparentAddress::decode(&network, addr_str)?;
+
+        let mut found = None;
+        if let Some(meta) = db_data.get_transparent_address_metadata(account_uuid, &addr)? {
+            lwd_conn.with_taddress_utxos(
+                &network,
+                addr,
+                match meta.exposure() {
+                    Exposure::Exposed { at_height, .. } => Some(at_height),
+                    Exposure::Unknown | Exposure::CannotKnow => {
+                        Some(db_data.get_account_birthday(account_uuid)?)
+                    }
+                },
+                0,
+                |output| {
+                    found = Some(addr);
+                    db_data.put_received_transparent_utxo(&output)?;
+                    Ok(())
+                },
+            )?;
+        }
+
+        Ok(ffi::AddressCheckResult::from_rust(&network, found))
+    });
+
+    unwrap_exc_or_null(res)
+}
+
 /// Checks to find any single-use ephemeral addresses exposed in the past day that have not yet
 /// received funds, excluding any whose next check time is in the future. This will then choose the
 /// address that is most overdue for checking, retrieve any UTXOs for that address over Tor, and

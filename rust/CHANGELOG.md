@@ -15,6 +15,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zcashlc_free_address_check_result`
 - `zcashlc_propose_send_max_transfer`
 - `zcashlc_tor_lwd_conn_update_transparent_address_transactions`
+- `zcashlc_tor_lwd_conn_fetch_utxos_by_address`
 
 ### Changed
 - MSRV is now 1.90.

@@ -5,17 +5,24 @@ use std::path::Path;
 use anyhow::anyhow;
 use tonic::transport::{Channel, Uri};
 use tor_rtcompat::{PreferredRuntime, ToplevelBlockOn};
-use transparent::address::TransparentAddress;
+
+use transparent::{
+    address::{Script, TransparentAddress},
+    bundle::{OutPoint, TxOut},
+};
 use zcash_client_backend::{
     encoding::AddressCodec as _,
     proto::service::{self, compact_tx_streamer_client::CompactTxStreamerClient},
     tor::{Client, DormantMode},
+    wallet::WalletTransparentOutput,
 };
 use zcash_primitives::block::BlockHash;
 use zcash_protocol::{
     TxId,
     consensus::{self, BlockHeight},
+    value::Zatoshis,
 };
+use zcash_script::script;
 
 use crate::ffi;
 
@@ -186,6 +193,48 @@ impl LwdConn {
             .clone()
             .block_on(self.conn.get_tree_state(request))?
             .into_inner())
+    }
+
+    /// Calls the given closure with the transactions corresponding to the given t-address
+    /// within the given block range, and the height of the main-chain block they are
+    /// mined in (if any).
+    pub(crate) fn with_taddress_utxos(
+        &mut self,
+        params: &impl consensus::Parameters,
+        address: TransparentAddress,
+        start: Option<BlockHeight>,
+        limit: u32,
+        mut f: impl FnMut(WalletTransparentOutput) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let request = service::GetAddressUtxosArg {
+            addresses: vec![address.encode(params)],
+            start_height: start.map_or(0, u64::from),
+            max_entries: limit,
+        };
+
+        self.runtime.clone().block_on(async {
+            let mut utxos = self
+                .conn
+                .get_address_utxos_stream(request)
+                .await?
+                .into_inner();
+
+            while let Some(result) = utxos.message().await? {
+                f(WalletTransparentOutput::from_parts(
+                    OutPoint::new(result.txid[..].try_into()?, result.index.try_into()?),
+                    TxOut::new(
+                        Zatoshis::from_nonnegative_i64(result.value_zat)?,
+                        Script(script::Code(result.script)),
+                    ),
+                    Some(BlockHeight::from(u32::try_from(result.height)?)),
+                )
+                .ok_or(anyhow!(
+                    "Received UTXO that doesn't correspond to a valid P2PKH or P2SH address"
+                ))?)?;
+            }
+
+            Ok(())
+        })
     }
 
     /// Calls the given closure with the transactions corresponding to the given t-address
