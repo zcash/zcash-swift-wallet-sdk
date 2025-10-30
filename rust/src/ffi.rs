@@ -8,10 +8,7 @@ use bytes::Bytes;
 use transparent::address::TransparentAddress;
 use zcash_client_backend::{address::UnifiedAddress, data_api, encoding::AddressCodec as _};
 use zcash_client_sqlite::AccountUuid;
-use zcash_protocol::{
-    consensus::{BlockHeight, Network},
-    value::ZatBalance,
-};
+use zcash_protocol::{consensus::Network, value::ZatBalance};
 use zip32::DiversifierIndex;
 
 use crate::{free_ptr_from_vec, free_ptr_from_vec_with, ptr_from_vec, zcashlc_string_free};
@@ -1215,13 +1212,6 @@ pub unsafe extern "C" fn zcashlc_free_single_use_taddr(ptr: *mut SingleUseTaddr)
         unsafe { zcashlc_string_free(res.address) }
         drop(res)
     }
-}
-
-pub(crate) fn parse_optional_height(value: i64) -> anyhow::Result<Option<BlockHeight>> {
-    Ok(match value {
-        -1 => None,
-        _ => Some(BlockHeight::try_from(value)?),
-    })
 }
 
 /// The result of checking for UTXOs received by an ephemeral address.

@@ -195,21 +195,25 @@ impl LwdConn {
             .into_inner())
     }
 
-    /// Calls the given closure with the transactions corresponding to the given t-address
-    /// within the given block range, and the height of the main-chain block they are
-    /// mined in (if any).
+    /// Discovers UTXOs received by the given transparent address in the provided block range, and
+    /// invokes the provided callback with the [`WalletTransparentOutput`] corresponding to that
+    /// UTXO.
     pub(crate) fn with_taddress_utxos(
         &mut self,
         params: &impl consensus::Parameters,
         address: TransparentAddress,
         start: Option<BlockHeight>,
-        limit: u32,
+        limit: Option<u32>,
         mut f: impl FnMut(WalletTransparentOutput) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
         let request = service::GetAddressUtxosArg {
             addresses: vec![address.encode(params)],
             start_height: start.map_or(0, u64::from),
-            max_entries: limit,
+            max_entries: match limit {
+                None => 0,
+                Some(0) => return Err(anyhow!("Invalid limit")),
+                Some(n) => n,
+            },
         };
 
         self.runtime.clone().block_on(async {

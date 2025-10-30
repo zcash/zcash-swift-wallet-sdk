@@ -3665,7 +3665,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_update_transparent_address_transac
             &network,
             addr,
             BlockHeight::from(start),
-            ffi::parse_optional_height(end)?,
+            parse_optional_height(end)?,
             |tx_data, mined_height| {
                 found = Some(addr);
                 let consensus_branch_id =
@@ -3742,7 +3742,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_utxos_by_address(
                         Some(db_data.get_account_birthday(account_uuid)?)
                     }
                 },
-                0,
+                None,
                 |output| {
                     found = Some(addr);
                     db_data.put_received_transparent_utxo(&output)?;
@@ -3930,4 +3930,11 @@ fn free_ptr_from_vec_with<T>(ptr: *mut T, len: usize, f: impl Fn(&mut T)) {
         }
         drop(s);
     }
+}
+
+pub(crate) fn parse_optional_height(value: i64) -> anyhow::Result<Option<BlockHeight>> {
+    Ok(match value {
+        -1 => None,
+        _ => Some(BlockHeight::try_from(value)?),
+    })
 }
