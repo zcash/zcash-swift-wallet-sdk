@@ -648,6 +648,56 @@ pub unsafe extern "C" fn zcashlc_is_seed_relevant_to_any_derived_account(
     unwrap_exc_or(res, -1)
 }
 
+/// Deletes the specified account, and all transactions that exclusively involve it, from the
+/// wallet database.
+///
+/// WARNING: This is a destructive operation and may result in the permanent loss of
+/// potentially important information that is not recoverable from chain data, including:
+/// * Data about transactions sent by the account for which [`OvkPolicy::Discard`] (or
+///   [`OvkPolicy::Custom`] with random OVKs) was used;
+/// * Data related to transactions that the account attempted to send that expired or were
+///   otherwise invalidated without having been mined in the main chain;
+/// * Data related to transactions that were observed in the mempool as having inputs or
+///   outputs that involved the account, but that were never mined in the main chain;
+/// * Data related to transactions that were received by the wallet in a mined block, where
+///   that block was later un-mined in a chain reorg and the transaction was either invalidated
+///   or was never re-mined.
+///
+/// Returns `true` on success, or `false` if an error is raised.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `seed` must be non-null and valid for reads for `seed_len` bytes, and it must have an
+///   alignment of `1`.
+///
+/// [`OvkPolicy::Discard`]: zcash_client_backend::wallet::OvkPolicy::Discard
+/// [`OvkPolicy::Custom`]: zcash_client_backend::wallet::OvkPolicy::Custom
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_delete_account(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    account_uuid_bytes: *const u8,
+) -> bool {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
+
+        db_data.delete_account(account_uuid)?;
+
+        Ok(true)
+    });
+
+    unwrap_exc_or(res, false)
+}
+
 /// A private utility function to reduce duplication across functions that take an USK
 /// across the FFI. `usk_ptr` should point to an array of `usk_len` bytes containing
 /// a unified spending key encoded as returned from the `zcashlc_create_account` or
