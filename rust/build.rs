@@ -47,6 +47,7 @@ fn main() {
         .rename_item("BlocksMeta", "FFIBlocksMeta")
         .rename_item("BoxedSlice", "FfiBoxedSlice")
         .rename_item("TxIds", "FfiTxIds")
+        .rename_item("MaxSpendMode", "FfiMaxSpendMode")
         .rename_item("TransactionStatus", "FfiTransactionStatus")
         .rename_item("TransactionDataRequest", "FfiTransactionDataRequest")
         .rename_item("TransactionDataRequests", "FfiTransactionDataRequests")
@@ -56,6 +57,8 @@ fn main() {
         .rename_item("HttpRequestHeader", "FfiHttpRequestHeader")
         .rename_item("HttpResponseBytes", "FfiHttpResponseBytes")
         .rename_item("HttpResponseHeader", "FfiHttpResponseHeader")
+        .rename_item("SingleUseTaddr", "FfiSingleUseTaddr")
+        .rename_item("AddressCheckResult", "FfiAddressCheckResult")
         .generate()
     {
         b.write_to_file("target/Headers/zcashlc.h");

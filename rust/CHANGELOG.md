@@ -6,6 +6,24 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.19.0 - 2025-11-04
+
+### Added
+- `ffi::AddressCheckResult`
+- `ffi::SingleUseTaddr`
+- `zcashlc_get_single_use_taddr`
+- `zcashlc_free_single_use_taddr`
+- `zcashlc_tor_lwd_conn_check_single_use_taddr`
+- `zcashlc_free_address_check_result`
+- `zcashlc_propose_send_max_transfer`
+- `zcashlc_tor_lwd_conn_update_transparent_address_transactions`
+- `zcashlc_tor_lwd_conn_fetch_utxos_by_address`
+- `zcashlc_delete_account`
+
+### Changed
+- MSRV is now 1.90.
+- Migrated to `zcash_client_backend 0.21`, `zcash_client_sqlite 0.19`, `pczt-0.5`.
+
 ## 0.18.5 - 2025-10-23
 
 ### Changed
