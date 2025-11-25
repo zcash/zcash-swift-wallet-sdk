@@ -3402,7 +3402,13 @@ pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd(
         let tor_runtime =
             unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
 
-        let exchanges = cryptex::Exchanges::unauthenticated_known_with_gemini_trusted();
+        let exchanges = cryptex::Exchanges::builder(cryptex::exchanges::Gemini::unauthenticated())
+            .with(cryptex::exchanges::Binance::unauthenticated())
+            .with(cryptex::exchanges::Coinbase::unauthenticated())
+            .with(cryptex::exchanges::Kraken::unauthenticated())
+            .with(cryptex::exchanges::KuCoin::unauthenticated())
+            .with(cryptex::exchanges::Mexc::unauthenticated())
+            .build();
 
         let rate = tor_runtime.runtime().block_on(async {
             tor_runtime
