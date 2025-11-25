@@ -6,6 +6,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- `ffi::ZecUsdExchange`
+- `zcashlc_get_exchange_rate_usd_from`
+
 ### Changed
 - Reduced the number of exchanges queried for ZEC/USD back to the number we had
   in 0.18 and earlier, to reduce power consumption.

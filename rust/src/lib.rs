@@ -19,6 +19,7 @@ use transparent::{
 };
 use zcash_script::script;
 
+use std::collections::HashSet;
 use std::convert::{Infallible, TryFrom, TryInto};
 use std::error::Error;
 use std::ffi::{CStr, CString, OsStr};
@@ -3409,6 +3410,138 @@ pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd(
             .with(cryptex::exchanges::KuCoin::unauthenticated())
             .with(cryptex::exchanges::Mexc::unauthenticated())
             .build();
+
+        let rate = tor_runtime.runtime().block_on(async {
+            tor_runtime
+                .client()
+                .get_latest_zec_to_usd_rate(&exchanges)
+                .await
+        })?;
+
+        ffi::Decimal::from_rust(rate)
+            .ok_or_else(|| anyhow!("Exchange rate has too many significant figures: {}", rate))
+    });
+    unwrap_exc_or(
+        res,
+        ffi::Decimal::from_rust(rust_decimal::Decimal::NEGATIVE_ONE).expect("fits"),
+    )
+}
+
+/// Fetches the current ZEC-USD exchange rate over Tor from the specified exchanges.
+///
+/// The result is a [`Decimal`] struct containing the fields necessary to construct an
+/// [`NSDecimalNumber`](https://developer.apple.com/documentation/foundation/nsdecimalnumber/1416003-init).
+///
+/// Returns a negative value on error.
+///
+/// # Safety
+///
+/// - `tor_runtime` must be a non-null pointer returned by a `zcashlc_*` method with
+///   return type `*mut TorRuntime` that has not previously been freed.
+/// - `tor_runtime` must not be passed to two FFI calls at the same time.
+/// - `exchanges` must be non-null and valid for reads for
+///   `exchanges_len * size_of::<ffi::ZecUsdExchange>()` bytes, and it must be properly
+///   aligned. This means in particular:
+///   - The entire memory range of this slice must be contained within a single allocated
+///     object! Slices can never span across multiple allocated objects.
+///   - `exchanges` must be non-null and aligned even for zero-length slices.
+/// - `exchanges` must point to `exchanges_len` consecutive properly initialized values of
+///   type `ffi::ZecUsdExchange`.
+/// - The memory referenced by `exchanges` must not be mutated for the duration of the function
+///   call.
+/// - The total size `exchanges_len * size_of::<ffi::ZecUsdExchange>()` of the slice must
+///   be no larger than `isize::MAX`, and adding that size to `exchanges` must not "wrap
+///   around" the address space.  See the safety documentation of `pointer::offset`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd_from(
+    tor_runtime: *mut TorRuntime,
+    trusted_exchange: ffi::ZecUsdExchange,
+    exchanges: *const ffi::ZecUsdExchange,
+    exchanges_len: usize,
+) -> ffi::Decimal {
+    // SAFETY: Callers would have to do the following for unwind safety (#194):
+    // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
+    //   avoid observing the effects of a panic in another thread.
+    // - discarding the `TorRuntime` whenever we get an error that is due to a panic.
+    let tor_runtime = AssertUnwindSafe(tor_runtime);
+
+    let res = catch_panic(|| {
+        let tor_runtime =
+            unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
+
+        let exchanges = unsafe { slice::from_raw_parts(exchanges, exchanges_len) }
+            .iter()
+            .collect::<HashSet<_>>();
+        if exchanges.contains(&trusted_exchange) {
+            return Err(anyhow!(
+                "Cannot use an exchange as both trusted and untrusted"
+            ));
+        }
+
+        let exchanges = {
+            let mut builder = match trusted_exchange {
+                ffi::ZecUsdExchange::Binance => {
+                    cryptex::Exchanges::builder(cryptex::exchanges::Binance::unauthenticated())
+                }
+                ffi::ZecUsdExchange::CoinEx => {
+                    cryptex::Exchanges::builder(cryptex::exchanges::CoinEx::unauthenticated())
+                }
+                ffi::ZecUsdExchange::Coinbase => {
+                    cryptex::Exchanges::builder(cryptex::exchanges::Coinbase::unauthenticated())
+                }
+                ffi::ZecUsdExchange::DigiFinex => {
+                    cryptex::Exchanges::builder(cryptex::exchanges::DigiFinex::unauthenticated())
+                }
+                ffi::ZecUsdExchange::Gemini => {
+                    cryptex::Exchanges::builder(cryptex::exchanges::Gemini::unauthenticated())
+                }
+                ffi::ZecUsdExchange::Kraken => {
+                    cryptex::Exchanges::builder(cryptex::exchanges::Kraken::unauthenticated())
+                }
+                ffi::ZecUsdExchange::KuCoin => {
+                    cryptex::Exchanges::builder(cryptex::exchanges::KuCoin::unauthenticated())
+                }
+                ffi::ZecUsdExchange::Mexc => {
+                    cryptex::Exchanges::builder(cryptex::exchanges::Mexc::unauthenticated())
+                }
+                ffi::ZecUsdExchange::Xt => {
+                    cryptex::Exchanges::builder(cryptex::exchanges::Xt::unauthenticated())
+                }
+            };
+
+            for exchange in exchanges {
+                builder = match exchange {
+                    ffi::ZecUsdExchange::Binance => {
+                        builder.with(cryptex::exchanges::Binance::unauthenticated())
+                    }
+                    ffi::ZecUsdExchange::CoinEx => {
+                        builder.with(cryptex::exchanges::CoinEx::unauthenticated())
+                    }
+                    ffi::ZecUsdExchange::Coinbase => {
+                        builder.with(cryptex::exchanges::Coinbase::unauthenticated())
+                    }
+                    ffi::ZecUsdExchange::DigiFinex => {
+                        builder.with(cryptex::exchanges::DigiFinex::unauthenticated())
+                    }
+                    ffi::ZecUsdExchange::Gemini => {
+                        builder.with(cryptex::exchanges::Gemini::unauthenticated())
+                    }
+                    ffi::ZecUsdExchange::Kraken => {
+                        builder.with(cryptex::exchanges::Kraken::unauthenticated())
+                    }
+                    ffi::ZecUsdExchange::KuCoin => {
+                        builder.with(cryptex::exchanges::KuCoin::unauthenticated())
+                    }
+                    ffi::ZecUsdExchange::Mexc => {
+                        builder.with(cryptex::exchanges::Mexc::unauthenticated())
+                    }
+                    ffi::ZecUsdExchange::Xt => {
+                        builder.with(cryptex::exchanges::Xt::unauthenticated())
+                    }
+                };
+            }
+            builder.build()
+        };
 
         let rate = tor_runtime.runtime().block_on(async {
             tor_runtime

@@ -59,6 +59,7 @@ fn main() {
         .rename_item("HttpResponseHeader", "FfiHttpResponseHeader")
         .rename_item("SingleUseTaddr", "FfiSingleUseTaddr")
         .rename_item("AddressCheckResult", "FfiAddressCheckResult")
+        .rename_item("ZecUsdExchange", "FfiZecUsdExchange")
         .generate()
     {
         b.write_to_file("target/Headers/zcashlc.h");
