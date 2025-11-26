@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 0.19.1 - 2025-11-26
+
 ### Added
 - `ffi::ZecUsdExchange`
 - `zcashlc_get_exchange_rate_usd_from`
