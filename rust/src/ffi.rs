@@ -904,6 +904,21 @@ pub enum TorDormantMode {
     Soft,
 }
 
+/// An exchange for which we know how to query the ZEC-USD exchange rate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(C)]
+pub enum ZecUsdExchange {
+    Binance,
+    CoinEx,
+    Coinbase,
+    DigiFinex,
+    Gemini,
+    Kraken,
+    KuCoin,
+    Mexc,
+    Xt,
+}
+
 /// A decimal suitable for converting into an `NSDecimalNumber`.
 #[repr(C)]
 pub struct Decimal {
