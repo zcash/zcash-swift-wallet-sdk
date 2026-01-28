@@ -242,7 +242,7 @@ public class SDKSynchronizer: Synchronizer {
         guard lastVersionCall == nil || lastVersionCall! < appVersion else { return }
         
         UserDefaults.standard.set(appVersion, forKey: Constants.fixWitnessesLastVersionCall)
-        await initializer.rustBackend.fixWitnesses()
+        try? await initializer.rustBackend.fixWitnesses()
     }
 
     // MARK: Connectivity State
@@ -1034,36 +1034,33 @@ public class SDKSynchronizer: Synchronizer {
     }
 
     public func checkSingleUseTransparentAddresses(accountUUID: AccountUUID) async throws -> TransparentAddressCheckResult {
-        let dbData = initializer.dataDbURL.osStr()
-        
+        let dbHandle = try await initializer.rustBackend.resolveDbHandle()
+
         return try await initializer.lightWalletService.checkSingleUseTransparentAddresses(
-            dbData: dbData,
-            networkType: network.networkType,
+            dbHandle: dbHandle,
             accountUUID: accountUUID,
             mode: await sdkFlags.ifTor(.uniqueTor)
         )
     }
-    
+
     public func updateTransparentAddressTransactions(address: String) async throws -> TransparentAddressCheckResult {
-        let dbData = initializer.dataDbURL.osStr()
-        
+        let dbHandle = try await initializer.rustBackend.resolveDbHandle()
+
         return try await initializer.lightWalletService.updateTransparentAddressTransactions(
             address: address,
             start: 0,
             end: -1,
-            dbData: dbData,
-            networkType: network.networkType,
+            dbHandle: dbHandle,
             mode: await sdkFlags.ifTor(.uniqueTor)
         )
     }
-    
+
     public func fetchUTXOsBy(address: String, accountUUID: AccountUUID) async throws -> TransparentAddressCheckResult {
-        let dbData = initializer.dataDbURL.osStr()
-        
+        let dbHandle = try await initializer.rustBackend.resolveDbHandle()
+
         return try await initializer.lightWalletService.fetchUTXOsByAddress(
             address: address,
-            dbData: dbData,
-            networkType: network.networkType,
+            dbHandle: dbHandle,
             accountUUID: accountUUID,
             mode: await sdkFlags.ifTor(.uniqueTor)
         )

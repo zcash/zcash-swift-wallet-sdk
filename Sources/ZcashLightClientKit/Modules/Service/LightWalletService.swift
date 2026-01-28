@@ -223,27 +223,26 @@ protocol LightWalletService: AnyObject {
     
     func getMempoolStream() throws -> AsyncThrowingStream<RawTransaction, Error>
     
+    @DBActor
     func checkSingleUseTransparentAddresses(
-        dbData: (String, UInt),
-        networkType: NetworkType,
+        dbHandle: OpaquePointer,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult
-    
-    // swiftlint:disable:next function_parameter_count
+
+    @DBActor
     func updateTransparentAddressTransactions(
         address: String,
         start: BlockHeight,
         end: BlockHeight,
-        dbData: (String, UInt),
-        networkType: NetworkType,
+        dbHandle: OpaquePointer,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult
-    
+
+    @DBActor
     func fetchUTXOsByAddress(
         address: String,
-        dbData: (String, UInt),
-        networkType: NetworkType,
+        dbHandle: OpaquePointer,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult

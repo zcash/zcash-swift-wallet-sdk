@@ -435,6 +435,13 @@ public class Initializer {
         name: String,
         keySource: String? = nil
     ) async throws -> InitializationResult {
+        // Create directory structure first (before opening handles)
+        try storage.createDirectories()
+
+        // Open database handles (requires directories to exist)
+        try await rustBackend.openDb()
+
+        // Initialize metadata database (requires handles to be open)
         try await storage.create()
 
         if case .seedRequired = try await rustBackend.initDataDb(seed: seed) {
