@@ -437,6 +437,8 @@ public class Initializer {
     ) async throws -> InitializationResult {
         try await storage.create()
 
+        try await rustBackend.openDb()
+
         if case .seedRequired = try await rustBackend.initDataDb(seed: seed) {
             return .seedRequired
         }

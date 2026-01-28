@@ -419,30 +419,26 @@ class LightWalletGRPCService: LightWalletService {
     }
     
     func checkSingleUseTransparentAddresses(
-        dbData: (String, UInt),
-        networkType: NetworkType,
+        dbHandle: OpaquePointer,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {
         .torRequired
     }
-    
-    // swiftlint:disable:next function_parameter_count
+
     func updateTransparentAddressTransactions(
         address: String,
         start: BlockHeight,
         end: BlockHeight,
-        dbData: (String, UInt),
-        networkType: NetworkType,
+        dbHandle: OpaquePointer,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {
         .torRequired
     }
-    
+
     func fetchUTXOsByAddress(
         address: String,
-        dbData: (String, UInt),
-        networkType: NetworkType,
+        dbHandle: OpaquePointer,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {
