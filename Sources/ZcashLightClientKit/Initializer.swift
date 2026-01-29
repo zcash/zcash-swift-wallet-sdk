@@ -117,6 +117,7 @@ public class Initializer {
     let container: DIContainer
     let alias: ZcashSynchronizerAlias
     var endpoint: LightWalletEndpoint
+    let urls: URLs
     let fsBlockDbRoot: URL
     let generalStorageURL: URL
     let dataDbURL: URL
@@ -124,13 +125,16 @@ public class Initializer {
     let spendParamsURL: URL
     let outputParamsURL: URL
     let saplingParamsSourceURL: SaplingParamsSourceURL
-    var lightWalletService: LightWalletService
-    let transactionRepository: TransactionRepository
-    let storage: CompactBlockRepository
-    var blockDownloaderService: BlockDownloaderService
     let network: ZcashNetwork
-    let logger: Logger
-    let rustBackend: ZcashRustBackendWelding
+    let loggingPolicy: LoggingPolicy
+
+    // These properties are lazily resolved after Phase 2/3 dependency setup
+    var lightWalletService: LightWalletService { container.resolve(LightWalletService.self) }
+    var transactionRepository: TransactionRepository { container.resolve(TransactionRepository.self) }
+    var storage: CompactBlockRepository { container.resolve(CompactBlockRepository.self) }
+    var blockDownloaderService: BlockDownloaderService { container.resolve(BlockDownloaderService.self) }
+    var logger: Logger { container.resolve(Logger.self) }
+    var rustBackend: ZcashRustBackendWelding { container.resolve(ZcashRustBackendWelding.self) }
 
     /// The effective birthday of the wallet based on the height provided when initializing and the checkpoints available on this SDK.
     ///
@@ -280,7 +284,7 @@ public class Initializer {
     ) {
         self.container = container
         self.cacheDbURL = cacheDbURL
-        self.rustBackend = container.resolve(ZcashRustBackendWelding.self)
+        self.urls = urls
         self.fsBlockDbRoot = urls.fsBlockDbRoot
         self.generalStorageURL = urls.generalStorageURL
         self.dataDbURL = urls.dataDbURL
@@ -290,14 +294,10 @@ public class Initializer {
         self.outputParamsURL = urls.outputParamsURL
         self.saplingParamsSourceURL = saplingParamsSourceURL
         self.alias = alias
-        self.lightWalletService = container.resolve(LightWalletService.self)
-        self.transactionRepository = container.resolve(TransactionRepository.self)
-        self.storage = container.resolve(CompactBlockRepository.self)
-        self.blockDownloaderService = container.resolve(BlockDownloaderService.self)
         self.network = network
+        self.loggingPolicy = loggingPolicy
         self.walletBirthday = container.resolve(CheckpointSource.self).saplingActivation.height
         self.urlsParsingError = urlsParsingError
-        self.logger = container.resolve(Logger.self)
     }
     
     // swiftlint:disable:next function_parameter_count
@@ -427,7 +427,7 @@ public class Initializer {
     ///
     /// - Parameter seed: ZIP-32 Seed bytes for the wallet that will be initialized
     /// - Throws: `InitializerError.dataDbInitFailed` if the creation of the dataDb fails
-    /// `InitializerError.accountInitFailed` if the account table can't be initialized. 
+    /// `InitializerError.accountInitFailed` if the account table can't be initialized.
     func initialize(
         with seed: [UInt8]?,
         walletBirthday: BlockHeight,
@@ -436,10 +436,25 @@ public class Initializer {
         keySource: String? = nil
     ) async throws -> InitializationResult {
         // Create directory structure first (before opening handles)
-        try storage.createDirectories()
+        let blocksDirectory = fsBlockDbRoot.appendingPathComponent("blocks", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: blocksDirectory.path) {
+            try FileManager.default.createDirectory(at: blocksDirectory, withIntermediateDirectories: true)
+        }
 
-        // Open database handles (requires directories to exist)
-        try await rustBackend.openDb()
+        // Phase 2: Create and register the opened rust backend (requires directories to exist)
+        try await Dependencies.setupRustBackend(
+            in: container,
+            urls: urls,
+            networkType: network.networkType,
+            loggingPolicy: loggingPolicy
+        )
+
+        // Phase 3: Register dependencies that require the rust backend
+        Dependencies.setupBackendDependencies(
+            in: container,
+            urls: urls,
+            networkType: network.networkType
+        )
 
         // Initialize metadata database (requires handles to be open)
         try await storage.create()

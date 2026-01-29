@@ -54,20 +54,14 @@ enum TestDbBuilder {
         Bundle.module.url(forResource: "darkside_caches", withExtension: "db")
     }
     
+    /// Creates a prepopulated data database provider.
+    /// The backend must already be opened (via `ZcashRustBackend.openForTests`).
     static func prepopulatedDataDbProvider(rustBackend: ZcashRustBackend) async throws -> ConnectionProvider? {
         let provider = SimpleConnectionProvider(path: rustBackend.walletDbHandle.databaseURL.path, readonly: true)
 
-        // Create block database directory if it doesn't exist
-        let fsBlockDbRoot = rustBackend.fsBlockDbHandle.databaseURL
-        if !FileManager.default.fileExists(atPath: fsBlockDbRoot.path) {
-            try FileManager.default.createDirectory(at: fsBlockDbRoot, withIntermediateDirectories: true)
-        }
-
-        // Open database handles before initializing
-        try await rustBackend.openDb()
-
+        // Backend is already opened via the openForTests factory, just initialize the data db
         let initResult = try await rustBackend.initDataDb(seed: Environment.seedBytes)
-        
+
         switch initResult {
         case .success: return provider
         case .seedRequired:

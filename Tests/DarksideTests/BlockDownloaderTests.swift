@@ -33,7 +33,7 @@ class BlockDownloaderTests: ZcashTestCase {
 
         service = LightWalletServiceFactory(endpoint: LightWalletEndpointBuilder.default).make()
 
-        rustBackend = ZcashRustBackend.makeForTests(
+        rustBackend = try await ZcashRustBackend.openForTests(
             fsBlockDbRoot: testTempDirectory,
             networkType: network.networkType
         )

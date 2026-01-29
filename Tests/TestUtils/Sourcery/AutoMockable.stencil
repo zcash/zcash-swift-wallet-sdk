@@ -84,7 +84,9 @@ import Foundation
         {% if method.isStatic %}Self.{% endif %}{% call methodName method %}CallsCount += 1
         {% call methodReceivedParameters method %}
         {% if method.returnTypeName.isVoid %}
-        {% if method.throws %}try {% endif %}{% if method.isAsync %}await {% endif %}{% call methodClosureName method %}!({% call methodClosureCallParameters method %})
+        if let closure = {% if method.isStatic %}Self.{% endif %}{% call methodClosureName method %} {
+            {% if method.throws %}try {% endif %}{% if method.isAsync %}await {% endif %}closure({% call methodClosureCallParameters method %})
+        }
         {% else %}
         if let closure = {% if method.isStatic %}Self.{% endif %}{% call methodClosureName method %} {
             return {% if method.throws %}try {% endif %}{% if method.isAsync %}await {% endif %}closure({% call methodClosureCallParameters method %})
@@ -93,7 +95,9 @@ import Foundation
         }
         {% endif %}
     {% else %}
-        {% if method.throws %}try {% endif %}{% call methodClosureName method %}!({% call methodClosureCallParameters method %})
+        if let closure = {% call methodClosureName method %} {
+            {% if method.throws %}try {% endif %}closure({% call methodClosureCallParameters method %})
+        }
     {% endif %}
     }
 

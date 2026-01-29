@@ -81,7 +81,11 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     static var rustInitialized = false
 
-    /// Creates instance of `ZcashRustBackend`.
+    /// Creates and opens a `ZcashRustBackend` instance with all database handles ready for use.
+    ///
+    /// This is the primary way to obtain a `ZcashRustBackend`. The returned instance is guaranteed
+    /// to have all database connections open and ready for operations.
+    ///
     /// - Parameters:
     ///   - dbData: `URL` pointing to file where data database will be.
     ///   - fsBlockDbRoot: `URL` pointing to the filesystem root directory where the fsBlock cache is.
@@ -93,7 +97,39 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     ///   - logLevel: this sets up whether the tracing system will dump logs onto the OSLogger system or not.
     ///     **Important note:** this will enable the tracing **for all instances** of ZcashRustBackend, not only for this one.
     ///     This is ignored after the first ZcashRustBackend instance is created.
-    init(
+    ///   - sdkFlags: SDK configuration flags.
+    /// - Returns: An opened `ZcashRustBackend` ready for database operations.
+    /// - Throws: `ZcashError.rustOpenDb` if the database handles cannot be opened.
+    @DBActor
+    static func open(
+        dbData: URL,
+        fsBlockDbRoot: URL,
+        spendParamsPath: URL,
+        outputParamsPath: URL,
+        networkType: NetworkType,
+        logLevel: RustLogging = RustLogging.off,
+        sdkFlags: SDKFlags
+    ) async throws -> ZcashRustBackend {
+        let backend = ZcashRustBackend(
+            dbData: dbData,
+            fsBlockDbRoot: fsBlockDbRoot,
+            spendParamsPath: spendParamsPath,
+            outputParamsPath: outputParamsPath,
+            networkType: networkType,
+            logLevel: logLevel,
+            sdkFlags: sdkFlags
+        )
+
+        // Open both database handles
+        try backend.walletDbHandle.open()
+        try backend.fsBlockDbHandle.open()
+
+        return backend
+    }
+
+    /// Creates instance of `ZcashRustBackend` without opening database handles.
+    /// This is internal and should only be used by the `open()` factory method.
+    private init(
         dbData: URL,
         fsBlockDbRoot: URL,
         spendParamsPath: URL,
@@ -116,14 +152,6 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         }
     }
 
-    /// Opens the database handles for use.
-    /// This must be called before any database operations.
-    @DBActor
-    func openDb() async throws {
-        try walletDbHandle.open()
-        try fsBlockDbHandle.open()
-    }
-
     /// Closes and reopens the block database handle.
     /// This is needed after clearing the block cache to get a fresh connection.
     @DBActor
@@ -132,22 +160,28 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         try fsBlockDbHandle.open()
     }
 
-    /// Returns the resolved wallet database handle pointer for use in FFI calls.
+    /// Returns the type-safe wallet database handle for use in service calls.
     @DBActor
-    func resolveDbHandle() async throws -> OpaquePointer {
+    func resolveDbHandle() async throws -> WalletDbPtr {
         try walletDbHandle.resolveHandle()
     }
 
-    /// Returns the resolved filesystem block database handle pointer for use in FFI calls.
+    /// Returns the raw wallet database pointer for internal FFI calls.
     @DBActor
-    func resolveFsBlockDbHandle() async throws -> OpaquePointer {
-        try fsBlockDbHandle.resolveHandle()
+    private func walletDbPtr() throws -> OpaquePointer {
+        try walletDbHandle.resolveHandle().ptr
+    }
+
+    /// Returns the raw filesystem block database pointer for internal FFI calls.
+    @DBActor
+    private func fsBlockDbPtr() throws -> OpaquePointer {
+        try fsBlockDbHandle.resolveHandle().ptr
     }
 
     @DBActor
     func listAccounts() async throws -> [Account] {
         let accountsPtr = zcashlc_list_accounts(
-            try walletDbHandle.resolveHandle()
+            try walletDbPtr()
         )
 
         guard let accountsPtr else {
@@ -175,7 +209,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         for accountUUID: AccountUUID
     ) async throws -> Account {
         let accountPtr: UnsafeMutablePointer<FfiAccount>? = zcashlc_get_account(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id
         )
         
@@ -220,7 +254,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         let index: UInt32 = zip32AccountIndex?.index ?? UINT32_MAX
 
         let uuidPtr = zcashlc_import_account_ufvk(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             [CChar](ufvk.utf8CString),
             treeStateBytes,
             UInt(treeStateBytes.count),
@@ -264,7 +298,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         }
 
         let ffiBinaryKeyPtr = zcashlc_create_account(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             seed,
             UInt(seed.count),
             treeStateBytes,
@@ -286,7 +320,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     @DBActor
     func isSeedRelevantToAnyDerivedAccount(seed: [UInt8]) async throws -> Bool {
         let result = zcashlc_is_seed_relevant_to_any_derived_account(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             seed,
             UInt(seed.count)
         )
@@ -310,7 +344,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         memo: MemoBytes?
     ) async throws -> FfiProposal {
         let proposal = zcashlc_propose_transfer(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id,
             [CChar](address.utf8CString),
             value,
@@ -336,7 +370,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         accountUUID: AccountUUID
     ) async throws -> FfiProposal {
         let proposal = zcashlc_propose_transfer_from_uri(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id,
             [CChar](uri.utf8CString),
             confirmationsPolicy.toBackend()
@@ -361,7 +395,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     ) async throws -> Pczt {
         let proposalBytes = try proposal.serializedData(partial: false).bytes
 
-        let handle = try walletDbHandle.resolveHandle()
+        let handle = try walletDbPtr()
         let pcztPtr = proposalBytes.withUnsafeBufferPointer { proposalPtr in
             zcashlc_create_pczt_from_proposal(
                 handle,
@@ -457,7 +491,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         pcztWithProofs: Pczt,
         pcztWithSigs: Pczt
     ) async throws -> Data {
-        let handle = try walletDbHandle.resolveHandle()
+        let handle = try walletDbPtr()
         let txidPtr: UnsafeMutablePointer<FfiBoxedSlice>? = pcztWithProofs.withUnsafeBytes { pcztWithProofsBuffer in
             guard let pcztWithProofsBufferPtr = pcztWithProofsBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
                 return nil
@@ -502,7 +536,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     func decryptAndStoreTransaction(txBytes: [UInt8], minedHeight: UInt32?) async throws -> Data {
         var contiguousTxidBytes = ContiguousArray<UInt8>(Data(count: 32))
 
-        let handle = try walletDbHandle.resolveHandle()
+        let handle = try walletDbPtr()
         let result = contiguousTxidBytes.withUnsafeMutableBufferPointer { txidBytePtr in
             zcashlc_decrypt_and_store_transaction(
                 handle,
@@ -523,7 +557,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     @DBActor
     func getCurrentAddress(accountUUID: AccountUUID) async throws -> UnifiedAddress {
         let addressCStr = zcashlc_get_current_address(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id
         )
 
@@ -543,7 +577,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     @DBActor
     func getNextAvailableAddress(accountUUID: AccountUUID, receiverFlags: UInt32) async throws -> UnifiedAddress {
         let addressCStr = zcashlc_get_next_available_address(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id,
             receiverFlags
         )
@@ -570,7 +604,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         var contiguousMemoBytes = ContiguousArray<UInt8>(MemoBytes.empty().bytes)
         var success = false
 
-        let handle = try walletDbHandle.resolveHandle()
+        let handle = try walletDbPtr()
         contiguousMemoBytes.withUnsafeMutableBufferPointer { memoBytePtr in
             success = zcashlc_get_memo(handle, txId.bytes, outputPool, outputIndex, memoBytePtr.baseAddress)
         }
@@ -583,7 +617,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     @DBActor
     func getTransparentBalance(accountUUID: AccountUUID) async throws -> Int64 {
         let balance = zcashlc_get_total_transparent_balance_for_account(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id
         )
 
@@ -600,7 +634,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     @DBActor
     func getVerifiedTransparentBalance(accountUUID: AccountUUID) async throws -> Int64 {
         let balance = zcashlc_get_verified_transparent_balance_for_account(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id,
             shieldingConfirmationsPolicy.toBackend()
         )
@@ -617,7 +651,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func initDataDb(seed: [UInt8]?) async throws -> DbInitResult {
-        let initResult = zcashlc_init_data_database(try walletDbHandle.resolveHandle(), seed, UInt(seed?.count ?? 0))
+        let initResult = zcashlc_init_data_database(try walletDbPtr(), seed, UInt(seed?.count ?? 0))
 
         switch initResult {
         case 0: // ok
@@ -633,7 +667,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func initBlockMetadataDb() async throws {
-        let result = zcashlc_init_block_metadata_db(try fsBlockDbHandle.resolveHandle())
+        let result = zcashlc_init_block_metadata_db(try fsBlockDbPtr())
 
         guard result else {
             throw ZcashError.rustInitBlockMetadataDb(lastErrorMessage(fallback: "`initBlockMetadataDb` failed with unknown error"))
@@ -690,7 +724,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
             fsBlocks.initialize(to: meta)
 
-            let res = zcashlc_write_block_metadata(try fsBlockDbHandle.resolveHandle(), fsBlocks)
+            let res = zcashlc_write_block_metadata(try fsBlockDbPtr(), fsBlocks)
 
             guard res else {
                 throw ZcashError.rustWriteBlocksMetadata(lastErrorMessage(fallback: "`writeBlocksMetadata` failed with unknown error"))
@@ -700,7 +734,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func latestCachedBlockHeight() async throws -> BlockHeight {
-        let height = zcashlc_latest_cached_block_height(try fsBlockDbHandle.resolveHandle())
+        let height = zcashlc_latest_cached_block_height(try fsBlockDbPtr())
 
         if height >= 0 {
             return BlockHeight(height)
@@ -714,7 +748,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     @DBActor
     func listTransparentReceivers(accountUUID: AccountUUID) async throws -> [TransparentAddress] {
         let encodedKeysPtr = zcashlc_list_transparent_receivers(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id
         )
 
@@ -750,7 +784,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         height: BlockHeight
     ) async throws {
         let result = zcashlc_put_utxo(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             txid,
             UInt(txid.count),
             Int32(index),
@@ -768,7 +802,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     @DBActor
     func rewindToHeight(height: BlockHeight) async throws -> RewindResult {
         var safeRewindHeight: Int64 = -1
-        let result = zcashlc_rewind_to_height(try walletDbHandle.resolveHandle(), UInt32(height), &safeRewindHeight)
+        let result = zcashlc_rewind_to_height(try walletDbPtr(), UInt32(height), &safeRewindHeight)
 
         if result >= 0 {
             return .success(BlockHeight(result))
@@ -781,7 +815,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func rewindCacheToHeight(height: Int32) async throws {
-        let result = zcashlc_rewind_fs_block_cache_to_height(try fsBlockDbHandle.resolveHandle(), height)
+        let result = zcashlc_rewind_fs_block_cache_to_height(try fsBlockDbPtr(), height)
 
         guard result else {
             throw ZcashError.rustRewindCacheToHeight(lastErrorMessage(fallback: "`rewindCacheToHeight` failed with unknown error"))
@@ -837,7 +871,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
             rootsPtr.initialize(to: roots)
 
-            let res = zcashlc_put_sapling_subtree_roots(try walletDbHandle.resolveHandle(), startIndex, rootsPtr)
+            let res = zcashlc_put_sapling_subtree_roots(try walletDbPtr(), startIndex, rootsPtr)
 
             guard res else {
                 throw ZcashError.rustPutSaplingSubtreeRoots(lastErrorMessage(fallback: "`putSaplingSubtreeRoots` failed with unknown error"))
@@ -894,7 +928,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
             rootsPtr.initialize(to: roots)
 
-            let res = zcashlc_put_orchard_subtree_roots(try walletDbHandle.resolveHandle(), startIndex, rootsPtr)
+            let res = zcashlc_put_orchard_subtree_roots(try walletDbPtr(), startIndex, rootsPtr)
 
             guard res else {
                 throw ZcashError.rustPutOrchardSubtreeRoots(lastErrorMessage(fallback: "`putOrchardSubtreeRoots` failed with unknown error"))
@@ -904,7 +938,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func updateChainTip(height: Int32) async throws {
-        let result = zcashlc_update_chain_tip(try walletDbHandle.resolveHandle(), height)
+        let result = zcashlc_update_chain_tip(try walletDbPtr(), height)
 
         guard result else {
             throw ZcashError.rustUpdateChainTip(lastErrorMessage(fallback: "`updateChainTip` failed with unknown error"))
@@ -913,7 +947,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func fullyScannedHeight() async throws -> BlockHeight? {
-        let height = zcashlc_fully_scanned_height(try walletDbHandle.resolveHandle())
+        let height = zcashlc_fully_scanned_height(try walletDbPtr())
 
         if height >= 0 {
             return BlockHeight(height)
@@ -926,7 +960,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func maxScannedHeight() async throws -> BlockHeight? {
-        let height = zcashlc_max_scanned_height(try walletDbHandle.resolveHandle())
+        let height = zcashlc_max_scanned_height(try walletDbPtr())
 
         if height >= 0 {
             return BlockHeight(height)
@@ -939,7 +973,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func getWalletSummary() async throws -> WalletSummary? {
-        let summaryPtr = zcashlc_get_wallet_summary(try walletDbHandle.resolveHandle(), confirmationsPolicy.toBackend())
+        let summaryPtr = zcashlc_get_wallet_summary(try walletDbPtr(), confirmationsPolicy.toBackend())
 
         guard let summaryPtr else {
             throw ZcashError.rustGetWalletSummary(lastErrorMessage(fallback: "`getWalletSummary` failed with unknown error"))
@@ -995,7 +1029,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func suggestScanRanges() async throws -> [ScanRange] {
-        let scanRangesPtr = zcashlc_suggest_scan_ranges(try walletDbHandle.resolveHandle())
+        let scanRangesPtr = zcashlc_suggest_scan_ranges(try walletDbPtr())
 
         guard let scanRangesPtr else {
             throw ZcashError.rustSuggestScanRanges(lastErrorMessage(fallback: "`suggestScanRanges` failed with unknown error"))
@@ -1027,8 +1061,8 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         let fromStateBytes = try fromState.serializedData(partial: false).bytes
 
         let summaryPtr = zcashlc_scan_blocks(
-            try walletDbHandle.resolveHandle(),
-            try fsBlockDbHandle.resolveHandle(),
+            try walletDbPtr(),
+            try fsBlockDbPtr(),
             fromHeight,
             fromStateBytes,
             UInt(fromStateBytes.count),
@@ -1059,7 +1093,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         transparentReceiver: String?
     ) async throws -> FfiProposal? {
         let proposal = zcashlc_propose_shielding(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id,
             memo?.bytes,
             UInt64(shieldingThreshold.amount),
@@ -1089,7 +1123,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         usk: UnifiedSpendingKey
     ) async throws -> [Data] {
         let proposalBytes = try proposal.serializedData(partial: false).bytes
-        let handle = try walletDbHandle.resolveHandle()
+        let handle = try walletDbPtr()
 
         let txIdsPtr = proposalBytes.withUnsafeBufferPointer { proposalPtr in
             usk.bytes.withUnsafeBufferPointer { uskPtr in
@@ -1136,7 +1170,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     // swiftlint:disable:next cyclomatic_complexity
     @DBActor func transactionDataRequests() async throws -> [TransactionDataRequest] {
         let tDataRequestsPtr = zcashlc_transaction_data_requests(
-            try walletDbHandle.resolveHandle()
+            try walletDbPtr()
         )
 
         guard let tDataRequestsPtr else {
@@ -1224,7 +1258,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         }
 
         zcashlc_set_transaction_status(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             txId.bytes,
             UInt(txId.bytes.count),
             transactionStatus
@@ -1233,13 +1267,13 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     
     @DBActor
     func fixWitnesses() async throws {
-        zcashlc_fix_witnesses(try walletDbHandle.resolveHandle())
+        zcashlc_fix_witnesses(try walletDbPtr())
     }
     
     @DBActor
     func getSingleUseTransparentAddress(accountUUID: AccountUUID) async throws -> SingleUseTransparentAddress {
         let singleUseTaddrPtr = zcashlc_get_single_use_taddr(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id
         )
 
@@ -1261,7 +1295,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     @DBActor
     func deleteAccount(_ accountUUID: AccountUUID) async throws {
         let success = zcashlc_delete_account(
-            try walletDbHandle.resolveHandle(),
+            try walletDbPtr(),
             accountUUID.id
         )
         

@@ -32,12 +32,7 @@ class ZcashRustBackendTests: XCTestCase {
         try? dataDbHandle.setUp()
 
         let fsBlockDbRoot = Environment.uniqueTestTempDirectory
-        if !FileManager.default.fileExists(atPath: fsBlockDbRoot.path) {
-            try FileManager.default.createDirectory(at: fsBlockDbRoot, withIntermediateDirectories: true)
-        }
-
-        rustBackend = ZcashRustBackend.makeForTests(dbData: dbData, fsBlockDbRoot: fsBlockDbRoot, networkType: .testnet)
-        try await rustBackend.openDb()
+        rustBackend = try await ZcashRustBackend.openForTests(dbData: dbData, fsBlockDbRoot: fsBlockDbRoot, networkType: .testnet)
     }
     
     override func tearDown() {
@@ -77,9 +72,14 @@ class ZcashRustBackendTests: XCTestCase {
         let testVector = [TestVector](TestVector.testVectors![0 ... 2])
         let tempDBs = TemporaryDbBuilder.build()
         let seed = testVector[0].root_seed!
-        rustBackend = ZcashRustBackend.makeForTests(dbData: tempDBs.dataDB, fsBlockDbRoot: Environment.uniqueTestTempDirectory, networkType: .mainnet)
 
         try? FileManager.default.removeItem(at: tempDBs.dataDB)
+
+        rustBackend = try await ZcashRustBackend.openForTests(
+            dbData: tempDBs.dataDB,
+            fsBlockDbRoot: Environment.uniqueTestTempDirectory,
+            networkType: .mainnet
+        )
 
         let initResult = try await rustBackend.initDataDb(seed: seed)
         XCTAssertEqual(initResult, .success)

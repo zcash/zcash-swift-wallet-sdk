@@ -183,7 +183,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
     
     @DBActor
     override func checkSingleUseTransparentAddresses(
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {
@@ -207,7 +207,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
         address: String,
         start: BlockHeight,
         end: BlockHeight,
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {
         guard mode != .direct else {
@@ -236,7 +236,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
     @DBActor
     override func fetchUTXOsByAddress(
         address: String,
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {

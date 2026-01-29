@@ -51,7 +51,7 @@ class CompactBlockReorgTests: ZcashTestCase {
             service: liveService
         )
 
-        rustBackend = ZcashRustBackend.makeForTests(
+        rustBackend = try await ZcashRustBackend.openForTests(
             dbData: processorConfig.dataDb,
             fsBlockDbRoot: processorConfig.fsBlockCacheRoot,
             networkType: network.networkType

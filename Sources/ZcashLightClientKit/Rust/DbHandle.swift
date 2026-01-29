@@ -9,6 +9,50 @@
 import Foundation
 import libzcashlc
 
+// MARK: - Type-Safe Pointer Wrappers
+
+/// A type-safe wrapper around an `OpaquePointer` to a wallet database handle.
+///
+/// This prevents accidentally passing a filesystem block database pointer where
+/// a wallet database pointer is expected. These pointers should only be used
+/// from the @DBActor context where database access is serialized.
+public struct WalletDbPtr: Sendable {
+    /// The underlying opaque pointer.
+    /// Marked as nonisolated(unsafe) because:
+    /// 1. The pointer is only valid within @DBActor context
+    /// 2. The struct is immutable after initialization
+    /// 3. All FFI calls using this pointer are on @DBActor
+    nonisolated(unsafe) let ptr: OpaquePointer
+
+    /// Creates a type-safe wrapper around a wallet database pointer.
+    ///
+    /// - Parameter ptr: The raw opaque pointer to the wallet database.
+    init(_ ptr: OpaquePointer) {
+        self.ptr = ptr
+    }
+}
+
+/// A type-safe wrapper around an `OpaquePointer` to a filesystem block database handle.
+///
+/// This prevents accidentally passing a wallet database pointer where
+/// a filesystem block database pointer is expected. These pointers should only be used
+/// from the @DBActor context where database access is serialized.
+public struct FsBlockDbPtr: Sendable {
+    /// The underlying opaque pointer.
+    /// Marked as nonisolated(unsafe) because:
+    /// 1. The pointer is only valid within @DBActor context
+    /// 2. The struct is immutable after initialization
+    /// 3. All FFI calls using this pointer are on @DBActor
+    nonisolated(unsafe) let ptr: OpaquePointer
+
+    /// Creates a type-safe wrapper around a filesystem block database pointer.
+    ///
+    /// - Parameter ptr: The raw opaque pointer to the filesystem block database.
+    init(_ ptr: OpaquePointer) {
+        self.ptr = ptr
+    }
+}
+
 /// A wrapper around the Rust wallet database handle that manages the lifecycle of
 /// a persistent database connection.
 ///
@@ -100,15 +144,15 @@ final class WalletDbHandle: Sendable {
         }
     }
 
-    /// Returns the raw database handle pointer for use in FFI calls.
+    /// Returns the type-safe database handle pointer for use in FFI calls.
     ///
-    /// - Returns: The opaque pointer to the Rust wallet database handle.
+    /// - Returns: A type-safe wrapper around the Rust wallet database handle.
     /// - Throws: `ZcashError.rustOpenDb` if the handle has not been opened.
-    func resolveHandle() throws -> OpaquePointer {
+    func resolveHandle() throws -> WalletDbPtr {
         guard let existingHandle = handle else {
             throw ZcashError.rustOpenDb("Wallet database handle has not been opened")
         }
-        return existingHandle
+        return WalletDbPtr(existingHandle)
     }
 
     /// Whether the database handle is currently open.
@@ -202,15 +246,15 @@ final class FsBlockDbHandle: Sendable {
         }
     }
 
-    /// Returns the raw database handle pointer for use in FFI calls.
+    /// Returns the type-safe database handle pointer for use in FFI calls.
     ///
-    /// - Returns: The opaque pointer to the Rust filesystem block database handle.
+    /// - Returns: A type-safe wrapper around the Rust filesystem block database handle.
     /// - Throws: `ZcashError.rustOpenDb` if the handle has not been opened.
-    func resolveHandle() throws -> OpaquePointer {
+    func resolveHandle() throws -> FsBlockDbPtr {
         guard let existingHandle = handle else {
             throw ZcashError.rustOpenDb("Block database handle has not been opened")
         }
-        return existingHandle
+        return FsBlockDbPtr(existingHandle)
     }
 
     /// Whether the database handle is currently open.

@@ -408,12 +408,12 @@ public class TorLwdConn {
     
     @DBActor
     func checkSingleUseTransparentAddresses(
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         accountUUID: AccountUUID
     ) async throws -> TransparentAddressCheckResult {
         let addressCheckResultPtr = zcashlc_tor_lwd_conn_check_single_use_taddr(
             conn,
-            dbHandle,
+            dbHandle.ptr,
             accountUUID.id
         )
         
@@ -439,11 +439,11 @@ public class TorLwdConn {
         address: String,
         start: BlockHeight,
         end: BlockHeight,
-        dbHandle: OpaquePointer
+        dbHandle: WalletDbPtr
     ) async throws -> TransparentAddressCheckResult {
         let addressCheckResultPtr = zcashlc_tor_lwd_conn_update_transparent_address_transactions(
             conn,
-            dbHandle,
+            dbHandle.ptr,
             address,
             UInt32(start),
             Int64(end)
@@ -469,12 +469,12 @@ public class TorLwdConn {
     @DBActor
     func fetchUTXOsByAddress(
         address: String,
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         accountUUID: AccountUUID
     ) async throws -> TransparentAddressCheckResult {
         let addressCheckResultPtr = zcashlc_tor_lwd_conn_fetch_utxos_by_address(
             conn,
-            dbHandle,
+            dbHandle.ptr,
             accountUUID.id,
             address
         )

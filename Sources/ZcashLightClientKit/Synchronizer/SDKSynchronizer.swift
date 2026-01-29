@@ -1151,9 +1151,8 @@ public class SDKSynchronizer: Synchronizer {
             config: await blockProcessor.config
         )
         
-        // INITIALIZER
-        initializer.lightWalletService = initializer.container.resolve(LightWalletService.self)
-        initializer.blockDownloaderService = initializer.container.resolve(BlockDownloaderService.self)
+        // INITIALIZER - update endpoint (lightWalletService and blockDownloaderService
+        // are computed properties that auto-resolve from the container)
         initializer.endpoint = endpoint
 
         // SELF

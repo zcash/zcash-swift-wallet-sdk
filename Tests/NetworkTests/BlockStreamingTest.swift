@@ -23,7 +23,7 @@ class BlockStreamingTest: ZcashTestCase {
         try await super.setUp()
         logger = OSLogger(logLevel: .debug)
 
-        rustBackend = ZcashRustBackend.makeForTests(fsBlockDbRoot: testTempDirectory, networkType: .testnet)
+        rustBackend = try await ZcashRustBackend.openForTests(fsBlockDbRoot: testTempDirectory, networkType: .testnet)
         logger = OSLogger(logLevel: .debug)
 
         Dependencies.setup(
