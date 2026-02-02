@@ -151,7 +151,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
             return try await serviceConnections.connectToLightwalletd(mode).submit(spendTransaction: spendTransaction)
         } catch {
             await serviceConnections.responseToTorFailure(mode)
-            throw error
+            throw ZcashError.serviceSubmitFailed(LightWalletServiceError.genericError(error: error))
         }
     }
     

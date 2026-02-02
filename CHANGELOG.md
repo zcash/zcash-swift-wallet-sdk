@@ -6,6 +6,26 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Fixed
+- LightWalletGRPCServiceOverTor.submit now throws ZcashError.serviceSubmitFailed instead of a generic error. This fix mirrors LightWalletGRPCService’s error reporting and resolves the discrepancy between the Tor and non-Tor submit APIs.
+
+## Checkpoints
+
+Mainnet
+
+````
+Sources/ZcashLightClientKit/Resources/checkpoints/mainnet/3172500.json
+...
+Sources/ZcashLightClientKit/Resources/checkpoints/mainnet/3217500.json
+````
+
+Testnet
+
+````
+Sources/ZcashLightClientKit/Resources/checkpoints/testnet/3740000.json
+...
+Sources/ZcashLightClientKit/Resources/checkpoints/testnet/3800000.json
+````
 # 2.4.2 - 2025-12-16
 
 ## Added
