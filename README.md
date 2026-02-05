@@ -26,6 +26,24 @@ Add a package with the source "https://github.com/zcash/ZcashLightClientKit.git"
 
 If you want to include a beta version of `ZCashLightClientKit` in an Xcode project e.g `0.14.0-beta` you will need to specify it with the commit sha instead as it does not appear that Xcode supports 'meta data' from semantic version strings for swift packages (at the time of writing).
 
+# FFI Development
+
+This SDK includes Rust code that provides the core cryptographic and wallet functionality via FFI. For most SDK development, you don't need to build the Rust code - SPM automatically downloads pre-built binaries.
+
+If you need to modify the Rust code in `rust/`:
+
+```bash
+# One-time setup (builds from source)
+./Scripts/init-local-ffi.sh
+
+# Add LocalPackages to Xcode as a local package dependency
+
+# Fast incremental rebuild after changes
+./Scripts/rebuild-local-ffi.sh
+```
+
+See [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md) for detailed instructions.
+
 # Testing
 
 The best way to run tests is to open "Package.swift" in Xcode and use the Test panel and target an iOS device. Tests will build and run for a Mac target but are not currently working as expected.
