@@ -115,6 +115,28 @@ The XCFramework contains three platform slices:
 
 When you add `LocalPackages` as a local package in Xcode, it provides a package named `libzcashlc` with the same product name as the binary target in Package.swift. SPM automatically prefers local packages over remote dependencies, so your local build is used instead of the GitHub Releases binary.
 
+## Alternative: Xcode Workspace with Automatic Rebuilds
+
+For developers who prefer Xcode to automatically rebuild the FFI, we provide a development workspace:
+
+```bash
+open ZcashSDK.xcworkspace
+```
+
+This workspace includes:
+- The SDK package (for editing Swift code)
+- `FFIBuilder` target with a Run Script build phase
+
+**How it works:** When you build the FFIBuilder target, it runs `rebuild-local-ffi.sh` with the appropriate platform based on your selected destination. You can add FFIBuilder as a dependency to ensure FFI rebuilds happen before SDK builds.
+
+**Note:** You still need to run `init-local-ffi.sh` first and add LocalPackages as a local package dependency.
+
+| Approach | Best for |
+|----------|----------|
+| Manual script | Occasional FFI changes, simple setup |
+| cargo-watch | Focused FFI development sessions |
+| Development workspace | Developers who prefer staying in Xcode |
+
 ## Troubleshooting
 
 ### Xcode doesn't pick up FFI changes
