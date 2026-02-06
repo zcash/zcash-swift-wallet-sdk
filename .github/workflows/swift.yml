@@ -1,11 +1,10 @@
 name: Build and Run Offline Tests
 
-on: 
- pull_request:
+on:
+  pull_request:
     paths-ignore:
       - '.github/ISSUE_TEMPLATE/*'
       - '.github/PULL_REQUEST_TEMPLATE.md'
-      - 'changelog.md'
       - 'LICENSE'
       - 'README.md'
       - 'responsible_disclosure.md'
@@ -15,18 +14,108 @@ on:
 jobs:
   build:
     permissions:
-          contents: read
-    
+      contents: read
+
     runs-on: macos-15
 
     steps:
-    - uses: actions/checkout@a12a3943b4bdde767164f792f33f40b04645d846
+    - uses: actions/checkout@v4
       timeout-minutes: 1
+
     - name: Select Xcode version
       run: sudo xcode-select -s '/Applications/Xcode_16.0.app/Contents/Developer'
+
+    # Generate a hash of all Rust source files for cache key
+    - name: Generate FFI source hash
+      id: ffi-hash
+      run: |
+        # Hash all Rust source files, Cargo files, and build support files
+        FFI_HASH=$(find rust Cargo.toml Cargo.lock BuildSupport -type f \( -name "*.rs" -o -name "*.toml" -o -name "*.lock" -o -name "Makefile" -o -name "*.h" -o -name "*.c" -o -name "*.plist" -o -name "*.modulemap" \) -exec shasum {} \; | sort | shasum | cut -d' ' -f1)
+        echo "hash=$FFI_HASH" >> $GITHUB_OUTPUT
+        echo "FFI source hash: $FFI_HASH"
+
+    # Cache the built xcframework (macOS-only for CI tests)
+    - name: Cache FFI XCFramework
+      id: cache-ffi
+      uses: actions/cache@v4
+      with:
+        path: BuildSupport/products/libzcashlc.xcframework
+        key: ffi-xcframework-macos-only-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
+
+    # Only set up Rust if we need to build FFI
+    - name: Setup Rust
+      if: steps.cache-ffi.outputs.cache-hit != 'true'
+      run: |
+        rustup update stable
+        rustup default stable
+        # Only need macOS targets for running tests
+        rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+    # Cache Cargo dependencies (only if building FFI)
+    - name: Cache Cargo
+      if: steps.cache-ffi.outputs.cache-hit != 'true'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    # Build FFI for macOS only (sufficient for running tests)
+    - name: Build FFI for macOS
+      if: steps.cache-ffi.outputs.cache-hit != 'true'
+      timeout-minutes: 30
+      run: |
+        echo "Building FFI for macOS..."
+        # Build for both macOS architectures to create universal binary
+        cargo build --target aarch64-apple-darwin --release
+        cargo build --target x86_64-apple-darwin --release
+
+        # Create the xcframework structure for macOS only
+        mkdir -p BuildSupport/products/libzcashlc.xcframework/macos-arm64_x86_64/libzcashlc.framework/Modules
+        mkdir -p BuildSupport/products/libzcashlc.xcframework/macos-arm64_x86_64/libzcashlc.framework/Headers
+
+        # Create universal binary
+        lipo -create \
+          target/aarch64-apple-darwin/release/libzcashlc.a \
+          target/x86_64-apple-darwin/release/libzcashlc.a \
+          -output BuildSupport/products/libzcashlc.xcframework/macos-arm64_x86_64/libzcashlc.framework/libzcashlc
+
+        # Copy headers and module map
+        cp -R target/Headers/* BuildSupport/products/libzcashlc.xcframework/macos-arm64_x86_64/libzcashlc.framework/Headers/
+        cp BuildSupport/module.modulemap BuildSupport/products/libzcashlc.xcframework/macos-arm64_x86_64/libzcashlc.framework/Modules/
+        cp BuildSupport/platform-Info.plist BuildSupport/products/libzcashlc.xcframework/macos-arm64_x86_64/libzcashlc.framework/Info.plist
+        cp BuildSupport/Info.plist BuildSupport/products/libzcashlc.xcframework/
+
+    # Verify xcframework exists (whether from cache or fresh build)
+    - name: Verify XCFramework
+      run: |
+        if [ ! -d "BuildSupport/products/libzcashlc.xcframework" ]; then
+          echo "Error: BuildSupport/products/libzcashlc.xcframework not found"
+          exit 1
+        fi
+        echo "XCFramework contents:"
+        ls -la BuildSupport/products/libzcashlc.xcframework/
+
+    # Modify Package.swift to use local xcframework path instead of URL
+    - name: Configure Package.swift for local xcframework
+      run: |
+        # Replace the multi-line binaryTarget with a local path version
+        # Using perl for reliable multi-line regex replacement
+        perl -i -0pe 's/\.binaryTarget\(\s*name:\s*"libzcashlc",\s*url:[^)]+\)/.binaryTarget(name: "libzcashlc", path: "BuildSupport\/products\/libzcashlc.xcframework")/s' Package.swift
+
+        echo "Modified Package.swift binaryTarget:"
+        grep -A1 'binaryTarget' Package.swift
+
+    # Build the Swift package
     - name: Build ZcashLightClientKit Swift Package
       timeout-minutes: 15
       run: swift build -v
+
+    # Run tests
     - name: Run OfflineTests suite
-      timeout-minutes: 5
+      timeout-minutes: 10
       run: swift test --filter OfflineTests
