@@ -65,8 +65,17 @@ esac
 echo "Building for $TARGET ($RUST_TARGET)..."
 echo ""
 
-# Ensure Rust target is installed
-rustup target add "$RUST_TARGET" 2>/dev/null || true
+# Check if Rust target is installed
+if ! rustup target list --installed | grep -q "^${RUST_TARGET}$"; then
+    echo "Rust target '$RUST_TARGET' is not installed."
+    read -p "Install it now? [Y/n] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        echo "Cannot build without the target. Exiting."
+        exit 1
+    fi
+    rustup target add "$RUST_TARGET"
+fi
 
 # Incremental cargo build (fast for small changes!)
 # Cargo.toml is at the repo root, so we run cargo from there

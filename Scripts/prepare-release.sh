@@ -1,6 +1,6 @@
 #!/bin/bash
 # Prepare FFI artifacts for an SDK release
-# Usage: ./Scripts/prepare-release.sh <version>
+# Usage: ./Scripts/prepare-release.sh [--force-overwrite-existing-release] <version>
 #
 # This script:
 #   1. Builds the full xcframework (all architectures)
@@ -14,6 +14,9 @@
 #   3. Create a signed tag for the SDK release
 #   4. Publish the draft release on GitHub
 #
+# Options:
+#   --force-overwrite-existing-release  Allow overwriting an existing release
+#
 # Prerequisites:
 #   - gh CLI installed and authenticated (https://cli.github.com/)
 #   - Rust toolchain with all Apple targets
@@ -22,8 +25,14 @@
 set -e
 cd "$(dirname "$0")/.."
 
+FORCE_OVERWRITE=false
+if [[ "$1" == "--force-overwrite-existing-release" ]]; then
+    FORCE_OVERWRITE=true
+    shift
+fi
+
 if [[ -z "$1" ]]; then
-    echo "Usage: $0 <version>"
+    echo "Usage: $0 [--force-overwrite-existing-release] <version>"
     echo "Example: $0 2.5.0"
     exit 1
 fi
@@ -68,7 +77,12 @@ echo ""
 echo "=== Uploading to GitHub (draft release) ==="
 
 if gh release view "$VERSION" --repo "$REPO" &>/dev/null; then
-    echo "Release $VERSION already exists. Updating assets..."
+    if [[ "$FORCE_OVERWRITE" != "true" ]]; then
+        echo "Error: Release $VERSION already exists."
+        echo "Use --force-overwrite-existing-release to update an existing release."
+        exit 1
+    fi
+    echo "Release $VERSION already exists. Updating assets (--force-overwrite-existing-release)..."
     gh release upload "$VERSION" \
         "$PRODUCTS_DIR/$ZIP_FILE" \
         "$PRODUCTS_DIR/checksum.txt" \

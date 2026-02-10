@@ -1,6 +1,6 @@
 #!/bin/bash
 # Full SDK release workflow
-# Usage: ./Scripts/release.sh <version>
+# Usage: ./Scripts/release.sh <remote> <version>
 #
 # This script performs the COMPLETE release process:
 #   1. Verifies clean working directory
@@ -9,8 +9,13 @@
 #   4. Updates Package.swift with URL and checksum
 #   5. Commits the Package.swift change
 #   6. Creates a signed tag
-#   7. Pushes to origin
+#   7. Pushes to the specified remote
 #   8. Publishes the GitHub release
+#
+# Arguments:
+#   <remote>   The git remote pointing to zcash/zcash-swift-wallet-sdk
+#              (e.g., 'origin' or 'upstream')
+#   <version>  The version to release (e.g., '2.5.0')
 #
 # Prerequisites:
 #   - gh CLI installed and authenticated
@@ -24,13 +29,26 @@
 set -e
 cd "$(dirname "$0")/.."
 
-if [[ -z "$1" ]]; then
-    echo "Usage: $0 <version>"
-    echo "Example: $0 2.5.0"
+if [[ -z "$1" ]] || [[ -z "$2" ]]; then
+    echo "Usage: $0 <remote> <version>"
+    echo "Example: $0 upstream 2.5.0"
+    echo ""
+    echo "Available remotes:"
+    git remote -v
     exit 1
 fi
 
-VERSION="$1"
+UPSTREAM_REMOTE="$1"
+VERSION="$2"
+
+# Verify the remote exists
+if ! git remote get-url "$UPSTREAM_REMOTE" &>/dev/null; then
+    echo "Error: Remote '$UPSTREAM_REMOTE' does not exist."
+    echo ""
+    echo "Available remotes:"
+    git remote -v
+    exit 1
+fi
 REPO="zcash/zcash-swift-wallet-sdk"
 PRODUCTS_DIR="BuildSupport/products"
 ZIP_FILE="libzcashlc.xcframework.zip"
@@ -135,8 +153,8 @@ echo "=== Step 6/8: Creating signed tag ==="
 git tag -s "$VERSION" -m "Release ${VERSION}"
 
 echo ""
-echo "=== Step 7/8: Pushing to origin ==="
-git push origin "$CURRENT_BRANCH" "$VERSION"
+echo "=== Step 7/8: Pushing to $UPSTREAM_REMOTE ==="
+git push "$UPSTREAM_REMOTE" "$CURRENT_BRANCH" "$VERSION"
 
 echo ""
 echo "=== Step 8/8: Publishing release ==="
