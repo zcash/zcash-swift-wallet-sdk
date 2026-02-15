@@ -93,6 +93,7 @@ use zcash_protocol::{
 use zip32::fingerprint::SeedFingerprint;
 
 mod derivation;
+mod eip681;
 mod ffi;
 mod tor;
 
