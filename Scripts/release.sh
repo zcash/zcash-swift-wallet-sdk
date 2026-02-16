@@ -8,6 +8,11 @@
 #   3. Uploads artifacts to GitHub (draft release)
 #   4. Updates Package.swift with URL and checksum
 #   5. Commits the Package.swift change
+
+# Ensure Rust toolchain is on PATH (needed when invoked from Xcode build phases)
+if [[ -f "$HOME/.cargo/env" ]]; then
+    source "$HOME/.cargo/env"
+fi
 #   6. Creates a signed tag
 #   7. Pushes to the specified remote
 #   8. Publishes the GitHub release

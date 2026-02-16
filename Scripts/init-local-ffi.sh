@@ -6,6 +6,11 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Ensure Rust toolchain is on PATH (needed when invoked from Xcode build phases)
+if [[ -f "$HOME/.cargo/env" ]]; then
+    source "$HOME/.cargo/env"
+fi
+
 USE_CACHED=false
 if [[ "$1" == "--cached" ]]; then
     USE_CACHED=true

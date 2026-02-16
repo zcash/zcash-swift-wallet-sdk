@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 56;
+	objectVersion = 60;
 	objects = {
 
 /* Begin PBXAggregateTarget section */
@@ -19,6 +19,23 @@
 			productName = FFIBuilder;
 		};
 /* End PBXAggregateTarget section */
+
+/* Begin PBXGroup section */
+		8A1B2C3D4E5F6A6F = {
+			isa = PBXGroup;
+			children = (
+				8A1B2C3D4E5F6A79 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		8A1B2C3D4E5F6A79 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
 
 /* Begin PBXProject section */
 		8A1B2C3D4E5F6A70 /* Project object */ = {
@@ -36,6 +53,9 @@
 				Base,
 			);
 			mainGroup = 8A1B2C3D4E5F6A6F;
+			packageReferences = (
+				EA664FA82F42D33D00CDF85B /* XCLocalSwiftPackageReference "../LocalPackages" */,
+			);
 			productRefGroup = 8A1B2C3D4E5F6A79 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -66,23 +86,6 @@
 			shellScript = "# Build FFI for the current platform\n# This script is called by Xcode when building the FFIBuilder target\n\nset -e\ncd \"$SRCROOT/..\"\n\n# Determine target based on Xcode's destination\ncase \"$PLATFORM_NAME\" in\n    macosx)\n        TARGET=\"macos\"\n        ;;\n    iphonesimulator)\n        TARGET=\"ios-sim\"\n        ;;\n    iphoneos)\n        TARGET=\"ios-device\"\n        ;;\n    *)\n        echo \"warning: Unknown platform $PLATFORM_NAME, defaulting to ios-sim\"\n        TARGET=\"ios-sim\"\n        ;;\nesac\n\necho \"Building FFI for $TARGET...\"\n./Scripts/rebuild-local-ffi.sh \"$TARGET\"\n";
 		};
 /* End PBXShellScriptBuildPhase section */
-
-/* Begin PBXGroup section */
-		8A1B2C3D4E5F6A6F = {
-			isa = PBXGroup;
-			children = (
-				8A1B2C3D4E5F6A79 /* Products */,
-			);
-			sourceTree = "<group>";
-		};
-		8A1B2C3D4E5F6A79 /* Products */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-/* End PBXGroup section */
 
 /* Begin XCBuildConfiguration section */
 		8A1B2C3D4E5F6A7E /* Debug */ = {
@@ -231,6 +234,12 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		EA664FA82F42D33D00CDF85B /* XCLocalSwiftPackageReference "../LocalPackages" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../LocalPackages;
+		};
+/* End XCLocalSwiftPackageReference section */
 	};
 	rootObject = 8A1B2C3D4E5F6A70 /* Project object */;
 }

@@ -15,6 +15,11 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# Ensure Rust toolchain is on PATH (needed when invoked from Xcode build phases)
+if [[ -f "$HOME/.cargo/env" ]]; then
+    source "$HOME/.cargo/env"
+fi
+
 TARGET="${1:-ios-sim}"
 XCFRAMEWORK_DIR="LocalPackages/libzcashlc.xcframework"
 

@@ -255,6 +255,8 @@ public enum ZcashErrorCode: String {
     case rustFetchUTXOsByAddress = "ZRUST0089"
     /// Error from rust layer when calling ZcashRustBackend.deleteAccount
     case rustDeleteAccount = "ZRUST0090"
+    /// Error from rust layer when calling ZcashEip681Backend.parseTransactionRequest
+    case rustEip681Parse = "ZRUST0091"
     /// SQLite query failed when fetching all accounts from the database.
     case accountDAOGetAll = "ZADAO0001"
     /// Fetched accounts from SQLite but can't decode them.
