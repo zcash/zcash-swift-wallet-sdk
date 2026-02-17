@@ -55,7 +55,16 @@ enum TestDbBuilder {
     }
     
     static func prepopulatedDataDbProvider(rustBackend: ZcashRustBackend) async throws -> ConnectionProvider? {
-        let provider = SimpleConnectionProvider(path: (rustBackend.dbData).0, readonly: true)
+        let provider = SimpleConnectionProvider(path: rustBackend.walletDbHandle.databaseURL.path, readonly: true)
+
+        // Create block database directory if it doesn't exist
+        let fsBlockDbRoot = rustBackend.fsBlockDbHandle.databaseURL
+        if !FileManager.default.fileExists(atPath: fsBlockDbRoot.path) {
+            try FileManager.default.createDirectory(at: fsBlockDbRoot, withIntermediateDirectories: true)
+        }
+
+        // Open database handles before initializing
+        try await rustBackend.openDb()
 
         let initResult = try await rustBackend.initDataDb(seed: Environment.seedBytes)
         

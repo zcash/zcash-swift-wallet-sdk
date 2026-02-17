@@ -211,20 +211,33 @@ class DarksideWalletService: LightWalletService {
         try service.getMempoolStream()
     }
     
+    @DBActor
     func checkSingleUseTransparentAddresses(
-        dbData: (String, UInt),
-        networkType: NetworkType,
+        dbHandle: OpaquePointer,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {
         .notFound
     }
-    
-    func updateTransparentAddressTransactions(address: String, start: BlockHeight, end: BlockHeight, dbData: (String, UInt), networkType: NetworkType, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
+
+    @DBActor
+    func updateTransparentAddressTransactions(
+        address: String,
+        start: BlockHeight,
+        end: BlockHeight,
+        dbHandle: OpaquePointer,
+        mode: ServiceMode
+    ) async throws -> TransparentAddressCheckResult {
         .notFound
     }
-    
-    func fetchUTXOsByAddress(address: String, dbData: (String, UInt), networkType: NetworkType, accountUUID: AccountUUID, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
+
+    @DBActor
+    func fetchUTXOsByAddress(
+        address: String,
+        dbHandle: OpaquePointer,
+        accountUUID: AccountUUID,
+        mode: ServiceMode
+    ) async throws -> TransparentAddressCheckResult {
         .notFound
     }
 }

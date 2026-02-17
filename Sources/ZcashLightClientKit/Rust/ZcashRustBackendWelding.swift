@@ -35,6 +35,18 @@ public enum RewindResult {
 }
 
 protocol ZcashRustBackendWelding {
+    /// Opens the database connections.
+    /// This must be called before any database operations.
+    func openDb() async throws
+
+    /// Closes and reopens the block database handle.
+    /// This is needed after clearing the block cache to get a fresh connection.
+    func reopenBlockDb() async throws
+
+    /// Returns the resolved database handle pointer for use in FFI calls.
+    /// The database must be opened first via `openDb()`.
+    func resolveDbHandle() async throws -> OpaquePointer
+
     /// Returns a list of the accounts in the wallet.
     func listAccounts() async throws -> [Account]
 
@@ -384,7 +396,7 @@ protocol ZcashRustBackendWelding {
 
     /// Fix witnesses - addressing note commitment tree bug.
     /// This function is supposed to be called occasionaly. It's handled by the SDK Synchronizer and called only once per version.
-    func fixWitnesses() async
+    func fixWitnesses() async throws
 
     /// Get an ephemeral single use transparent address
     func getSingleUseTransparentAddress(accountUUID: AccountUUID) async throws -> SingleUseTransparentAddress

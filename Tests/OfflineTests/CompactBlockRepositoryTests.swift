@@ -16,13 +16,14 @@ class CompactBlockRepositoryTests: ZcashTestCase {
     let testFileManager = FileManager()
     var rustBackend: ZcashRustBackendWelding!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         rustBackend = ZcashRustBackend.makeForTests(fsBlockDbRoot: testTempDirectory, networkType: .testnet)
+        try await rustBackend.openDb()
     }
 
-    override func tearDownWithError() throws {
-        try super.tearDownWithError()
+    override func tearDown() async throws {
+        try await super.tearDown()
         rustBackend = nil
     }
 

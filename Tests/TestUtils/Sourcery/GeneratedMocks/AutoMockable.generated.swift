@@ -544,6 +544,23 @@ class CompactBlockRepositoryMock: CompactBlockRepository {
     ) {
     }
 
+    // MARK: - createDirectories
+
+    var createDirectoriesThrowableError: Error?
+    var createDirectoriesCallsCount = 0
+    var createDirectoriesCalled: Bool {
+        return createDirectoriesCallsCount > 0
+    }
+    var createDirectoriesClosure: (() throws -> Void)?
+
+    func createDirectories() throws {
+        if let error = createDirectoriesThrowableError {
+            throw error
+        }
+        createDirectoriesCallsCount += 1
+        try createDirectoriesClosure?()
+    }
+
     // MARK: - create
 
     var createThrowableError: Error?
@@ -655,6 +672,23 @@ class CompactBlockRepositoryMock: CompactBlockRepository {
         }
         clearCallsCount += 1
         try await clearClosure!()
+    }
+
+    // MARK: - wipe
+
+    var wipeThrowableError: Error?
+    var wipeCallsCount = 0
+    var wipeCalled: Bool {
+        return wipeCallsCount > 0
+    }
+    var wipeClosure: (() throws -> Void)?
+
+    func wipe() throws {
+        if let error = wipeThrowableError {
+            throw error
+        }
+        wipeCallsCount += 1
+        try wipeClosure?()
     }
 
 }
@@ -1084,73 +1118,76 @@ class LightWalletServiceMock: LightWalletService {
 
     // MARK: - checkSingleUseTransparentAddresses
 
-    var checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeThrowableError: Error?
-    var checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeCallsCount = 0
-    var checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeCalled: Bool {
-        return checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeCallsCount > 0
+    var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeThrowableError: Error?
+    var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeCallsCount = 0
+    var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeCalled: Bool {
+        return checkSingleUseTransparentAddressesDbHandleAccountUUIDModeCallsCount > 0
     }
-    var checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeReceivedArguments: (dbData: (String, UInt), networkType: NetworkType, accountUUID: AccountUUID, mode: ServiceMode)?
-    var checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeReturnValue: TransparentAddressCheckResult!
-    var checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeClosure: (((String, UInt), NetworkType, AccountUUID, ServiceMode) async throws -> TransparentAddressCheckResult)?
+    var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeReceivedArguments: (dbHandle: OpaquePointer, accountUUID: AccountUUID, mode: ServiceMode)?
+    var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeReturnValue: TransparentAddressCheckResult!
+    var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeClosure: ((OpaquePointer, AccountUUID, ServiceMode) async throws -> TransparentAddressCheckResult)?
 
-    func checkSingleUseTransparentAddresses(dbData: (String, UInt), networkType: NetworkType, accountUUID: AccountUUID, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
-        if let error = checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeThrowableError {
+    @DBActor
+    func checkSingleUseTransparentAddresses(dbHandle: OpaquePointer, accountUUID: AccountUUID, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
+        if let error = checkSingleUseTransparentAddressesDbHandleAccountUUIDModeThrowableError {
             throw error
         }
-        checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeCallsCount += 1
-        checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeReceivedArguments = (dbData: dbData, networkType: networkType, accountUUID: accountUUID, mode: mode)
-        if let closure = checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeClosure {
-            return try await closure(dbData, networkType, accountUUID, mode)
+        checkSingleUseTransparentAddressesDbHandleAccountUUIDModeCallsCount += 1
+        checkSingleUseTransparentAddressesDbHandleAccountUUIDModeReceivedArguments = (dbHandle: dbHandle, accountUUID: accountUUID, mode: mode)
+        if let closure = checkSingleUseTransparentAddressesDbHandleAccountUUIDModeClosure {
+            return try await closure(dbHandle, accountUUID, mode)
         } else {
-            return checkSingleUseTransparentAddressesDbDataNetworkTypeAccountUUIDModeReturnValue
+            return checkSingleUseTransparentAddressesDbHandleAccountUUIDModeReturnValue
         }
     }
 
     // MARK: - updateTransparentAddressTransactions
 
-    var updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeThrowableError: Error?
-    var updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeCallsCount = 0
-    var updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeCalled: Bool {
-        return updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeCallsCount > 0
+    var updateTransparentAddressTransactionsAddressStartEndDbHandleModeThrowableError: Error?
+    var updateTransparentAddressTransactionsAddressStartEndDbHandleModeCallsCount = 0
+    var updateTransparentAddressTransactionsAddressStartEndDbHandleModeCalled: Bool {
+        return updateTransparentAddressTransactionsAddressStartEndDbHandleModeCallsCount > 0
     }
-    var updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeReceivedArguments: (address: String, start: BlockHeight, end: BlockHeight, dbData: (String, UInt), networkType: NetworkType, mode: ServiceMode)?
-    var updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeReturnValue: TransparentAddressCheckResult!
-    var updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeClosure: ((String, BlockHeight, BlockHeight, (String, UInt), NetworkType, ServiceMode) async throws -> TransparentAddressCheckResult)?
+    var updateTransparentAddressTransactionsAddressStartEndDbHandleModeReceivedArguments: (address: String, start: BlockHeight, end: BlockHeight, dbHandle: OpaquePointer, mode: ServiceMode)?
+    var updateTransparentAddressTransactionsAddressStartEndDbHandleModeReturnValue: TransparentAddressCheckResult!
+    var updateTransparentAddressTransactionsAddressStartEndDbHandleModeClosure: ((String, BlockHeight, BlockHeight, OpaquePointer, ServiceMode) async throws -> TransparentAddressCheckResult)?
 
-    func updateTransparentAddressTransactions(address: String, start: BlockHeight, end: BlockHeight, dbData: (String, UInt), networkType: NetworkType, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
-        if let error = updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeThrowableError {
+    @DBActor
+    func updateTransparentAddressTransactions(address: String, start: BlockHeight, end: BlockHeight, dbHandle: OpaquePointer, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
+        if let error = updateTransparentAddressTransactionsAddressStartEndDbHandleModeThrowableError {
             throw error
         }
-        updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeCallsCount += 1
-        updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeReceivedArguments = (address: address, start: start, end: end, dbData: dbData, networkType: networkType, mode: mode)
-        if let closure = updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeClosure {
-            return try await closure(address, start, end, dbData, networkType, mode)
+        updateTransparentAddressTransactionsAddressStartEndDbHandleModeCallsCount += 1
+        updateTransparentAddressTransactionsAddressStartEndDbHandleModeReceivedArguments = (address: address, start: start, end: end, dbHandle: dbHandle, mode: mode)
+        if let closure = updateTransparentAddressTransactionsAddressStartEndDbHandleModeClosure {
+            return try await closure(address, start, end, dbHandle, mode)
         } else {
-            return updateTransparentAddressTransactionsAddressStartEndDbDataNetworkTypeModeReturnValue
+            return updateTransparentAddressTransactionsAddressStartEndDbHandleModeReturnValue
         }
     }
 
     // MARK: - fetchUTXOsByAddress
 
-    var fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeThrowableError: Error?
-    var fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeCallsCount = 0
-    var fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeCalled: Bool {
-        return fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeCallsCount > 0
+    var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeThrowableError: Error?
+    var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeCallsCount = 0
+    var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeCalled: Bool {
+        return fetchUTXOsByAddressAddressDbHandleAccountUUIDModeCallsCount > 0
     }
-    var fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeReceivedArguments: (address: String, dbData: (String, UInt), networkType: NetworkType, accountUUID: AccountUUID, mode: ServiceMode)?
-    var fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeReturnValue: TransparentAddressCheckResult!
-    var fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeClosure: ((String, (String, UInt), NetworkType, AccountUUID, ServiceMode) async throws -> TransparentAddressCheckResult)?
+    var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeReceivedArguments: (address: String, dbHandle: OpaquePointer, accountUUID: AccountUUID, mode: ServiceMode)?
+    var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeReturnValue: TransparentAddressCheckResult!
+    var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeClosure: ((String, OpaquePointer, AccountUUID, ServiceMode) async throws -> TransparentAddressCheckResult)?
 
-    func fetchUTXOsByAddress(address: String, dbData: (String, UInt), networkType: NetworkType, accountUUID: AccountUUID, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
-        if let error = fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeThrowableError {
+    @DBActor
+    func fetchUTXOsByAddress(address: String, dbHandle: OpaquePointer, accountUUID: AccountUUID, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
+        if let error = fetchUTXOsByAddressAddressDbHandleAccountUUIDModeThrowableError {
             throw error
         }
-        fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeCallsCount += 1
-        fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeReceivedArguments = (address: address, dbData: dbData, networkType: networkType, accountUUID: accountUUID, mode: mode)
-        if let closure = fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeClosure {
-            return try await closure(address, dbData, networkType, accountUUID, mode)
+        fetchUTXOsByAddressAddressDbHandleAccountUUIDModeCallsCount += 1
+        fetchUTXOsByAddressAddressDbHandleAccountUUIDModeReceivedArguments = (address: address, dbHandle: dbHandle, accountUUID: accountUUID, mode: mode)
+        if let closure = fetchUTXOsByAddressAddressDbHandleAccountUUIDModeClosure {
+            return try await closure(address, dbHandle, accountUUID, mode)
         } else {
-            return fetchUTXOsByAddressAddressDbDataNetworkTypeAccountUUIDModeReturnValue
+            return fetchUTXOsByAddressAddressDbHandleAccountUUIDModeReturnValue
         }
     }
 
@@ -3028,6 +3065,66 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
 
     init(
     ) {
+    }
+
+    // MARK: - openDb
+
+    var openDbThrowableError: Error?
+    var openDbCallsCount = 0
+    var openDbCalled: Bool {
+        return openDbCallsCount > 0
+    }
+    var openDbClosure: (() async throws -> Void)?
+
+    func openDb() async throws {
+        if let error = openDbThrowableError {
+            throw error
+        }
+        openDbCallsCount += 1
+        if let closure = openDbClosure {
+            try await closure()
+        }
+    }
+
+    // MARK: - reopenBlockDb
+
+    var reopenBlockDbThrowableError: Error?
+    var reopenBlockDbCallsCount = 0
+    var reopenBlockDbCalled: Bool {
+        return reopenBlockDbCallsCount > 0
+    }
+    var reopenBlockDbClosure: (() async throws -> Void)?
+
+    func reopenBlockDb() async throws {
+        if let error = reopenBlockDbThrowableError {
+            throw error
+        }
+        reopenBlockDbCallsCount += 1
+        if let closure = reopenBlockDbClosure {
+            try await closure()
+        }
+    }
+
+    // MARK: - resolveDbHandle
+
+    var resolveDbHandleThrowableError: Error?
+    var resolveDbHandleCallsCount = 0
+    var resolveDbHandleCalled: Bool {
+        return resolveDbHandleCallsCount > 0
+    }
+    var resolveDbHandleReturnValue: OpaquePointer!
+    var resolveDbHandleClosure: (() async throws -> OpaquePointer)?
+
+    func resolveDbHandle() async throws -> OpaquePointer {
+        if let error = resolveDbHandleThrowableError {
+            throw error
+        }
+        resolveDbHandleCallsCount += 1
+        if let closure = resolveDbHandleClosure {
+            return try await closure()
+        } else {
+            return resolveDbHandleReturnValue
+        }
     }
 
     // MARK: - listAccounts

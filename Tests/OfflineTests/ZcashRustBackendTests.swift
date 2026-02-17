@@ -25,13 +25,19 @@ class ZcashRustBackendTests: XCTestCase {
     
     let networkType = NetworkType.testnet
 
-    override func setUp() {
-        super.setUp()
+    override func setUp() async throws {
+        try await super.setUp()
 
         dbData = try! __dataDbURL()
         try? dataDbHandle.setUp()
 
-        rustBackend = ZcashRustBackend.makeForTests(dbData: dbData, fsBlockDbRoot: Environment.uniqueTestTempDirectory, networkType: .testnet)
+        let fsBlockDbRoot = Environment.uniqueTestTempDirectory
+        if !FileManager.default.fileExists(atPath: fsBlockDbRoot.path) {
+            try FileManager.default.createDirectory(at: fsBlockDbRoot, withIntermediateDirectories: true)
+        }
+
+        rustBackend = ZcashRustBackend.makeForTests(dbData: dbData, fsBlockDbRoot: fsBlockDbRoot, networkType: .testnet)
+        try await rustBackend.openDb()
     }
     
     override func tearDown() {

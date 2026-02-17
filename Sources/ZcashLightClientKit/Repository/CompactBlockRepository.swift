@@ -9,7 +9,12 @@
 import Foundation
 
 protocol CompactBlockRepository {
-    /// Creates the underlying repository
+    /// Creates the underlying directory structure without initializing the metadata database.
+    /// Call this before opening database handles.
+    func createDirectories() throws
+
+    /// Creates the underlying repository (directories + metadata database).
+    /// Requires database handles to be open first.
     func create() async throws
 
     /**
@@ -38,6 +43,9 @@ protocol CompactBlockRepository {
     /// Clear only blocks with height lower or equal than `height` from the repository.
     func clear(upTo height: BlockHeight) async throws
 
-    /// Clears the repository
+    /// Clears the repository and reinitializes (for use during sync)
     func clear() async throws
+
+    /// Clears the repository without reinitializing (for use during wipe)
+    func wipe() throws
 }

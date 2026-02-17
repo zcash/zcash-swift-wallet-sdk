@@ -446,7 +446,7 @@ extension CompactBlockProcessor {
         context.prewipe()
 
         do {
-            try await self.storage.clear()
+            try self.storage.wipe()
 
             wipeLegacyCacheDbIfNeeded()
 

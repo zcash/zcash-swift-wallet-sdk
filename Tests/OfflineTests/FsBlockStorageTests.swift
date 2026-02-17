@@ -15,17 +15,18 @@ final class FsBlockStorageTests: ZcashTestCase {
     var fsBlockDb: URL!
     var rustBackend: ZcashRustBackendWelding!
 
-    override func setUpWithError() throws {
-        try super.setUpWithError()
+    override func setUp() async throws {
+        try await super.setUp()
         // Put setup code here. This method is called before the invocation of each test method in the class.
         self.fsBlockDb = testTempDirectory.appendingPathComponent("FsBlockDb-\(Int.random(in: 0 ... .max))")
         try self.testFileManager.createDirectory(at: self.fsBlockDb, withIntermediateDirectories: false)
 
         rustBackend = ZcashRustBackend.makeForTests(fsBlockDbRoot: testTempDirectory, networkType: .testnet)
+        try await rustBackend.openDb()
     }
 
-    override func tearDownWithError() throws {
-        try super.tearDownWithError()
+    override func tearDown() async throws {
+        try await super.tearDown()
         rustBackend = nil
     }
 
@@ -521,6 +522,7 @@ extension FSMetadataStore {
         saveBlocksMeta: { _ in },
         rewindToHeight: { _ in },
         initFsBlockDbRoot: { },
-        latestHeight: { .empty() }
+        latestHeight: { .empty() },
+        reopenBlockDb: { }
     )
 }

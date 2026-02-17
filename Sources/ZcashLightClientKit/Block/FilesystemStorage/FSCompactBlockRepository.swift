@@ -47,7 +47,7 @@ class FSCompactBlockRepository {
 }
 
 extension FSCompactBlockRepository: CompactBlockRepository {
-    func create() async throws {
+    func createDirectories() throws {
         if !fileManager.fileExists(atPath: blocksDirectory.path) {
             do {
                 try fileManager.createDirectory(at: blocksDirectory, withIntermediateDirectories: true)
@@ -55,6 +55,10 @@ extension FSCompactBlockRepository: CompactBlockRepository {
                 throw ZcashError.blockRepositoryCreateBlocksCacheDirectory(blocksDirectory, error)
             }
         }
+    }
+
+    func create() async throws {
+        try createDirectories()
 
         do {
             try await self.metadataStore.initFsBlockDbRoot()
@@ -145,6 +149,13 @@ extension FSCompactBlockRepository: CompactBlockRepository {
     }
 
     func clear() async throws {
+        try wipe()
+        try createDirectories()
+        try await metadataStore.reopenBlockDb()
+        try await metadataStore.initFsBlockDbRoot()
+    }
+
+    func wipe() throws {
         if self.fileManager.fileExists(atPath: self.fsBlockDbRoot.path) {
             do {
                 try self.fileManager.removeItem(at: self.fsBlockDbRoot)
@@ -152,7 +163,6 @@ extension FSCompactBlockRepository: CompactBlockRepository {
                 throw ZcashError.blockRepositoryRemoveBlocksCacheDirectory(fsBlockDbRoot, error)
             }
         }
-        try await create()
     }
 }
 
@@ -252,6 +262,7 @@ struct FSMetadataStore {
     let rewindToHeight: (BlockHeight) async throws -> Void
     let initFsBlockDbRoot: () async throws -> Void
     let latestHeight: () async throws -> BlockHeight
+    let reopenBlockDb: () async throws -> Void
 }
 
 extension FSMetadataStore {
@@ -269,6 +280,8 @@ extension FSMetadataStore {
             try await rustBackend.initBlockMetadataDb()
         } latestHeight: {
             try await rustBackend.latestCachedBlockHeight()
+        } reopenBlockDb: {
+            try await rustBackend.reopenBlockDb()
         }
     }
 }
