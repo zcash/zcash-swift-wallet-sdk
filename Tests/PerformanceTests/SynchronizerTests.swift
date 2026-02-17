@@ -36,7 +36,7 @@ class SynchronizerTests: ZcashTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        rustBackend = ZcashRustBackend.makeForTests(fsBlockDbRoot: testTempDirectory, networkType: .mainnet)
+        rustBackend = try await ZcashRustBackend.openForTests(fsBlockDbRoot: testTempDirectory, networkType: .mainnet)
     }
 
     override func tearDown() {

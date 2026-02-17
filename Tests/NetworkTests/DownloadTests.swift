@@ -44,8 +44,9 @@ class DownloadTests: ZcashTestCase {
     }
 
     func testSingleDownload() async throws {
+        let rustBackend = try await ZcashRustBackend.openForTests(fsBlockDbRoot: self.testTempDirectory, networkType: self.network.networkType)
         mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in
-            ZcashRustBackend.makeForTests(fsBlockDbRoot: self.testTempDirectory, networkType: self.network.networkType)
+            rustBackend
         }
         mockContainer.mock(type: LightWalletService.self, isSingleton: true) { _ in
             LightWalletServiceFactory(endpoint: LightWalletEndpointBuilder.eccTestnet).make()

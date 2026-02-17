@@ -144,14 +144,32 @@ func parametersReady() -> Bool {
 }
 
 extension ZcashRustBackend {
-    static func makeForTests(
+    /// Creates and opens a `ZcashRustBackend` for testing purposes.
+    ///
+    /// This async factory method creates the necessary directories if they don't exist,
+    /// then creates and opens the backend with all database handles ready for use.
+    ///
+    /// - Parameters:
+    ///   - dbData: URL for the wallet database. Defaults to a test database URL.
+    ///   - fsBlockDbRoot: URL for the filesystem block database root directory.
+    ///   - spendParamsPath: URL for spend parameters. Defaults to the SDK default.
+    ///   - outputParamsPath: URL for output parameters. Defaults to the SDK default.
+    ///   - networkType: The network type (mainnet or testnet).
+    /// - Returns: An opened `ZcashRustBackend` ready for database operations.
+    @DBActor
+    static func openForTests(
         dbData: URL = try! __dataDbURL(),
         fsBlockDbRoot: URL,
         spendParamsPath: URL = SaplingParamsSourceURL.default.spendParamFileURL,
         outputParamsPath: URL = SaplingParamsSourceURL.default.outputParamFileURL,
         networkType: NetworkType
-    ) -> ZcashRustBackend {
-        ZcashRustBackend(
+    ) async throws -> ZcashRustBackend {
+        // Create the fsBlockDbRoot directory if it doesn't exist
+        if !FileManager.default.fileExists(atPath: fsBlockDbRoot.path) {
+            try FileManager.default.createDirectory(at: fsBlockDbRoot, withIntermediateDirectories: true)
+        }
+
+        return try await ZcashRustBackend.open(
             dbData: dbData,
             fsBlockDbRoot: fsBlockDbRoot,
             spendParamsPath: spendParamsPath,

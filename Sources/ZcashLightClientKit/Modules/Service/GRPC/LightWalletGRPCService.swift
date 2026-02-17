@@ -420,7 +420,7 @@ class LightWalletGRPCService: LightWalletService {
     
     @DBActor
     func checkSingleUseTransparentAddresses(
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {
@@ -432,7 +432,7 @@ class LightWalletGRPCService: LightWalletService {
         address: String,
         start: BlockHeight,
         end: BlockHeight,
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {
         .torRequired
@@ -441,7 +441,7 @@ class LightWalletGRPCService: LightWalletService {
     @DBActor
     func fetchUTXOsByAddress(
         address: String,
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {

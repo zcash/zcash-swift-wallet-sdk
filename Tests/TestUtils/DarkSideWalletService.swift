@@ -213,7 +213,7 @@ class DarksideWalletService: LightWalletService {
     
     @DBActor
     func checkSingleUseTransparentAddresses(
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {
@@ -225,7 +225,7 @@ class DarksideWalletService: LightWalletService {
         address: String,
         start: BlockHeight,
         end: BlockHeight,
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {
         .notFound
@@ -234,7 +234,7 @@ class DarksideWalletService: LightWalletService {
     @DBActor
     func fetchUTXOsByAddress(
         address: String,
-        dbHandle: OpaquePointer,
+        dbHandle: WalletDbPtr,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult {

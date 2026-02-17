@@ -21,8 +21,7 @@ final class FsBlockStorageTests: ZcashTestCase {
         self.fsBlockDb = testTempDirectory.appendingPathComponent("FsBlockDb-\(Int.random(in: 0 ... .max))")
         try self.testFileManager.createDirectory(at: self.fsBlockDb, withIntermediateDirectories: false)
 
-        rustBackend = ZcashRustBackend.makeForTests(fsBlockDbRoot: testTempDirectory, networkType: .testnet)
-        try await rustBackend.openDb()
+        rustBackend = try await ZcashRustBackend.openForTests(fsBlockDbRoot: testTempDirectory, networkType: .testnet)
     }
 
     override func tearDown() async throws {

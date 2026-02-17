@@ -69,14 +69,14 @@ class TransactionEnhancementTests: ZcashTestCase {
             network: network
         )
 
-        rustBackend = ZcashRustBackend.makeForTests(
+        try? FileManager.default.removeItem(at: processorConfig.fsBlockCacheRoot)
+        try? FileManager.default.removeItem(at: processorConfig.dataDb)
+
+        rustBackend = try await ZcashRustBackend.openForTests(
             dbData: processorConfig.dataDb,
             fsBlockDbRoot: testTempDirectory,
             networkType: network.networkType
         )
-
-        try? FileManager.default.removeItem(at: processorConfig.fsBlockCacheRoot)
-        try? FileManager.default.removeItem(at: processorConfig.dataDb)
 
         let dbInit = try await rustBackend.initDataDb(seed: nil)
 

@@ -46,7 +46,9 @@ class ActionContextMock: ActionContext {
     func update(state: CBPState) async {
         updateStateCallsCount += 1
         updateStateReceivedState = state
-        await updateStateClosure!(state)
+        if let closure = updateStateClosure {
+            await closure(state)
+        }
     }
 
     // MARK: - update
@@ -61,7 +63,9 @@ class ActionContextMock: ActionContext {
     func update(syncControlData: SyncControlData) async {
         updateSyncControlDataCallsCount += 1
         updateSyncControlDataReceivedSyncControlData = syncControlData
-        await updateSyncControlDataClosure!(syncControlData)
+        if let closure = updateSyncControlDataClosure {
+            await closure(syncControlData)
+        }
     }
 
     // MARK: - update
@@ -76,7 +80,9 @@ class ActionContextMock: ActionContext {
     func update(processedHeight: BlockHeight) async {
         updateProcessedHeightCallsCount += 1
         updateProcessedHeightReceivedProcessedHeight = processedHeight
-        await updateProcessedHeightClosure!(processedHeight)
+        if let closure = updateProcessedHeightClosure {
+            await closure(processedHeight)
+        }
     }
 
     // MARK: - update
@@ -91,7 +97,9 @@ class ActionContextMock: ActionContext {
     func update(lastChainTipUpdateTime: TimeInterval) async {
         updateLastChainTipUpdateTimeCallsCount += 1
         updateLastChainTipUpdateTimeReceivedLastChainTipUpdateTime = lastChainTipUpdateTime
-        await updateLastChainTipUpdateTimeClosure!(lastChainTipUpdateTime)
+        if let closure = updateLastChainTipUpdateTimeClosure {
+            await closure(lastChainTipUpdateTime)
+        }
     }
 
     // MARK: - update
@@ -106,7 +114,9 @@ class ActionContextMock: ActionContext {
     func update(lastScannedHeight: BlockHeight) async {
         updateLastScannedHeightCallsCount += 1
         updateLastScannedHeightReceivedLastScannedHeight = lastScannedHeight
-        await updateLastScannedHeightClosure!(lastScannedHeight)
+        if let closure = updateLastScannedHeightClosure {
+            await closure(lastScannedHeight)
+        }
     }
 
     // MARK: - update
@@ -121,7 +131,9 @@ class ActionContextMock: ActionContext {
     func update(lastDownloadedHeight: BlockHeight) async {
         updateLastDownloadedHeightCallsCount += 1
         updateLastDownloadedHeightReceivedLastDownloadedHeight = lastDownloadedHeight
-        await updateLastDownloadedHeightClosure!(lastDownloadedHeight)
+        if let closure = updateLastDownloadedHeightClosure {
+            await closure(lastDownloadedHeight)
+        }
     }
 
     // MARK: - update
@@ -136,7 +148,9 @@ class ActionContextMock: ActionContext {
     func update(lastEnhancedHeight: BlockHeight?) async {
         updateLastEnhancedHeightCallsCount += 1
         updateLastEnhancedHeightReceivedLastEnhancedHeight = lastEnhancedHeight
-        await updateLastEnhancedHeightClosure!(lastEnhancedHeight)
+        if let closure = updateLastEnhancedHeightClosure {
+            await closure(lastEnhancedHeight)
+        }
     }
 
     // MARK: - update
@@ -151,7 +165,9 @@ class ActionContextMock: ActionContext {
     func update(requestedRewindHeight: BlockHeight) async {
         updateRequestedRewindHeightCallsCount += 1
         updateRequestedRewindHeightReceivedRequestedRewindHeight = requestedRewindHeight
-        await updateRequestedRewindHeightClosure!(requestedRewindHeight)
+        if let closure = updateRequestedRewindHeightClosure {
+            await closure(requestedRewindHeight)
+        }
     }
 
 }
@@ -174,7 +190,9 @@ class BlockDownloaderMock: BlockDownloader {
     func setDownloadLimit(_ limit: BlockHeight) async {
         setDownloadLimitCallsCount += 1
         setDownloadLimitReceivedLimit = limit
-        await setDownloadLimitClosure!(limit)
+        if let closure = setDownloadLimitClosure {
+            await closure(limit)
+        }
     }
 
     // MARK: - setSyncRange
@@ -193,7 +211,9 @@ class BlockDownloaderMock: BlockDownloader {
         }
         setSyncRangeBatchSizeCallsCount += 1
         setSyncRangeBatchSizeReceivedArguments = (range: range, batchSize: batchSize)
-        try await setSyncRangeBatchSizeClosure!(range, batchSize)
+        if let closure = setSyncRangeBatchSizeClosure {
+            try await closure(range, batchSize)
+        }
     }
 
     // MARK: - startDownload
@@ -208,7 +228,9 @@ class BlockDownloaderMock: BlockDownloader {
     func startDownload(maxBlockBufferSize: Int) async {
         startDownloadMaxBlockBufferSizeCallsCount += 1
         startDownloadMaxBlockBufferSizeReceivedMaxBlockBufferSize = maxBlockBufferSize
-        await startDownloadMaxBlockBufferSizeClosure!(maxBlockBufferSize)
+        if let closure = startDownloadMaxBlockBufferSizeClosure {
+            await closure(maxBlockBufferSize)
+        }
     }
 
     // MARK: - stopDownload
@@ -221,7 +243,9 @@ class BlockDownloaderMock: BlockDownloader {
 
     func stopDownload() async {
         stopDownloadCallsCount += 1
-        await stopDownloadClosure!()
+        if let closure = stopDownloadClosure {
+            await closure()
+        }
     }
 
     // MARK: - waitUntilRequestedBlocksAreDownloaded
@@ -240,7 +264,9 @@ class BlockDownloaderMock: BlockDownloader {
         }
         waitUntilRequestedBlocksAreDownloadedInCallsCount += 1
         waitUntilRequestedBlocksAreDownloadedInReceivedRange = range
-        try await waitUntilRequestedBlocksAreDownloadedInClosure!(range)
+        if let closure = waitUntilRequestedBlocksAreDownloadedInClosure {
+            try await closure(range)
+        }
     }
 
     // MARK: - update
@@ -255,7 +281,9 @@ class BlockDownloaderMock: BlockDownloader {
     func update(latestDownloadedBlockHeight: BlockHeight, force: Bool) async {
         updateLatestDownloadedBlockHeightForceCallsCount += 1
         updateLatestDownloadedBlockHeightForceReceivedArguments = (latestDownloadedBlockHeight: latestDownloadedBlockHeight, force: force)
-        await updateLatestDownloadedBlockHeightForceClosure!(latestDownloadedBlockHeight, force)
+        if let closure = updateLatestDownloadedBlockHeightForceClosure {
+            await closure(latestDownloadedBlockHeight, force)
+        }
     }
 
     // MARK: - latestDownloadedBlockHeight
@@ -288,7 +316,9 @@ class BlockDownloaderMock: BlockDownloader {
     func rewind(latestDownloadedBlockHeight: BlockHeight?) async {
         rewindLatestDownloadedBlockHeightCallsCount += 1
         rewindLatestDownloadedBlockHeightReceivedLatestDownloadedBlockHeight = latestDownloadedBlockHeight
-        await rewindLatestDownloadedBlockHeightClosure!(latestDownloadedBlockHeight)
+        if let closure = rewindLatestDownloadedBlockHeightClosure {
+            await closure(latestDownloadedBlockHeight)
+        }
     }
 
 }
@@ -319,7 +349,9 @@ class BlockDownloaderServiceMock: BlockDownloaderService {
         }
         downloadBlockRangeModeCallsCount += 1
         downloadBlockRangeModeReceivedArguments = (heightRange: heightRange, mode: mode)
-        try await downloadBlockRangeModeClosure!(heightRange, mode)
+        if let closure = downloadBlockRangeModeClosure {
+            try await closure(heightRange, mode)
+        }
     }
 
     // MARK: - rewind
@@ -338,7 +370,9 @@ class BlockDownloaderServiceMock: BlockDownloaderService {
         }
         rewindToCallsCount += 1
         rewindToReceivedHeight = height
-        try await rewindToClosure!(height)
+        if let closure = rewindToClosure {
+            try await closure(height)
+        }
     }
 
     // MARK: - lastDownloadedBlockHeight
@@ -469,7 +503,9 @@ class BlockDownloaderServiceMock: BlockDownloaderService {
 
     func closeConnections() {
         closeConnectionsCallsCount += 1
-        closeConnectionsClosure!()
+        if let closure = closeConnectionsClosure {
+            closure()
+        }
     }
 
 }
@@ -558,7 +594,9 @@ class CompactBlockRepositoryMock: CompactBlockRepository {
             throw error
         }
         createDirectoriesCallsCount += 1
-        try createDirectoriesClosure?()
+        if let closure = createDirectoriesClosure {
+            try closure()
+        }
     }
 
     // MARK: - create
@@ -575,7 +613,9 @@ class CompactBlockRepositoryMock: CompactBlockRepository {
             throw error
         }
         createCallsCount += 1
-        try await createClosure!()
+        if let closure = createClosure {
+            try await closure()
+        }
     }
 
     // MARK: - latestHeight
@@ -616,7 +656,9 @@ class CompactBlockRepositoryMock: CompactBlockRepository {
         }
         writeBlocksCallsCount += 1
         writeBlocksReceivedBlocks = blocks
-        try await writeBlocksClosure!(blocks)
+        if let closure = writeBlocksClosure {
+            try await closure(blocks)
+        }
     }
 
     // MARK: - rewind
@@ -635,7 +677,9 @@ class CompactBlockRepositoryMock: CompactBlockRepository {
         }
         rewindToCallsCount += 1
         rewindToReceivedHeight = height
-        try await rewindToClosure!(height)
+        if let closure = rewindToClosure {
+            try await closure(height)
+        }
     }
 
     // MARK: - clear
@@ -654,7 +698,9 @@ class CompactBlockRepositoryMock: CompactBlockRepository {
         }
         clearUpToCallsCount += 1
         clearUpToReceivedHeight = height
-        try await clearUpToClosure!(height)
+        if let closure = clearUpToClosure {
+            try await closure(height)
+        }
     }
 
     // MARK: - clear
@@ -671,7 +717,9 @@ class CompactBlockRepositoryMock: CompactBlockRepository {
             throw error
         }
         clearCallsCount += 1
-        try await clearClosure!()
+        if let closure = clearClosure {
+            try await closure()
+        }
     }
 
     // MARK: - wipe
@@ -688,7 +736,9 @@ class CompactBlockRepositoryMock: CompactBlockRepository {
             throw error
         }
         wipeCallsCount += 1
-        try wipeClosure?()
+        if let closure = wipeClosure {
+            try closure()
+        }
     }
 
 }
@@ -725,7 +775,9 @@ class LatestBlocksDataProviderMock: LatestBlocksDataProvider {
 
     func reset() async {
         resetCallsCount += 1
-        await resetClosure!()
+        if let closure = resetClosure {
+            await closure()
+        }
     }
 
     // MARK: - updateScannedData
@@ -738,7 +790,9 @@ class LatestBlocksDataProviderMock: LatestBlocksDataProvider {
 
     func updateScannedData() async {
         updateScannedDataCallsCount += 1
-        await updateScannedDataClosure!()
+        if let closure = updateScannedDataClosure {
+            await closure()
+        }
     }
 
     // MARK: - updateBlockData
@@ -751,7 +805,9 @@ class LatestBlocksDataProviderMock: LatestBlocksDataProvider {
 
     func updateBlockData() async {
         updateBlockDataCallsCount += 1
-        await updateBlockDataClosure!()
+        if let closure = updateBlockDataClosure {
+            await closure()
+        }
     }
 
     // MARK: - updateWalletBirthday
@@ -766,7 +822,9 @@ class LatestBlocksDataProviderMock: LatestBlocksDataProvider {
     func updateWalletBirthday(_ walletBirthday: BlockHeight) async {
         updateWalletBirthdayCallsCount += 1
         updateWalletBirthdayReceivedWalletBirthday = walletBirthday
-        await updateWalletBirthdayClosure!(walletBirthday)
+        if let closure = updateWalletBirthdayClosure {
+            await closure(walletBirthday)
+        }
     }
 
     // MARK: - update
@@ -781,7 +839,9 @@ class LatestBlocksDataProviderMock: LatestBlocksDataProvider {
     func update(_ latestBlockHeight: BlockHeight) async {
         updateCallsCount += 1
         updateReceivedLatestBlockHeight = latestBlockHeight
-        await updateClosure!(latestBlockHeight)
+        if let closure = updateClosure {
+            await closure(latestBlockHeight)
+        }
     }
 
 }
@@ -1019,7 +1079,9 @@ class LightWalletServiceMock: LightWalletService {
 
     func closeConnections() async {
         closeConnectionsCallsCount += 1
-        await closeConnectionsClosure!()
+        if let closure = closeConnectionsClosure {
+            await closure()
+        }
     }
 
     // MARK: - getSubtreeRoots
@@ -1123,12 +1185,11 @@ class LightWalletServiceMock: LightWalletService {
     var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeCalled: Bool {
         return checkSingleUseTransparentAddressesDbHandleAccountUUIDModeCallsCount > 0
     }
-    var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeReceivedArguments: (dbHandle: OpaquePointer, accountUUID: AccountUUID, mode: ServiceMode)?
+    var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeReceivedArguments: (dbHandle: WalletDbPtr, accountUUID: AccountUUID, mode: ServiceMode)?
     var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeReturnValue: TransparentAddressCheckResult!
-    var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeClosure: ((OpaquePointer, AccountUUID, ServiceMode) async throws -> TransparentAddressCheckResult)?
+    var checkSingleUseTransparentAddressesDbHandleAccountUUIDModeClosure: ((WalletDbPtr, AccountUUID, ServiceMode) async throws -> TransparentAddressCheckResult)?
 
-    @DBActor
-    func checkSingleUseTransparentAddresses(dbHandle: OpaquePointer, accountUUID: AccountUUID, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
+    func checkSingleUseTransparentAddresses(dbHandle: WalletDbPtr, accountUUID: AccountUUID, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
         if let error = checkSingleUseTransparentAddressesDbHandleAccountUUIDModeThrowableError {
             throw error
         }
@@ -1148,12 +1209,11 @@ class LightWalletServiceMock: LightWalletService {
     var updateTransparentAddressTransactionsAddressStartEndDbHandleModeCalled: Bool {
         return updateTransparentAddressTransactionsAddressStartEndDbHandleModeCallsCount > 0
     }
-    var updateTransparentAddressTransactionsAddressStartEndDbHandleModeReceivedArguments: (address: String, start: BlockHeight, end: BlockHeight, dbHandle: OpaquePointer, mode: ServiceMode)?
+    var updateTransparentAddressTransactionsAddressStartEndDbHandleModeReceivedArguments: (address: String, start: BlockHeight, end: BlockHeight, dbHandle: WalletDbPtr, mode: ServiceMode)?
     var updateTransparentAddressTransactionsAddressStartEndDbHandleModeReturnValue: TransparentAddressCheckResult!
-    var updateTransparentAddressTransactionsAddressStartEndDbHandleModeClosure: ((String, BlockHeight, BlockHeight, OpaquePointer, ServiceMode) async throws -> TransparentAddressCheckResult)?
+    var updateTransparentAddressTransactionsAddressStartEndDbHandleModeClosure: ((String, BlockHeight, BlockHeight, WalletDbPtr, ServiceMode) async throws -> TransparentAddressCheckResult)?
 
-    @DBActor
-    func updateTransparentAddressTransactions(address: String, start: BlockHeight, end: BlockHeight, dbHandle: OpaquePointer, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
+    func updateTransparentAddressTransactions(address: String, start: BlockHeight, end: BlockHeight, dbHandle: WalletDbPtr, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
         if let error = updateTransparentAddressTransactionsAddressStartEndDbHandleModeThrowableError {
             throw error
         }
@@ -1173,12 +1233,11 @@ class LightWalletServiceMock: LightWalletService {
     var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeCalled: Bool {
         return fetchUTXOsByAddressAddressDbHandleAccountUUIDModeCallsCount > 0
     }
-    var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeReceivedArguments: (address: String, dbHandle: OpaquePointer, accountUUID: AccountUUID, mode: ServiceMode)?
+    var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeReceivedArguments: (address: String, dbHandle: WalletDbPtr, accountUUID: AccountUUID, mode: ServiceMode)?
     var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeReturnValue: TransparentAddressCheckResult!
-    var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeClosure: ((String, OpaquePointer, AccountUUID, ServiceMode) async throws -> TransparentAddressCheckResult)?
+    var fetchUTXOsByAddressAddressDbHandleAccountUUIDModeClosure: ((String, WalletDbPtr, AccountUUID, ServiceMode) async throws -> TransparentAddressCheckResult)?
 
-    @DBActor
-    func fetchUTXOsByAddress(address: String, dbHandle: OpaquePointer, accountUUID: AccountUUID, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
+    func fetchUTXOsByAddress(address: String, dbHandle: WalletDbPtr, accountUUID: AccountUUID, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
         if let error = fetchUTXOsByAddressAddressDbHandleAccountUUIDModeThrowableError {
             throw error
         }
@@ -1293,7 +1352,9 @@ class LoggerMock: Logger {
     func debug(_ message: String, file: StaticString, function: StaticString, line: Int) {
         debugFileFunctionLineCallsCount += 1
         debugFileFunctionLineReceivedArguments = (message: message, file: file, function: function, line: line)
-        debugFileFunctionLineClosure!(message, file, function, line)
+        if let closure = debugFileFunctionLineClosure {
+            closure(message, file, function, line)
+        }
     }
 
     // MARK: - info
@@ -1308,7 +1369,9 @@ class LoggerMock: Logger {
     func info(_ message: String, file: StaticString, function: StaticString, line: Int) {
         infoFileFunctionLineCallsCount += 1
         infoFileFunctionLineReceivedArguments = (message: message, file: file, function: function, line: line)
-        infoFileFunctionLineClosure!(message, file, function, line)
+        if let closure = infoFileFunctionLineClosure {
+            closure(message, file, function, line)
+        }
     }
 
     // MARK: - event
@@ -1323,7 +1386,9 @@ class LoggerMock: Logger {
     func event(_ message: String, file: StaticString, function: StaticString, line: Int) {
         eventFileFunctionLineCallsCount += 1
         eventFileFunctionLineReceivedArguments = (message: message, file: file, function: function, line: line)
-        eventFileFunctionLineClosure!(message, file, function, line)
+        if let closure = eventFileFunctionLineClosure {
+            closure(message, file, function, line)
+        }
     }
 
     // MARK: - warn
@@ -1338,7 +1403,9 @@ class LoggerMock: Logger {
     func warn(_ message: String, file: StaticString, function: StaticString, line: Int) {
         warnFileFunctionLineCallsCount += 1
         warnFileFunctionLineReceivedArguments = (message: message, file: file, function: function, line: line)
-        warnFileFunctionLineClosure!(message, file, function, line)
+        if let closure = warnFileFunctionLineClosure {
+            closure(message, file, function, line)
+        }
     }
 
     // MARK: - error
@@ -1353,7 +1420,9 @@ class LoggerMock: Logger {
     func error(_ message: String, file: StaticString, function: StaticString, line: Int) {
         errorFileFunctionLineCallsCount += 1
         errorFileFunctionLineReceivedArguments = (message: message, file: file, function: function, line: line)
-        errorFileFunctionLineClosure!(message, file, function, line)
+        if let closure = errorFileFunctionLineClosure {
+            closure(message, file, function, line)
+        }
     }
 
     // MARK: - sync
@@ -1368,7 +1437,9 @@ class LoggerMock: Logger {
     func sync(_ message: String, file: StaticString, function: StaticString, line: Int) {
         syncFileFunctionLineCallsCount += 1
         syncFileFunctionLineReceivedArguments = (message: message, file: file, function: function, line: line)
-        syncFileFunctionLineClosure!(message, file, function, line)
+        if let closure = syncFileFunctionLineClosure {
+            closure(message, file, function, line)
+        }
     }
 
 }
@@ -1389,7 +1460,9 @@ class SDKMetricsMock: SDKMetrics {
 
     func cbpStart() {
         cbpStartCallsCount += 1
-        cbpStartClosure!()
+        if let closure = cbpStartClosure {
+            closure()
+        }
     }
 
     // MARK: - actionStart
@@ -1404,7 +1477,9 @@ class SDKMetricsMock: SDKMetrics {
     func actionStart(_ action: CBPState) {
         actionStartCallsCount += 1
         actionStartReceivedAction = action
-        actionStartClosure!(action)
+        if let closure = actionStartClosure {
+            closure(action)
+        }
     }
 
     // MARK: - actionDetail
@@ -1419,7 +1494,9 @@ class SDKMetricsMock: SDKMetrics {
     func actionDetail(_ detail: String, `for` action: CBPState) {
         actionDetailForCallsCount += 1
         actionDetailForReceivedArguments = (detail: detail, action: action)
-        actionDetailForClosure!(detail, action)
+        if let closure = actionDetailForClosure {
+            closure(detail, action)
+        }
     }
 
     // MARK: - actionStop
@@ -1432,7 +1509,9 @@ class SDKMetricsMock: SDKMetrics {
 
     func actionStop() {
         actionStopCallsCount += 1
-        actionStopClosure!()
+        if let closure = actionStopClosure {
+            closure()
+        }
     }
 
     // MARK: - logCBPOverviewReport
@@ -1447,7 +1526,9 @@ class SDKMetricsMock: SDKMetrics {
     func logCBPOverviewReport(_ logger: Logger, walletSummary: WalletSummary?) async {
         logCBPOverviewReportWalletSummaryCallsCount += 1
         logCBPOverviewReportWalletSummaryReceivedArguments = (logger: logger, walletSummary: walletSummary)
-        await logCBPOverviewReportWalletSummaryClosure!(logger, walletSummary)
+        if let closure = logCBPOverviewReportWalletSummaryClosure {
+            await closure(logger, walletSummary)
+        }
     }
 
 }
@@ -1472,7 +1553,9 @@ class SaplingParametersHandlerMock: SaplingParametersHandler {
             throw error
         }
         handleIfNeededCallsCount += 1
-        try await handleIfNeededClosure!()
+        if let closure = handleIfNeededClosure {
+            try await closure()
+        }
     }
 
 }
@@ -1559,7 +1642,9 @@ class SynchronizerMock: Synchronizer {
         }
         startRetryCallsCount += 1
         startRetryReceivedRetry = retry
-        try await startRetryClosure!(retry)
+        if let closure = startRetryClosure {
+            try await closure(retry)
+        }
     }
 
     // MARK: - stop
@@ -1572,7 +1657,9 @@ class SynchronizerMock: Synchronizer {
 
     func stop() {
         stopCallsCount += 1
-        stopClosure!()
+        if let closure = stopClosure {
+            closure()
+        }
     }
 
     // MARK: - getSaplingAddress
@@ -2093,7 +2180,9 @@ class SynchronizerMock: Synchronizer {
 
     func refreshExchangeRateUSD() {
         refreshExchangeRateUSDCallsCount += 1
-        refreshExchangeRateUSDClosure!()
+        if let closure = refreshExchangeRateUSDClosure {
+            closure()
+        }
     }
 
     // MARK: - listAccounts
@@ -2220,7 +2309,9 @@ class SynchronizerMock: Synchronizer {
         }
         switchToEndpointCallsCount += 1
         switchToEndpointReceivedEndpoint = endpoint
-        try await switchToEndpointClosure!(endpoint)
+        if let closure = switchToEndpointClosure {
+            try await closure(endpoint)
+        }
     }
 
     // MARK: - isSeedRelevantToAnyDerivedAccount
@@ -2323,7 +2414,9 @@ class SynchronizerMock: Synchronizer {
         }
         torEnabledCallsCount += 1
         torEnabledReceivedEnabled = enabled
-        try await torEnabledClosure!(enabled)
+        if let closure = torEnabledClosure {
+            try await closure(enabled)
+        }
     }
 
     // MARK: - exchangeRateOverTor
@@ -2342,7 +2435,9 @@ class SynchronizerMock: Synchronizer {
         }
         exchangeRateOverTorEnabledCallsCount += 1
         exchangeRateOverTorEnabledReceivedEnabled = enabled
-        try await exchangeRateOverTorEnabledClosure!(enabled)
+        if let closure = exchangeRateOverTorEnabledClosure {
+            try await closure(enabled)
+        }
     }
 
     // MARK: - isTorSuccessfullyInitialized
@@ -2519,7 +2614,9 @@ class SynchronizerMock: Synchronizer {
         }
         enhanceTransactionByTxIdCallsCount += 1
         enhanceTransactionByTxIdReceivedTxId = txId
-        try await enhanceTransactionByTxIdClosure!(txId)
+        if let closure = enhanceTransactionByTxIdClosure {
+            try await closure(txId)
+        }
     }
 
     // MARK: - deleteAccount
@@ -2538,7 +2635,9 @@ class SynchronizerMock: Synchronizer {
         }
         deleteAccountCallsCount += 1
         deleteAccountReceivedAccountUUID = accountUUID
-        try await deleteAccountClosure!(accountUUID)
+        if let closure = deleteAccountClosure {
+            try await closure(accountUUID)
+        }
     }
 
 }
@@ -2559,7 +2658,9 @@ class TransactionRepositoryMock: TransactionRepository {
 
     func closeDBConnection() {
         closeDBConnectionCallsCount += 1
-        closeDBConnectionClosure!()
+        if let closure = closeDBConnectionClosure {
+            closure()
+        }
     }
 
     // MARK: - countAll
@@ -3036,7 +3137,9 @@ class ZcashFileManagerMock: ZcashFileManager {
         }
         removeItemAtCallsCount += 1
         removeItemAtReceivedURL = URL
-        try removeItemAtClosure!(URL)
+        if let closure = removeItemAtClosure {
+            try closure(URL)
+        }
     }
 
     // MARK: - isDeletableFile
@@ -3067,25 +3170,6 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
     ) {
     }
 
-    // MARK: - openDb
-
-    var openDbThrowableError: Error?
-    var openDbCallsCount = 0
-    var openDbCalled: Bool {
-        return openDbCallsCount > 0
-    }
-    var openDbClosure: (() async throws -> Void)?
-
-    func openDb() async throws {
-        if let error = openDbThrowableError {
-            throw error
-        }
-        openDbCallsCount += 1
-        if let closure = openDbClosure {
-            try await closure()
-        }
-    }
-
     // MARK: - reopenBlockDb
 
     var reopenBlockDbThrowableError: Error?
@@ -3112,10 +3196,10 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
     var resolveDbHandleCalled: Bool {
         return resolveDbHandleCallsCount > 0
     }
-    var resolveDbHandleReturnValue: OpaquePointer!
-    var resolveDbHandleClosure: (() async throws -> OpaquePointer)?
+    var resolveDbHandleReturnValue: WalletDbPtr!
+    var resolveDbHandleClosure: (() async throws -> WalletDbPtr)?
 
-    func resolveDbHandle() async throws -> OpaquePointer {
+    func resolveDbHandle() async throws -> WalletDbPtr {
         if let error = resolveDbHandleThrowableError {
             throw error
         }
@@ -3453,7 +3537,9 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
         rewindCacheToHeightHeightCallsCount += 1
         rewindCacheToHeightHeightReceivedHeight = height
-        try await rewindCacheToHeightHeightClosure!(height)
+        if let closure = rewindCacheToHeightHeightClosure {
+            try await closure(height)
+        }
     }
 
     // MARK: - putSaplingSubtreeRoots
@@ -3472,7 +3558,9 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
         putSaplingSubtreeRootsStartIndexRootsCallsCount += 1
         putSaplingSubtreeRootsStartIndexRootsReceivedArguments = (startIndex: startIndex, roots: roots)
-        try await putSaplingSubtreeRootsStartIndexRootsClosure!(startIndex, roots)
+        if let closure = putSaplingSubtreeRootsStartIndexRootsClosure {
+            try await closure(startIndex, roots)
+        }
     }
 
     // MARK: - putOrchardSubtreeRoots
@@ -3491,7 +3579,9 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
         putOrchardSubtreeRootsStartIndexRootsCallsCount += 1
         putOrchardSubtreeRootsStartIndexRootsReceivedArguments = (startIndex: startIndex, roots: roots)
-        try await putOrchardSubtreeRootsStartIndexRootsClosure!(startIndex, roots)
+        if let closure = putOrchardSubtreeRootsStartIndexRootsClosure {
+            try await closure(startIndex, roots)
+        }
     }
 
     // MARK: - updateChainTip
@@ -3510,7 +3600,9 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
         updateChainTipHeightCallsCount += 1
         updateChainTipHeightReceivedHeight = height
-        try await updateChainTipHeightClosure!(height)
+        if let closure = updateChainTipHeightClosure {
+            try await closure(height)
+        }
     }
 
     // MARK: - fullyScannedHeight
@@ -3641,7 +3733,9 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
         putUnspentTransparentOutputTxidIndexScriptValueHeightCallsCount += 1
         putUnspentTransparentOutputTxidIndexScriptValueHeightReceivedArguments = (txid: txid, index: index, script: script, value: value, height: height)
-        try await putUnspentTransparentOutputTxidIndexScriptValueHeightClosure!(txid, index, script, value, height)
+        if let closure = putUnspentTransparentOutputTxidIndexScriptValueHeightClosure {
+            try await closure(txid, index, script, value, height)
+        }
     }
 
     // MARK: - proposeTransfer
@@ -3894,7 +3988,9 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
             throw error
         }
         initBlockMetadataDbCallsCount += 1
-        try await initBlockMetadataDbClosure!()
+        if let closure = initBlockMetadataDbClosure {
+            try await closure()
+        }
     }
 
     // MARK: - writeBlocksMetadata
@@ -3913,7 +4009,9 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
         writeBlocksMetadataBlocksCallsCount += 1
         writeBlocksMetadataBlocksReceivedBlocks = blocks
-        try await writeBlocksMetadataBlocksClosure!(blocks)
+        if let closure = writeBlocksMetadataBlocksClosure {
+            try await closure(blocks)
+        }
     }
 
     // MARK: - latestCachedBlockHeight
@@ -3976,20 +4074,28 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
         setTransactionStatusTxIdStatusCallsCount += 1
         setTransactionStatusTxIdStatusReceivedArguments = (txId: txId, status: status)
-        try await setTransactionStatusTxIdStatusClosure!(txId, status)
+        if let closure = setTransactionStatusTxIdStatusClosure {
+            try await closure(txId, status)
+        }
     }
 
     // MARK: - fixWitnesses
 
+    var fixWitnessesThrowableError: Error?
     var fixWitnessesCallsCount = 0
     var fixWitnessesCalled: Bool {
         return fixWitnessesCallsCount > 0
     }
-    var fixWitnessesClosure: (() async -> Void)?
+    var fixWitnessesClosure: (() async throws -> Void)?
 
-    func fixWitnesses() async {
+    func fixWitnesses() async throws {
+        if let error = fixWitnessesThrowableError {
+            throw error
+        }
         fixWitnessesCallsCount += 1
-        await fixWitnessesClosure!()
+        if let closure = fixWitnessesClosure {
+            try await closure()
+        }
     }
 
     // MARK: - getSingleUseTransparentAddress
@@ -4032,7 +4138,9 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
         deleteAccountCallsCount += 1
         deleteAccountReceivedAccountUUID = accountUUID
-        try await deleteAccountClosure!(accountUUID)
+        if let closure = deleteAccountClosure {
+            try await closure(accountUUID)
+        }
     }
 
 }

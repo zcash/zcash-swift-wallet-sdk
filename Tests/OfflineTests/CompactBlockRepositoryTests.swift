@@ -18,8 +18,7 @@ class CompactBlockRepositoryTests: ZcashTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        rustBackend = ZcashRustBackend.makeForTests(fsBlockDbRoot: testTempDirectory, networkType: .testnet)
-        try await rustBackend.openDb()
+        rustBackend = try await ZcashRustBackend.openForTests(fsBlockDbRoot: testTempDirectory, networkType: .testnet)
     }
 
     override func tearDown() async throws {

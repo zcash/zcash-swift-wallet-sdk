@@ -152,3 +152,48 @@ extension SynchronizerState {
         )
     }
 }
+
+/// Stub TransactionEncoder for tests that don't need actual encoding
+class StubTransactionEncoder: TransactionEncoder {
+    func proposeTransfer(
+        accountUUID: AccountUUID,
+        recipient: String,
+        amount: Zatoshi,
+        memoBytes: MemoBytes?
+    ) async throws -> Proposal {
+        throw ZcashError.synchronizerNotPrepared
+    }
+
+    func proposeShielding(
+        accountUUID: AccountUUID,
+        shieldingThreshold: Zatoshi,
+        memoBytes: MemoBytes?,
+        transparentReceiver: String?
+    ) async throws -> Proposal? {
+        throw ZcashError.synchronizerNotPrepared
+    }
+
+    func proposeFulfillingPaymentFromURI(
+        _ uri: String,
+        accountUUID: AccountUUID
+    ) async throws -> Proposal {
+        throw ZcashError.synchronizerNotPrepared
+    }
+
+    func createProposedTransactions(
+        proposal: Proposal,
+        spendingKey: UnifiedSpendingKey
+    ) async throws -> [ZcashTransaction.Overview] {
+        throw ZcashError.synchronizerNotPrepared
+    }
+
+    func submit(transaction: EncodedTransaction) async throws {
+        throw ZcashError.synchronizerNotPrepared
+    }
+
+    func fetchTransactionsForTxIds(_ txIds: [Data]) async throws -> [ZcashTransaction.Overview] {
+        throw ZcashError.synchronizerNotPrepared
+    }
+
+    func closeDBConnection() { }
+}
