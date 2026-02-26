@@ -36,7 +36,7 @@ zip32 = "0.2"
 pczt = { version = "0.5", features = ["prover"] }
 
 # EIP-681
-eip681 = { git = "https://github.com/zcash/librustzcash.git", branch = "eip681-ffi-api" }
+eip681 = { git = "https://github.com/zcash/librustzcash.git", branch = "feat/eip681-from-parts" }
 
 # Infrastructure
 prost = "0.14"

@@ -24,6 +24,8 @@ public enum Eip681TransactionRequest: Equatable {
 public struct Eip681NativeRequest: Equatable {
     /// The URI schema prefix (e.g. "ethereum").
     public let schemaPrefix: String
+    /// Whether the URI uses the "pay-" prefix after the schema (e.g. "ethereum:pay-").
+    public let hasPay: Bool
     /// The chain ID, if specified in the URI.
     public let chainId: UInt64?
     /// The recipient address (ERC-55 checksummed hex or ENS name).
@@ -37,6 +39,7 @@ public struct Eip681NativeRequest: Equatable {
 
     public init(
         schemaPrefix: String,
+        hasPay: Bool,
         chainId: UInt64?,
         recipientAddress: String,
         valueHex: String?,
@@ -44,6 +47,7 @@ public struct Eip681NativeRequest: Equatable {
         gasPriceHex: String?
     ) {
         self.schemaPrefix = schemaPrefix
+        self.hasPay = hasPay
         self.chainId = chainId
         self.recipientAddress = recipientAddress
         self.valueHex = valueHex
@@ -54,6 +58,10 @@ public struct Eip681NativeRequest: Equatable {
 
 /// An ERC-20 token transfer extracted from a parsed EIP-681 request.
 public struct Eip681Erc20Request: Equatable {
+    /// The URI schema prefix (e.g. "ethereum").
+    public let schemaPrefix: String
+    /// Whether the URI uses the "pay-" prefix after the schema (e.g. "ethereum:pay-").
+    public let hasPay: Bool
     /// The chain ID, if specified in the URI.
     public let chainId: UInt64?
     /// The ERC-20 token contract address (ERC-55 checksummed hex or ENS name).
@@ -64,11 +72,15 @@ public struct Eip681Erc20Request: Equatable {
     public let valueHex: String
 
     public init(
+        schemaPrefix: String,
+        hasPay: Bool,
         chainId: UInt64?,
         tokenContractAddress: String,
         recipientAddress: String,
         valueHex: String
     ) {
+        self.schemaPrefix = schemaPrefix
+        self.hasPay = hasPay
         self.chainId = chainId
         self.tokenContractAddress = tokenContractAddress
         self.recipientAddress = recipientAddress
