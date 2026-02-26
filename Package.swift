@@ -22,8 +22,9 @@ let package = Package(
         // Updated by Scripts/release.sh during the release process
         .binaryTarget(
             name: "libzcashlc",
-            url: "https://github.com/zcash/zcash-swift-wallet-sdk/releases/download/0.0.1/libzcashlc.xcframework.zip",
-            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+            path: "LocalPackages/libzcashlc.xcframework"
+//            url: "https://github.com/zcash/zcash-swift-wallet-sdk/releases/download/0.0.1/libzcashlc.xcframework.zip",
+//            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
         ),
         .target(
             name: "ZcashLightClientKit",

@@ -7,6 +7,11 @@
 #   2. Creates a zip archive with checksum
 #   3. Uploads to GitHub as a DRAFT release
 #   4. Outputs the values needed for Package.swift
+
+# Ensure Rust toolchain is on PATH (needed when invoked from Xcode build phases)
+if [[ -f "$HOME/.cargo/env" ]]; then
+    source "$HOME/.cargo/env"
+fi
 #
 # After running this script:
 #   1. Update Package.swift with the URL and checksum
