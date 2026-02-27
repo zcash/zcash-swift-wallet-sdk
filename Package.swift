@@ -15,16 +15,22 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/grpc/grpc-swift.git", from: "1.24.2"),
-        .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.15.3"),
-        .package(url: "https://github.com/Electric-Coin-Company/zcash-light-client-ffi", exact: "0.19.1")
+        .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.15.3")
     ],
     targets: [
+        // Binary target for the Rust FFI library
+        // Updated by Scripts/release.sh during the release process
+        .binaryTarget(
+            name: "libzcashlc",
+            url: "https://github.com/zcash/zcash-swift-wallet-sdk/releases/download/0.0.1/libzcashlc.xcframework.zip",
+            checksum: "0000000000000000000000000000000000000000000000000000000000000000"
+        ),
         .target(
             name: "ZcashLightClientKit",
             dependencies: [
                 .product(name: "SQLite", package: "SQLite.swift"),
                 .product(name: "GRPC", package: "grpc-swift"),
-                .product(name: "libzcashlc", package: "zcash-light-client-ffi")
+                "libzcashlc"
             ],
             exclude: [
                 "Modules/Service/GRPC/ProtoBuf/proto/compact_formats.proto",

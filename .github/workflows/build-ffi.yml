@@ -1,0 +1,77 @@
+name: Build FFI XCFramework
+
+on:
+  # Manual trigger for preparing releases
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'SDK version (e.g., 2.5.0)'
+        required: true
+
+env:
+  RUST_TOOLCHAIN: stable
+
+jobs:
+  build-xcframework:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.0.app
+
+      - name: Setup Rust
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: |
+            aarch64-apple-ios
+            x86_64-apple-ios
+            aarch64-apple-ios-sim
+            x86_64-apple-darwin
+            aarch64-apple-darwin
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build XCFramework
+        run: |
+          cd BuildSupport
+          make clean
+          make xcframework
+
+      - name: Create Release Archive
+        run: |
+          cd BuildSupport/products
+          zip -r libzcashlc.xcframework.zip libzcashlc.xcframework
+          shasum -a 256 libzcashlc.xcframework.zip > checksum.txt
+          echo "CHECKSUM=$(cat checksum.txt | awk '{print $1}')" >> $GITHUB_ENV
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: ${{ github.event.inputs.version }}
+          draft: true
+          files: |
+            BuildSupport/products/libzcashlc.xcframework.zip
+            BuildSupport/products/checksum.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Output Package.swift Update
+        run: |
+          echo ""
+          echo "========================================"
+          echo "Update Package.swift with:"
+          echo "========================================"
+          echo ""
+          echo "url: \"https://github.com/zcash/zcash-swift-wallet-sdk/releases/download/${{ github.event.inputs.version }}/libzcashlc.xcframework.zip\","
+          echo "checksum: \"${{ env.CHECKSUM }}\""
+          echo ""
+          echo "Then commit, tag ${{ github.event.inputs.version }}, and publish the draft release."
