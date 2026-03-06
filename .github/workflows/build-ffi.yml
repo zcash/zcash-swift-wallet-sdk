@@ -1,0 +1,53 @@
+name: Build FFI XCFramework
+
+on:
+  # Manual trigger for preparing releases.
+  # The branch selected in the GitHub UI determines which commit is checked out and built.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'SDK version (e.g., 2.5.0)'
+        required: true
+
+permissions: {}
+
+jobs:
+  build-xcframework:
+    runs-on: macos-15
+    permissions:
+      contents: write # Required for creating draft releases
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.0.app
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          targets: aarch64-apple-ios, x86_64-apple-ios, aarch64-apple-ios-sim, x86_64-apple-darwin, aarch64-apple-darwin
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Build and upload draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: ./Scripts/prepare-release.sh "$VERSION"
+
+      - name: Output Package.swift Update
+        run: |
+          source BuildSupport/products/release.env
+          echo ""
+          echo "========================================"
+          echo "Update Package.swift with:"
+          echo "========================================"
+          echo ""
+          echo "url: \"${DOWNLOAD_URL}\","
+          echo "checksum: \"${CHECKSUM}\""
+          echo ""
+          echo "Then commit, tag ${VERSION}, and publish the draft release."

@@ -1,12 +1,10 @@
-# Documentation 
+# Documentation
 
 Source code is intended to be self-documented with inline comments complying to SwiftDoc.
 
-[SDK Architecture documentation](docs/Architecture.md) can be found on `docs/Architecture.md`
+- [SDK Architecture](Architecture.md)
+- [Continuous Integration](ci.md)
+- [Development Process](development_process.md)
+- [Local FFI Development](LOCAL_DEVELOPMENT.md) — working on the Rust FFI code alongside the Swift SDK
 
-Continuous Integration documentation can found in [docs/ci.md](docs/ci.md)
-
-Our **development process** is simple and described in [docs/development_process.md](docs/development_process.md)
-
-
-In the `/testing` folder you will find documentation related to manual and automated testing. 
+In the [testing/](testing/) folder you will find documentation related to manual and automated testing.

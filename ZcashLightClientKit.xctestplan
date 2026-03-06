@@ -1,0 +1,56 @@
+{
+  "configurations" : [
+    {
+      "id" : "942BF6E1-A617-4AD2-8419-4FFD9FF9DCC0",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "performanceAntipatternCheckerEnabled" : true
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "OfflineTests",
+        "name" : "OfflineTests"
+      }
+    },
+    {
+      "enabled" : false,
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "NetworkTests",
+        "name" : "NetworkTests"
+      }
+    },
+    {
+      "enabled" : false,
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "DarksideTests",
+        "name" : "DarksideTests"
+      }
+    },
+    {
+      "enabled" : false,
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "AliasDarksideTests",
+        "name" : "AliasDarksideTests"
+      }
+    },
+    {
+      "enabled" : false,
+      "target" : {
+        "containerPath" : "container:",
+        "identifier" : "PerformanceTests",
+        "name" : "PerformanceTests"
+      }
+    }
+  ],
+  "version" : 1
+}

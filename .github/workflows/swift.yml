@@ -1,13 +1,14 @@
 name: Build and Run Offline Tests
 
-on: 
- pull_request:
+on:
+  pull_request:
     paths-ignore:
       - '.github/ISSUE_TEMPLATE/*'
       - '.github/PULL_REQUEST_TEMPLATE.md'
-      - 'changelog.md'
       - 'LICENSE'
       - 'README.md'
+      - 'CHANGELOG.md'
+      - 'CONTRIBUTING.md'
       - 'responsible_disclosure.md'
       - 'SWIFTLINT.md'
       - 'docs/**'
@@ -15,18 +16,94 @@ on:
 jobs:
   build:
     permissions:
-          contents: read
-    
+      contents: read
+
     runs-on: macos-15
 
     steps:
-    - uses: actions/checkout@a12a3943b4bdde767164f792f33f40b04645d846
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        persist-credentials: false
       timeout-minutes: 1
+
     - name: Select Xcode version
       run: sudo xcode-select -s '/Applications/Xcode_16.0.app/Contents/Developer'
+
+    # Generate a hash of all Rust source files for cache key
+    - name: Generate FFI source hash
+      id: ffi-hash
+      run: |
+        # Hash all Rust source files, Cargo files, and build support files
+        FFI_HASH=$(find rust Cargo.toml Cargo.lock BuildSupport -type f \( -name "*.rs" -o -name "*.toml" -o -name "*.lock" -o -name "Makefile" -o -name "*.h" -o -name "*.c" -o -name "*.plist" -o -name "*.modulemap" \) -exec shasum {} \; | sort | shasum | cut -d' ' -f1)
+        echo "hash=$FFI_HASH" >> $GITHUB_OUTPUT
+        echo "FFI source hash: $FFI_HASH"
+
+    # Cache the built xcframework (macOS-only for CI tests)
+    - name: Cache FFI XCFramework
+      id: cache-ffi
+      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      with:
+        path: BuildSupport/products/libzcashlc.xcframework
+        key: ffi-xcframework-macos-only-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
+
+    # Only set up Rust if we need to build FFI
+    - name: Setup Rust
+      if: steps.cache-ffi.outputs.cache-hit != 'true'
+      uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+      with:
+        toolchain: stable
+        targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+    # Cache Cargo dependencies (only if building FFI)
+    - name: Cache Cargo
+      if: steps.cache-ffi.outputs.cache-hit != 'true'
+      uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+    # Build FFI for macOS only (sufficient for running tests)
+    - name: Build FFI for macOS
+      if: steps.cache-ffi.outputs.cache-hit != 'true'
+      timeout-minutes: 30
+      working-directory: ./BuildSupport
+      run: |
+        echo "Building FFI for macOS..."
+        make macos
+        mkdir -p products/libzcashlc.xcframework
+        cp -R products/macos/frameworks products/libzcashlc.xcframework/macos-arm64_x86_64
+        cp Info.plist products/libzcashlc.xcframework
+
+    # Verify xcframework exists (whether from cache or fresh build)
+    - name: Verify XCFramework
+      run: |
+        if [ ! -d "BuildSupport/products/libzcashlc.xcframework" ]; then
+          echo "Error: BuildSupport/products/libzcashlc.xcframework not found"
+          exit 1
+        fi
+        echo "XCFramework contents:"
+        ls -la BuildSupport/products/libzcashlc.xcframework/
+
+    # Set up LocalPackages so Package.swift auto-detects the local build
+    - name: Configure local FFI for CI
+      run: |
+        mkdir -p LocalPackages
+        cp -R BuildSupport/products/libzcashlc.xcframework LocalPackages/
+        cat > LocalPackages/Package.swift << 'PKGEOF'
+        // swift-tools-version:5.6
+        import PackageDescription
+        let package = Package(
+            name: "libzcashlc",
+            products: [.library(name: "libzcashlc", targets: ["libzcashlc"])],
+            targets: [.binaryTarget(name: "libzcashlc", path: "libzcashlc.xcframework")]
+        )
+        PKGEOF
+
+        echo "LocalPackages created — Package.swift will use local FFI"
+
+    # Build the Swift package
     - name: Build ZcashLightClientKit Swift Package
       timeout-minutes: 15
       run: swift build -v
+
+    # Run tests
     - name: Run OfflineTests suite
-      timeout-minutes: 5
+      timeout-minutes: 10
       run: swift test --filter OfflineTests

@@ -79,3 +79,9 @@ lib
 env-vars.sh
 
 .vscode/
+
+# Local FFI development (see Scripts/init-local-ffi.sh)
+LocalPackages/
+
+# Build products
+BuildSupport/products/

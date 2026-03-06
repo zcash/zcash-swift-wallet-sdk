@@ -1,0 +1,6 @@
+framework module libzcashlc {
+  umbrella header "zcashlc.h"
+  
+  export *
+  module * { export * }
+}
