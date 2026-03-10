@@ -507,7 +507,7 @@ extension VotingRustBackend {
     public func buildAndProveDelegation(
         roundId: String,
         bundleIndex: UInt32,
-        walletDbPath: String,
+        notes: [VotingNoteInfo],
         hotkeyRawAddress: [UInt8],
         pirServerUrl: String,
         networkId: UInt32,
@@ -515,13 +515,14 @@ extension VotingRustBackend {
     ) throws -> VotingDelegationProofResult {
         let dbh = try requireHandle()
         let roundIdBytes = [UInt8](roundId.utf8)
-        let pathBytes = [UInt8](walletDbPath.utf8)
+        let notesJson = try JSONEncoder().encode(notes)
+        let notesBytes = [UInt8](notesJson)
         let urlBytes = [UInt8](pirServerUrl.utf8)
 
         var context = ProgressContext(handler: progress)
 
         let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
-            pathBytes.withUnsafeBufferPointer { pathBuf in
+            notesBytes.withUnsafeBufferPointer { notesBuf in
                 hotkeyRawAddress.withUnsafeBufferPointer { hkBuf in
                     urlBytes.withUnsafeBufferPointer { urlBuf in
                         withUnsafeMutablePointer(to: &context) { ctxPtr in
@@ -532,8 +533,8 @@ extension VotingRustBackend {
                                 ridBuf.baseAddress,
                                 UInt(ridBuf.count),
                                 bundleIndex,
-                                pathBuf.baseAddress,
-                                UInt(pathBuf.count),
+                                notesBuf.baseAddress,
+                                UInt(notesBuf.count),
                                 hkBuf.baseAddress,
                                 UInt(hkBuf.count),
                                 urlBuf.baseAddress,
