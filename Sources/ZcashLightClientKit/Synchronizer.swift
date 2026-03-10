@@ -479,6 +479,10 @@ public protocol Synchronizer: AnyObject {
     ///   hex-encoded bytes otherwise.
     func debugDatabase(sql: String) -> String
 
+    /// Fetch the commitment tree state at the given block height from lightwalletd,
+    /// returned as protobuf-serialized bytes suitable for witness generation.
+    func getTreeState(height: UInt64) async throws -> Data
+
     /// Get an ephemeral single use transparent address
     /// - Parameter accountUUID: The account for which the single use transparent address is going to be created.
     /// - Returns The struct with an ephemeral transparent address and gap limit info
