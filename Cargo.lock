@@ -1556,7 +1556,7 @@ dependencies = [
 [[package]]
 name = "equihash"
 version = "0.2.2"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "blake2b_simd",
  "core2",
@@ -1592,7 +1592,7 @@ dependencies = [
 [[package]]
 name = "f4jumble"
 version = "0.1.1"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "blake2b_simd",
 ]
@@ -2730,7 +2730,7 @@ dependencies = [
 [[package]]
 name = "librustvoting"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/librustvoting.git#31f87923c10e136816e23d2b11718b30fc4d17a7"
+source = "git+https://github.com/valargroup/librustvoting.git#361b743d06f73cf6310595967609c4e384281837"
 dependencies = [
  "blake2b_simd",
  "ff",
@@ -2744,21 +2744,16 @@ dependencies = [
  "pasta_curves",
  "pczt",
  "pir-client",
- "prost",
  "rand 0.8.5",
  "rusqlite",
  "serde",
  "serde_json",
- "shardtree",
  "subtle",
  "thiserror 2.0.18",
  "vote-commitment-tree",
  "vote-commitment-tree-client",
  "voting-circuits",
- "zcash_client_backend",
- "zcash_client_sqlite",
  "zcash_keys",
- "zcash_primitives",
  "zcash_protocol",
  "zip32",
 ]
@@ -2789,6 +2784,7 @@ dependencies = [
  "fs-mistrust",
  "http",
  "http-body-util",
+ "incrementalmerkletree",
  "librustvoting",
  "log-panics",
  "nonempty",
@@ -3407,7 +3403,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "pczt"
 version = "0.5.1"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "blake2b_simd",
  "bls12_381",
@@ -6610,7 +6606,7 @@ checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 [[package]]
 name = "vote-commitment-tree"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/librustvoting.git#31f87923c10e136816e23d2b11718b30fc4d17a7"
+source = "git+https://github.com/valargroup/librustvoting.git#361b743d06f73cf6310595967609c4e384281837"
 dependencies = [
  "anyhow",
  "ff",
@@ -6626,7 +6622,7 @@ dependencies = [
 [[package]]
 name = "vote-commitment-tree-client"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/librustvoting.git#31f87923c10e136816e23d2b11718b30fc4d17a7"
+source = "git+https://github.com/valargroup/librustvoting.git#361b743d06f73cf6310595967609c4e384281837"
 dependencies = [
  "base64",
  "clap",
@@ -7368,7 +7364,7 @@ dependencies = [
 [[package]]
 name = "zcash_address"
 version = "0.10.1"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "bech32",
  "bs58",
@@ -7381,7 +7377,7 @@ dependencies = [
 [[package]]
 name = "zcash_client_backend"
 version = "0.21.1"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "arti-client",
  "base64",
@@ -7449,7 +7445,7 @@ dependencies = [
 [[package]]
 name = "zcash_client_sqlite"
 version = "0.19.4"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "bip32",
  "bitflags 2.11.0",
@@ -7495,7 +7491,7 @@ dependencies = [
 [[package]]
 name = "zcash_encoding"
 version = "0.3.0"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "core2",
  "nonempty",
@@ -7504,7 +7500,7 @@ dependencies = [
 [[package]]
 name = "zcash_keys"
 version = "0.12.0"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "bech32",
  "bip32",
@@ -7546,7 +7542,7 @@ dependencies = [
 [[package]]
 name = "zcash_primitives"
 version = "0.26.1"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "bip32",
  "blake2b_simd",
@@ -7611,7 +7607,7 @@ dependencies = [
 [[package]]
 name = "zcash_protocol"
 version = "0.7.1"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "core2",
  "document-features",
@@ -7648,7 +7644,7 @@ dependencies = [
 [[package]]
 name = "zcash_transparent"
 version = "0.6.1"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "bip32",
  "blake2b_simd",
@@ -7779,7 +7775,7 @@ dependencies = [
 [[package]]
 name = "zip321"
 version = "0.6.0"
-source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#c3abb345ce51a79978688c91edac012b191ce0b7"
+source = "git+https://github.com/valargroup/librustzcash.git?branch=valargroup%2Fpczt-governance-extensions-0.11#afb474a03f82620de276ba8b1103034dfac65389"
 dependencies = [
  "base64",
  "nom",

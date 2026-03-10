@@ -16,9 +16,15 @@ use std::sync::Arc;
 
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
+use incrementalmerkletree::Position;
+use orchard::note::ExtractedNoteCommitment;
+use orchard::tree::MerkleHashOrchard;
+use prost::Message;
 use serde::{Deserialize, Serialize};
+use zcash_client_backend::proto::service::TreeState;
+use zcash_client_sqlite::util::SystemClock;
 use zcash_keys::keys::{UnifiedFullViewingKey, UnifiedSpendingKey};
-use zcash_protocol::consensus::{MAIN_NETWORK, TEST_NETWORK};
+use zcash_protocol::consensus::{self, MAIN_NETWORK, Network, TEST_NETWORK};
 use zip32::{AccountId, Scope};
 
 use librustvoting as voting;
@@ -57,6 +63,77 @@ unsafe fn bytes_from_ptr<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
 fn json_to_boxed_slice<T: Serialize>(value: &T) -> anyhow::Result<*mut crate::ffi::BoxedSlice> {
     let json = serde_json::to_vec(value)?;
     Ok(crate::ffi::BoxedSlice::some(json))
+}
+
+/// Convert a librustzcash ReceivedNote (orchard) into librustvoting's NoteInfo.
+///
+/// Requires the account's UFVK and network to compute the nullifier and
+/// encode the UFVK string.
+fn received_note_to_note_info<P: consensus::Parameters>(
+    note: &zcash_client_backend::wallet::ReceivedNote<
+        zcash_client_sqlite::ReceivedNoteId,
+        orchard::note::Note,
+    >,
+    ufvk: &UnifiedFullViewingKey,
+    network: &P,
+) -> anyhow::Result<voting::NoteInfo> {
+    let orchard_note = note.note();
+    let fvk = ufvk
+        .orchard()
+        .ok_or_else(|| anyhow!("UFVK has no Orchard component"))?;
+
+    // Compute nullifier from note + full viewing key
+    let nullifier = orchard_note.nullifier(fvk);
+
+    // Compute cmx (extracted note commitment)
+    let cmx: ExtractedNoteCommitment = orchard_note.commitment().into();
+
+    // Extract raw fields
+    let diversifier = orchard_note.recipient().diversifier().as_array().to_vec();
+    let value = orchard_note.value().inner();
+    let rho = orchard_note.rho().to_bytes().to_vec();
+    let rseed = orchard_note.rseed().as_bytes().to_vec();
+    let position = u64::from(note.note_commitment_tree_position());
+    let scope = match note.spending_key_scope() {
+        Scope::External => 0u32,
+        Scope::Internal => 1u32,
+    };
+    let ufvk_str = ufvk.encode(network);
+
+    Ok(voting::NoteInfo {
+        commitment: cmx.to_bytes().to_vec(),
+        nullifier: nullifier.to_bytes().to_vec(),
+        value,
+        position,
+        diversifier,
+        rho,
+        rseed,
+        scope,
+        ufvk_str,
+    })
+}
+
+/// Open the wallet database and return a network value.
+fn open_wallet_db(
+    wallet_db_path: &str,
+    network_id: u32,
+) -> anyhow::Result<(
+    zcash_client_sqlite::WalletDb<rusqlite::Connection, Network, SystemClock, rand::rngs::OsRng>,
+    Network,
+)> {
+    let network = match network_id {
+        0 => Network::MainNetwork,
+        1 => Network::TestNetwork,
+        _ => return Err(anyhow!("invalid network_id {}", network_id)),
+    };
+    let wallet_db = zcash_client_sqlite::WalletDb::for_path(
+        wallet_db_path,
+        network,
+        SystemClock,
+        rand::rngs::OsRng,
+    )
+    .map_err(|e| anyhow!("failed to open wallet DB: {}", e))?;
+    Ok((wallet_db, network))
 }
 
 // =============================================================================
@@ -944,11 +1021,11 @@ pub unsafe extern "C" fn zcashlc_voting_get_wallet_notes(
 ) -> *mut crate::ffi::BoxedSlice {
     let db = AssertUnwindSafe(db);
     let res = catch_panic(|| {
-        let handle =
+        let _handle =
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
         let wallet_path_str = unsafe { str_from_ptr(wallet_db_path, wallet_db_path_len) }?;
 
-        let seed_fp = if seed_fingerprint.is_null() || seed_fingerprint_len == 0 {
+        let _seed_fp = if seed_fingerprint.is_null() || seed_fingerprint_len == 0 {
             None
         } else {
             Some(unsafe { bytes_from_ptr(seed_fingerprint, seed_fingerprint_len) }.to_vec())
@@ -959,18 +1036,40 @@ pub unsafe extern "C" fn zcashlc_voting_get_wallet_notes(
             Some(account_index as u32)
         };
 
-        let notes = handle
-            .db
-            .get_wallet_notes(
-                &wallet_path_str,
-                snapshot_height,
-                network_id,
-                seed_fp.as_deref(),
-                acct_idx,
-            )
-            .map_err(|e| anyhow!("get_wallet_notes failed: {}", e))?;
+        let (wallet_db, network) = open_wallet_db(&wallet_path_str, network_id)?;
 
-        let json_notes: Vec<JsonNoteInfo> = notes.into_iter().map(Into::into).collect();
+        // Resolve the account UUID — use account_index to pick from the
+        // wallet's account list, or default to the first account.
+        use zcash_client_backend::data_api::WalletRead;
+        let account_ids = wallet_db.get_account_ids()?;
+        let target_id = match acct_idx {
+            Some(idx) => account_ids
+                .get(idx as usize)
+                .copied()
+                .ok_or_else(|| anyhow!("account_index {} out of range (wallet has {} accounts)", idx, account_ids.len()))?,
+            None => *account_ids
+                .first()
+                .ok_or_else(|| anyhow!("no accounts in wallet"))?,
+        };
+        let account = wallet_db
+            .get_account(target_id)?
+            .ok_or_else(|| anyhow!("account not found"))?;
+
+        use zcash_client_backend::data_api::Account;
+        let ufvk = account.ufvk()
+            .ok_or_else(|| anyhow!("account has no UFVK"))?;
+        let account_uuid = account.id();
+
+        let height = zcash_protocol::consensus::BlockHeight::from_u32(snapshot_height as u32);
+        let received_notes = wallet_db
+            .get_orchard_notes_at_snapshot(account_uuid, height)
+            .map_err(|e| anyhow!("get_orchard_notes_at_snapshot failed: {}", e))?;
+
+        let mut json_notes = Vec::with_capacity(received_notes.len());
+        for rn in &received_notes {
+            let note_info = received_note_to_note_info(rn, ufvk, &network)?;
+            json_notes.push(JsonNoteInfo::from(note_info));
+        }
         json_to_boxed_slice(&json_notes)
     });
     unwrap_exc_or_null(res)
@@ -1212,10 +1311,57 @@ pub unsafe extern "C" fn zcashlc_voting_generate_note_witnesses(
         let json_notes: Vec<JsonNoteInfo> = serde_json::from_slice(notes_bytes)?;
         let core_notes: Vec<voting::NoteInfo> = json_notes.into_iter().map(Into::into).collect();
 
-        let witnesses = handle
-            .db
-            .generate_note_witnesses(&round_id_str, bundle_index, &wallet_path_str, &core_notes)
-            .map_err(|e| anyhow!("generate_note_witnesses failed: {}", e))?;
+        // Load cached tree state from voting DB and parse frontier
+        let conn = handle.db.conn();
+        let tree_state_bytes = voting::storage::queries::load_tree_state(&conn, &round_id_str)
+            .map_err(|e| anyhow!("load_tree_state failed: {}", e))?;
+        let params = voting::storage::queries::load_round_params(&conn, &round_id_str)
+            .map_err(|e| anyhow!("load_round_params failed: {}", e))?;
+        drop(conn);
+
+        let tree_state = TreeState::decode(tree_state_bytes.as_slice())
+            .map_err(|e| anyhow!("failed to decode TreeState protobuf: {}", e))?;
+        let orchard_ct = tree_state.orchard_tree()
+            .map_err(|e| anyhow!("failed to parse orchard tree from TreeState: {}", e))?;
+        let frontier_root = orchard_ct.root();
+        let frontier = orchard_ct.to_frontier();
+        let nonempty_frontier = frontier.take()
+            .ok_or_else(|| anyhow!("empty orchard frontier — no orchard activity at snapshot height"))?;
+
+        // Generate witnesses from wallet DB shard data + frontier
+        let (wallet_db, _network) = open_wallet_db(&wallet_path_str, 0)?; // network_id not needed for tree ops
+        let positions: Vec<Position> = core_notes
+            .iter()
+            .map(|n| Position::from(n.position))
+            .collect();
+        let checkpoint_height = zcash_protocol::consensus::BlockHeight::from_u32(params.snapshot_height as u32);
+
+        let merkle_paths = wallet_db
+            .generate_orchard_witnesses_at_frontier(&positions, nonempty_frontier, checkpoint_height)
+            .map_err(|e| anyhow!("generate_orchard_witnesses_at_frontier failed: {}", e))?;
+
+        // Convert MerklePaths to WitnessData
+        let root_bytes = frontier_root.to_bytes().to_vec();
+        let witnesses: Vec<voting::WitnessData> = merkle_paths
+            .into_iter()
+            .zip(core_notes.iter())
+            .map(|(path, note): (incrementalmerkletree::MerklePath<MerkleHashOrchard, { orchard::NOTE_COMMITMENT_TREE_DEPTH as u8 }>, &voting::NoteInfo)| {
+                let auth_path: Vec<Vec<u8>> = path.path_elems()
+                    .iter()
+                    .map(|h: &MerkleHashOrchard| h.to_bytes().to_vec())
+                    .collect();
+                voting::WitnessData {
+                    note_commitment: note.commitment.clone(),
+                    position: note.position,
+                    root: root_bytes.clone(),
+                    auth_path,
+                }
+            })
+            .collect();
+
+        // Verify and cache in voting DB
+        handle.db.store_witnesses(&round_id_str, bundle_index, &witnesses)
+            .map_err(|e| anyhow!("store_witnesses failed: {}", e))?;
 
         let json_witnesses: Vec<JsonWitnessData> =
             witnesses.into_iter().map(Into::into).collect();
@@ -1243,8 +1389,8 @@ pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
     round_id: *const u8,
     round_id_len: usize,
     bundle_index: u32,
-    wallet_db_path: *const u8,
-    wallet_db_path_len: usize,
+    notes_json: *const u8,
+    notes_json_len: usize,
     hotkey_raw_address: *const u8,
     hotkey_raw_address_len: usize,
     pir_server_url: *const u8,
@@ -1259,7 +1405,9 @@ pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
         let handle =
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
         let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
-        let wallet_path_str = unsafe { str_from_ptr(wallet_db_path, wallet_db_path_len) }?;
+        let notes_bytes = unsafe { bytes_from_ptr(notes_json, notes_json_len) };
+        let json_notes: Vec<JsonNoteInfo> = serde_json::from_slice(notes_bytes)?;
+        let core_notes: Vec<voting::NoteInfo> = json_notes.into_iter().map(Into::into).collect();
         let hotkey_addr = unsafe { bytes_from_ptr(hotkey_raw_address, hotkey_raw_address_len) };
         let pir_url = unsafe { str_from_ptr(pir_server_url, pir_server_url_len) }?;
 
@@ -1276,7 +1424,7 @@ pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
             .build_and_prove_delegation(
                 &round_id_str,
                 bundle_index,
-                &wallet_path_str,
+                &core_notes,
                 hotkey_addr,
                 &pir_url,
                 network_id,
@@ -2034,8 +2182,11 @@ pub unsafe extern "C" fn zcashlc_voting_extract_nc_root(
 ) -> *mut crate::ffi::BoxedSlice {
     let res = catch_panic(|| {
         let bytes = unsafe { bytes_from_ptr(tree_state_bytes, tree_state_bytes_len) };
-        let nc_root = voting::extract_nc_root(bytes)
-            .map_err(|e| anyhow!("extract_nc_root failed: {}", e))?;
+        let tree_state = TreeState::decode(bytes)
+            .map_err(|e| anyhow!("failed to decode TreeState protobuf: {}", e))?;
+        let orchard_ct = tree_state.orchard_tree()
+            .map_err(|e| anyhow!("failed to parse orchard tree from TreeState: {}", e))?;
+        let nc_root = orchard_ct.root().to_bytes().to_vec();
         Ok(crate::ffi::BoxedSlice::some(nc_root))
     });
     unwrap_exc_or_null(res)
