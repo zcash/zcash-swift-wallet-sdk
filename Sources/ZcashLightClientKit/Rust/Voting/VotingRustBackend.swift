@@ -8,11 +8,24 @@ import libzcashlc
 
 // MARK: - Error
 
-public enum VotingRustBackendError: Error, Equatable {
+public enum VotingRustBackendError: LocalizedError, Equatable {
     case databaseAlreadyOpen
     case databaseNotOpen
     case rustError(String)
     case invalidData(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .databaseAlreadyOpen:
+            return "Voting database is already open. Please restart the app."
+        case .databaseNotOpen:
+            return "Voting database is not open. Please restart the app."
+        case .rustError(let message):
+            return "Voting backend error: \(message)"
+        case .invalidData(let message):
+            return "Invalid data: \(message)"
+        }
+    }
 }
 
 // MARK: - Progress callback
