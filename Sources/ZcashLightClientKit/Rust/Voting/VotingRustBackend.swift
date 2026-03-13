@@ -657,7 +657,7 @@ extension VotingRustBackend {
 
 extension VotingRustBackend {
     /// Encrypt voting shares for a round.
-    public func encryptShares(roundId: String, shares: [UInt64]) throws -> [VotingEncryptedShare] {
+    public func encryptShares(roundId: String, shares: [UInt64]) throws -> [VotingWireEncryptedShare] {
         let dbh = try requireHandle()
         let roundIdBytes = [UInt8](roundId.utf8)
         let sharesJson = try JSONEncoder().encode(shares)
@@ -740,7 +740,7 @@ extension VotingRustBackend {
 
     /// Build share payloads for delegated share submission.
     public func buildSharePayloads(
-        encShares: [VotingEncryptedShare],
+        encShares: [VotingWireEncryptedShare],
         commitment: VotingVoteCommitmentBundle,
         voteDecision: UInt32,
         numOptions: UInt32,

@@ -324,36 +324,22 @@ impl From<voting::DelegationSubmissionData> for JsonDelegationSubmission {
     }
 }
 
-/// JSON-serializable EncryptedShare.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct JsonEncryptedShare {
-    pub c1: Vec<u8>,
-    pub c2: Vec<u8>,
-    pub share_index: u32,
-    pub plaintext_value: u64,
-    pub randomness: Vec<u8>,
-}
-
-impl From<voting::EncryptedShare> for JsonEncryptedShare {
+impl From<voting::EncryptedShare> for JsonWireEncryptedShare {
     fn from(s: voting::EncryptedShare) -> Self {
         Self {
             c1: s.c1,
             c2: s.c2,
             share_index: s.share_index,
-            plaintext_value: s.plaintext_value,
-            randomness: s.randomness,
         }
     }
 }
 
-impl From<JsonEncryptedShare> for voting::EncryptedShare {
-    fn from(s: JsonEncryptedShare) -> Self {
+impl From<JsonWireEncryptedShare> for voting::WireEncryptedShare {
+    fn from(s: JsonWireEncryptedShare) -> Self {
         Self {
             c1: s.c1,
             c2: s.c2,
             share_index: s.share_index,
-            plaintext_value: s.plaintext_value,
-            randomness: s.randomness,
         }
     }
 }
@@ -366,7 +352,7 @@ pub struct JsonVoteCommitmentBundle {
     pub vote_commitment: Vec<u8>,
     pub proposal_id: u32,
     pub proof: Vec<u8>,
-    pub enc_shares: Vec<JsonEncryptedShare>,
+    pub enc_shares: Vec<JsonWireEncryptedShare>,
     pub anchor_height: u32,
     pub vote_round_id: String,
     pub shares_hash: Vec<u8>,
@@ -404,7 +390,9 @@ impl From<JsonVoteCommitmentBundle> for voting::VoteCommitmentBundle {
             vote_commitment: b.vote_commitment,
             proposal_id: b.proposal_id,
             proof: b.proof,
-            enc_shares: b.enc_shares.into_iter().map(Into::into).collect(),
+            // enc_shares with secrets are not sent across FFI; wire shares are
+            // passed separately to build_share_payloads, so this is unused.
+            enc_shares: Vec::new(),
             anchor_height: b.anchor_height,
             vote_round_id: b.vote_round_id,
             shares_hash: b.shares_hash,
@@ -416,15 +404,24 @@ impl From<JsonVoteCommitmentBundle> for voting::VoteCommitmentBundle {
     }
 }
 
+/// Wire-safe encrypted share that omits secret fields (plaintext_value, randomness).
+/// Used in SharePayload which is sent to the helper server.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JsonWireEncryptedShare {
+    pub c1: Vec<u8>,
+    pub c2: Vec<u8>,
+    pub share_index: u32,
+}
+
 /// JSON-serializable SharePayload.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JsonSharePayload {
     pub shares_hash: Vec<u8>,
     pub proposal_id: u32,
     pub vote_decision: u32,
-    pub enc_share: JsonEncryptedShare,
+    pub enc_share: JsonWireEncryptedShare,
     pub tree_position: u64,
-    pub all_enc_shares: Vec<JsonEncryptedShare>,
+    pub all_enc_shares: Vec<JsonWireEncryptedShare>,
     pub share_comms: Vec<Vec<u8>>,
     pub primary_blind: Vec<u8>,
 }
@@ -435,11 +432,32 @@ impl From<voting::SharePayload> for JsonSharePayload {
             shares_hash: p.shares_hash,
             proposal_id: p.proposal_id,
             vote_decision: p.vote_decision,
-            enc_share: p.enc_share.into(),
+            enc_share: JsonWireEncryptedShare {
+                c1: p.enc_share.c1,
+                c2: p.enc_share.c2,
+                share_index: p.enc_share.share_index,
+            },
             tree_position: p.tree_position,
-            all_enc_shares: p.all_enc_shares.into_iter().map(Into::into).collect(),
+            all_enc_shares: p.all_enc_shares
+                .into_iter()
+                .map(|s| JsonWireEncryptedShare {
+                    c1: s.c1,
+                    c2: s.c2,
+                    share_index: s.share_index,
+                })
+                .collect(),
             share_comms: p.share_comms,
             primary_blind: p.primary_blind,
+        }
+    }
+}
+
+impl From<voting::WireEncryptedShare> for JsonWireEncryptedShare {
+    fn from(s: voting::WireEncryptedShare) -> Self {
+        Self {
+            c1: s.c1,
+            c2: s.c2,
+            share_index: s.share_index,
         }
     }
 }
@@ -1591,7 +1609,7 @@ pub unsafe extern "C" fn zcashlc_voting_encrypt_shares(
             .encrypt_shares(&round_id_str, &shares)
             .map_err(|e| anyhow!("encrypt_shares failed: {}", e))?;
 
-        let json_shares: Vec<JsonEncryptedShare> =
+        let json_shares: Vec<JsonWireEncryptedShare> =
             encrypted.into_iter().map(Into::into).collect();
         json_to_boxed_slice(&json_shares)
     });
@@ -1679,7 +1697,7 @@ pub unsafe extern "C" fn zcashlc_voting_build_vote_commitment(
 
 /// Build share payloads for delegated share submission.
 ///
-/// `enc_shares_json` is JSON-encoded `Vec<EncryptedShare>`.
+/// `enc_shares_json` is JSON-encoded `Vec<WireEncryptedShare>`.
 /// `commitment_json` is JSON-encoded `VoteCommitmentBundle`.
 ///
 /// Returns JSON-encoded `Vec<SharePayload>` as `*mut FfiBoxedSlice`, or null on error.
@@ -1704,8 +1722,8 @@ pub unsafe extern "C" fn zcashlc_voting_build_share_payloads(
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
 
         let shares_bytes = unsafe { bytes_from_ptr(enc_shares_json, enc_shares_json_len) };
-        let json_shares: Vec<JsonEncryptedShare> = serde_json::from_slice(shares_bytes)?;
-        let core_shares: Vec<voting::EncryptedShare> =
+        let json_shares: Vec<JsonWireEncryptedShare> = serde_json::from_slice(shares_bytes)?;
+        let wire_shares: Vec<voting::WireEncryptedShare> =
             json_shares.into_iter().map(Into::into).collect();
 
         let commitment_bytes = unsafe { bytes_from_ptr(commitment_json, commitment_json_len) };
@@ -1716,7 +1734,7 @@ pub unsafe extern "C" fn zcashlc_voting_build_share_payloads(
         let payloads = handle
             .db
             .build_share_payloads(
-                &core_shares,
+                &wire_shares,
                 &core_commitment,
                 vote_decision,
                 num_options,

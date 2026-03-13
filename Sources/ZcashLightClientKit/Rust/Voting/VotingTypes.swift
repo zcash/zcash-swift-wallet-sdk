@@ -232,42 +232,6 @@ public struct VotingDelegationSubmission: Codable, Sendable {
 // MARK: - Encrypted Share (JSON)
 
 /// An encrypted vote share.
-public struct VotingEncryptedShare: Codable, Sendable {
-    // swiftlint:disable:next identifier_name
-    public let c1: [UInt8]
-    // swiftlint:disable:next identifier_name
-    public let c2: [UInt8]
-    public let shareIndex: UInt32
-    public let plaintextValue: UInt64
-    public let randomness: [UInt8]
-
-    enum CodingKeys: String, CodingKey {
-        // swiftlint:disable:next identifier_name
-        case c1
-        // swiftlint:disable:next identifier_name
-        case c2
-        case shareIndex = "share_index"
-        case plaintextValue = "plaintext_value"
-        case randomness
-    }
-
-    public init(
-        // swiftlint:disable:next identifier_name
-        c1: [UInt8],
-        // swiftlint:disable:next identifier_name
-        c2: [UInt8],
-        shareIndex: UInt32,
-        plaintextValue: UInt64,
-        randomness: [UInt8]
-    ) {
-        self.c1 = c1
-        self.c2 = c2
-        self.shareIndex = shareIndex
-        self.plaintextValue = plaintextValue
-        self.randomness = randomness
-    }
-}
-
 // MARK: - Vote Commitment Bundle (JSON)
 
 /// A vote commitment bundle produced by ZKP #2.
@@ -277,7 +241,7 @@ public struct VotingVoteCommitmentBundle: Codable, Sendable {
     public let voteCommitment: [UInt8]
     public let proposalId: UInt32
     public let proof: [UInt8]
-    public let encShares: [VotingEncryptedShare]
+    public let encShares: [VotingWireEncryptedShare]
     public let anchorHeight: UInt32
     public let voteRoundId: String
     public let sharesHash: [UInt8]
@@ -308,7 +272,7 @@ public struct VotingVoteCommitmentBundle: Codable, Sendable {
         voteCommitment: [UInt8],
         proposalId: UInt32,
         proof: [UInt8],
-        encShares: [VotingEncryptedShare],
+        encShares: [VotingWireEncryptedShare],
         anchorHeight: UInt32,
         voteRoundId: String,
         sharesHash: [UInt8],
@@ -333,6 +297,33 @@ public struct VotingVoteCommitmentBundle: Codable, Sendable {
     }
 }
 
+// MARK: - Wire Encrypted Share (JSON)
+
+/// Wire-safe encrypted share — contains only the public ciphertext components.
+/// Secrets (plaintextValue, randomness) stay inside Rust and never cross the FFI boundary.
+public struct VotingWireEncryptedShare: Codable, Sendable {
+    // swiftlint:disable:next identifier_name
+    public let c1: [UInt8]
+    // swiftlint:disable:next identifier_name
+    public let c2: [UInt8]
+    public let shareIndex: UInt32
+
+    enum CodingKeys: String, CodingKey {
+        // swiftlint:disable:next identifier_name
+        case c1
+        // swiftlint:disable:next identifier_name
+        case c2
+        case shareIndex = "share_index"
+    }
+
+    // swiftlint:disable:next identifier_name
+    public init(c1: [UInt8], c2: [UInt8], shareIndex: UInt32) {
+        self.c1 = c1
+        self.c2 = c2
+        self.shareIndex = shareIndex
+    }
+}
+
 // MARK: - Share Payload (JSON)
 
 /// Share payload for delegated share submission.
@@ -340,9 +331,9 @@ public struct VotingSharePayload: Codable, Sendable {
     public let sharesHash: [UInt8]
     public let proposalId: UInt32
     public let voteDecision: UInt32
-    public let encShare: VotingEncryptedShare
+    public let encShare: VotingWireEncryptedShare
     public let treePosition: UInt64
-    public let allEncShares: [VotingEncryptedShare]
+    public let allEncShares: [VotingWireEncryptedShare]
     public let shareComms: [[UInt8]]
     public let primaryBlind: [UInt8]
 
