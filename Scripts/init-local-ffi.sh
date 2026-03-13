@@ -26,16 +26,38 @@ XCFRAMEWORK_DIR="LocalPackages/libzcashlc.xcframework"
 
 if [[ "$USE_CACHED" == "true" ]]; then
     echo "Downloading pre-built xcframework..."
+    REPO="zcash/zcash-swift-wallet-sdk"
+
     # Extract the version from the download URL in Package.swift
     SDK_VERSION=$(grep -oE 'releases/download/[0-9]+\.[0-9]+\.[0-9]+' Package.swift | head -1 | sed 's|releases/download/||')
     if [[ -z "$SDK_VERSION" ]]; then
         echo "Error: Could not determine SDK version from Package.swift"
         exit 1
     fi
-    DOWNLOAD_URL="https://github.com/zcash/zcash-swift-wallet-sdk/releases/download/${SDK_VERSION}/libzcashlc.xcframework.zip"
+
+    # Extract the expected checksum from Package.swift
+    EXPECTED_CHECKSUM=$(grep -A1 'libzcashlc.xcframework.zip' Package.swift | grep 'checksum:' | sed -E 's/.*checksum: "([a-f0-9]+)".*/\1/')
 
     mkdir -p LocalPackages
-    curl -L "$DOWNLOAD_URL" -o LocalPackages/libzcashlc.xcframework.zip
+    # Use gh CLI to download release assets (works for both draft and published releases)
+    gh release download "$SDK_VERSION" \
+        --repo "$REPO" \
+        --pattern "libzcashlc.xcframework.zip" \
+        --dir LocalPackages
+
+    # Verify checksum if we extracted one from Package.swift
+    if [[ -n "$EXPECTED_CHECKSUM" ]]; then
+        ACTUAL_CHECKSUM=$(shasum -a 256 LocalPackages/libzcashlc.xcframework.zip | awk '{print $1}')
+        if [[ "$ACTUAL_CHECKSUM" != "$EXPECTED_CHECKSUM" ]]; then
+            echo "Error: Checksum mismatch!"
+            echo "  Expected: $EXPECTED_CHECKSUM"
+            echo "  Actual:   $ACTUAL_CHECKSUM"
+            rm -f LocalPackages/libzcashlc.xcframework.zip
+            exit 1
+        fi
+        echo "Checksum verified."
+    fi
+
     unzip -o LocalPackages/libzcashlc.xcframework.zip -d LocalPackages/
     rm LocalPackages/libzcashlc.xcframework.zip
     echo ""
