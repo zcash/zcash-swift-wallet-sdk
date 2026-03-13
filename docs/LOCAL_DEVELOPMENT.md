@@ -52,6 +52,8 @@ The `--cached` flag downloads a pre-built release instead of building from sourc
 ./Scripts/init-local-ffi.sh --cached
 ```
 
+**Warning:** Only use `--cached` if there have been no FFI changes on your branch since the last release. Using a stale pre-built binary with modified Swift bindings could cause silent data corruption and loss of funds. Additionally, `--cached` skips the Rust build entirely, so the first call to `rebuild-local-ffi.sh` will be a full (non-incremental) build.
+
 ### Opening in Xcode
 
 You can open the project two ways:
@@ -201,6 +203,14 @@ rm -rf target/Headers
 After running `init-local-ffi.sh` or `reset-local-ffi.sh`, Xcode may need to re-resolve packages:
 1. File > Packages > Reset Package Caches
 2. If that doesn't help, close and reopen the workspace
+
+### FFIBuilder fails on first workspace open
+
+When opening `ZcashSDK.xcworkspace` for the first time after running `init-local-ffi.sh`, FFIBuilder may fail with "Command PhaseScriptExecution failed with a nonzero exit code". This is a timing issue -- Xcode may attempt to build FFIBuilder before package resolution has completed. Run "Product > Build For > Testing" manually and the build should succeed. Subsequent builds will work normally.
+
+### FFI rebuilds from scratch despite no changes
+
+The Makefile (used by `init-local-ffi.sh`) and `rebuild-local-ffi.sh` invoke `cargo` with slightly different environment variables, which can cause Cargo to invalidate its build cache. This means the first `rebuild-local-ffi.sh` after `init-local-ffi.sh` (or vice versa) may do a full rebuild. Subsequent incremental rebuilds within the same tool will be fast.
 
 ### `rustup: command not found` in Xcode build
 

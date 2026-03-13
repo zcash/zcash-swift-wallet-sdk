@@ -6,6 +6,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## 2.4.6 - 2026-03-12
+
+### Changed
+- This is the first release using Github artifact-based deployment. Users should 
+  obtain releases from <TBD>
+
+## 0.19.2 - 2026-03-02
+
+### Fixed
+- Updated to `shardtree 0.6.2, zcash_client_sqlite 0.19.4` to fix a note
+  commitment tree corruption bug.
+
 ## 0.19.1 - 2025-11-26
 
 ### Added

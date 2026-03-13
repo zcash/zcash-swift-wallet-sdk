@@ -51,23 +51,7 @@ else
 fi
 
 # Create local SPM package wrapper
-cat > LocalPackages/Package.swift << 'EOF'
-// swift-tools-version:5.6
-import PackageDescription
-
-let package = Package(
-    name: "libzcashlc",
-    products: [
-        .library(name: "libzcashlc", targets: ["libzcashlc"])
-    ],
-    targets: [
-        .binaryTarget(
-            name: "libzcashlc",
-            path: "libzcashlc.xcframework"
-        )
-    ]
-)
-EOF
+cp BuildSupport/LocalPackages-Package.swift LocalPackages/Package.swift
 
 echo ""
 echo "Local FFI initialized at LocalPackages/"

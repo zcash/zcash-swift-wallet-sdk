@@ -2428,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "libzcashlc"
-version = "0.19.1"
+version = "2.4.6"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -4093,9 +4093,9 @@ dependencies = [
 
 [[package]]
 name = "shardtree"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "637e95dcd06bc1bb3f86ed9db1e1832a70125f32daae071ef37dcb7701b7d4fe"
+checksum = "359e552886ae54d1642091645980d83f7db465fd9b5b0248e3680713c1773388"
 dependencies = [
  "bitflags 2.10.0",
  "either",
@@ -6424,9 +6424,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_backend"
-version = "0.21.0"
+version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5493217c813ba1f7ef4e6b6bf846f4e4cd57b6a070d679c9f15d2477e12d1464"
+checksum = "60385c0fce292b87ecff619b52b70221b2b948c341d7dd1f6bbb4fd849befead"
 dependencies = [
  "arti-client",
  "base64",
@@ -6493,9 +6493,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_sqlite"
-version = "0.19.1"
+version = "0.19.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b31a864819b6534a88b055aaaab446699e368b17caa4bc94edc5b65febf0b72f"
+checksum = "04ef4c41fe87933c996e8d77ae602ed3f7bf0f056b219c1044f6e7742d4e5cf1"
 dependencies = [
  "bip32",
  "bitflags 2.10.0",

@@ -1,10 +1,11 @@
 [package]
 name = "libzcashlc"
-version = "0.19.1"
+version = "2.4.6"
 authors = [
-    "Jack Grigg <jack@electriccoin.co>",
-    "Francisco Gindre",
+    "Jack Grigg <thestr4d@gmail.com>",
     "Lukas Korba <lukas@tangiblecodes.com>",
+    "Kris Nuttycombe<kris@nutty.land>",
+    "Francisco Gindre",
 ]
 license = "MIT"
 edition = "2024"
