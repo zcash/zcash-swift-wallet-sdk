@@ -276,40 +276,27 @@ extension VotingRustBackend {
 
 extension VotingRustBackend {
     /// Get wallet notes eligible for voting at the snapshot height.
+    ///
+    /// `accountUUID` must be exactly 16 bytes identifying the wallet account.
     public func getWalletNotes(
         walletDbPath: String,
         snapshotHeight: UInt64,
         networkId: UInt32,
-        seedFingerprint: [UInt8]?,
-        accountIndex: Int64
+        accountUUID: [UInt8]
     ) throws -> [VotingNoteInfo] {
         let dbh = try requireHandle()
         let pathBytes = [UInt8](walletDbPath.utf8)
 
         let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = pathBytes.withUnsafeBufferPointer { pathBuf in
-            if let sfp = seedFingerprint {
-                return sfp.withUnsafeBufferPointer { sfpBuf in
-                    zcashlc_voting_get_wallet_notes(
-                        dbh,
-                        pathBuf.baseAddress,
-                        UInt(pathBuf.count),
-                        snapshotHeight,
-                        networkId,
-                        sfpBuf.baseAddress,
-                        UInt(sfpBuf.count),
-                        accountIndex
-                    )
-                }
-            } else {
-                return zcashlc_voting_get_wallet_notes(
+            accountUUID.withUnsafeBufferPointer { uuidBuf in
+                zcashlc_voting_get_wallet_notes(
                     dbh,
                     pathBuf.baseAddress,
                     UInt(pathBuf.count),
                     snapshotHeight,
                     networkId,
-                    nil,
-                    0,
-                    accountIndex
+                    uuidBuf.baseAddress,
+                    UInt(uuidBuf.count)
                 )
             }
         }

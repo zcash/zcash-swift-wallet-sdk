@@ -1020,12 +1020,13 @@ pub unsafe extern "C" fn zcashlc_voting_delete_skipped_bundles(
 ///
 /// Returns JSON-encoded `Vec<NoteInfo>` as `*mut FfiBoxedSlice`, or null on error.
 ///
-/// `seed_fingerprint` and `account_index` are optional filters: pass null/0 to skip.
+/// `account_uuid` must be a non-null pointer to a 16-byte AccountUuid.
 ///
 /// # Safety
 ///
 /// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
 /// - `wallet_db_path` must be a valid path for reads of `wallet_db_path_len` bytes.
+/// - `account_uuid` must be a valid pointer to 16 bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_get_wallet_notes(
     db: *mut VotingDatabaseHandle,
@@ -1033,9 +1034,8 @@ pub unsafe extern "C" fn zcashlc_voting_get_wallet_notes(
     wallet_db_path_len: usize,
     snapshot_height: u64,
     network_id: u32,
-    seed_fingerprint: *const u8,
-    seed_fingerprint_len: usize,
-    account_index: i64,
+    account_uuid: *const u8,
+    account_uuid_len: usize,
 ) -> *mut crate::ffi::BoxedSlice {
     let db = AssertUnwindSafe(db);
     let res = catch_panic(|| {
@@ -1043,32 +1043,17 @@ pub unsafe extern "C" fn zcashlc_voting_get_wallet_notes(
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
         let wallet_path_str = unsafe { str_from_ptr(wallet_db_path, wallet_db_path_len) }?;
 
-        let _seed_fp = if seed_fingerprint.is_null() || seed_fingerprint_len == 0 {
-            None
-        } else {
-            Some(unsafe { bytes_from_ptr(seed_fingerprint, seed_fingerprint_len) }.to_vec())
-        };
-        let acct_idx = if account_index < 0 {
-            None
-        } else {
-            Some(account_index as u32)
-        };
-
         let (wallet_db, network) = open_wallet_db(&wallet_path_str, network_id)?;
 
-        // Resolve the account UUID — use account_index to pick from the
-        // wallet's account list, or default to the first account.
         use zcash_client_backend::data_api::WalletRead;
-        let account_ids = wallet_db.get_account_ids()?;
-        let target_id = match acct_idx {
-            Some(idx) => account_ids
-                .get(idx as usize)
-                .copied()
-                .ok_or_else(|| anyhow!("account_index {} out of range (wallet has {} accounts)", idx, account_ids.len()))?,
-            None => *account_ids
-                .first()
-                .ok_or_else(|| anyhow!("no accounts in wallet"))?,
-        };
+        if account_uuid.is_null() || account_uuid_len != 16 {
+            return Err(anyhow!("account_uuid must be a non-null pointer to 16 bytes"));
+        }
+        let uuid_bytes = unsafe { bytes_from_ptr(account_uuid, account_uuid_len) };
+        let arr: [u8; 16] = uuid_bytes
+            .try_into()
+            .map_err(|_| anyhow!("account_uuid must be 16 bytes"))?;
+        let target_id = zcash_client_sqlite::AccountUuid::from_uuid(uuid::Uuid::from_bytes(arr));
         let account = wallet_db
             .get_account(target_id)?
             .ok_or_else(|| anyhow!("account not found"))?;
