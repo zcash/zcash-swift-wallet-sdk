@@ -649,6 +649,32 @@ pub unsafe extern "C" fn zcashlc_voting_db_free(ptr: *mut VotingDatabaseHandle) 
     }
 }
 
+/// Set the wallet identifier for all subsequent voting operations.
+/// Must be called after `zcashlc_voting_db_open` and before any round operations.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
+/// - `wallet_id` must be valid for reads of `wallet_id_len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_voting_set_wallet_id(
+    db: *mut VotingDatabaseHandle,
+    wallet_id: *const u8,
+    wallet_id_len: usize,
+) -> i32 {
+    let db = AssertUnwindSafe(db);
+    let res = catch_panic(|| {
+        let handle =
+            unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
+        let wallet_id_str = unsafe { str_from_ptr(wallet_id, wallet_id_len) }?;
+        handle.db.set_wallet_id(&wallet_id_str);
+        Ok(0)
+    });
+    unwrap_exc_or(res, -1)
+}
+
 // =============================================================================
 // Free functions for #[repr(C)] return types
 // =============================================================================
@@ -1020,7 +1046,8 @@ pub unsafe extern "C" fn zcashlc_voting_delete_skipped_bundles(
 ///
 /// Returns JSON-encoded `Vec<NoteInfo>` as `*mut FfiBoxedSlice`, or null on error.
 ///
-/// `seed_fingerprint` and `account_index` are optional filters: pass null/0 to skip.
+/// When `account_uuid` is non-null and 16 bytes, it is used directly to look up the
+/// account. Otherwise falls back to positional `account_index` into `get_account_ids()`.
 ///
 /// # Safety
 ///
@@ -1033,8 +1060,8 @@ pub unsafe extern "C" fn zcashlc_voting_get_wallet_notes(
     wallet_db_path_len: usize,
     snapshot_height: u64,
     network_id: u32,
-    seed_fingerprint: *const u8,
-    seed_fingerprint_len: usize,
+    account_uuid: *const u8,
+    account_uuid_len: usize,
     account_index: i64,
 ) -> *mut crate::ffi::BoxedSlice {
     let db = AssertUnwindSafe(db);
@@ -1043,31 +1070,32 @@ pub unsafe extern "C" fn zcashlc_voting_get_wallet_notes(
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
         let wallet_path_str = unsafe { str_from_ptr(wallet_db_path, wallet_db_path_len) }?;
 
-        let _seed_fp = if seed_fingerprint.is_null() || seed_fingerprint_len == 0 {
-            None
-        } else {
-            Some(unsafe { bytes_from_ptr(seed_fingerprint, seed_fingerprint_len) }.to_vec())
-        };
-        let acct_idx = if account_index < 0 {
-            None
-        } else {
-            Some(account_index as u32)
-        };
-
         let (wallet_db, network) = open_wallet_db(&wallet_path_str, network_id)?;
 
-        // Resolve the account UUID — use account_index to pick from the
-        // wallet's account list, or default to the first account.
         use zcash_client_backend::data_api::WalletRead;
-        let account_ids = wallet_db.get_account_ids()?;
-        let target_id = match acct_idx {
-            Some(idx) => account_ids
-                .get(idx as usize)
-                .copied()
-                .ok_or_else(|| anyhow!("account_index {} out of range (wallet has {} accounts)", idx, account_ids.len()))?,
-            None => *account_ids
-                .first()
-                .ok_or_else(|| anyhow!("no accounts in wallet"))?,
+        let target_id = if !account_uuid.is_null() && account_uuid_len == 16 {
+            let uuid_bytes = unsafe { bytes_from_ptr(account_uuid, account_uuid_len) };
+            let arr: [u8; 16] = uuid_bytes
+                .try_into()
+                .map_err(|_| anyhow!("account_uuid must be 16 bytes"))?;
+            zcash_client_sqlite::AccountUuid::from_uuid(uuid::Uuid::from_bytes(arr))
+        } else {
+            // Legacy fallback: positional index into account list.
+            let acct_idx = if account_index < 0 {
+                None
+            } else {
+                Some(account_index as u32)
+            };
+            let account_ids = wallet_db.get_account_ids()?;
+            match acct_idx {
+                Some(idx) => account_ids
+                    .get(idx as usize)
+                    .copied()
+                    .ok_or_else(|| anyhow!("account_index {} out of range (wallet has {} accounts)", idx, account_ids.len()))?,
+                None => *account_ids
+                    .first()
+                    .ok_or_else(|| anyhow!("no accounts in wallet"))?,
+            }
         };
         let account = wallet_db
             .get_account(target_id)?
@@ -1330,10 +1358,11 @@ pub unsafe extern "C" fn zcashlc_voting_generate_note_witnesses(
         let core_notes: Vec<voting::NoteInfo> = json_notes.into_iter().map(Into::into).collect();
 
         // Load cached tree state from voting DB and parse frontier
+        let wallet_id = handle.db.wallet_id();
         let conn = handle.db.conn();
-        let tree_state_bytes = voting::storage::queries::load_tree_state(&conn, &round_id_str)
+        let tree_state_bytes = voting::storage::queries::load_tree_state(&conn, &round_id_str, &wallet_id)
             .map_err(|e| anyhow!("load_tree_state failed: {}", e))?;
-        let params = voting::storage::queries::load_round_params(&conn, &round_id_str)
+        let params = voting::storage::queries::load_round_params(&conn, &round_id_str, &wallet_id)
             .map_err(|e| anyhow!("load_round_params failed: {}", e))?;
         drop(conn);
 
