@@ -3,7 +3,13 @@ extern crate cbindgen;
 use std::{env, path::PathBuf};
 
 fn main() {
-    println!("cargo:rerun-if-changed=rust/src/lib.rs");
+    // Re-run when any Rust source changes so cbindgen regenerates the C header.
+    for entry in std::fs::read_dir("rust/src").expect("rust/src should exist") {
+        let path = entry.expect("readable dir entry").path();
+        if path.extension().is_some_and(|ext| ext == "rs") {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
     println!("cargo:rerun-if-changed=rust/wrapper.c");
     println!("cargo:rerun-if-changed=rust/wrapper.h");
 
