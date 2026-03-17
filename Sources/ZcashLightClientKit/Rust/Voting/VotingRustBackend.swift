@@ -810,6 +810,147 @@ extension VotingRustBackend {
     }
 }
 
+// MARK: - Recovery state (TX hashes, bundles, keystone sigs)
+
+extension VotingRustBackend {
+    public func storeDelegationTxHash(roundId: String, bundleIndex: UInt32, txHash: String) throws {
+        let dbh = try requireHandle()
+        let ridBytes = [UInt8](roundId.utf8)
+        let txBytes = [UInt8](txHash.utf8)
+        let result = ridBytes.withUnsafeBufferPointer { ridBuf in
+            txBytes.withUnsafeBufferPointer { txBuf in
+                zcashlc_voting_store_delegation_tx_hash(dbh, ridBuf.baseAddress, UInt(ridBuf.count), bundleIndex, txBuf.baseAddress, UInt(txBuf.count))
+            }
+        }
+        guard result == 0 else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`store_delegation_tx_hash` failed")) }
+    }
+
+    public func getDelegationTxHash(roundId: String, bundleIndex: UInt32) throws -> String? {
+        let dbh = try requireHandle()
+        let ridBytes = [UInt8](roundId.utf8)
+        let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = ridBytes.withUnsafeBufferPointer { ridBuf in
+            zcashlc_voting_get_delegation_tx_hash(dbh, ridBuf.baseAddress, UInt(ridBuf.count), bundleIndex)
+        }
+        guard let ptr else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`get_delegation_tx_hash` failed")) }
+        defer { zcashlc_free_boxed_slice(ptr) }
+        return try decodeJSON(from: ptr)
+    }
+
+    public func storeVoteTxHash(roundId: String, bundleIndex: UInt32, proposalId: UInt32, txHash: String) throws {
+        let dbh = try requireHandle()
+        let ridBytes = [UInt8](roundId.utf8)
+        let txBytes = [UInt8](txHash.utf8)
+        let result = ridBytes.withUnsafeBufferPointer { ridBuf in
+            txBytes.withUnsafeBufferPointer { txBuf in
+                zcashlc_voting_store_vote_tx_hash(dbh, ridBuf.baseAddress, UInt(ridBuf.count), bundleIndex, proposalId, txBuf.baseAddress, UInt(txBuf.count))
+            }
+        }
+        guard result == 0 else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`store_vote_tx_hash` failed")) }
+    }
+
+    public func getVoteTxHash(roundId: String, bundleIndex: UInt32, proposalId: UInt32) throws -> String? {
+        let dbh = try requireHandle()
+        let ridBytes = [UInt8](roundId.utf8)
+        let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = ridBytes.withUnsafeBufferPointer { ridBuf in
+            zcashlc_voting_get_vote_tx_hash(dbh, ridBuf.baseAddress, UInt(ridBuf.count), bundleIndex, proposalId)
+        }
+        guard let ptr else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`get_vote_tx_hash` failed")) }
+        defer { zcashlc_free_boxed_slice(ptr) }
+        return try decodeJSON(from: ptr)
+    }
+
+    public func storeCommitmentBundle(roundId: String, bundleIndex: UInt32, proposalId: UInt32, bundleJson: String, vcTreePosition: UInt64) throws {
+        let dbh = try requireHandle()
+        let ridBytes = [UInt8](roundId.utf8)
+        let jsonBytes = [UInt8](bundleJson.utf8)
+        let result = ridBytes.withUnsafeBufferPointer { ridBuf in
+            jsonBytes.withUnsafeBufferPointer { jsonBuf in
+                zcashlc_voting_store_commitment_bundle(dbh, ridBuf.baseAddress, UInt(ridBuf.count), bundleIndex, proposalId, jsonBuf.baseAddress, UInt(jsonBuf.count), vcTreePosition)
+            }
+        }
+        guard result == 0 else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`store_commitment_bundle` failed")) }
+    }
+
+    public struct CommitmentBundleResult {
+        public let json: String
+        public let vcTreePosition: UInt64
+    }
+
+    public func getCommitmentBundle(roundId: String, bundleIndex: UInt32, proposalId: UInt32) throws -> CommitmentBundleResult? {
+        let dbh = try requireHandle()
+        let ridBytes = [UInt8](roundId.utf8)
+        let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = ridBytes.withUnsafeBufferPointer { ridBuf in
+            zcashlc_voting_get_commitment_bundle(dbh, ridBuf.baseAddress, UInt(ridBuf.count), bundleIndex, proposalId)
+        }
+        guard let ptr else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`get_commitment_bundle` failed")) }
+        defer { zcashlc_free_boxed_slice(ptr) }
+        // Rust serializes Option<(String, u64)> as a JSON array [string, number] or null.
+        let decoded: CommitmentBundleWire? = try decodeJSON(from: ptr)
+        return decoded.map { CommitmentBundleResult(json: $0.json, vcTreePosition: $0.vcTreePosition) }
+    }
+
+    private struct CommitmentBundleWire: Decodable {
+        let json: String
+        let vcTreePosition: UInt64
+
+        init(from decoder: Decoder) throws {
+            var container = try decoder.unkeyedContainer()
+            json = try container.decode(String.self)
+            vcTreePosition = try container.decode(UInt64.self)
+        }
+    }
+
+    public func storeKeystoneSignature(roundId: String, bundleIndex: UInt32, sig: Data, sighash: Data, rk: Data) throws { // swiftlint:disable:this function_parameter_count
+        let dbh = try requireHandle()
+        let ridBytes = [UInt8](roundId.utf8)
+        let sigBytes = [UInt8](sig)
+        let sighashBytes = [UInt8](sighash)
+        let rkBytes = [UInt8](rk)
+        let result = ridBytes.withUnsafeBufferPointer { ridBuf in
+            sigBytes.withUnsafeBufferPointer { sigBuf in
+                sighashBytes.withUnsafeBufferPointer { shBuf in
+                    rkBytes.withUnsafeBufferPointer { rkBuf in
+                        zcashlc_voting_store_keystone_signature(dbh, ridBuf.baseAddress, UInt(ridBuf.count), bundleIndex, sigBuf.baseAddress, UInt(sigBuf.count), shBuf.baseAddress, UInt(shBuf.count), rkBuf.baseAddress, UInt(rkBuf.count))
+                    }
+                }
+            }
+        }
+        guard result == 0 else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`store_keystone_signature` failed")) }
+    }
+
+    public struct KeystoneSignatureOut: Codable {
+        public let bundleIndex: UInt32
+        public let sig: [UInt8]
+        public let sighash: [UInt8]
+        public let rk: [UInt8]
+
+        enum CodingKeys: String, CodingKey {
+            case bundleIndex = "bundle_index"
+            case sig, sighash, rk
+        }
+    }
+
+    public func getKeystoneSignatures(roundId: String) throws -> [KeystoneSignatureOut] {
+        let dbh = try requireHandle()
+        let ridBytes = [UInt8](roundId.utf8)
+        let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = ridBytes.withUnsafeBufferPointer { ridBuf in
+            zcashlc_voting_get_keystone_signatures(dbh, ridBuf.baseAddress, UInt(ridBuf.count))
+        }
+        guard let ptr else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`get_keystone_signatures` failed")) }
+        defer { zcashlc_free_boxed_slice(ptr) }
+        return try decodeJSON(from: ptr)
+    }
+
+    public func clearRecoveryState(roundId: String) throws {
+        let dbh = try requireHandle()
+        let ridBytes = [UInt8](roundId.utf8)
+        let result = ridBytes.withUnsafeBufferPointer { ridBuf in
+            zcashlc_voting_clear_recovery_state(dbh, ridBuf.baseAddress, UInt(ridBuf.count))
+        }
+        guard result == 0 else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`clear_recovery_state` failed")) }
+    }
+}
+
 // MARK: - Tree sync
 
 extension VotingRustBackend {
