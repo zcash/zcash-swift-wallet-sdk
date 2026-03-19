@@ -96,6 +96,10 @@ class RustBackendMockHelper {
             try await rustBackend.rewindToHeight(height: height)
         }
 
+        rustBackendMock.rewindToChainStateChainStateClosure = { chainState in
+            try await rustBackend.rewindToChainState(chainState: chainState)
+        }
+
         rustBackendMock.rewindCacheToHeightHeightClosure = { _ in }
 
         rustBackendMock.suggestScanRangesClosure = {

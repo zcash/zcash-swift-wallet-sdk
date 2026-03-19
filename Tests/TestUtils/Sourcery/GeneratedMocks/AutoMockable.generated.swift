@@ -3340,6 +3340,25 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
     }
 
+    // MARK: - rewindToChainState
+
+    var rewindToChainStateChainStateThrowableError: Error?
+    var rewindToChainStateChainStateCallsCount = 0
+    var rewindToChainStateChainStateCalled: Bool {
+        return rewindToChainStateChainStateCallsCount > 0
+    }
+    var rewindToChainStateChainStateReceivedChainState: TreeState?
+    var rewindToChainStateChainStateClosure: ((TreeState) async throws -> Void)?
+
+    func rewindToChainState(chainState: TreeState) async throws {
+        if let error = rewindToChainStateChainStateThrowableError {
+            throw error
+        }
+        rewindToChainStateChainStateCallsCount += 1
+        rewindToChainStateChainStateReceivedChainState = chainState
+        try await rewindToChainStateChainStateClosure!(chainState)
+    }
+
     // MARK: - rewindCacheToHeight
 
     var rewindCacheToHeightHeightThrowableError: Error?
