@@ -38,7 +38,7 @@ use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 use zcash_client_backend::{
     data_api::{
-        AccountPurpose, MaxSpendMode, TransactionStatus, Zip32Derivation,
+        AccountPurpose, MaxSpendMode, TransactionStatus, TransparentKeyOrigin, Zip32Derivation,
         wallet::{self, SpendingKeys, extract_and_store_transaction_from_pczt},
     },
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
@@ -2095,7 +2095,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         let (change_strategy, input_selector) = zip317_helper(None);
 
         let req = TransactionRequest::new(vec![
-            Payment::new(to, value, memo, None, None, vec![]).ok_or_else(|| {
+            Payment::new(to, Some(value), memo, None, None, vec![]).ok_or_else(|| {
                 anyhow!("Memos are not permitted when sending to transparent recipients.")
             })?,
         ])
@@ -2109,6 +2109,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
             &change_strategy,
             req,
             wallet::ConfirmationsPolicy::try_from(confirmations_policy)?,
+            None,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
@@ -2248,6 +2249,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
             &change_strategy,
             req,
             wallet::ConfirmationsPolicy::try_from(confirmations_policy)?,
+            None,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
@@ -2420,7 +2422,13 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                 let (ephemeral, non_ephemeral): (Vec<_>, Vec<_>) = account_receivers
                     .into_iter()
                     .filter(|(_, (_, balance))| balance.spendable_value() >= shielding_threshold)
-                    .partition(|(_, (scope, _))| *scope == TransparentKeyScope::EPHEMERAL);
+                    .partition(|(_, (origin, _))| {
+                        matches!(
+                            origin,
+                            TransparentKeyOrigin::Derived { scope } if *scope
+                                == TransparentKeyScope::EPHEMERAL
+                        )
+                    });
 
                 if non_ephemeral.is_empty() {
                     ephemeral
@@ -2549,6 +2557,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
             &SpendingKeys::from_unified_spending_key(usk),
             OvkPolicy::Sender,
             &proposal,
+            None,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
