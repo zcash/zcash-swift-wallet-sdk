@@ -999,11 +999,13 @@ extension VotingRustBackend {
         return try decodeJSON(from: ptr)
     }
 
-    /// Reset the in-memory TreeClient.
-    public func resetTreeClient() throws {
+    /// Reset the in-memory TreeClient for a round (empty string resets all).
+    public func resetTreeClient(roundId: String = "") throws {
         let dbh = try requireHandle()
 
-        let result = zcashlc_voting_reset_tree_client(dbh)
+        let result = roundId.utf8CString.withUnsafeBufferPointer { buf in
+            zcashlc_voting_reset_tree_client(dbh, buf.baseAddress, UInt(buf.count - 1))
+        }
         guard result == 0 else {
             throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`reset_tree_client` failed"))
         }

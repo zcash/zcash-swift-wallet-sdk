@@ -2089,15 +2089,18 @@ pub unsafe extern "C" fn zcashlc_voting_generate_van_witness(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_reset_tree_client(
     db: *mut VotingDatabaseHandle,
+    round_id: *const u8,
+    round_id_len: usize,
 ) -> i32 {
     let db = AssertUnwindSafe(db);
     let res = catch_panic(|| {
         let handle =
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
+        let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
 
         handle
             .tree_sync
-            .reset()
+            .reset(&round_id_str)
             .map_err(|e| anyhow!("reset_tree_client failed: {}", e))?;
         Ok(0)
     });
