@@ -155,6 +155,15 @@ protocol ZcashRustBackendWelding {
     /// - Throws: `rustRewindToHeight` if rust layer returns error.
     func rewindToHeight(height: BlockHeight) async throws -> RewindResult
 
+    /// Truncates the data database to the specified chain state.
+    ///
+    /// In contrast to `rewindToHeight`, this method allows the caller to truncate the wallet database to a precise
+    /// height by providing additional chain state information needed for note commitment tree maintenance after the
+    /// truncation.
+    /// - parameter chainState: the `TreeState` representing the chain state at the height to truncate to.
+    /// - Throws: `rustRewindToChainState` if rust layer returns error.
+    func rewindToChainState(chainState: TreeState) async throws
+
     /// Resets the state of the FsBlock database to only contain block and transaction information up to the given height.
     /// - Note: this does not delete the files. Only rolls back the database.
     /// - parameter height: height to rewind to. This should be the height returned by a successful `rewindToHeight` call.
