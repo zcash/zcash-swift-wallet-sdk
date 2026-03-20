@@ -95,6 +95,7 @@ use zip32::fingerprint::SeedFingerprint;
 mod derivation;
 mod ffi;
 mod tor;
+mod voting;
 
 #[cfg(target_vendor = "apple")]
 mod os_log;
