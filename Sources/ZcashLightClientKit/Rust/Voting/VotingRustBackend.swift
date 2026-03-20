@@ -717,6 +717,7 @@ extension VotingRustBackend {
         vanAuthPath: [[UInt8]],
         vanPosition: UInt32,
         anchorHeight: UInt32,
+        singleShare: UInt8 = 0,
         progress: VotingProgressHandler?
     ) throws -> VotingVoteCommitmentBundle {
         let dbh = try requireHandle()
@@ -747,7 +748,8 @@ extension VotingRustBackend {
                             vanPosition,
                             anchorHeight,
                             callback,
-                            UnsafeMutableRawPointer(ctxPtr)
+                            UnsafeMutableRawPointer(ctxPtr),
+                            singleShare
                         )
                     }
                 }
@@ -767,7 +769,8 @@ extension VotingRustBackend {
         commitment: VotingVoteCommitmentBundle,
         voteDecision: UInt32,
         numOptions: UInt32,
-        vcTreePosition: UInt64
+        vcTreePosition: UInt64,
+        singleShare: UInt8 = 0
     ) throws -> [VotingSharePayload] {
         let dbh = try requireHandle()
         let sharesJson = try JSONEncoder().encode(encShares)
@@ -783,7 +786,8 @@ extension VotingRustBackend {
                     UInt(cjBuf.count),
                     voteDecision,
                     numOptions,
-                    vcTreePosition
+                    vcTreePosition,
+                    singleShare
                 )
             }
         }

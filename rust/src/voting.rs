@@ -1673,6 +1673,7 @@ pub unsafe extern "C" fn zcashlc_voting_build_vote_commitment(
     anchor_height: u32,
     progress_callback: Option<unsafe extern "C" fn(f64, *mut std::ffi::c_void)>,
     progress_context: *mut std::ffi::c_void,
+    single_share: u8,
 ) -> *mut crate::ffi::BoxedSlice {
     let db = AssertUnwindSafe(db);
     let progress_context = AssertUnwindSafe(progress_context);
@@ -1714,6 +1715,7 @@ pub unsafe extern "C" fn zcashlc_voting_build_vote_commitment(
                 &auth_path,
                 van_position,
                 anchor_height,
+                single_share != 0,
                 reporter.as_ref(),
             )
             .map_err(|e| anyhow!("build_vote_commitment failed: {}", e))?;
@@ -1744,6 +1746,7 @@ pub unsafe extern "C" fn zcashlc_voting_build_share_payloads(
     vote_decision: u32,
     num_options: u32,
     vc_tree_position: u64,
+    single_share: u8,
 ) -> *mut crate::ffi::BoxedSlice {
     let db = AssertUnwindSafe(db);
     let res = catch_panic(|| {
@@ -1768,6 +1771,7 @@ pub unsafe extern "C" fn zcashlc_voting_build_share_payloads(
                 vote_decision,
                 num_options,
                 vc_tree_position,
+                single_share != 0,
             )
             .map_err(|e| anyhow!("build_share_payloads failed: {}", e))?;
 
