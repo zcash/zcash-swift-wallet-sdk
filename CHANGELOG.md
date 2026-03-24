@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Changed
+- `importAccount` now accepts an optional `birthdayHeight` parameter. When provided, the account's birthday checkpoint is resolved from the given height instead of the current chain tip, allowing proper sync of wallets with older funds (e.g. Keystone imports).
+
 # 2.4.7 - 2026-03-20
 
 ## Checkpoints

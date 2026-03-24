@@ -2083,25 +2083,25 @@ class SynchronizerMock: Synchronizer {
 
     // MARK: - importAccount
 
-    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceThrowableError: Error?
-    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceCallsCount = 0
-    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceCalled: Bool {
-        return importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceCallsCount > 0
+    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightThrowableError: Error?
+    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightCallsCount = 0
+    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightCalled: Bool {
+        return importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightCallsCount > 0
     }
-    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceReceivedArguments: (ufvk: String, seedFingerprint: [UInt8]?, zip32AccountIndex: Zip32AccountIndex?, purpose: AccountPurpose, name: String, keySource: String?)?
-    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceReturnValue: AccountUUID!
-    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceClosure: ((String, [UInt8]?, Zip32AccountIndex?, AccountPurpose, String, String?) async throws -> AccountUUID)?
+    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightReceivedArguments: (ufvk: String, seedFingerprint: [UInt8]?, zip32AccountIndex: Zip32AccountIndex?, purpose: AccountPurpose, name: String, keySource: String?, birthdayHeight: BlockHeight?)?
+    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightReturnValue: AccountUUID!
+    var importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightClosure: ((String, [UInt8]?, Zip32AccountIndex?, AccountPurpose, String, String?, BlockHeight?) async throws -> AccountUUID)?
 
-    func importAccount(ufvk: String, seedFingerprint: [UInt8]?, zip32AccountIndex: Zip32AccountIndex?, purpose: AccountPurpose, name: String, keySource: String?) async throws -> AccountUUID {
-        if let error = importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceThrowableError {
+    func importAccount(ufvk: String, seedFingerprint: [UInt8]?, zip32AccountIndex: Zip32AccountIndex?, purpose: AccountPurpose, name: String, keySource: String?, birthdayHeight: BlockHeight?) async throws -> AccountUUID {
+        if let error = importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightThrowableError {
             throw error
         }
-        importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceCallsCount += 1
-        importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceReceivedArguments = (ufvk: ufvk, seedFingerprint: seedFingerprint, zip32AccountIndex: zip32AccountIndex, purpose: purpose, name: name, keySource: keySource)
-        if let closure = importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceClosure {
-            return try await closure(ufvk, seedFingerprint, zip32AccountIndex, purpose, name, keySource)
+        importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightCallsCount += 1
+        importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightReceivedArguments = (ufvk: ufvk, seedFingerprint: seedFingerprint, zip32AccountIndex: zip32AccountIndex, purpose: purpose, name: name, keySource: keySource, birthdayHeight: birthdayHeight)
+        if let closure = importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightClosure {
+            return try await closure(ufvk, seedFingerprint, zip32AccountIndex, purpose, name, keySource, birthdayHeight)
         } else {
-            return importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceReturnValue
+            return importAccountUfvkSeedFingerprintZip32AccountIndexPurposeNameKeySourceBirthdayHeightReturnValue
         }
     }
 

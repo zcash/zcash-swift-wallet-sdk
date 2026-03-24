@@ -186,7 +186,8 @@ extension CombineSDKSynchronizer: CombineSynchronizer {
         zip32AccountIndex: Zip32AccountIndex?,
         purpose: AccountPurpose,
         name: String,
-        keySource: String?
+        keySource: String?,
+        birthdayHeight: BlockHeight? = nil
     ) async throws -> SinglePublisher<AccountUUID, Error> {
         AsyncToCombineGateway.executeThrowingAction() {
             try await self.synchronizer.importAccount(
@@ -195,7 +196,8 @@ extension CombineSDKSynchronizer: CombineSynchronizer {
                 zip32AccountIndex: zip32AccountIndex,
                 purpose: purpose,
                 name: name,
-                keySource: keySource
+                keySource: keySource,
+                birthdayHeight: birthdayHeight
             )
         }
     }
