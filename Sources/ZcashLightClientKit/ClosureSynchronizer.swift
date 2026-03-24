@@ -134,6 +134,7 @@ public protocol ClosureSynchronizer {
         purpose: AccountPurpose,
         name: String,
         keySource: String?,
+        birthdayHeight: BlockHeight?,
         completion: @escaping (Result<AccountUUID, Error>) -> Void
     ) async throws
 
@@ -168,4 +169,27 @@ public protocol ClosureSynchronizer {
      */
     func rewind(_ policy: RewindPolicy) -> CompletablePublisher<Error>
     func wipe() -> CompletablePublisher<Error>
+}
+
+extension ClosureSynchronizer {
+    func importAccount(
+        ufvk: String,
+        seedFingerprint: [UInt8]?,
+        zip32AccountIndex: Zip32AccountIndex?,
+        purpose: AccountPurpose,
+        name: String,
+        keySource: String?,
+        completion: @escaping (Result<AccountUUID, Error>) -> Void
+    ) async throws {
+        try await importAccount(
+            ufvk: ufvk,
+            seedFingerprint: seedFingerprint,
+            zip32AccountIndex: zip32AccountIndex,
+            purpose: purpose,
+            name: name,
+            keySource: keySource,
+            birthdayHeight: nil,
+            completion: completion
+        )
+    }
 }

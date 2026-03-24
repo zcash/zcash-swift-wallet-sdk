@@ -351,6 +351,9 @@ public protocol Synchronizer: AnyObject {
     ///   - purpose: of the account, either `spending` or `viewOnly`
     ///   - name: name of the account.
     ///   - keySource: custom optional string for clients, used for example to help identify the type of the account.
+    ///   - birthdayHeight: optional birthday height for the account. When `nil`, the nearest checkpoint
+    ///     at or below the current chain tip is used. Pass an earlier height to ensure the SDK scans
+    ///     historical transactions (e.g. Orchard activation height for wallets with older funds).
     // swiftlint:disable:next function_parameter_count
     func importAccount(
         ufvk: String,
@@ -358,7 +361,8 @@ public protocol Synchronizer: AnyObject {
         zip32AccountIndex: Zip32AccountIndex?,
         purpose: AccountPurpose,
         name: String,
-        keySource: String?
+        keySource: String?,
+        birthdayHeight: BlockHeight?
     ) async throws -> AccountUUID
 
     func fetchTxidsWithMemoContaining(searchTerm: String) async throws -> [Data]
@@ -727,6 +731,27 @@ extension InternalSyncStatus {
         case .error(let error):
             return .error(error)
         }
+    }
+}
+
+extension Synchronizer {
+    func importAccount(
+        ufvk: String,
+        seedFingerprint: [UInt8]?,
+        zip32AccountIndex: Zip32AccountIndex?,
+        purpose: AccountPurpose,
+        name: String,
+        keySource: String?
+    ) async throws -> AccountUUID {
+        try await importAccount(
+            ufvk: ufvk,
+            seedFingerprint: seedFingerprint,
+            zip32AccountIndex: zip32AccountIndex,
+            purpose: purpose,
+            name: name,
+            keySource: keySource,
+            birthdayHeight: nil
+        )
     }
 }
 
