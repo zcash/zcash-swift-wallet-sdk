@@ -91,6 +91,14 @@ struct ZcashKeyDerivationBackend: ZcashKeyDerivationBackendWelding {
         return zcashlc_is_valid_unified_full_viewing_key([CChar](key.utf8CString), networkType.networkId)
     }
 
+    func isValidUnifiedIncomingViewingKey(_ key: String) -> Bool {
+        guard !key.containsCStringNullBytesBeforeStringEnding() else {
+            return false
+        }
+
+        return zcashlc_is_valid_unified_incoming_viewing_key([CChar](key.utf8CString), networkType.networkId)
+    }
+
     // MARK: Address Derivation
 
     func deriveUnifiedAddressFrom(ufvk: String) throws -> UnifiedAddress {

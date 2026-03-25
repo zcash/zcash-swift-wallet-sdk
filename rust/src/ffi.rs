@@ -28,6 +28,7 @@ pub struct Account {
     seed_fingerprint: [u8; 32],
     hd_account_index: u32,
     ufvk: *mut c_char,
+    uivk: *mut c_char,
 }
 
 impl Account {
@@ -38,6 +39,7 @@ impl Account {
         seed_fingerprint: [0u8; 32],
         hd_account_index: u32::MAX,
         ufvk: ptr::null_mut(),
+        uivk: ptr::null_mut(),
     };
 
     pub(crate) fn from_account(
@@ -58,6 +60,10 @@ impl Account {
             hd_account_index: derivation.map_or(u32::MAX, |d| d.account_index().into()),
             ufvk: account.ufvk().map_or(ptr::null_mut(), |ufvk| {
                 CString::new(ufvk.encode(params)).unwrap().into_raw()
+            }),
+            uivk: account.ufvk().map_or(ptr::null_mut(), |ufvk| {
+                let uivk = ufvk.to_unified_incoming_viewing_key();
+                CString::new(uivk.encode(params)).unwrap().into_raw()
             }),
         }
     }
@@ -80,6 +86,9 @@ pub unsafe extern "C" fn zcashlc_free_account(ptr: *mut Account) {
         }
         if !(account.ufvk.is_null()) {
             unsafe { zcashlc_string_free(account.ufvk) }
+        }
+        if !(account.uivk.is_null()) {
+            unsafe { zcashlc_string_free(account.uivk) }
         }
         drop(account);
     }

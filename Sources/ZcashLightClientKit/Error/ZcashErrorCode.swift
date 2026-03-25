@@ -347,6 +347,8 @@ public enum ZcashErrorCode: String {
     case spendingKeyInvalidInput = "ZWLTP0001"
     /// Can't create `UnifiedFullViewingKey` because input is invalid.
     case unifiedFullViewingKeyInvalidInput = "ZWLTP0002"
+    /// Can't create `UnifiedIncomingViewingKey` because input is invalid.
+    case unifiedIncomingViewingKeyInvalidInput = "ZWLTP0009"
     /// Can't create `SaplingExtendedFullViewingKey` because input is invalid.
     case extetendedFullViewingKeyInvalidInput = "ZWLTP0003"
     /// Can't create `TransparentAddress` because input is invalid.

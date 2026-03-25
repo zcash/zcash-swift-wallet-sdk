@@ -685,6 +685,9 @@ enum ZcashErrorDefinition {
     /// Can't create `UnifiedFullViewingKey` because input is invalid.
     // sourcery: code="ZWLTP0002"
     case unifiedFullViewingKeyInvalidInput
+    /// Can't create `UnifiedIncomingViewingKey` because input is invalid.
+    // sourcery: code="ZWLTP0009"
+    case unifiedIncomingViewingKeyInvalidInput
     /// Can't create `SaplingExtendedFullViewingKey` because input is invalid.
     // sourcery: code="ZWLTP0003"
     case extetendedFullViewingKeyInvalidInput

@@ -297,6 +297,28 @@ pub unsafe extern "C" fn zcashlc_is_valid_unified_full_viewing_key(
     unwrap_exc_or(res, false)
 }
 
+/// Returns true when the provided key encoding is a valid unified incoming viewing key for the
+/// given network, false in any other case.
+///
+/// # Safety
+///
+/// - `uivk` must be non-null and must point to a null-terminated UTF-8 string.
+/// - The memory referenced by `uivk` must not be mutated for the duration of the
+///   function call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_is_valid_unified_incoming_viewing_key(
+    uivk: *const c_char,
+    network_id: u32,
+) -> bool {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let uivkstr = unsafe { CStr::from_ptr(uivk).to_str()? };
+
+        Ok(UnifiedIncomingViewingKey::decode(&network, uivkstr).is_ok())
+    });
+    unwrap_exc_or(res, false)
+}
+
 /// Derives and returns a unified spending key from the given seed for the given account ID.
 ///
 /// Returns the binary encoding of the spending key. The caller should manage the memory of (and

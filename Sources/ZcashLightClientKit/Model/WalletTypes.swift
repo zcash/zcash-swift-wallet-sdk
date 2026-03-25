@@ -17,6 +17,7 @@ public struct Account: Equatable, Hashable, Codable, Identifiable {
     public let seedFingerprint: [UInt8]?
     public let hdAccountIndex: Zip32AccountIndex?
     public let ufvk: UnifiedFullViewingKey?
+    public let uivk: UnifiedIncomingViewingKey?
 }
 
 public struct UnifiedSpendingKey: Equatable, Undescribable {
@@ -64,6 +65,26 @@ public struct UnifiedFullViewingKey: Equatable, StringEncoded, Undescribable, Ha
     public init(encoding: String, network: NetworkType) throws {
         guard DerivationTool(networkType: network).isValidUnifiedFullViewingKey(encoding) else {
             throw ZcashError.unifiedFullViewingKeyInvalidInput
+        }
+
+        self.encoding = encoding
+    }
+}
+
+/// A ZIP 316 Unified Incoming Viewing Key.
+public struct UnifiedIncomingViewingKey: Equatable, StringEncoded, Undescribable, Hashable, Codable {
+    let encoding: String
+
+    public var stringEncoded: String { encoding }
+
+    /// Initializes a new UnifiedIncomingViewingKey (UIVK) from the provided string encoding
+    /// - Parameters:
+    ///  - parameter encoding: String encoding of unified incoming viewing key
+    ///  - parameter network: `NetworkType` corresponding to the encoding (Mainnet or Testnet)
+    /// - Throws: `unifiedIncomingViewingKeyInvalidInput` when the provided encoding is found to be invalid
+    public init(encoding: String, network: NetworkType) throws {
+        guard DerivationTool(networkType: network).isValidUnifiedIncomingViewingKey(encoding) else {
+            throw ZcashError.unifiedIncomingViewingKeyInvalidInput
         }
 
         self.encoding = encoding
