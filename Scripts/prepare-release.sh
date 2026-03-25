@@ -62,6 +62,8 @@ if [[ -t 0 ]] && [[ -n $(git status --porcelain) ]]; then
     fi
 fi
 
+git checkout -b "release/ffi-${VERSION}"
+
 # Build full xcframework
 echo "=== Building xcframework (this takes a while) ==="
 cd BuildSupport
@@ -130,13 +132,13 @@ echo "   ),"
 echo ""
 echo "2. Commit the change:"
 echo "   git add Package.swift"
-echo "   git commit -m \"Prepare release ${VERSION}\""
+echo "   git commit -m \"Prepare ffi release for sdk version ${VERSION}\""
 echo ""
-echo "3. Create signed tag:"
+echo "3. Push:"
+echo "   git push -u upstream release/ffi-${VERSION}"
+echo ""
+echo "4. Once release/ffi-${VERSION} has merged to the SDK release branch, create the signed tag:"
 echo "   git tag -s ${VERSION} -m \"Release ${VERSION}\""
-echo ""
-echo "4. Push:"
-echo "   git push origin main ${VERSION}"
 echo ""
 echo "5. Publish the draft release:"
 echo "   ${RELEASE_URL}"
