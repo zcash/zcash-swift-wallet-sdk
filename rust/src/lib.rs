@@ -38,7 +38,7 @@ use tracing_subscriber::prelude::*;
 use uuid::Uuid;
 use zcash_client_backend::{
     data_api::{
-        AccountPurpose, MaxSpendMode, TransactionStatus, Zip32Derivation,
+        AccountPurpose, MaxSpendMode, TransactionStatus, TransparentKeyOrigin, Zip32Derivation,
         wallet::{self, SpendingKeys, extract_and_store_transaction_from_pczt},
     },
     fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
@@ -1345,6 +1345,57 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
     unwrap_exc_or(res, -1)
 }
 
+/// Truncates the data database to the specified chain state.
+///
+/// In contrast to [`zcashlc_rewind_to_height`], this function allows the caller to truncate the
+/// wallet database to a precise height by providing additional chain state information needed for
+/// note commitment tree maintenance after the truncation.
+///
+/// The `chain_state` parameter is a protobuf-encoded `TreeState` value representing the chain
+/// state at the height to which the database should be truncated.
+///
+/// Returns `true` if the truncation succeeded, or `false` if an error occurred. When `false` is
+/// returned, the caller should check for errors.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
+///   alignment of `1`. Its contents must be a string representing a valid system path in the
+///   operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `chain_state` must be non-null and valid for reads for `chain_state_len` bytes, and it must
+///   have an alignment of `1`. Its contents must be a protobuf-encoded `TreeState` value.
+/// - The memory referenced by `chain_state` must not be mutated for the duration of the function
+///   call.
+/// - The total size `chain_state_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_rewind_to_chain_state(
+    db_data: *const u8,
+    db_data_len: usize,
+    chain_state: *const u8,
+    chain_state_len: usize,
+    network_id: u32,
+) -> bool {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let chain_state =
+            TreeState::decode(unsafe { slice::from_raw_parts(chain_state, chain_state_len) })
+                .map_err(|e| anyhow!("Invalid TreeState: {}", e))?
+                .to_chain_state()?;
+
+        db_data
+            .truncate_to_chain_state(chain_state)
+            .map_err(|e| anyhow!("Error while truncating to chain state: {}", e))?;
+
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
+}
+
 /// Adds a sequence of Sapling subtree roots to the data store.
 ///
 /// Returns true if the subtrees could be stored, false otherwise. When false is returned,
@@ -2095,9 +2146,8 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
         let (change_strategy, input_selector) = zip317_helper(None);
 
         let req = TransactionRequest::new(vec![
-            Payment::new(to, value, memo, None, None, vec![]).ok_or_else(|| {
-                anyhow!("Memos are not permitted when sending to transparent recipients.")
-            })?,
+            Payment::new(to, Some(value), memo, None, None, vec![])
+                .map_err(|e| anyhow!("Unable to construct payment: {}.", e))?,
         ])
         .map_err(|e| anyhow!("Error creating transaction request: {:?}", e))?;
 
@@ -2109,6 +2159,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
             &change_strategy,
             req,
             wallet::ConfirmationsPolicy::try_from(confirmations_policy)?,
+            None,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
@@ -2248,6 +2299,7 @@ pub unsafe extern "C" fn zcashlc_propose_transfer_from_uri(
             &change_strategy,
             req,
             wallet::ConfirmationsPolicy::try_from(confirmations_policy)?,
+            None,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
@@ -2420,7 +2472,13 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
                 let (ephemeral, non_ephemeral): (Vec<_>, Vec<_>) = account_receivers
                     .into_iter()
                     .filter(|(_, (_, balance))| balance.spendable_value() >= shielding_threshold)
-                    .partition(|(_, (scope, _))| *scope == TransparentKeyScope::EPHEMERAL);
+                    .partition(|(_, (origin, _))| {
+                        matches!(
+                            origin,
+                            TransparentKeyOrigin::Derived { scope } if *scope
+                                == TransparentKeyScope::EPHEMERAL
+                        )
+                    });
 
                 if non_ephemeral.is_empty() {
                     ephemeral
@@ -2549,6 +2607,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
             &SpendingKeys::from_unified_spending_key(usk),
             OvkPolicy::Sender,
             &proposal,
+            None,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 

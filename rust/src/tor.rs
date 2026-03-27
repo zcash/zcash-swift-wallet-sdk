@@ -263,6 +263,7 @@ impl LwdConn {
                     height: u32::from(height).into(),
                     ..Default::default()
                 }),
+                pool_types: vec![],
             }),
         };
 
