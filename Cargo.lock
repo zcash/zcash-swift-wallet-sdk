@@ -160,7 +160,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -171,7 +171,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1376,7 +1376,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1599,7 +1599,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2336,7 +2336,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -2465,7 +2465,7 @@ dependencies = [
 [[package]]
 name = "imt-tree"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/vote-nullifier-pir.git?branch=main#fcf8db07e7188b68e5100276d0aec089f5a13b9a"
+source = "git+https://github.com/valargroup/vote-nullifier-pir.git?branch=main#d6cdd4612aa1a7be82d8b6b8af3fc5a13f330d8a"
 dependencies = [
  "anyhow",
  "ff",
@@ -2473,13 +2473,12 @@ dependencies = [
  "hex",
  "pasta_curves",
  "rayon",
- "tracing",
 ]
 
 [[package]]
 name = "imt-tree"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/vote-nullifier-pir.git#fcf8db07e7188b68e5100276d0aec089f5a13b9a"
+source = "git+https://github.com/valargroup/vote-nullifier-pir.git#d6cdd4612aa1a7be82d8b6b8af3fc5a13f330d8a"
 dependencies = [
  "anyhow",
  "ff",
@@ -2487,7 +2486,6 @@ dependencies = [
  "hex",
  "pasta_curves",
  "rayon",
- "tracing",
 ]
 
 [[package]]
@@ -2679,7 +2677,7 @@ version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a1886916523694cd6ea3d175f03a1e5010699a2a4cc13696d83d7bea1d80638"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2754,7 +2752,7 @@ dependencies = [
 [[package]]
 name = "librustvoting"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/librustvoting.git#d87a01b70a8d261ae3b65828e5088e56c3eb658d"
+source = "git+https://github.com/valargroup/librustvoting.git#3860780a34ab37ced8a4db6752990474291d3610"
 dependencies = [
  "blake2b_simd",
  "ff",
@@ -3077,7 +3075,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3279,7 +3277,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "orchard"
 version = "0.11.0"
-source = "git+https://github.com/valargroup/voting-circuits.git#05503e205535fce5f0d5ab393eb88f952d15640b"
+source = "git+https://github.com/valargroup/voting-circuits.git#c00f26d828cf6d2f1db24792342dff343120d4f3"
 dependencies = [
  "aes",
  "bitvec",
@@ -3567,7 +3565,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 [[package]]
 name = "pir-client"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/vote-nullifier-pir.git?branch=main#fcf8db07e7188b68e5100276d0aec089f5a13b9a"
+source = "git+https://github.com/valargroup/vote-nullifier-pir.git?branch=main#d6cdd4612aa1a7be82d8b6b8af3fc5a13f330d8a"
 dependencies = [
  "anyhow",
  "ff",
@@ -3586,7 +3584,7 @@ dependencies = [
 [[package]]
 name = "pir-types"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/vote-nullifier-pir.git?branch=main#fcf8db07e7188b68e5100276d0aec089f5a13b9a"
+source = "git+https://github.com/valargroup/vote-nullifier-pir.git?branch=main#d6cdd4612aa1a7be82d8b6b8af3fc5a13f330d8a"
 dependencies = [
  "anyhow",
  "ff",
@@ -4282,7 +4280,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4819,7 +4817,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4831,7 +4829,7 @@ checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 [[package]]
 name = "spiral-rs"
 version = "0.4.0"
-source = "git+https://github.com/menonsamir/spiral-rs.git?rev=f2c23c7#f2c23c7ced192e80687b52134ee861098f764769"
+source = "git+https://github.com/valargroup/spiral-rs.git?branch=valar%2Favoid-avx512#e06c730f958ddd0717fda43ae43eb7c628290bd4"
 dependencies = [
  "fastrand",
  "getrandom 0.2.17",
@@ -5038,7 +5036,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6631,7 +6629,7 @@ checksum = "6a02e4885ed3bc0f2de90ea6dd45ebcbb66dacffe03547fadbb0eeae2770887d"
 [[package]]
 name = "vote-commitment-tree"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/librustvoting.git#d87a01b70a8d261ae3b65828e5088e56c3eb658d"
+source = "git+https://github.com/valargroup/librustvoting.git#3860780a34ab37ced8a4db6752990474291d3610"
 dependencies = [
  "anyhow",
  "ff",
@@ -6647,7 +6645,7 @@ dependencies = [
 [[package]]
 name = "vote-commitment-tree-client"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/librustvoting.git#d87a01b70a8d261ae3b65828e5088e56c3eb658d"
+source = "git+https://github.com/valargroup/librustvoting.git#3860780a34ab37ced8a4db6752990474291d3610"
 dependencies = [
  "base64",
  "clap",
@@ -6664,7 +6662,7 @@ dependencies = [
 [[package]]
 name = "voting-circuits"
 version = "0.1.0"
-source = "git+https://github.com/valargroup/voting-circuits.git#05503e205535fce5f0d5ab393eb88f952d15640b"
+source = "git+https://github.com/valargroup/voting-circuits.git#c00f26d828cf6d2f1db24792342dff343120d4f3"
 dependencies = [
  "blake2b_simd",
  "ff",
@@ -6881,7 +6879,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6897,7 +6895,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9babd3a767a4c1aef6900409f85f5d53ce2544ccdfaa86dad48c91782c6d6893"
 dependencies = [
  "windows-collections",
- "windows-core 0.61.2",
+ "windows-core",
  "windows-future",
  "windows-link 0.1.3",
  "windows-numerics",
@@ -6909,7 +6907,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3beeceb5e5cfd9eb1d76b381630e82c4241ccd0d27f1a39ed41b2760b255c5e8"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -6926,25 +6924,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
-dependencies = [
- "windows-implement",
- "windows-interface",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
- "windows-strings 0.5.1",
-]
-
-[[package]]
 name = "windows-future"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc6a41e98427b19fe4b73c550f060b59fa592d7d686537eebf9385621bfbad8e"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
  "windows-link 0.1.3",
  "windows-threading",
 ]
@@ -6989,7 +6974,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9150af68066c4c5c07ddc0ce30421554771e528bde427614c61038bc2c92c2b1"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
  "windows-link 0.1.3",
 ]
 
@@ -7379,7 +7364,7 @@ dependencies = [
 [[package]]
 name = "ypir"
 version = "0.1.0"
-source = "git+https://github.com/menonsamir/ypir.git?branch=artifact#b9801521301f34502496d694b2ac034857104ebc"
+source = "git+https://github.com/valargroup/ypir.git?branch=valar%2Fartifact#bb4d68bf0022b1b6cefc1fda8bf25ea8bce36fef"
 dependencies = [
  "cc",
  "clap",

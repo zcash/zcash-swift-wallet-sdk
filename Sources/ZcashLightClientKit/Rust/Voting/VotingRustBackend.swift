@@ -1016,6 +1016,170 @@ extension VotingRustBackend {
     }
 }
 
+// MARK: - Share delegation tracking
+
+extension VotingRustBackend {
+    /// Compute the nullifier for a vote share.
+    ///
+    /// This is a static/pure function — no database handle needed.
+    /// `voteCommitment` and `primaryBlind` must each be exactly 32 bytes.
+    /// Returns a hex-encoded nullifier string.
+    public static func computeShareNullifier(
+        voteCommitment: [UInt8],
+        shareIndex: UInt32,
+        primaryBlind: [UInt8]
+    ) throws -> String {
+        let ptr = voteCommitment.withUnsafeBufferPointer { vcBuf in
+            primaryBlind.withUnsafeBufferPointer { blindBuf in
+                zcashlc_voting_compute_share_nullifier(
+                    vcBuf.baseAddress,
+                    blindBuf.baseAddress,
+                    shareIndex
+                )
+            }
+        }
+
+        guard let ptr else {
+            throw VotingRustBackendError.rustError(
+                staticLastErrorMessage(fallback: "`compute_share_nullifier` failed")
+            )
+        }
+        defer { zcashlc_string_free(ptr) }
+        return String(cString: ptr)
+    }
+
+    /// Record a share delegation after sending to helper servers.
+    public func recordShareDelegation(
+        roundId: String,
+        bundleIndex: UInt32,
+        proposalId: UInt32,
+        shareIndex: UInt32,
+        sentToURLs: [String],
+        nullifier: [UInt8],
+        submitAt: UInt64
+    ) throws {
+        let dbh = try requireHandle()
+        let roundIdBytes = [UInt8](roundId.utf8)
+        let urlsJson = try JSONEncoder().encode(sentToURLs)
+        let urlsBytes = [UInt8](urlsJson)
+
+        let result = roundIdBytes.withUnsafeBufferPointer { ridBuf in
+            urlsBytes.withUnsafeBufferPointer { urlsBuf in
+                nullifier.withUnsafeBufferPointer { nfBuf in
+                    zcashlc_voting_record_share_delegation(
+                        dbh,
+                        ridBuf.baseAddress,
+                        UInt(ridBuf.count),
+                        bundleIndex,
+                        proposalId,
+                        shareIndex,
+                        urlsBuf.baseAddress,
+                        UInt(urlsBuf.count),
+                        nfBuf.baseAddress,
+                        UInt(nfBuf.count),
+                        submitAt
+                    )
+                }
+            }
+        }
+
+        guard result == 0 else {
+            throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`record_share_delegation` failed"))
+        }
+    }
+
+    /// Get all share delegations for a round.
+    public func getShareDelegations(roundId: String) throws -> [VotingShareDelegation] {
+        let dbh = try requireHandle()
+        let roundIdBytes = [UInt8](roundId.utf8)
+
+        let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
+            zcashlc_voting_get_share_delegations(dbh, ridBuf.baseAddress, UInt(ridBuf.count))
+        }
+
+        guard let ptr else {
+            throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`get_share_delegations` failed"))
+        }
+        defer { zcashlc_free_boxed_slice(ptr) }
+        return try decodeJSON(from: ptr)
+    }
+
+    /// Get unconfirmed share delegations for a round.
+    public func getUnconfirmedDelegations(roundId: String) throws -> [VotingShareDelegation] {
+        let dbh = try requireHandle()
+        let roundIdBytes = [UInt8](roundId.utf8)
+
+        let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
+            zcashlc_voting_get_unconfirmed_delegations(dbh, ridBuf.baseAddress, UInt(ridBuf.count))
+        }
+
+        guard let ptr else {
+            throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`get_unconfirmed_delegations` failed"))
+        }
+        defer { zcashlc_free_boxed_slice(ptr) }
+        return try decodeJSON(from: ptr)
+    }
+
+    /// Mark a share delegation as confirmed on-chain.
+    public func markShareConfirmed(
+        roundId: String,
+        bundleIndex: UInt32,
+        proposalId: UInt32,
+        shareIndex: UInt32
+    ) throws {
+        let dbh = try requireHandle()
+        let roundIdBytes = [UInt8](roundId.utf8)
+
+        let result = roundIdBytes.withUnsafeBufferPointer { ridBuf in
+            zcashlc_voting_mark_share_confirmed(
+                dbh,
+                ridBuf.baseAddress,
+                UInt(ridBuf.count),
+                bundleIndex,
+                proposalId,
+                shareIndex
+            )
+        }
+
+        guard result == 0 else {
+            throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`mark_share_confirmed` failed"))
+        }
+    }
+
+    /// Append new server URLs to a share delegation's sent_to_urls.
+    public func addSentServers(
+        roundId: String,
+        bundleIndex: UInt32,
+        proposalId: UInt32,
+        shareIndex: UInt32,
+        newURLs: [String]
+    ) throws {
+        let dbh = try requireHandle()
+        let roundIdBytes = [UInt8](roundId.utf8)
+        let urlsJson = try JSONEncoder().encode(newURLs)
+        let urlsBytes = [UInt8](urlsJson)
+
+        let result = roundIdBytes.withUnsafeBufferPointer { ridBuf in
+            urlsBytes.withUnsafeBufferPointer { urlsBuf in
+                zcashlc_voting_add_sent_servers(
+                    dbh,
+                    ridBuf.baseAddress,
+                    UInt(ridBuf.count),
+                    bundleIndex,
+                    proposalId,
+                    shareIndex,
+                    urlsBuf.baseAddress,
+                    UInt(urlsBuf.count)
+                )
+            }
+        }
+
+        guard result == 0 else {
+            throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`add_sent_servers` failed"))
+        }
+    }
+}
+
 // MARK: - Static / free functions (no database needed)
 
 extension VotingRustBackend {

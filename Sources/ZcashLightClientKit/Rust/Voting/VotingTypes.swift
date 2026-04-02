@@ -175,6 +175,33 @@ public struct VotingWitnessData: Codable, Sendable {
     }
 }
 
+// MARK: - Share Delegation (JSON)
+
+/// Record of a share delegation sent to helper servers.
+public struct VotingShareDelegation: Codable, Equatable, Sendable {
+    public let roundId: String
+    public let bundleIndex: UInt32
+    public let proposalId: UInt32
+    public let shareIndex: UInt32
+    public let sentToURLs: [String]
+    public let nullifier: [UInt8]
+    public let confirmed: Bool
+    public let submitAt: UInt64
+    public let createdAt: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case roundId = "round_id"
+        case bundleIndex = "bundle_index"
+        case proposalId = "proposal_id"
+        case shareIndex = "share_index"
+        case sentToURLs = "sent_to_urls"
+        case nullifier
+        case confirmed
+        case submitAt = "submit_at"
+        case createdAt = "created_at"
+    }
+}
+
 // MARK: - Delegation Proof Result (JSON)
 
 /// Result of building and proving a delegation.
