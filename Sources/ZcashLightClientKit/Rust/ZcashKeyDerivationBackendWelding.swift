@@ -40,6 +40,11 @@ protocol ZcashKeyDerivationBackendWelding {
     /// - Returns: true when the encoded string is a valid UFVK. false in any other case
     func isValidUnifiedFullViewingKey(_ ufvk: String) -> Bool
 
+    /// Verifies that the given string-encoded `UnifiedIncomingViewingKey` is valid.
+    /// - Parameter uivk: UTF-8 encoded String to validate
+    /// - Returns: true when the encoded string is a valid UIVK. false in any other case
+    func isValidUnifiedIncomingViewingKey(_ uivk: String) -> Bool
+
     /// Derives and returns a UnifiedAddress from a UnifiedFullViewingKey
     /// - Parameter ufvk: UTF-8 encoded String containing a valid UFVK
     /// - Returns: the corresponding default `UnifiedAddress`

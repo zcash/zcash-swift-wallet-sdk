@@ -10,6 +10,7 @@ import Foundation
 
 public protocol KeyValidation {
     func isValidUnifiedFullViewingKey(_ ufvk: String) -> Bool
+    func isValidUnifiedIncomingViewingKey(_ uivk: String) -> Bool
     func isValidTransparentAddress(_ tAddress: String) -> Bool
     func isValidSaplingAddress(_ zAddress: String) -> Bool
     func isValidSaplingExtendedSpendingKey(_ extsk: String) -> Bool
@@ -165,6 +166,10 @@ extension DerivationTool: KeyValidation {
         backend.isValidUnifiedFullViewingKey(ufvk)
     }
 
+    public func isValidUnifiedIncomingViewingKey(_ uivk: String) -> Bool {
+        backend.isValidUnifiedIncomingViewingKey(uivk)
+    }
+
     public func isValidUnifiedAddress(_ unifiedAddress: String) -> Bool {
         DerivationTool.getAddressMetadata(unifiedAddress).map {
             $0.networkType == backend.networkType && $0.addressType == AddressType.unified
@@ -238,6 +243,16 @@ extension TexAddress {
 }
 
 extension UnifiedFullViewingKey {
+    /// This constructor is for internal use for Strings encodings that are assumed to be
+    /// already validated by another function. only for internal use. Unless you are
+    /// constructing an address from a primitive function of the FFI, you probably
+    /// shouldn't be using this.
+    init(validatedEncoding: String) {
+        self.encoding = validatedEncoding
+    }
+}
+
+extension UnifiedIncomingViewingKey {
     /// This constructor is for internal use for Strings encodings that are assumed to be
     /// already validated by another function. only for internal use. Unless you are
     /// constructing an address from a primitive function of the FFI, you probably

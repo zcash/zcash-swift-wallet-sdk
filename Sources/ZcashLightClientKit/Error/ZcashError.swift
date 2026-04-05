@@ -626,6 +626,9 @@ public enum ZcashError: Equatable, Error {
     /// Can't create `UnifiedFullViewingKey` because input is invalid.
     /// ZWLTP0002
     case unifiedFullViewingKeyInvalidInput
+    /// Can't create `UnifiedIncomingViewingKey` because input is invalid.
+    /// ZWLTP0009
+    case unifiedIncomingViewingKeyInvalidInput
     /// Can't create `SaplingExtendedFullViewingKey` because input is invalid.
     /// ZWLTP0003
     case extetendedFullViewingKeyInvalidInput
@@ -927,6 +930,7 @@ public enum ZcashError: Equatable, Error {
         case .unspentTransactionOutputDAOBalance: return "SQLite query failed when getting balance."
         case .spendingKeyInvalidInput: return "Can't create `SaplingExtendedSpendingKey` because input is invalid."
         case .unifiedFullViewingKeyInvalidInput: return "Can't create `UnifiedFullViewingKey` because input is invalid."
+        case .unifiedIncomingViewingKeyInvalidInput: return "Can't create `UnifiedIncomingViewingKey` because input is invalid."
         case .extetendedFullViewingKeyInvalidInput: return "Can't create `SaplingExtendedFullViewingKey` because input is invalid."
         case .transparentAddressInvalidInput: return "Can't create `TransparentAddress` because input is invalid."
         case .saplingAddressInvalidInput: return "Can't create `SaplingAddress` because input is invalid."
@@ -1144,6 +1148,7 @@ public enum ZcashError: Equatable, Error {
         case .unspentTransactionOutputDAOBalance: return .unspentTransactionOutputDAOBalance
         case .spendingKeyInvalidInput: return .spendingKeyInvalidInput
         case .unifiedFullViewingKeyInvalidInput: return .unifiedFullViewingKeyInvalidInput
+        case .unifiedIncomingViewingKeyInvalidInput: return .unifiedIncomingViewingKeyInvalidInput
         case .extetendedFullViewingKeyInvalidInput: return .extetendedFullViewingKeyInvalidInput
         case .transparentAddressInvalidInput: return .transparentAddressInvalidInput
         case .saplingAddressInvalidInput: return .saplingAddressInvalidInput
