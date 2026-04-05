@@ -358,7 +358,8 @@ public protocol Synchronizer: AnyObject {
         zip32AccountIndex: Zip32AccountIndex?,
         purpose: AccountPurpose,
         name: String,
-        keySource: String?
+        keySource: String?,
+        walletBirthday: BlockHeight?
     ) async throws -> AccountUUID
 
     func fetchTxidsWithMemoContaining(searchTerm: String) async throws -> [Data]
@@ -526,6 +527,28 @@ public protocol Synchronizer: AnyObject {
     ///
     /// - Throws rustDeleteAccount as a common indicator of the operation failure
     func deleteAccount(_ accountUUID: AccountUUID) async throws -> Void
+}
+
+extension Synchronizer {
+    // swiftlint:disable:next function_parameter_count
+    public func importAccount(
+        ufvk: String,
+        seedFingerprint: [UInt8]?,
+        zip32AccountIndex: Zip32AccountIndex?,
+        purpose: AccountPurpose,
+        name: String,
+        keySource: String?
+    ) async throws -> AccountUUID {
+        try await importAccount(
+            ufvk: ufvk,
+            seedFingerprint: seedFingerprint,
+            zip32AccountIndex: zip32AccountIndex,
+            purpose: purpose,
+            name: name,
+            keySource: keySource,
+            walletBirthday: nil
+        )
+    }
 }
 
 public enum SyncStatus: Equatable {

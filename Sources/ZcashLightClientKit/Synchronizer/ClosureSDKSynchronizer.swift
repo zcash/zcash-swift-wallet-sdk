@@ -99,6 +99,7 @@ extension ClosureSDKSynchronizer: ClosureSynchronizer {
         purpose: AccountPurpose,
         name: String,
         keySource: String?,
+        walletBirthday: BlockHeight? = nil,
         completion: @escaping (Result<AccountUUID, Error>) -> Void
     ) async throws {
         AsyncToClosureGateway.executeThrowingAction(completion) {
@@ -108,7 +109,8 @@ extension ClosureSDKSynchronizer: ClosureSynchronizer {
                 zip32AccountIndex: zip32AccountIndex,
                 purpose: purpose,
                 name: name,
-                keySource: keySource
+                keySource: keySource,
+                walletBirthday: walletBirthday
             )
         }
     }

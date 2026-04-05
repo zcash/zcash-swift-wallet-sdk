@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Added
+- Optional `walletBirthday` parameter on `Synchronizer.importAccount()` to sync from an earlier block height instead of the chain tip. Existing callers are unaffected (defaults to `nil`).
+
 # 2.4.9 - 2026-04-04
 
 ## Checkpoints

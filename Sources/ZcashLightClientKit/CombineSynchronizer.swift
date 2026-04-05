@@ -128,7 +128,8 @@ public protocol CombineSynchronizer {
         zip32AccountIndex: Zip32AccountIndex?,
         purpose: AccountPurpose,
         name: String,
-        keySource: String?
+        keySource: String?,
+        walletBirthday: BlockHeight?
     ) async throws -> SinglePublisher<AccountUUID, Error>
 
     var allTransactions: SinglePublisher<[ZcashTransaction.Overview], Never> { get }
@@ -155,4 +156,26 @@ public protocol CombineSynchronizer {
     
     func rewind(_ policy: RewindPolicy) -> CompletablePublisher<Error>
     func wipe() -> CompletablePublisher<Error>
+}
+
+extension CombineSynchronizer {
+    // swiftlint:disable:next function_parameter_count
+    public func importAccount(
+        ufvk: String,
+        seedFingerprint: [UInt8]?,
+        zip32AccountIndex: Zip32AccountIndex?,
+        purpose: AccountPurpose,
+        name: String,
+        keySource: String?
+    ) async throws -> SinglePublisher<AccountUUID, Error> {
+        try await importAccount(
+            ufvk: ufvk,
+            seedFingerprint: seedFingerprint,
+            zip32AccountIndex: zip32AccountIndex,
+            purpose: purpose,
+            name: name,
+            keySource: keySource,
+            walletBirthday: nil
+        )
+    }
 }

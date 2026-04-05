@@ -337,7 +337,8 @@ public class SDKSynchronizer: Synchronizer {
         zip32AccountIndex: Zip32AccountIndex?,
         purpose: AccountPurpose,
         name: String,
-        keySource: String?
+        keySource: String?,
+        walletBirthday: BlockHeight? = nil
     ) async throws -> AccountUUID {
         // called when a new account is imported
         let chainTip = try? await UInt32(
@@ -351,9 +352,9 @@ public class SDKSynchronizer: Synchronizer {
         guard let chainTip else {
             throw ZcashError.synchronizerNotPrepared
         }
-        
-        let checkpoint = checkpointSource.birthday(for: BlockHeight(chainTip))
-            
+
+        let checkpoint = checkpointSource.birthday(for: walletBirthday ?? BlockHeight(chainTip))
+
         return try await initializer.rustBackend.importAccount(
             ufvk: ufvk,
             seedFingerprint: seedFingerprint,
