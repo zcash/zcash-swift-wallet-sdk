@@ -450,19 +450,34 @@ public class Initializer {
         // If there are no accounts it must be created, the default amount of accounts is 1
         if let seed, try await rustBackend.listAccounts().isEmpty {
             var chainTip: UInt32?
-            
+            var accountTreeState = checkpoint.treeState()
+
             let sdkFlags = container.resolve(SDKFlags.self)
-            
-            // called when client starts and restore of the wallet is in progress
-            if walletMode == .restoreWallet {
+
+            switch walletMode {
+            case .restoreWallet:
                 if let latestBlockHeight = try? await lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor)) {
                     chainTip = UInt32(latestBlockHeight)
                 }
+            case .newWallet:
+                if let latestBlockHeight = try? await lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor)) {
+                    // Fetch the tree state at the chain tip so the birthday equals chain_tip + 1,
+                    // producing zero scan ranges. This eliminates unnecessary block scanning for
+                    // wallets with no transaction history.
+                    var blockID = BlockID()
+                    blockID.height = UInt64(latestBlockHeight)
+                    if let serverTreeState = try? await lightWalletService.getTreeState(blockID, mode: await sdkFlags.ifTor(.uniqueTor)) {
+                        accountTreeState = serverTreeState
+                        self.walletBirthday = latestBlockHeight
+                    }
+                }
+            case .existingWallet:
+                break
             }
-            
+
             _ = try await rustBackend.createAccount(
                 seed: seed,
-                treeState: checkpoint.treeState(),
+                treeState: accountTreeState,
                 recoverUntil: chainTip,
                 name: name,
                 keySource: keySource
