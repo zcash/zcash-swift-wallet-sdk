@@ -2504,6 +2504,53 @@ class SynchronizerMock: Synchronizer {
         try await deleteAccountClosure!(accountUUID)
     }
 
+    // MARK: - checkWalletSpendability
+
+    var checkWalletSpendabilityThrowableError: Error?
+    var checkWalletSpendabilityCallsCount = 0
+    var checkWalletSpendabilityCalled: Bool {
+        return checkWalletSpendabilityCallsCount > 0
+    }
+    var checkWalletSpendabilityReturnValue: SpendabilityResult!
+    var checkWalletSpendabilityClosure: ((String, SpendabilityProgressHandler?) async throws -> SpendabilityResult)?
+
+    func checkWalletSpendability(
+        pirServerUrl: String,
+        progress: SpendabilityProgressHandler?
+    ) async throws -> SpendabilityResult {
+        if let error = checkWalletSpendabilityThrowableError {
+            throw error
+        }
+        checkWalletSpendabilityCallsCount += 1
+        if let closure = checkWalletSpendabilityClosure {
+            return try await closure(pirServerUrl, progress)
+        } else {
+            return checkWalletSpendabilityReturnValue
+        }
+    }
+
+    // MARK: - fetchNoteWitnesses
+
+    var fetchNoteWitnessesThrowableError: Error?
+    var fetchNoteWitnessesCallsCount = 0
+    var fetchNoteWitnessesReturnValue: WitnessResult!
+    var fetchNoteWitnessesClosure: ((String, SpendabilityProgressHandler?) async throws -> WitnessResult)?
+
+    func fetchNoteWitnesses(
+        pirServerUrl: String,
+        progress: SpendabilityProgressHandler?
+    ) async throws -> WitnessResult {
+        if let error = fetchNoteWitnessesThrowableError {
+            throw error
+        }
+        fetchNoteWitnessesCallsCount += 1
+        if let closure = fetchNoteWitnessesClosure {
+            return try await closure(pirServerUrl, progress)
+        } else {
+            return fetchNoteWitnessesReturnValue
+        }
+    }
+
 }
 class TransactionRepositoryMock: TransactionRepository {
 
@@ -3621,25 +3668,25 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
 
     // MARK: - createProposedTransactions
 
-    var createProposedTransactionsProposalUskThrowableError: Error?
-    var createProposedTransactionsProposalUskCallsCount = 0
-    var createProposedTransactionsProposalUskCalled: Bool {
-        return createProposedTransactionsProposalUskCallsCount > 0
+    var createProposedTransactionsProposalUskUsePIRWitnessesThrowableError: Error?
+    var createProposedTransactionsProposalUskUsePIRWitnessesCallsCount = 0
+    var createProposedTransactionsProposalUskUsePIRWitnessesCalled: Bool {
+        return createProposedTransactionsProposalUskUsePIRWitnessesCallsCount > 0
     }
-    var createProposedTransactionsProposalUskReceivedArguments: (proposal: FfiProposal, usk: UnifiedSpendingKey)?
-    var createProposedTransactionsProposalUskReturnValue: [Data]!
-    var createProposedTransactionsProposalUskClosure: ((FfiProposal, UnifiedSpendingKey) async throws -> [Data])?
+    var createProposedTransactionsProposalUskUsePIRWitnessesReceivedArguments: (proposal: FfiProposal, usk: UnifiedSpendingKey, usePIRWitnesses: Bool)?
+    var createProposedTransactionsProposalUskUsePIRWitnessesReturnValue: [Data]!
+    var createProposedTransactionsProposalUskUsePIRWitnessesClosure: ((FfiProposal, UnifiedSpendingKey, Bool) async throws -> [Data])?
 
-    func createProposedTransactions(proposal: FfiProposal, usk: UnifiedSpendingKey) async throws -> [Data] {
-        if let error = createProposedTransactionsProposalUskThrowableError {
+    func createProposedTransactions(proposal: FfiProposal, usk: UnifiedSpendingKey, usePIRWitnesses: Bool) async throws -> [Data] {
+        if let error = createProposedTransactionsProposalUskUsePIRWitnessesThrowableError {
             throw error
         }
-        createProposedTransactionsProposalUskCallsCount += 1
-        createProposedTransactionsProposalUskReceivedArguments = (proposal: proposal, usk: usk)
-        if let closure = createProposedTransactionsProposalUskClosure {
-            return try await closure(proposal, usk)
+        createProposedTransactionsProposalUskUsePIRWitnessesCallsCount += 1
+        createProposedTransactionsProposalUskUsePIRWitnessesReceivedArguments = (proposal: proposal, usk: usk, usePIRWitnesses: usePIRWitnesses)
+        if let closure = createProposedTransactionsProposalUskUsePIRWitnessesClosure {
+            return try await closure(proposal, usk, usePIRWitnesses)
         } else {
-            return createProposedTransactionsProposalUskReturnValue
+            return createProposedTransactionsProposalUskUsePIRWitnessesReturnValue
         }
     }
 
@@ -3937,5 +3984,81 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         deleteAccountReceivedAccountUUID = accountUUID
         try await deleteAccountClosure!(accountUUID)
     }
+
+    // MARK: - getUnspentOrchardNotesForPIR
+
+    var getUnspentOrchardNotesForPIRThrowableError: Error?
+    var getUnspentOrchardNotesForPIRCallsCount = 0
+    var getUnspentOrchardNotesForPIRReturnValue: [PIRUnspentNote] = []
+    var getUnspentOrchardNotesForPIRClosure: (() async throws -> [PIRUnspentNote])?
+
+    func getUnspentOrchardNotesForPIR() async throws -> [PIRUnspentNote] {
+        if let error = getUnspentOrchardNotesForPIRThrowableError {
+            throw error
+        }
+        getUnspentOrchardNotesForPIRCallsCount += 1
+        if let closure = getUnspentOrchardNotesForPIRClosure {
+            return try await closure()
+        } else {
+            return getUnspentOrchardNotesForPIRReturnValue
+        }
+    }
+
+    // MARK: - getNotesNeedingPIRWitness
+
+    var getNotesNeedingPIRWitnessThrowableError: Error?
+    var getNotesNeedingPIRWitnessCallsCount = 0
+    var getNotesNeedingPIRWitnessReturnValue: [PIRNotePosition] = []
+    var getNotesNeedingPIRWitnessClosure: (() async throws -> [PIRNotePosition])?
+
+    func getNotesNeedingPIRWitness() async throws -> [PIRNotePosition] {
+        if let error = getNotesNeedingPIRWitnessThrowableError {
+            throw error
+        }
+        getNotesNeedingPIRWitnessCallsCount += 1
+        if let closure = getNotesNeedingPIRWitnessClosure {
+            return try await closure()
+        } else {
+            return getNotesNeedingPIRWitnessReturnValue
+        }
+    }
+
+    // MARK: - getPIRWitnessNotes
+
+    var getPIRWitnessNotesThrowableError: Error?
+    var getPIRWitnessNotesCallsCount = 0
+    var getPIRWitnessNotesReceivedProposal: FfiProposal?
+    var getPIRWitnessNotesReturnValue: [PIRNotePosition] = []
+    var getPIRWitnessNotesClosure: ((FfiProposal) async throws -> [PIRNotePosition])?
+
+    func getPIRWitnessNotes(for proposal: FfiProposal) async throws -> [PIRNotePosition] {
+        if let error = getPIRWitnessNotesThrowableError {
+            throw error
+        }
+        getPIRWitnessNotesCallsCount += 1
+        getPIRWitnessNotesReceivedProposal = proposal
+        if let closure = getPIRWitnessNotesClosure {
+            return try await closure(proposal)
+        } else {
+            return getPIRWitnessNotesReturnValue
+        }
+    }
+
+    // MARK: - insertPIRWitnesses
+
+    var insertPIRWitnessesThrowableError: Error?
+    var insertPIRWitnessesCallsCount = 0
+    var insertPIRWitnessesReceivedWitnesses: [PIRWitnessEntry]?
+    var insertPIRWitnessesClosure: (([PIRWitnessEntry]) async throws -> Void)?
+
+    func insertPIRWitnesses(_ witnesses: [PIRWitnessEntry]) async throws {
+        if let error = insertPIRWitnessesThrowableError {
+            throw error
+        }
+        insertPIRWitnessesCallsCount += 1
+        insertPIRWitnessesReceivedWitnesses = witnesses
+        try await insertPIRWitnessesClosure?(witnesses)
+    }
+
 
 }

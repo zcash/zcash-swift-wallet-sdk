@@ -94,6 +94,7 @@ use zip32::fingerprint::SeedFingerprint;
 
 mod derivation;
 mod ffi;
+mod spendability;
 mod tor;
 
 #[cfg(target_vendor = "apple")]
@@ -2474,6 +2475,9 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
 /// - `output_params`: A pointer to a buffer containing the operating system path of the Sapling
 ///   output proving parameters, in the operating system's preferred path representation.
 /// - `output_params_len`: the length of the `output_params` buffer.
+/// - `use_pir_witnesses`: When `true`, Orchard witnesses are read from PIR-stored data
+///   instead of the local ShardTree. `spendability-pir` feature must be enabled. Otherwise,
+///   this parameter is ignored.
 ///
 /// # Safety
 ///
@@ -2522,6 +2526,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
     output_params: *const u8,
     output_params_len: usize,
     network_id: u32,
+    use_pir_witnesses: bool,
 ) -> *mut ffi::TxIds {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2549,6 +2554,7 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
             &SpendingKeys::from_unified_spending_key(usk),
             OvkPolicy::Sender,
             &proposal,
+            use_pir_witnesses,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 
@@ -4121,9 +4127,404 @@ fn free_ptr_from_vec_with<T>(ptr: *mut T, len: usize, f: impl Fn(&mut T)) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// PIR FFI — DB-touching operations that go through wallet_db() so they share
+// the same connection pattern as every other zcashlc_* function.
+// ---------------------------------------------------------------------------
+
+/// Returns unspent Orchard notes with nullifiers for PIR spend-checking.
+///
+/// Returns JSON `[{"id":i64,"nf":[u8, ...],"value":u64}, ...]`, or null on error.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_get_unspent_orchard_notes_for_pir(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+) -> *mut ffi::BoxedSlice {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let notes = db_data
+            .get_unspent_orchard_notes_for_pir()
+            .map_err(|e| anyhow!("failed to query unspent orchard notes for PIR: {e}"))?;
+
+        #[derive(serde::Serialize)]
+        struct Note {
+            id: i64,
+            nf: Vec<u8>,
+            value: u64,
+        }
+
+        let out: Vec<Note> = notes
+            .into_iter()
+            .map(|n| Note {
+                id: n.id,
+                nf: n.nf.to_vec(),
+                value: n.value,
+            })
+            .collect();
+
+        let json = serde_json::to_vec(&out)?;
+        Ok(ffi::BoxedSlice::some(json))
+    });
+    unwrap_exc_or_null(res)
+}
+
+// ---------------------------------------------------------------------------
+// Witness PIR FFI — DB-touching operations for PIR note commitment witnesses.
+// ---------------------------------------------------------------------------
+
+/// JSON wire type shared by witness-related FFI endpoints that return
+/// `[{"id":i64,"position":u64,"value":u64}, ...]`.
+#[derive(serde::Serialize)]
+struct PirNotePosition {
+    id: i64,
+    position: u64,
+    value: u64,
+}
+
+/// Returns canonical Orchard notes that should be considered for PIR witness
+/// fetch or refresh.
+///
+/// Returns JSON `[{"id":i64,"position":u64,"value":u64}, ...]`, or null on error.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and point to a path-encoded byte array of length `db_data_len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_get_notes_needing_pir_witness(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+) -> *mut ffi::BoxedSlice {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let notes = db_data
+            .get_notes_needing_pir_witness()
+            .map_err(|e| anyhow!("failed to query notes needing PIR witness: {e}"))?;
+
+        let out: Vec<PirNotePosition> = notes
+            .into_iter()
+            .map(|n| PirNotePosition {
+                id: n.id,
+                position: n.position,
+                value: n.value,
+            })
+            .collect();
+
+        let json = serde_json::to_vec(&out)?;
+        Ok(ffi::BoxedSlice::some(json))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Returns Orchard notes referenced by a proposal that can be refreshed via witness PIR.
+///
+/// Returns JSON `[{"id":i64,"position":u64,"value":u64}, ...]`, or null on error.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and point to a path-encoded byte array of length `db_data_len`.
+/// - `proposal_ptr` must be non-null and point to a valid encoded `Proposal` protobuf.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_get_pir_witness_notes_for_proposal(
+    db_data: *const u8,
+    db_data_len: usize,
+    proposal_ptr: *const u8,
+    proposal_len: usize,
+    network_id: u32,
+) -> *mut ffi::BoxedSlice {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let proposal =
+            Proposal::decode(unsafe { slice::from_raw_parts(proposal_ptr, proposal_len) })
+                .map_err(|e| anyhow!("Invalid proposal: {}", e))?
+                .try_into_standard_proposal(&db_data)?;
+
+        let out: Vec<PirNotePosition> = db_data
+            .get_pir_witness_notes_for_proposal(&proposal)
+            .into_iter()
+            .map(|note| PirNotePosition {
+                id: note.id,
+                position: note.position,
+                value: note.value,
+            })
+            .collect();
+
+        let json = serde_json::to_vec(&out)?;
+        Ok(ffi::BoxedSlice::some(json))
+    });
+    unwrap_exc_or_null(res)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct WitnessInput {
+    note_id: i64,
+    siblings: Vec<String>,
+    anchor_height: u64,
+    anchor_root: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DecodedWitnessInput {
+    note_id: i64,
+    siblings: [[u8; 32]; 32],
+    anchor_height: u64,
+    anchor_root: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WitnessValidationSummary {
+    computed_root: [u8; 32],
+}
+
+/// Deserializes and validates hex-encoded PIR witness JSON into typed inputs.
+///
+/// Each sibling and anchor root is decoded from hex and length-checked (32 bytes).
+fn parse_pir_witness_inputs(json_bytes: &[u8]) -> anyhow::Result<Vec<DecodedWitnessInput>> {
+    let inputs: Vec<WitnessInput> = serde_json::from_slice(json_bytes)
+        .map_err(|e| anyhow!("failed to parse witnesses JSON: {e}"))?;
+
+    inputs
+        .into_iter()
+        .map(|input| {
+            if input.siblings.len() != 32 {
+                return Err(anyhow!(
+                    "witness for note {} has {} siblings, expected 32",
+                    input.note_id,
+                    input.siblings.len()
+                ));
+            }
+
+            let mut siblings = [[0u8; 32]; 32];
+            for (i, hex_str) in input.siblings.iter().enumerate() {
+                let bytes = hex::decode(hex_str).map_err(|e| {
+                    anyhow!("invalid hex in sibling {i} for note {}: {e}", input.note_id)
+                })?;
+                if bytes.len() != 32 {
+                    return Err(anyhow!(
+                        "sibling {i} for note {} is {} bytes, expected 32",
+                        input.note_id,
+                        bytes.len()
+                    ));
+                }
+                siblings[i].copy_from_slice(&bytes);
+            }
+
+            let anchor_root_bytes = hex::decode(&input.anchor_root).map_err(|e| {
+                anyhow!("invalid hex in anchor_root for note {}: {e}", input.note_id)
+            })?;
+            let anchor_root: [u8; 32] = anchor_root_bytes
+                .try_into()
+                .map_err(|_| anyhow!("anchor_root for note {} is not 32 bytes", input.note_id))?;
+
+            Ok(DecodedWitnessInput {
+                note_id: input.note_id,
+                siblings,
+                anchor_height: input.anchor_height,
+                anchor_root,
+            })
+        })
+        .collect()
+}
+
+/// Validates each witness input against its note commitment, then inserts it.
+///
+/// For each input, `validate` recomputes the Merkle root from the note and siblings;
+/// if the root matches the provided anchor, `insert` persists the witness. A mismatch
+/// is an immediate hard error (no partial writes).
+fn apply_pir_witness_inputs<Validate, Insert>(
+    inputs: Vec<DecodedWitnessInput>,
+    mut validate: Validate,
+    mut insert: Insert,
+) -> anyhow::Result<()>
+where
+    Validate: FnMut(&DecodedWitnessInput) -> anyhow::Result<WitnessValidationSummary>,
+    Insert: FnMut(&DecodedWitnessInput) -> anyhow::Result<()>,
+{
+    for input in inputs {
+        let validation = validate(&input)?;
+        let witness_root_matches_anchor = validation.computed_root == input.anchor_root;
+
+        if !witness_root_matches_anchor {
+            tracing::warn!(
+                note_id = input.note_id,
+                anchor_height = input.anchor_height,
+                provided_anchor_root = %hex::encode(input.anchor_root),
+                computed_root = %hex::encode(validation.computed_root),
+                "witness FFI: rejecting PIR witness because computed root did not match provided anchor",
+            );
+            return Err(anyhow!(
+                "PIR witness for note {} failed root validation before insert",
+                input.note_id
+            ));
+        }
+
+        insert(&input)?;
+    }
+
+    Ok(())
+}
+
+/// Inserts PIR-obtained witness data for notes into the wallet DB.
+///
+/// `witnesses_json` is a JSON array of `WitnessInput` objects.
+///
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and point to a path-encoded byte array of length `db_data_len`.
+/// - `witnesses_json` must be non-null and point to a valid JSON byte array of length `witnesses_json_len`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_insert_pir_witnesses(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    witnesses_json: *const u8,
+    witnesses_json_len: usize,
+) -> i32 {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+        let json_bytes = unsafe { std::slice::from_raw_parts(witnesses_json, witnesses_json_len) };
+        let inputs = parse_pir_witness_inputs(json_bytes)?;
+        apply_pir_witness_inputs(
+            inputs,
+            |input| {
+                let validation = db_data
+                    .validate_pir_orchard_witness(
+                        input.note_id,
+                        &input.siblings,
+                        input.anchor_height,
+                        &input.anchor_root,
+                    )
+                    .map_err(|e| {
+                        anyhow!(
+                            "failed to validate PIR witness for note {} before insert: {e}",
+                            input.note_id
+                        )
+                    })?;
+
+                Ok(WitnessValidationSummary {
+                    computed_root: validation.computed_root,
+                })
+            },
+            |input| {
+                db_data
+                    .insert_pir_witness(
+                        input.note_id,
+                        &input.siblings,
+                        input.anchor_height,
+                        &input.anchor_root,
+                    )
+                    .map_err(|e| {
+                        anyhow!(
+                            "failed to insert PIR witness for note {}: {e}",
+                            input.note_id
+                        )
+                    })
+            },
+        )?;
+        Ok(0i32)
+    });
+    crate::unwrap_exc_or(res, -1)
+}
+
 pub(crate) fn parse_optional_height(value: i64) -> anyhow::Result<Option<BlockHeight>> {
     Ok(match value {
         -1 => None,
         _ => Some(BlockHeight::try_from(value)?),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn witness_json(note_id: i64) -> Vec<u8> {
+        let json = serde_json::json!([{
+            "note_id": note_id,
+            "siblings": vec!["00".repeat(32); 32],
+            "anchor_height": 100u64,
+            "anchor_root": "11".repeat(32)
+        }]);
+        serde_json::to_vec(&json).expect("serialize witness json")
+    }
+
+    fn validation_summary(matches_anchor: bool) -> WitnessValidationSummary {
+        WitnessValidationSummary {
+            computed_root: if matches_anchor { [0x11; 32] } else { [6u8; 32] },
+        }
+    }
+
+    #[test]
+    fn parse_pir_witness_inputs_decodes_hex_payload() {
+        let inputs = parse_pir_witness_inputs(&witness_json(7)).expect("parse witness json");
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].note_id, 7);
+        assert_eq!(inputs[0].anchor_height, 100);
+        assert_eq!(inputs[0].siblings.len(), 32);
+        assert_eq!(inputs[0].anchor_root, [0x11; 32]);
+    }
+
+    #[test]
+    fn apply_pir_witness_inputs_rejects_invalid_witness_before_insert() {
+        let inputs = parse_pir_witness_inputs(&witness_json(9)).expect("parse witness json");
+        let insert_calls = Cell::new(0usize);
+
+        let err = apply_pir_witness_inputs(
+            inputs,
+            |_input| Ok(validation_summary(false)),
+            |_input| {
+                insert_calls.set(insert_calls.get() + 1);
+                Ok(())
+            },
+        )
+        .expect_err("invalid witness should be rejected before insert");
+
+        assert!(
+            err.to_string()
+                .contains("PIR witness for note 9 failed root validation before insert"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            insert_calls.get(),
+            0,
+            "insert should not be attempted after validation failure"
+        );
+    }
+
+    #[test]
+    fn apply_pir_witness_inputs_inserts_valid_witnesses() {
+        let inputs = parse_pir_witness_inputs(&witness_json(11)).expect("parse witness json");
+        let validate_calls = Cell::new(0usize);
+        let insert_calls = Cell::new(0usize);
+
+        apply_pir_witness_inputs(
+            inputs,
+            |_input| {
+                validate_calls.set(validate_calls.get() + 1);
+                Ok(validation_summary(true))
+            },
+            |_input| {
+                insert_calls.set(insert_calls.get() + 1);
+                Ok(())
+            },
+        )
+        .expect("valid witness should be inserted");
+
+        assert_eq!(validate_calls.get(), 1);
+        assert_eq!(insert_calls.get(), 1);
+    }
 }

@@ -87,6 +87,12 @@ public protocol CombineSynchronizer {
     ///
     /// If `prepare()` hasn't already been called since creation of the synchronizer instance
     /// or since the last wipe then this method throws `SynchronizerErrors.notPrepared`.
+    ///
+    /// - Parameters:
+    ///   - proposal: The proposal for which to create transactions. Attach a
+    ///     `Proposal.PIRWitnessConfig` via `proposal.pirWitnessConfig` to enable PIR witness
+    ///     fetching when the wallet is not fully synced.
+    ///   - spendingKey: The `UnifiedSpendingKey` for the account that controls the funds.
     func createProposedTransactions(
         proposal: Proposal,
         spendingKey: UnifiedSpendingKey

@@ -288,10 +288,13 @@ protocol ZcashRustBackendWelding {
     /// Creates a transaction from the given proposal.
     /// - Parameter proposal: the transaction proposal.
     /// - Parameter usk: `UnifiedSpendingKey` for the account that controls the funds to be spent.
+    /// - Parameter usePIRWitnesses: When `true`, Orchard witnesses are read from
+    ///   PIR-stored data instead of the local ShardTree.
     /// - Throws: `rustCreateToAddress`.
     func createProposedTransactions(
         proposal: FfiProposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        usePIRWitnesses: Bool
     ) async throws -> [Data]
 
     /// Creates a partially-created (unsigned without proofs) transaction from the given proposal.
@@ -391,4 +394,22 @@ protocol ZcashRustBackendWelding {
     
     /// Attempts to delete an account defined by UUID
     func deleteAccount(_ accountUUID: AccountUUID) async throws
+
+    // MARK: - PIR (serialized through @DBActor, no standalone connections)
+
+    /// Returns unspent Orchard notes with nullifiers for PIR spend-checking.
+    func getUnspentOrchardNotesForPIR() async throws -> [PIRUnspentNote]
+
+    // MARK: - Witness PIR (serialized through @DBActor, no standalone connections)
+
+    /// Returns canonical Orchard notes that should be considered for PIR
+    /// witness fetch or refresh.
+    func getNotesNeedingPIRWitness() async throws -> [PIRNotePosition]
+
+    /// Returns Orchard notes selected by the provided proposal that may require
+    /// a PIR witness refresh before transaction construction.
+    func getPIRWitnessNotes(for proposal: FfiProposal) async throws -> [PIRNotePosition]
+
+    /// Inserts PIR-obtained witnesses into the wallet DB.
+    func insertPIRWitnesses(_ witnesses: [PIRWitnessEntry]) async throws
 }

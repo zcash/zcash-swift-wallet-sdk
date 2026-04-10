@@ -85,7 +85,7 @@ class RustBackendMockHelper {
         rustBackendMock.proposeTransferAccountUUIDToValueMemoThrowableError = ZcashError.rustCreateToAddress("mocked error")
         let error = ZcashError.rustShieldFunds("mocked error")
         rustBackendMock.proposeShieldingAccountUUIDMemoShieldingThresholdTransparentReceiverThrowableError = error
-        rustBackendMock.createProposedTransactionsProposalUskThrowableError = ZcashError.rustCreateToAddress("mocked error")
+        rustBackendMock.createProposedTransactionsProposalUskUsePIRWitnessesThrowableError = ZcashError.rustCreateToAddress("mocked error")
         rustBackendMock.decryptAndStoreTransactionTxBytesMinedHeightThrowableError = ZcashError.rustDecryptAndStoreTransaction("mock fail")
 
         rustBackendMock.initDataDbSeedClosure = { seed in

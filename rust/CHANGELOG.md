@@ -6,6 +6,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- PIR (Private Information Retrieval) FFI for nullifier spend-checking and witness retrieval:
+  - `zcashlc_check_nullifiers_pir` — batch-check nullifiers against a PIR server.
+  - `zcashlc_fetch_pir_witnesses` — fetch Orchard note commitment witnesses from a PIR server.
+  - `zcashlc_get_unspent_orchard_notes_for_pir` — return unspent Orchard notes with nullifiers for PIR queries.
+  - `zcashlc_get_notes_needing_pir_witness` — return canonical notes that need a PIR witness fetch.
+  - `zcashlc_get_pir_witness_notes_for_proposal` — return notes selected by a proposal that may need witness refresh.
+  - `zcashlc_insert_pir_witnesses` — store PIR-obtained witnesses in the wallet DB.
+
+
+### Changed
+- `zcashlc_create_proposed_transactions` now accepts a `use_pir_witnesses` parameter to read Orchard witnesses from PIR-stored data instead of the local ShardTree.
+
 ## 2.4.6 - 2026-03-12
 
 ### Changed

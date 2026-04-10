@@ -89,6 +89,13 @@ public protocol ClosureSynchronizer {
     /// proposal, indicating whether they were submitted to the network or if an error
     /// occurred.
     ///
+    /// - Parameters:
+    ///   - proposal: The proposal for which to create transactions. Attach a
+    ///     `Proposal.PIRWitnessConfig` via `proposal.pirWitnessConfig` to enable PIR witness
+    ///     fetching when the wallet is not fully synced.
+    ///   - spendingKey: The `UnifiedSpendingKey` for the account that controls the funds.
+    ///   - completion: Completion handler.
+    ///
     /// If `prepare()` hasn't already been called since creation of the synchronizer instance
     /// or since the last wipe then this method throws `SynchronizerErrors.notPrepared`.
     func createProposedTransactions(
