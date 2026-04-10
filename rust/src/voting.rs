@@ -1383,9 +1383,13 @@ pub unsafe extern "C" fn zcashlc_voting_generate_note_witnesses(
             .collect();
         let checkpoint_height = zcash_protocol::consensus::BlockHeight::from_u32(params.snapshot_height as u32);
 
-        let merkle_paths = wallet_db
-            .generate_orchard_witnesses_at_frontier(&positions, nonempty_frontier, checkpoint_height)
-            .map_err(|e| anyhow!("generate_orchard_witnesses_at_frontier failed: {}", e))?;
+        let merkle_paths = voting::orchard_witnesses::generate_orchard_witnesses_at_frontier(
+            wallet_db.conn(),
+            &positions,
+            nonempty_frontier,
+            checkpoint_height,
+        )
+        .map_err(|e| anyhow!("generate_orchard_witnesses_at_frontier failed: {}", e))?;
 
         // Convert MerklePaths to WitnessData
         let root_bytes = frontier_root.to_bytes().to_vec();
