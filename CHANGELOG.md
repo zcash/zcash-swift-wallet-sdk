@@ -6,6 +6,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Added
+- PIR (Private Information Retrieval) integration for detecting Orchard note spendability without waiting for shard-tree scanning to complete.
+  - `SpendabilityBackend` / `SpendabilityTypes` — Swift wrappers for the nullifier and witness PIR FFI layer.
+  - `Synchronizer.checkWalletSpendability` — queries a PIR server to determine which notes have been spent, without revealing the wallet's notes to the server.
+  - `Synchronizer.fetchNoteWitnesses` — fetches Orchard note commitment witnesses from a PIR server, making notes spendable before the scanner catches up.
+  - `SDKFlags.pirCompleted` — lifecycle flag preserving spendable balance across sync restarts.
+- `Proposal.PIRWitnessConfig` — attach to a `Proposal` via `proposal.pirWitnessConfig` to enable PIR witness fetching when the wallet is not fully synced. The SDK handles alignment and retry logic automatically.
+- `createProposedTransactions` reads PIR configuration from the proposal itself, keeping the method signature clean.
+
 # 2.4.9 - 2026-04-04
 
 ## Checkpoints

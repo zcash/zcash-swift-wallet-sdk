@@ -962,19 +962,15 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         if await !sdkFlags.chainTipUpdated {
             accountBalances.forEach { key, _ in
                 if let accountBalance = accountBalances[key] {
+                    let saplingBalance = PoolBalance(
+                        spendableValue: .zero,
+                        changePendingConfirmation: accountBalance.saplingBalance.changePendingConfirmation,
+                        valuePendingSpendability: accountBalance.saplingBalance.valuePendingSpendability
+                        + accountBalance.saplingBalance.spendableValue
+                    )
                     accountBalances[key] = AccountBalance(
-                        saplingBalance: PoolBalance(
-                            spendableValue: .zero,
-                            changePendingConfirmation: accountBalance.saplingBalance.changePendingConfirmation,
-                            valuePendingSpendability: accountBalance.saplingBalance.valuePendingSpendability
-                            + accountBalance.saplingBalance.spendableValue
-                        ),
-                        orchardBalance: PoolBalance(
-                            spendableValue: .zero,
-                            changePendingConfirmation: accountBalance.orchardBalance.changePendingConfirmation,
-                            valuePendingSpendability: accountBalance.orchardBalance.valuePendingSpendability
-                            + accountBalance.orchardBalance.spendableValue
-                        ),
+                        saplingBalance: saplingBalance,
+                        orchardBalance: accountBalance.orchardBalance,
                         unshielded: .zero,
                         awaitingResolution: accountBalance.unshielded
                     )
@@ -1091,7 +1087,8 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     @DBActor
     func createProposedTransactions(
         proposal: FfiProposal,
-        usk: UnifiedSpendingKey
+        usk: UnifiedSpendingKey,
+        usePIRWitnesses: Bool
     ) async throws -> [Data] {
         let proposalBytes = try proposal.serializedData(partial: false).bytes
 
@@ -1108,7 +1105,8 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
                     spendParamsPath.1,
                     outputParamsPath.0,
                     outputParamsPath.1,
-                    networkType.networkId
+                    networkType.networkId,
+                    usePIRWitnesses
                 )
             }
         }
@@ -1285,6 +1283,94 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             )
         }
     }
+
+    // MARK: - PIR (serialized through @DBActor)
+
+    @DBActor
+    func getUnspentOrchardNotesForPIR() async throws -> [PIRUnspentNote] {
+        let ptr = zcashlc_get_unspent_orchard_notes_for_pir(
+            dbData.0,
+            dbData.1,
+            networkType.networkId
+        )
+
+        guard let ptr else {
+            throw SpendabilityBackendError.rustError(
+                lastErrorMessage(fallback: "`getUnspentOrchardNotesForPIR` failed")
+            )
+        }
+        defer { zcashlc_free_boxed_slice(ptr) }
+
+        let data = Data(bytes: ptr.pointee.ptr, count: Int(ptr.pointee.len))
+        return try JSONDecoder().decode([PIRUnspentNote].self, from: data)
+    }
+
+    // MARK: - Witness PIR
+
+    @DBActor
+    func getNotesNeedingPIRWitness() async throws -> [PIRNotePosition] {
+        let ptr = zcashlc_get_notes_needing_pir_witness(
+            dbData.0,
+            dbData.1,
+            networkType.networkId
+        )
+
+        guard let ptr else {
+            throw SpendabilityBackendError.rustError(
+                lastErrorMessage(fallback: "`getNotesNeedingPIRWitness` failed")
+            )
+        }
+        defer { zcashlc_free_boxed_slice(ptr) }
+
+        let data = Data(bytes: ptr.pointee.ptr, count: Int(ptr.pointee.len))
+        return try JSONDecoder().decode([PIRNotePosition].self, from: data)
+    }
+
+    @DBActor
+    func getPIRWitnessNotes(for proposal: FfiProposal) async throws -> [PIRNotePosition] {
+        let proposalBytes = try proposal.serializedData(partial: false).bytes
+        let ptr = proposalBytes.withUnsafeBufferPointer { proposalPtr in
+            zcashlc_get_pir_witness_notes_for_proposal(
+                dbData.0,
+                dbData.1,
+                proposalPtr.baseAddress,
+                UInt(proposalBytes.count),
+                networkType.networkId
+            )
+        }
+
+        guard let ptr else {
+            throw SpendabilityBackendError.rustError(
+                lastErrorMessage(fallback: "`getPIRWitnessNotes(for:)` failed")
+            )
+        }
+        defer { zcashlc_free_boxed_slice(ptr) }
+
+        let data = Data(bytes: ptr.pointee.ptr, count: Int(ptr.pointee.len))
+        return try JSONDecoder().decode([PIRNotePosition].self, from: data)
+    }
+
+    @DBActor
+    func insertPIRWitnesses(_ witnesses: [PIRWitnessEntry]) async throws {
+        let json = try JSONEncoder().encode(witnesses)
+
+        let result = json.withUnsafeBytes { buf in
+            zcashlc_insert_pir_witnesses(
+                dbData.0,
+                dbData.1,
+                networkType.networkId,
+                buf.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                UInt(buf.count)
+            )
+        }
+
+        guard result == 0 else {
+            throw SpendabilityBackendError.rustError(
+                lastErrorMessage(fallback: "`insertPIRWitnesses` failed")
+            )
+        }
+    }
+
 }
 
 private extension ZcashRustBackend {

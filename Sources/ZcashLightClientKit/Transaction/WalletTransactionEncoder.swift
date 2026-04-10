@@ -108,14 +108,19 @@ class WalletTransactionEncoder: TransactionEncoder {
         proposal: Proposal,
         spendingKey: UnifiedSpendingKey
     ) async throws -> [ZcashTransaction.Overview] {
+        let usePIRWitnesses = proposal.pirWitnessConfig?.usePIRWitnesses ?? false
+        logger.info("[PIR-DEBUG] WalletTransactionEncoder.createProposedTransactions: usePIRWitnesses=\(usePIRWitnesses)")
+
         guard ensureParams(spend: self.spendParamsURL, output: self.outputParamsURL) else {
             throw ZcashError.walletTransEncoderCreateTransactionMissingSaplingParams
         }
 
         let txIds = try await rustBackend.createProposedTransactions(
             proposal: proposal.inner,
-            usk: spendingKey
+            usk: spendingKey,
+            usePIRWitnesses: usePIRWitnesses
         )
+        logger.info("[PIR-DEBUG] WalletTransactionEncoder.createProposedTransactions completed, txIds count=\(txIds.count)")
 
         return try await fetchTransactionsForTxIds(txIds)
     }

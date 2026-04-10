@@ -208,12 +208,15 @@ public protocol Synchronizer: AnyObject {
 
     /// Creates the transactions in the given proposal.
     ///
-    /// - Parameter proposal: the proposal for which to create transactions.
-    /// - Parameter spendingKey: the `UnifiedSpendingKey` associated with the account for which the proposal was created.
-    ///
     /// Returns a stream of objects for the transactions that were created as part of the
     /// proposal, indicating whether they were submitted to the network or if an error
     /// occurred.
+    ///
+    /// - Parameters:
+    ///   - proposal: The proposal for which to create transactions. Attach a
+    ///     `Proposal.PIRWitnessConfig` via `proposal.pirWitnessConfig` to enable PIR witness
+    ///     fetching when the wallet is not fully synced.
+    ///   - spendingKey: The `UnifiedSpendingKey` for the account that controls the funds.
     ///
     /// If `prepare()` hasn't already been called since creation of the synchronizer instance
     /// or since the last wipe then this method throws `SynchronizerErrors.notPrepared`.
@@ -526,6 +529,34 @@ public protocol Synchronizer: AnyObject {
     ///
     /// - Throws rustDeleteAccount as a common indicator of the operation failure
     func deleteAccount(_ accountUUID: AccountUUID) async throws -> Void
+
+    /// Check spendability of all unspent orchard notes in the wallet using a PIR server.
+    /// Queries the wallet DB for unspent notes, checks each via PIR, and returns
+    /// which are spent along with total spent value.
+    ///
+    /// - Parameters:
+    ///   - pirServerUrl: Base URL of the spend-server.
+    ///   - progress: Optional progress callback (0.0..1.0).
+    func checkWalletSpendability(
+        pirServerUrl: String,
+        progress: SpendabilityProgressHandler?
+    ) async throws -> SpendabilityResult
+
+    /// Fetch note commitment witnesses from the PIR server for canonical Orchard
+    /// notes the wallet wants to keep spendable during sync.
+    ///
+    /// Orchestrates: DB read (canonical notes) -> PIR server fetch -> DB write
+    /// (store witnesses). Notes with witnesses bypass the shard-scanned gate in
+    /// coin selection, making them spendable sooner.
+    ///
+    /// - Parameters:
+    ///   - pirServerUrl: Base URL of the witness PIR server.
+    ///   - progress: Optional progress callback (0.0..1.0).
+    func fetchNoteWitnesses(
+        pirServerUrl: String,
+        progress: SpendabilityProgressHandler?
+    ) async throws -> WitnessResult
+
 }
 
 public enum SyncStatus: Equatable {

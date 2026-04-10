@@ -9,7 +9,28 @@ import Foundation
 
 /// A data structure that describes a series of transactions to be created.
 public struct Proposal: Equatable {
+    /// PIR witness configuration attached to a proposal.
+    ///
+    /// Set `serverURL` before calling `createProposedTransactions` so the SDK
+    /// can fetch Orchard witnesses from the PIR server when the wallet is not
+    /// fully synced.  The SDK sets `usePIRWitnesses` internally based on sync
+    /// status and retry logic.
+    public struct PIRWitnessConfig: Equatable, Sendable {
+        public let serverURL: String
+        public internal(set) var usePIRWitnesses: Bool
+
+        public init(serverURL: String) {
+            self.serverURL = serverURL
+            self.usePIRWitnesses = false
+        }
+    }
+
     let inner: FfiProposal
+
+    /// Optional PIR witness configuration. When set, the SDK will use the
+    /// provided server URL to fetch Orchard witnesses if the wallet is not
+    /// fully synced, enabling spending before scanning completes.
+    public var pirWitnessConfig: PIRWitnessConfig?
 
     /// Returns the number of transactions that this proposal will create.
     ///

@@ -59,7 +59,9 @@ protocol TransactionEncoder {
 
     /// Creates the transactions in the given proposal.
     ///
-    /// - Parameter proposal: the proposal for which to create transactions.
+    /// - Parameter proposal: the proposal for which to create transactions. The proposal's
+    ///   `pirWitnessConfig.usePIRWitnesses` flag controls whether Orchard witnesses are
+    ///   read from PIR-stored data instead of the local ShardTree.
     /// - Parameter spendingKey: the `UnifiedSpendingKey` associated with the account for which the proposal was created.
     /// - Throws:
     ///     - `walletTransEncoderCreateTransactionMissingSaplingParams` if the sapling parameters aren't downloaded.
