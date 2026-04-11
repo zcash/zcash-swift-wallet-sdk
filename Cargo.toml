@@ -103,13 +103,13 @@ lto = true
 #   visibility changes needed for voting delegation flows.
 [patch.crates-io]
 orchard = { git = "https://github.com/valargroup/voting-circuits.git" }
-# librustzcash crates pinned by rev to shielded-voting-wallet-support HEAD (1d3ac2f).
-pczt              = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
-zcash_keys        = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
-zcash_protocol    = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
-zcash_address     = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
-zcash_encoding    = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
-zcash_transparent = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
-zcash_client_sqlite  = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
-zcash_client_backend = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
-zcash_primitives  = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
+# librustzcash crates pinned by rev to shielded-voting-wallet-support HEAD (38ef1c6).
+pczt              = { git = "https://github.com/valargroup/librustzcash.git", rev = "38ef1c6c81e9b0663aedbd81f904c51a204fa72f" }
+zcash_keys        = { git = "https://github.com/valargroup/librustzcash.git", rev = "38ef1c6c81e9b0663aedbd81f904c51a204fa72f" }
+zcash_protocol    = { git = "https://github.com/valargroup/librustzcash.git", rev = "38ef1c6c81e9b0663aedbd81f904c51a204fa72f" }
+zcash_address     = { git = "https://github.com/valargroup/librustzcash.git", rev = "38ef1c6c81e9b0663aedbd81f904c51a204fa72f" }
+zcash_encoding    = { git = "https://github.com/valargroup/librustzcash.git", rev = "38ef1c6c81e9b0663aedbd81f904c51a204fa72f" }
+zcash_transparent = { git = "https://github.com/valargroup/librustzcash.git", rev = "38ef1c6c81e9b0663aedbd81f904c51a204fa72f" }
+zcash_client_sqlite  = { git = "https://github.com/valargroup/librustzcash.git", rev = "38ef1c6c81e9b0663aedbd81f904c51a204fa72f" }
+zcash_client_backend = { git = "https://github.com/valargroup/librustzcash.git", rev = "38ef1c6c81e9b0663aedbd81f904c51a204fa72f" }
+zcash_primitives  = { git = "https://github.com/valargroup/librustzcash.git", rev = "38ef1c6c81e9b0663aedbd81f904c51a204fa72f" }
