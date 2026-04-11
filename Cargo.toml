@@ -78,7 +78,7 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 xz2 = { version = "0.1", features = ["static"] }
 
 # Voting
-librustvoting = { git = "https://github.com/valargroup/librustvoting.git", rev = "8ff443286d313182625cfb504061700f29130d88" }
+librustvoting = { git = "https://github.com/valargroup/librustvoting.git", rev = "126c11d354c28de257d75558f0d88bcee0f2e0d0" }
 voting-circuits = { git = "https://github.com/valargroup/voting-circuits.git" }
 zcash_keys = { version = "0.12", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
@@ -103,13 +103,13 @@ lto = true
 #   visibility changes needed for voting delegation flows.
 [patch.crates-io]
 orchard = { git = "https://github.com/valargroup/voting-circuits.git" }
-# librustzcash crates pinned by rev to shielded-voting-wallet-support HEAD (6858db4).
-pczt              = { git = "https://github.com/valargroup/librustzcash.git", rev = "6858db4a523de05f7474a89c7df751510c71874d" }
-zcash_keys        = { git = "https://github.com/valargroup/librustzcash.git", rev = "6858db4a523de05f7474a89c7df751510c71874d" }
-zcash_protocol    = { git = "https://github.com/valargroup/librustzcash.git", rev = "6858db4a523de05f7474a89c7df751510c71874d" }
-zcash_address     = { git = "https://github.com/valargroup/librustzcash.git", rev = "6858db4a523de05f7474a89c7df751510c71874d" }
-zcash_encoding    = { git = "https://github.com/valargroup/librustzcash.git", rev = "6858db4a523de05f7474a89c7df751510c71874d" }
-zcash_transparent = { git = "https://github.com/valargroup/librustzcash.git", rev = "6858db4a523de05f7474a89c7df751510c71874d" }
-zcash_client_sqlite  = { git = "https://github.com/valargroup/librustzcash.git", rev = "6858db4a523de05f7474a89c7df751510c71874d" }
-zcash_client_backend = { git = "https://github.com/valargroup/librustzcash.git", rev = "6858db4a523de05f7474a89c7df751510c71874d" }
-zcash_primitives  = { git = "https://github.com/valargroup/librustzcash.git", rev = "6858db4a523de05f7474a89c7df751510c71874d" }
+# librustzcash crates pinned by rev to shielded-voting-wallet-support HEAD (1d3ac2f).
+pczt              = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
+zcash_keys        = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
+zcash_protocol    = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
+zcash_address     = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
+zcash_encoding    = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
+zcash_transparent = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
+zcash_client_sqlite  = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
+zcash_client_backend = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
+zcash_primitives  = { git = "https://github.com/valargroup/librustzcash.git", rev = "1d3ac2fa9977e2118301722fb0c98b6aedde02e8" }
