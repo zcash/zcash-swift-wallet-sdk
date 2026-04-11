@@ -1108,8 +1108,8 @@ pub unsafe extern "C" fn zcashlc_voting_get_wallet_notes(
 
         let height = zcash_protocol::consensus::BlockHeight::from_u32(snapshot_height as u32);
         let received_notes = wallet_db
-            .get_orchard_notes_at_historical_height(account_uuid, height)
-            .map_err(|e| anyhow!("get_orchard_notes_at_historical_height failed: {}", e))?;
+            .get_unspent_orchard_notes_at_historical_height(account_uuid, height)
+            .map_err(|e| anyhow!("get_unspent_orchard_notes_at_historical_height failed: {}", e))?;
 
         let mut json_notes = Vec::with_capacity(received_notes.len());
         for rn in &received_notes {
