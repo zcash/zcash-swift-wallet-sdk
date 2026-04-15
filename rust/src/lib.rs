@@ -96,6 +96,7 @@ mod derivation;
 mod eip681;
 mod ffi;
 mod tor;
+mod voting;
 
 #[cfg(target_vendor = "apple")]
 mod os_log;
