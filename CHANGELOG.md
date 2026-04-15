@@ -6,6 +6,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Added
+- `Broadcaster` protocol — separates transaction creation from submission, enabling custom broadcast strategies (e.g. submitting to multiple lightwalletd servers in parallel).
+  - `Broadcaster.createProposedTransactions(proposal:spendingKey:)` — creates transactions locally without broadcasting, returning `[ZcashTransaction.Overview]` with raw bytes.
+  - `Broadcaster.createTransactionFromPCZT(pcztWithProofs:pcztWithSigs:)` — extracts and stores a transaction from PCZT data without submitting.
+  - `Broadcaster.submit(_:to:)` — submits raw transaction bytes to a specific `LightWalletEndpoint`. Respects Tor configuration.
+- `Synchronizer.broadcaster` property to access the `Broadcaster` from any synchronizer instance.
+
 # 2.4.9 - 2026-04-04
 
 ## Checkpoints

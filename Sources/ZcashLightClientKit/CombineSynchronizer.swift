@@ -152,7 +152,9 @@ public protocol CombineSynchronizer {
     func estimateBirthdayHeight(for date: Date) -> SinglePublisher<BlockHeight, Error>
 
     func httpRequestOverTor(for request: URLRequest, retryLimit: UInt8) -> SinglePublisher<(data: Data, response: HTTPURLResponse), Error>
-    
+
+    var broadcaster: Broadcaster { get }
+
     func rewind(_ policy: RewindPolicy) -> CompletablePublisher<Error>
     func wipe() -> CompletablePublisher<Error>
 }

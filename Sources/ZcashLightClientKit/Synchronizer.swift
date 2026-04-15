@@ -526,6 +526,13 @@ public protocol Synchronizer: AnyObject {
     ///
     /// - Throws rustDeleteAccount as a common indicator of the operation failure
     func deleteAccount(_ accountUUID: AccountUUID) async throws -> Void
+
+    /// Provides access to transaction creation and submission operations
+    /// that are decoupled from the synchronizer's built-in submission flow.
+    ///
+    /// Use this to implement custom broadcast strategies such as submitting
+    /// to multiple lightwalletd servers in parallel.
+    var broadcaster: Broadcaster { get }
 }
 
 public enum SyncStatus: Equatable {

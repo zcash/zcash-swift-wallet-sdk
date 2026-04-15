@@ -161,7 +161,9 @@ public protocol ClosureSynchronizer {
     func estimateBirthdayHeight(for date: Date, completion: @escaping (BlockHeight) -> Void)
 
     func httpRequestOverTor(for request: URLRequest, retryLimit: UInt8, completion: @escaping (Result<(data: Data, response: HTTPURLResponse), Error>) -> Void)
-    
+
+    var broadcaster: Broadcaster { get }
+
     /*
      It can be missleading that these two methods are returning Publisher even this protocol is closure based. Reason is that Synchronizer doesn't
      provide different implementations for these two methods. So Combine it is even here.

@@ -55,6 +55,18 @@ public class SDKSynchronizer: Synchronizer {
     private let syncSessionTicker: SessionTicker
     var latestBlocksDataProvider: LatestBlocksDataProvider
 
+    public private(set) lazy var broadcaster: Broadcaster = SDKBroadcaster(
+        transactionEncoder: transactionEncoder,
+        initializer: initializer,
+        sdkFlags: sdkFlags,
+        logger: logger,
+        eventSubject: eventSubject,
+        statusCheck: { [weak self] in
+            guard let self else { return }
+            try self.throwIfUnprepared()
+        }
+    )
+
     /// Creates an SDKSynchronizer instance
     /// - Parameter initializer: a wallet Initializer object
     public convenience init(initializer: Initializer) {

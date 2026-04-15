@@ -273,7 +273,9 @@ extension CombineSDKSynchronizer: CombineSynchronizer {
             try await self.synchronizer.httpRequestOverTor(for: request, retryLimit: retryLimit)
         }
     }
-    
+
+    public var broadcaster: Broadcaster { synchronizer.broadcaster }
+
     public func rewind(_ policy: RewindPolicy) -> CompletablePublisher<Error> { synchronizer.rewind(policy) }
     public func wipe() -> CompletablePublisher<Error> { synchronizer.wipe() }
 }
