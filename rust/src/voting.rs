@@ -27,7 +27,7 @@ use zcash_keys::keys::{UnifiedFullViewingKey, UnifiedSpendingKey};
 use zcash_protocol::consensus::{self, MAIN_NETWORK, Network, TEST_NETWORK};
 use zip32::{AccountId, Scope};
 
-use librustvoting as voting;
+use zcash_voting as voting;
 use voting::storage::VotingDb;
 use voting::tree_sync::VoteTreeSync;
 
@@ -65,7 +65,7 @@ fn json_to_boxed_slice<T: Serialize>(value: &T) -> anyhow::Result<*mut crate::ff
     Ok(crate::ffi::BoxedSlice::some(json))
 }
 
-/// Convert a librustzcash ReceivedNote (orchard) into librustvoting's NoteInfo.
+/// Convert a librustzcash ReceivedNote (orchard) into zcash_voting's NoteInfo.
 ///
 /// Requires the account's UFVK and network to compute the nullifier and
 /// encode the UFVK string.
