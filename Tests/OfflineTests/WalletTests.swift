@@ -38,6 +38,7 @@ class WalletTests: ZcashTestCase {
         let serviceMock = LightWalletServiceMock()
         mockContainer.mock(type: LightWalletService.self, isSingleton: true) { _ in serviceMock }
         serviceMock.latestBlockHeightModeReturnValue = 1
+        serviceMock.getTreeStateModeThrowableError = ZcashError.rustTorLwdGetTreeState("test")
         
         let wallet = Initializer(
             container: mockContainer,
