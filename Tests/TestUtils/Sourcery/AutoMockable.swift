@@ -23,6 +23,7 @@ extension LightWalletdInfo { }
 extension LightWalletService { }
 extension Logger { }
 extension SaplingParametersHandler { }
+extension Broadcaster { }
 extension Synchronizer { }
 extension TransactionRepository { }
 extension UTXOFetcher { }
