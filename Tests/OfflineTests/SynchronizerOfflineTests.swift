@@ -439,7 +439,8 @@ class SynchronizerOfflineTests: ZcashTestCase {
             syncSessionID: .nullID,
             accountsBalances: [:],
             internalSyncStatus: internalSyncStatus,
-            latestBlockHeight: .zero
+            latestBlockHeight: .zero,
+            fullyScannedHeight: .zero
         )
     }
 }
