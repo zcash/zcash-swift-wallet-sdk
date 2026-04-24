@@ -557,6 +557,10 @@ extension VotingRustBackend {
 
         var context = ProgressContext(handler: progress)
 
+        // SAFETY: `ctxPtr` points at a stack-local ProgressContext. The Rust side
+        // must invoke the callback only synchronously within this FFI call — if it
+        // ever retains the pointer past the call boundary, this becomes a
+        // use-after-free. The Rust impl in voting.rs holds this invariant today.
         let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
             notesBytes.withUnsafeBufferPointer { notesBuf in
                 hotkeyRawAddress.withUnsafeBufferPointer { hkBuf in
@@ -726,6 +730,8 @@ extension VotingRustBackend {
 
         var context = ProgressContext(handler: progress)
 
+        // SAFETY: see the equivalent note on `buildAndProveDelegation`. `ctxPtr` is
+        // stack-scoped to this call; the Rust side must not retain it past return.
         let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
             hotkeySeed.withUnsafeBufferPointer { seedBuf in
                 authPathJson.withUnsafeBytes { apBuf in
