@@ -1816,6 +1816,8 @@ pub unsafe extern "C" fn zcashlc_voting_mark_vote_submitted(
 // A2. VotingDatabase methods — Recovery state (TX hashes, bundles, share delegations, keystone sigs)
 // =============================================================================
 
+/// Persist the on-chain TX hash of a submitted delegation bundle so
+/// crash recovery can find it after app restart.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_store_delegation_tx_hash(
     db: *mut VotingDatabaseHandle,
@@ -1837,6 +1839,8 @@ pub unsafe extern "C" fn zcashlc_voting_store_delegation_tx_hash(
     unwrap_exc_or(res, -1)
 }
 
+/// Load a previously stored delegation TX hash. Returns a JSON-encoded
+/// `Option<String>` — `null` when no row exists for this bundle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_get_delegation_tx_hash(
     db: *mut VotingDatabaseHandle,
@@ -1855,6 +1859,8 @@ pub unsafe extern "C" fn zcashlc_voting_get_delegation_tx_hash(
     unwrap_exc_or_null(res)
 }
 
+/// Persist the on-chain TX hash of a submitted vote (scoped by bundle and
+/// proposal) for crash-recovery lookups.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_store_vote_tx_hash(
     db: *mut VotingDatabaseHandle,
@@ -1877,6 +1883,8 @@ pub unsafe extern "C" fn zcashlc_voting_store_vote_tx_hash(
     unwrap_exc_or(res, -1)
 }
 
+/// Load a previously stored vote TX hash. Returns a JSON-encoded
+/// `Option<String>` — `null` when no row exists for this bundle/proposal.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_get_vote_tx_hash(
     db: *mut VotingDatabaseHandle,
@@ -1896,6 +1904,9 @@ pub unsafe extern "C" fn zcashlc_voting_get_vote_tx_hash(
     unwrap_exc_or_null(res)
 }
 
+/// Persist the vote commitment bundle JSON and VC-tree position before TX
+/// submission, so share delegation can resume after a crash between TX
+/// confirmation and share send-out.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_store_commitment_bundle(
     db: *mut VotingDatabaseHandle,
@@ -1919,6 +1930,8 @@ pub unsafe extern "C" fn zcashlc_voting_store_commitment_bundle(
     unwrap_exc_or(res, -1)
 }
 
+/// Load a stored commitment bundle and its VC-tree position. Returns a
+/// JSON-encoded `Option<(String, u64)>` — `null` when no row exists.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_get_commitment_bundle(
     db: *mut VotingDatabaseHandle,
@@ -1938,6 +1951,8 @@ pub unsafe extern "C" fn zcashlc_voting_get_commitment_bundle(
     unwrap_exc_or_null(res)
 }
 
+/// Persist a Keystone-produced PCZT signature (`sig` + `sighash` + `rk`)
+/// so it survives app restarts during the delegation-signing workflow.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_store_keystone_signature(
     db: *mut VotingDatabaseHandle,
@@ -1965,6 +1980,8 @@ pub unsafe extern "C" fn zcashlc_voting_store_keystone_signature(
     unwrap_exc_or(res, -1)
 }
 
+/// Load all Keystone signatures stored for a round, returned as a JSON array
+/// of `{ bundle_index, sig, sighash, rk }` objects.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_get_keystone_signatures(
     db: *mut VotingDatabaseHandle,
@@ -1998,6 +2015,9 @@ pub unsafe extern "C" fn zcashlc_voting_get_keystone_signatures(
     unwrap_exc_or_null(res)
 }
 
+/// Remove all recovery-state rows for a round — TX hashes, commitment
+/// bundles, and Keystone signatures — once the round is fully submitted
+/// and no longer needs crash-recovery metadata.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_clear_recovery_state(
     db: *mut VotingDatabaseHandle,
