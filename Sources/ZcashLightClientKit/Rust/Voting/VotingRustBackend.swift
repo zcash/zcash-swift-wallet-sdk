@@ -1007,8 +1007,9 @@ extension VotingRustBackend {
     public func resetTreeClient(roundId: String = "") throws {
         let dbh = try requireHandle()
 
-        let result = roundId.utf8CString.withUnsafeBufferPointer { buf in
-            zcashlc_voting_reset_tree_client(dbh, buf.baseAddress, UInt(buf.count - 1))
+        let roundIdBytes = [UInt8](roundId.utf8)
+        let result = roundIdBytes.withUnsafeBufferPointer { buf in
+            zcashlc_voting_reset_tree_client(dbh, buf.baseAddress, UInt(buf.count))
         }
         guard result == 0 else {
             throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`reset_tree_client` failed"))
