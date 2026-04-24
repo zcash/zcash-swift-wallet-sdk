@@ -835,7 +835,7 @@ extension VotingRustBackend {
         guard result == 0 else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`store_delegation_tx_hash` failed")) }
     }
 
-    public func getDelegationTxHash(roundId: String, bundleIndex: UInt32) throws -> String? {
+    public func getDelegationTxHash(roundId: String, bundleIndex: UInt32) throws -> VotingTxHashLookup {
         let dbh = try requireHandle()
         let ridBytes = [UInt8](roundId.utf8)
         let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = ridBytes.withUnsafeBufferPointer { ridBuf in
@@ -843,7 +843,8 @@ extension VotingRustBackend {
         }
         guard let ptr else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`get_delegation_tx_hash` failed")) }
         defer { zcashlc_free_boxed_slice(ptr) }
-        return try decodeJSON(from: ptr)
+        let optional: String? = try decodeJSON(from: ptr)
+        return optional.map { .present($0) } ?? .notFound
     }
 
     public func storeVoteTxHash(roundId: String, bundleIndex: UInt32, proposalId: UInt32, txHash: String) throws {
@@ -858,7 +859,7 @@ extension VotingRustBackend {
         guard result == 0 else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`store_vote_tx_hash` failed")) }
     }
 
-    public func getVoteTxHash(roundId: String, bundleIndex: UInt32, proposalId: UInt32) throws -> String? {
+    public func getVoteTxHash(roundId: String, bundleIndex: UInt32, proposalId: UInt32) throws -> VotingTxHashLookup {
         let dbh = try requireHandle()
         let ridBytes = [UInt8](roundId.utf8)
         let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = ridBytes.withUnsafeBufferPointer { ridBuf in
@@ -866,7 +867,8 @@ extension VotingRustBackend {
         }
         guard let ptr else { throw VotingRustBackendError.rustError(lastErrorMessage(fallback: "`get_vote_tx_hash` failed")) }
         defer { zcashlc_free_boxed_slice(ptr) }
-        return try decodeJSON(from: ptr)
+        let optional: String? = try decodeJSON(from: ptr)
+        return optional.map { .present($0) } ?? .notFound
     }
 
     public func storeCommitmentBundle(roundId: String, bundleIndex: UInt32, proposalId: UInt32, bundleJson: String, vcTreePosition: UInt64) throws {

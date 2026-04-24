@@ -424,3 +424,20 @@ public struct VotingVanWitness: Codable, Sendable {
         case anchorHeight = "anchor_height"
     }
 }
+
+// MARK: - TX hash lookup
+
+/// Result of a stored-tx-hash lookup for a delegation or vote bundle.
+///
+/// Making "the DB has no row for this key" an explicit case — rather than
+/// letting it ride on an optional `String?` — disambiguates it from the
+/// `throws` path, which covers FFI-level failures (null handle, serde decode
+/// error, DB I/O error). Callers that only need to know "do we have a hash"
+/// can pattern-match `.present(let hash)`; callers that need to branch on
+/// absence-without-error can match `.notFound`.
+public enum VotingTxHashLookup: Equatable, Sendable {
+    /// No record exists for the given key (round/bundle or round/bundle/proposal).
+    case notFound
+    /// A record exists and contains the given tx hash.
+    case present(String)
+}
