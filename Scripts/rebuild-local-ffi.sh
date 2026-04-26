@@ -5,11 +5,13 @@
 # Targets:
 #   ios-sim     iOS Simulator (default, detects arm64 vs x86_64)
 #   ios-device  iOS Device (arm64)
+#   ios-all     iOS Device + iOS Simulator (both arm64)
 #   macos       macOS (detects arm64 vs x86_64)
 #
 # Examples:
 #   ./Scripts/rebuild-local-ffi.sh              # iOS Simulator (auto-detect arch)
 #   ./Scripts/rebuild-local-ffi.sh ios-device   # iOS Device
+#   ./Scripts/rebuild-local-ffi.sh ios-all      # iOS Device + Simulator
 #   ./Scripts/rebuild-local-ffi.sh macos        # macOS
 
 set -e
@@ -27,6 +29,99 @@ XCFRAMEWORK_DIR="LocalPackages/libzcashlc.xcframework"
 if [[ ! -d "$XCFRAMEWORK_DIR" ]]; then
     echo "Error: Local FFI not initialized. Run ./Scripts/init-local-ffi.sh first"
     exit 1
+fi
+
+ensure_rust_target() {
+    local rust_target="$1"
+    if ! rustup target list --installed | grep -q "^${rust_target}$"; then
+        echo "Rust target '$rust_target' is not installed."
+        read -p "Install it now? [Y/n] " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Nn]$ ]]; then
+            echo "Cannot build without the target. Exiting."
+            exit 1
+        fi
+        rustup target add "$rust_target"
+    fi
+}
+
+copy_framework_slice() {
+    local rust_target="$1"
+    local framework_dir="$2"
+    mkdir -p "$framework_dir/Modules" "$framework_dir/Headers"
+    cp "target/$rust_target/release/libzcashlc.a" "$framework_dir/libzcashlc"
+    cp BuildSupport/module.modulemap "$framework_dir/Modules/"
+    cp BuildSupport/platform-Info.plist "$framework_dir/Info.plist"
+    if [[ -d "target/Headers" ]]; then
+        cp -R target/Headers/* "$framework_dir/Headers/"
+    fi
+}
+
+if [[ "$TARGET" == "ios-all" ]]; then
+    echo "Building ios-all (device arm64 + simulator arm64)..."
+    echo ""
+    for RUST_TARGET in aarch64-apple-ios aarch64-apple-ios-sim; do
+        ensure_rust_target "$RUST_TARGET"
+        echo "Building $RUST_TARGET..."
+        cargo build --target "$RUST_TARGET" --release
+    done
+
+    TEMP_DIR=$(mktemp -d)
+    TEMP_XCFW="$TEMP_DIR/libzcashlc.xcframework"
+    copy_framework_slice "aarch64-apple-ios"     "$TEMP_XCFW/ios-arm64/libzcashlc.framework"
+    copy_framework_slice "aarch64-apple-ios-sim" "$TEMP_XCFW/ios-arm64-simulator/libzcashlc.framework"
+
+    cat > "$TEMP_XCFW/Info.plist" << 'PLISTEOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>AvailableLibraries</key>
+	<array>
+		<dict>
+			<key>LibraryIdentifier</key>
+			<string>ios-arm64</string>
+			<key>LibraryPath</key>
+			<string>libzcashlc.framework</string>
+			<key>SupportedArchitectures</key>
+			<array>
+				<string>arm64</string>
+			</array>
+			<key>SupportedPlatform</key>
+			<string>ios</string>
+		</dict>
+		<dict>
+			<key>LibraryIdentifier</key>
+			<string>ios-arm64-simulator</string>
+			<key>LibraryPath</key>
+			<string>libzcashlc.framework</string>
+			<key>SupportedArchitectures</key>
+			<array>
+				<string>arm64</string>
+			</array>
+			<key>SupportedPlatform</key>
+			<string>ios</string>
+			<key>SupportedPlatformVariant</key>
+			<string>simulator</string>
+		</dict>
+	</array>
+	<key>CFBundlePackageType</key>
+	<string>XFWK</string>
+	<key>XCFrameworkFormatVersion</key>
+	<string>1.0</string>
+</dict>
+</plist>
+PLISTEOF
+
+    rm -rf "$XCFRAMEWORK_DIR"
+    mv "$TEMP_XCFW" "$XCFRAMEWORK_DIR"
+    rm -rf "$TEMP_DIR"
+
+    echo ""
+    echo "Rebuilt ios-all (device arm64 + simulator arm64) in $XCFRAMEWORK_DIR"
+    echo ""
+    echo "Xcode should automatically pick up the changes. If not, clean build folder (Cmd+Shift+K)."
+    exit 0
 fi
 
 # Detect host architecture
@@ -72,7 +167,7 @@ case "$TARGET" in
         ;;
     *)
         echo "Unknown target: $TARGET"
-        echo "Valid targets: ios-sim, ios-device, macos"
+        echo "Valid targets: ios-sim, ios-device, ios-all, macos"
         exit 1
         ;;
 esac
@@ -80,17 +175,7 @@ esac
 echo "Building for $TARGET ($RUST_TARGET)..."
 echo ""
 
-# Check if Rust target is installed
-if ! rustup target list --installed | grep -q "^${RUST_TARGET}$"; then
-    echo "Rust target '$RUST_TARGET' is not installed."
-    read -p "Install it now? [Y/n] " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Nn]$ ]]; then
-        echo "Cannot build without the target. Exiting."
-        exit 1
-    fi
-    rustup target add "$RUST_TARGET"
-fi
+ensure_rust_target "$RUST_TARGET"
 
 # Incremental cargo build (fast for small changes!)
 # Cargo.toml is at the repo root, so we run cargo from there
