@@ -539,16 +539,36 @@ extension VotingRustBackend {
 
 extension VotingRustBackend {
     /// Build and prove the delegation ZKP. Long-running; reports progress via callback.
+    ///
+    /// Pass every PIR endpoint configured for the round and the round's expected
+    /// snapshot height; the SDK probes each endpoint's `GET /root` in parallel
+    /// (see `PirSnapshotResolver`) and uses the first endpoint (in config order)
+    /// whose served snapshot height equals `expectedSnapshotHeight` exactly.
+    /// Endpoints that are behind, ahead, missing snapshot metadata, or unreachable
+    /// are excluded. If no endpoint matches, the call throws
+    /// `PirSnapshotResolverError.noMatchingEndpoint` (or `.noEndpointsConfigured`)
+    /// — the SDK refuses to fall back to a mismatched endpoint, since proofs
+    /// built against the wrong snapshot are rejected on chain.
+    ///
+    /// Pass a custom `pirResolver` (typically only in tests) to inject a
+    /// stubbed probe; production callers should let it default.
     // swiftlint:disable:next function_parameter_count
     public func buildAndProveDelegation(
         roundId: String,
         bundleIndex: UInt32,
         notes: [VotingNoteInfo],
         hotkeyRawAddress: [UInt8],
-        pirServerUrl: String,
+        pirEndpoints: [String],
+        expectedSnapshotHeight: UInt64,
         networkId: UInt32,
-        progress: VotingProgressHandler?
-    ) throws -> VotingDelegationProofResult {
+        progress: VotingProgressHandler?,
+        pirResolver: PirSnapshotResolver = PirSnapshotResolver()
+    ) async throws -> VotingDelegationProofResult {
+        let pirServerUrl = try await pirResolver.resolve(
+            endpoints: pirEndpoints,
+            expectedSnapshotHeight: expectedSnapshotHeight
+        )
+
         let dbh = try requireHandle()
         let roundIdBytes = [UInt8](roundId.utf8)
         let notesJson = try JSONEncoder().encode(notes)
