@@ -1052,7 +1052,13 @@ public class SDKSynchronizer: Synchronizer {
     public func debugDatabase(sql: String) -> String {
         transactionRepository.debugDatabase(sql: sql)
     }
-    
+
+    public func getTreeState(height: UInt64) async throws -> Data {
+        let blockID = BlockID.with { $0.height = height }
+        let treeState = try await initializer.lightWalletService.getTreeState(blockID, mode: .direct)
+        return try treeState.serializedData()
+    }
+
     public func getSingleUseTransparentAddress(accountUUID: AccountUUID) async throws -> SingleUseTransparentAddress {
         try await initializer.rustBackend.getSingleUseTransparentAddress(accountUUID: accountUUID)
     }
@@ -1228,7 +1234,8 @@ public class SDKSynchronizer: Synchronizer {
             syncSessionID: syncSession.value,
             accountsBalances: (try? await getAccountsBalances()) ?? [:],
             internalSyncStatus: status,
-            latestBlockHeight: latestBlocksDataProvider.latestBlockHeight
+            latestBlockHeight: latestBlocksDataProvider.latestBlockHeight,
+            fullyScannedHeight: latestBlocksDataProvider.fullyScannedHeight
         )
     }
 

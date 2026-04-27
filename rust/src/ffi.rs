@@ -1186,7 +1186,7 @@ impl TryFrom<ConfirmationsPolicy> for data_api::wallet::ConfirmationsPolicy {
                 value.allow_zero_conf_shielding,
             )
         }
-        .map_err(|()| anyhow::anyhow!("Could not construct ConfirmationsPolicy"))
+        .map_err(|e| anyhow::anyhow!("Could not construct ConfirmationsPolicy: {e}"))
     }
 }
 

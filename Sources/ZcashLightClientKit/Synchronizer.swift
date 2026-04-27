@@ -42,6 +42,13 @@ public struct SynchronizerState: Equatable {
     public var syncStatus: SyncStatus
     /// height of the latest block on the blockchain known to this synchronizer.
     public var latestBlockHeight: BlockHeight
+    /// Height below which every block has been scanned contiguously from the wallet
+    /// birthday. Unlike `latestBlockHeight` (chain tip) or `maxScannedHeight` (head-first
+    /// scan progress), this is the only value that tells a caller "the wallet has
+    /// authoritative note and nullifier state for this height." Callers that need a
+    /// stable snapshot of balance at a specific height — e.g. voting power at a poll
+    /// snapshot — must gate on this, not on `latestBlockHeight`.
+    public var fullyScannedHeight: BlockHeight
 
     /// Represents a synchronizer that has made zero progress hasn't done a sync attempt
     public static var zero: SynchronizerState {
@@ -49,20 +56,23 @@ public struct SynchronizerState: Equatable {
             syncSessionID: .nullID,
             accountsBalances: [:],
             internalSyncStatus: .unprepared,
-            latestBlockHeight: .zero
+            latestBlockHeight: .zero,
+            fullyScannedHeight: .zero
         )
     }
-    
+
     init(
         syncSessionID: UUID,
         accountsBalances: [AccountUUID: AccountBalance],
         internalSyncStatus: InternalSyncStatus,
-        latestBlockHeight: BlockHeight
+        latestBlockHeight: BlockHeight,
+        fullyScannedHeight: BlockHeight = .zero
     ) {
         self.syncSessionID = syncSessionID
         self.accountsBalances = accountsBalances
         self.internalSyncStatus = internalSyncStatus
         self.latestBlockHeight = latestBlockHeight
+        self.fullyScannedHeight = fullyScannedHeight
         self.syncStatus = internalSyncStatus.mapToSyncStatus()
     }
 }
@@ -484,6 +494,10 @@ public protocol Synchronizer: AnyObject {
     ///   hex-encoded bytes otherwise.
     func debugDatabase(sql: String) -> String
 
+    /// Fetch the commitment tree state at the given block height from lightwalletd,
+    /// returned as protobuf-serialized bytes suitable for witness generation.
+    func getTreeState(height: UInt64) async throws -> Data
+
     /// Get an ephemeral single use transparent address
     /// - Parameter accountUUID: The account for which the single use transparent address is going to be created.
     /// - Returns The struct with an ephemeral transparent address and gap limit info
@@ -531,6 +545,31 @@ public protocol Synchronizer: AnyObject {
     ///
     /// - Throws rustDeleteAccount as a common indicator of the operation failure
     func deleteAccount(_ accountUUID: AccountUUID) async throws -> Void
+}
+
+/// Error thrown by the default `Synchronizer.getTreeState(height:)` implementation
+/// when a conformer without a lightwalletd source doesn't override it. Hoisted to
+/// file scope because Swift forbids nesting concrete types with synthesized members
+/// inside a generic function — protocol-extension methods carry an implicit `Self`
+/// and so count as generic.
+private struct GetTreeStateUnimplemented: LocalizedError {
+    var errorDescription: String? {
+        """
+        Synchronizer.getTreeState(height:) has no default implementation. \
+        Override this method in your Synchronizer conformer to provide a tree-state source.
+        """
+    }
+}
+
+public extension Synchronizer {
+    /// Default implementation so adding `getTreeState(height:)` to the protocol is
+    /// not a source-breaking change for downstream conformers. Conformers that have
+    /// a lightwalletd connection (such as `SDKSynchronizer`) override this;
+    /// conformers that don't — mocks, stubs, alternate transports — fall through to
+    /// this default and report the feature as unavailable.
+    func getTreeState(height: UInt64) async throws -> Data {
+        throw GetTreeStateUnimplemented()
+    }
 }
 
 public enum SyncStatus: Equatable {

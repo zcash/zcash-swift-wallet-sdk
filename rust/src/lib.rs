@@ -53,7 +53,7 @@ use zcash_client_backend::{
     address::Address,
     data_api::{
         Account, AccountBirthday, InputSource, SeedRelevance, TransactionDataRequest,
-        WalletCommitmentTrees, WalletRead, WalletWrite,
+        TransparentOutputFilter, WalletCommitmentTrees, WalletRead, WalletWrite,
         chain::{CommitmentTreeRoot, scan_cached_blocks},
         scanning::ScanPriority,
         wallet::{
@@ -64,7 +64,7 @@ use zcash_client_backend::{
     },
     encoding::AddressCodec,
     fees::DustOutputPolicy,
-    keys::{DecodingError, Era, UnifiedSpendingKey},
+    keys::{DecodingError, Era, ReceiverRequirementError, UnifiedSpendingKey},
     proto::{proposal::Proposal, service::TreeState},
     tor::http::cryptex,
     wallet::{NoteId, OvkPolicy, WalletTransparentOutput},
@@ -96,6 +96,7 @@ mod derivation;
 mod eip681;
 mod ffi;
 mod tor;
+mod voting;
 
 #[cfg(target_vendor = "apple")]
 mod os_log;
@@ -855,7 +856,7 @@ bitflags! {
 }
 
 impl ReceiverFlags {
-    fn to_address_request(self) -> Result<UnifiedAddressRequest, ()> {
+    fn to_address_request(self) -> Result<UnifiedAddressRequest, ReceiverRequirementError> {
         UnifiedAddressRequest::custom(
             if self.contains(ReceiverFlags::ORCHARD) {
                 ReceiverRequirement::Require
@@ -917,10 +918,11 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
         let account_uuid = account_uuid_from_bytes(account_uuid_bytes)?;
         let receiver_flags = ReceiverFlags::from_bits(receiver_flags)
             .ok_or_else(|| anyhow!("Invalid unified address receiver flags {}", receiver_flags))?;
-        let address_request = receiver_flags.to_address_request().map_err(|_| {
+        let address_request = receiver_flags.to_address_request().map_err(|e| {
             anyhow!(
-                "Could not generate a valid unified address for flags {}",
-                receiver_flags.bits()
+                "Could not generate a valid unified address for flags {}: {}",
+                receiver_flags.bits(),
+                e
             )
         })?;
 
@@ -1020,7 +1022,12 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance(
             .map_err(|e| anyhow!("Error while fetching target height: {}", e))?
             .context("Target height not available; scan required.")?;
         let utxos = db_data
-            .get_spendable_transparent_outputs(&taddr, target, confirmations_policy)
+            .get_spendable_transparent_outputs(
+                &taddr,
+                target,
+                confirmations_policy,
+                TransparentOutputFilter::All,
+            )
             .map_err(|e| anyhow!("Error while fetching verified transparent balance: {}", e))?;
         let amount = utxos
             .iter()
@@ -1079,7 +1086,12 @@ pub unsafe extern "C" fn zcashlc_get_verified_transparent_balance_for_account(
             .keys()
             .map(|taddr| {
                 db_data
-                    .get_spendable_transparent_outputs(taddr, target, confirmations_policy)
+                    .get_spendable_transparent_outputs(
+                        taddr,
+                        target,
+                        confirmations_policy,
+                        TransparentOutputFilter::All,
+                    )
                     .map_err(|e| {
                         anyhow!("Error while fetching verified transparent balance: {}", e)
                     })
@@ -1129,6 +1141,7 @@ pub unsafe extern "C" fn zcashlc_get_total_transparent_balance(
                 &taddr,
                 target,
                 wallet::ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
+                TransparentOutputFilter::All,
             )
             .map_err(|e| anyhow!("Error while fetching total transparent balance: {}", e))?
             .iter()
@@ -2507,6 +2520,7 @@ pub unsafe extern "C" fn zcashlc_propose_shielding(
             &from_addrs,
             account_uuid,
             confirmations_policy,
+            TransparentOutputFilter::All,
         )
         .map_err(|e| anyhow!("Error while shielding transaction: {}", e))?;
 
