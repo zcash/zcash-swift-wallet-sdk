@@ -49,6 +49,9 @@ targets.append(contentsOf: [
         ],
         resources: [
             .copy("Resources/checkpoints")
+        ],
+        linkerSettings: [
+            .linkedFramework("SystemConfiguration")
         ]
     ),
     .target(
