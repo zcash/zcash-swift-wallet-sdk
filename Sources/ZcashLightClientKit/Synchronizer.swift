@@ -42,6 +42,13 @@ public struct SynchronizerState: Equatable {
     public var syncStatus: SyncStatus
     /// height of the latest block on the blockchain known to this synchronizer.
     public var latestBlockHeight: BlockHeight
+    /// Height below which every block has been scanned contiguously from the wallet
+    /// birthday. Unlike `latestBlockHeight` (chain tip) or `maxScannedHeight` (head-first
+    /// scan progress), this is the only value that tells a caller "the wallet has
+    /// authoritative note and nullifier state for this height." Callers that need a
+    /// stable snapshot of balance at a specific height — e.g. voting power at a poll
+    /// snapshot — must gate on this, not on `latestBlockHeight`.
+    public var fullyScannedHeight: BlockHeight
 
     /// Represents a synchronizer that has made zero progress hasn't done a sync attempt
     public static var zero: SynchronizerState {
@@ -49,20 +56,23 @@ public struct SynchronizerState: Equatable {
             syncSessionID: .nullID,
             accountsBalances: [:],
             internalSyncStatus: .unprepared,
-            latestBlockHeight: .zero
+            latestBlockHeight: .zero,
+            fullyScannedHeight: .zero
         )
     }
-    
+
     init(
         syncSessionID: UUID,
         accountsBalances: [AccountUUID: AccountBalance],
         internalSyncStatus: InternalSyncStatus,
-        latestBlockHeight: BlockHeight
+        latestBlockHeight: BlockHeight,
+        fullyScannedHeight: BlockHeight = .zero
     ) {
         self.syncSessionID = syncSessionID
         self.accountsBalances = accountsBalances
         self.internalSyncStatus = internalSyncStatus
         self.latestBlockHeight = latestBlockHeight
+        self.fullyScannedHeight = fullyScannedHeight
         self.syncStatus = internalSyncStatus.mapToSyncStatus()
     }
 }
