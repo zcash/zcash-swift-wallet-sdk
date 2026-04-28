@@ -366,8 +366,6 @@ public class SDKSynchronizer: Synchronizer {
             keySource: keySource
         )
         
-        try await initializer.rustBackend.rewindToChainState(chainState: checkpoint.treeState())
-
         return accountUUID
     }
 
