@@ -1,24 +1,5 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use anyhow::{Context, anyhow};
-use bitflags::bitflags;
-use ffi_helpers::panic::catch_panic;
-use http_body_util::BodyExt;
-use nonempty::NonEmpty;
-use pczt::{
-    Pczt,
-    roles::{combiner::Combiner, prover::Prover, redactor::Redactor},
-};
-use prost::Message;
-use rand::rngs::OsRng;
-use secrecy::Secret;
-use transparent::{
-    address::TransparentAddress,
-    bundle::{OutPoint, TxOut},
-    keys::TransparentKeyScope,
-};
-use zcash_script::script;
-
 use std::collections::HashSet;
 use std::convert::{Infallible, TryFrom, TryInto};
 use std::error::Error;
@@ -32,47 +13,60 @@ use std::slice;
 use std::time::UNIX_EPOCH;
 use std::{array::TryFromSliceError, time::SystemTime};
 
+use anyhow::{Context, anyhow};
+use bitflags::bitflags;
+use ffi_helpers::panic::catch_panic;
+use http_body_util::BodyExt;
+use nonempty::NonEmpty;
+use pczt::{
+    Pczt,
+    roles::{combiner::Combiner, prover::Prover, redactor::Redactor},
+};
+use prost::Message;
+use rand::rngs::OsRng;
+use secrecy::Secret;
 use tor_rtcompat::ToplevelBlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
-use zcash_client_backend::{
-    data_api::{
-        AccountPurpose, MaxSpendMode, TransactionStatus, TransparentKeyOrigin, Zip32Derivation,
-        wallet::{self, SpendingKeys, extract_and_store_transaction_from_pczt},
-    },
-    fees::{SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
-    keys::{ReceiverRequirement, UnifiedAddressRequest, UnifiedFullViewingKey},
-    tor::http::HttpError,
-    wallet::{Exposure, GapMetadata},
-};
-use zcash_client_sqlite::{error::SqliteClientError, util::SystemClock};
 
+use transparent::{
+    address::TransparentAddress,
+    bundle::{OutPoint, TxOut},
+    keys::TransparentKeyScope,
+};
 use zcash_address::ZcashAddress;
 use zcash_client_backend::{
     address::Address,
     data_api::{
-        Account, AccountBirthday, InputSource, SeedRelevance, TransactionDataRequest,
-        TransparentOutputFilter, WalletCommitmentTrees, WalletRead, WalletWrite,
+        Account, AccountBirthday, AccountPurpose, InputSource, MaxSpendMode, SeedRelevance,
+        TransactionDataRequest, TransactionStatus, TransparentKeyOrigin, TransparentOutputFilter,
+        WalletCommitmentTrees, WalletRead, WalletWrite, Zip32Derivation,
         chain::{CommitmentTreeRoot, scan_cached_blocks},
         scanning::ScanPriority,
         wallet::{
-            create_pczt_from_proposal, create_proposed_transactions, decrypt_and_store_transaction,
+            self, SpendingKeys, create_pczt_from_proposal, create_proposed_transactions,
+            decrypt_and_store_transaction, extract_and_store_transaction_from_pczt,
             input_selection::GreedyInputSelector, propose_send_max_transfer, propose_shielding,
             propose_transfer,
         },
     },
     encoding::AddressCodec,
-    fees::DustOutputPolicy,
-    keys::{DecodingError, Era, ReceiverRequirementError, UnifiedSpendingKey},
+    fees::{DustOutputPolicy, SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy},
+    keys::{
+        DecodingError, Era, ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest,
+        UnifiedFullViewingKey, UnifiedSpendingKey,
+    },
     proto::{proposal::Proposal, service::TreeState},
-    tor::http::cryptex,
-    wallet::{NoteId, OvkPolicy, WalletTransparentOutput},
+    tor::http::{HttpError, cryptex},
+    wallet::{Exposure, GapMetadata, NoteId, OvkPolicy, WalletTransparentOutput},
     zip321::{Payment, TransactionRequest},
 };
 use zcash_client_sqlite::{
     AccountUuid, FsBlockDb, WalletDb,
     chain::{BlockMeta, init::init_blockmeta_db},
+    error::SqliteClientError,
+    util::SystemClock,
     wallet::init::{WalletMigrationError, init_wallet_db},
 };
 use zcash_primitives::{
@@ -90,6 +84,7 @@ use zcash_protocol::{
     memo::MemoBytes,
     value::{ZatBalance, Zatoshis},
 };
+use zcash_script::script;
 use zip32::fingerprint::SeedFingerprint;
 
 mod derivation;
