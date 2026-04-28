@@ -161,7 +161,7 @@ protocol ZcashRustBackendWelding {
     /// height by providing additional chain state information needed for note commitment tree maintenance after the
     /// truncation.
     /// - parameter chainState: the `TreeState` representing the chain state at the height to truncate to.
-    /// - Throws: `rustRewindToChainState` if rust layer returns error.
+    /// - Throws: `rustTruncateToChainState` if rust layer returns error.
     func rewindToChainState(chainState: TreeState) async throws
 
     /// Resets the state of the FsBlock database to only contain block and transaction information up to the given height.

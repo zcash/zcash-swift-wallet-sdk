@@ -256,7 +256,7 @@ public enum ZcashErrorCode: String {
     /// Error from rust layer when calling ZcashRustBackend.deleteAccount
     case rustDeleteAccount = "ZRUST0090"
     /// Error from rust layer when calling ZcashRustBackend.rewindToChainState
-    case rustRewindToChainState = "ZRUST0091"
+    case rustTruncateToChainState = "ZRUST0091"
     /// Error from rust layer when calling ZcashEip681Backend.parseTransactionRequest
     case rustEip681Parse = "ZRUST0092"
     /// SQLite query failed when fetching all accounts from the database.
