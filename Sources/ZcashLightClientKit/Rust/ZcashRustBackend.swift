@@ -780,10 +780,10 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     }
 
     @DBActor
-    func rewindToChainState(chainState: TreeState) async throws {
+    func truncateToChainState(chainState: TreeState) async throws {
         let chainStateBytes = try chainState.serializedData(partial: false).bytes
 
-        let result = zcashlc_rewind_to_chain_state(
+        let result = zcashlc_truncate_to_chain_state(
             dbData.0,
             dbData.1,
             chainStateBytes,
@@ -792,7 +792,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         )
 
         guard result else {
-            throw ZcashError.rustRewindToChainState(lastErrorMessage(fallback: "`rewindToChainState` failed with unknown error"))
+            throw ZcashError.rustTruncateToChainState(lastErrorMessage(fallback: "`truncateToChainState` failed with unknown error"))
         }
     }
 

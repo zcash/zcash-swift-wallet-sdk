@@ -1335,7 +1335,7 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let height = BlockHeight::from(height);
-        let result_height = db_data.truncate_to_height(height);
+        let result_height = db_data.rewind_to_height(height);
 
         result_height.map_or_else(
             |err| match err {
@@ -1385,7 +1385,7 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
 /// - The total size `chain_state_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_rewind_to_chain_state(
+pub unsafe extern "C" fn zcashlc_truncate_to_chain_state(
     db_data: *const u8,
     db_data_len: usize,
     chain_state: *const u8,

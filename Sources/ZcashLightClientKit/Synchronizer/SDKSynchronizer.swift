@@ -681,7 +681,7 @@ public class SDKSynchronizer: Synchronizer {
 
         let checkpoint = checkpointSource.birthday(for: height)
 
-        try await initializer.rustBackend.rewindToChainState(chainState: checkpoint.treeState())
+        try await initializer.rustBackend.truncateToChainState(chainState: checkpoint.treeState())
     }
     
     // MARK: Rewind
