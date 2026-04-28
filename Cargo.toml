@@ -15,7 +15,7 @@ build = "rust/build.rs"
 [dependencies]
 
 # Zcash
-orchard = "0.13"
+orchard = { version = "=0.13.1", features = ["unstable-voting-circuits"] }
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.7", default-features = false }
 zcash_address = { version = "0.11" }
@@ -80,9 +80,9 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 # - The "static" feature is required for the "compression" default feature of arti-client.
 xz2 = { version = "0.1", features = ["static"] }
 
-# Voting
-zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", branch = "greg/orchard-0.12" }
-zcash_keys = { version = "0.12", features = ["orchard"] }
+zcash_voting = "0.1.1"
+voting-circuits = { version = "0.3.1", features = ["share-reveal"] }
+zcash_keys = { version = "0.13", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
 
 [build-dependencies]
