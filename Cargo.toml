@@ -80,8 +80,8 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 # - The "static" feature is required for the "compression" default feature of arti-client.
 xz2 = { version = "0.1", features = ["static"] }
 
-zcash_voting = "0.2.0"
-voting-circuits = { version = "0.4.0", features = ["share-reveal"] }
+zcash_voting = "0.2.2"
+voting-circuits = { version = "0.4.1", features = ["share-reveal"] }
 zcash_keys = { version = "0.13", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
 

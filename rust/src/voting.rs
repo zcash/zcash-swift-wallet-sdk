@@ -2135,6 +2135,18 @@ pub unsafe extern "C" fn zcashlc_voting_reset_tree_client(
 // C. Free functions (no VotingDatabase needed)
 // =============================================================================
 
+/// Warm process-lifetime proving-key caches used by voting proofs.
+///
+/// Returns 0 on success, -1 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_voting_warm_proving_caches() -> i32 {
+    let res = catch_panic(|| {
+        voting::warm_proving_caches();
+        Ok(0)
+    });
+    unwrap_exc_or(res, -1)
+}
+
 /// Generate a standalone voting hotkey (no database needed).
 ///
 /// Returns a pointer to `FfiVotingHotkey` on success, or null on error.

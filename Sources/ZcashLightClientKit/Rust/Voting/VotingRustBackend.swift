@@ -1212,6 +1212,14 @@ extension VotingRustBackend {
 // MARK: - Static / free functions (no database needed)
 
 extension VotingRustBackend {
+    /// Warm process-lifetime proving-key caches used by voting proofs.
+    public static func warmProvingCaches() throws {
+        let result = zcashlc_voting_warm_proving_caches()
+        guard result == 0 else {
+            throw VotingRustBackendError.rustError(staticLastErrorMessage(fallback: "`warm_proving_caches` failed"))
+        }
+    }
+
     /// Generate a standalone voting hotkey (no database).
     public static func generateHotkeyStandalone(seed: [UInt8]) throws -> VotingHotkey {
         let ptr = seed.withUnsafeBufferPointer { buf in
