@@ -1274,6 +1274,22 @@ public class SDKSynchronizer: Synchronizer {
     }
 }
 
+public extension SDKSynchronizer {
+    static func estimateBirthdayHeight(
+        for date: Date,
+        network: NetworkType = .mainnet
+    ) -> BlockHeight {
+        CheckpointSourceFactory.fromBundle(for: network).estimateBirthdayHeight(for: date)
+    }
+
+    static func estimateTimestamp(
+        for height: BlockHeight,
+        network: NetworkType = .mainnet
+    ) -> TimeInterval? {
+        CheckpointSourceFactory.fromBundle(for: network).estimateTimestamp(for: height)
+    }
+}
+
 extension SDKSynchronizer {
     public var transactions: [ZcashTransaction.Overview] {
         get async {
