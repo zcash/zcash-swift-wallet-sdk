@@ -204,6 +204,26 @@ After running `init-local-ffi.sh` or `reset-local-ffi.sh`, Xcode may need to re-
 1. File > Packages > Reset Package Caches
 2. If that doesn't help, close and reopen the workspace
 
+### Xcode repeatedly prompts that the package is unsigned
+
+SwiftPM validates package fingerprints, and the recorded fingerprint is invalidated every time `rebuild-local-ffi.sh` swaps the xcframework. Accepting "Trust" only persists until the next rebuild, so the prompt re-fires on every iteration.
+
+While iterating on Rust, you can disable fingerprint validation globally for Xcode:
+
+```bash
+defaults write com.apple.dt.Xcode IDESkipPackagePluginFingerprintValidatation -bool YES
+defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool YES
+```
+
+(The doubled "at" in `Validatation` is the literal key Xcode reads, not a typo here.) Restart Xcode for the change to take effect. Re-enable validation when you're done with FFI work:
+
+```bash
+defaults write com.apple.dt.Xcode IDESkipPackagePluginFingerprintValidatation -bool NO
+defaults write com.apple.dt.Xcode IDESkipMacroFingerprintValidation -bool NO
+```
+
+This setting is global to Xcode (not scoped to this workspace), so it suppresses the prompt for every package on your machine — re-enable it when you're done.
+
 ### FFIBuilder fails on first workspace open
 
 When opening `ZcashSDK.xcworkspace` for the first time after running `init-local-ffi.sh`, FFIBuilder may fail with "Command PhaseScriptExecution failed with a nonzero exit code". This is a timing issue -- Xcode may attempt to build FFIBuilder before package resolution has completed. Run "Product > Build For > Testing" manually and the build should succeed. Subsequent builds will work normally.
