@@ -1300,15 +1300,11 @@ pub unsafe extern "C" fn zcashlc_seed_fingerprint(
 
 /// Rewinds the data database to at most the given height.
 ///
-/// If the requested height is greater than or equal to the height of the last scanned block, this
-/// function sets the `safe_rewind_ret` output parameter to `-1` and does nothing else.
+/// The primary effect of this rewind is to update the scan queue to cause all outputs starting
+/// with those created at the given height to be re-scanned, using the full set of viewing keys.
 ///
 /// This procedure returns the height to which the database was actually rewound, or `-1` if no
 /// rewind was performed.
-///
-/// If the requested rewind could not be performed, but a rewind to a different (greater) height
-/// would be valid, the `safe_rewind_ret` output parameter will be set to that value on completion;
-/// otherwise, it will be set to `-1`.
 ///
 /// # Safety
 ///
@@ -1325,11 +1321,7 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
     db_data_len: usize,
     height: u32,
     network_id: u32,
-    safe_rewind_ret: *mut i64,
 ) -> i64 {
-    unsafe {
-        *safe_rewind_ret = -1;
-    }
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -1338,19 +1330,12 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
         let result_height = db_data.rewind_to_height(height);
 
         result_height.map_or_else(
-            |err| match err {
-                SqliteClientError::RequestedRewindInvalid {
-                    safe_rewind_height: Some(h),
-                    ..
-                } => {
-                    unsafe { *safe_rewind_ret = u32::from(h).into() };
-                    Ok(-1)
-                }
-                other => Err(anyhow!(
+            |err| {
+                Err(anyhow!(
                     "Error while rewinding data DB to height {}: {}",
                     height,
-                    other
-                )),
+                    err
+                ))
             },
             |h| Ok(u32::from(h).into()),
         )

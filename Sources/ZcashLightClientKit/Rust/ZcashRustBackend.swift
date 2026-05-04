@@ -767,13 +767,10 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func rewindToHeight(height: BlockHeight) async throws -> RewindResult {
-        var safeRewindHeight: Int64 = -1
-        let result = zcashlc_rewind_to_height(dbData.0, dbData.1, UInt32(height), networkType.networkId, &safeRewindHeight)
+        let result = zcashlc_rewind_to_height(dbData.0, dbData.1, UInt32(height), networkType.networkId)
 
         if result >= 0 {
             return .success(BlockHeight(result))
-        } else if result == -1 && safeRewindHeight > 0 {
-            return .requestedHeightTooLow(BlockHeight(safeRewindHeight))
         } else {
             throw ZcashError.rustRewindToHeight(Int32(height), lastErrorMessage(fallback: "`rewindToHeight` failed with unknown error"))
         }
