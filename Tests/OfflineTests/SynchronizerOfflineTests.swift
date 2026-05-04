@@ -476,6 +476,39 @@ class SynchronizerOfflineTests: ZcashTestCase {
         XCTAssertNotEqual(lhs, rhs)
     }
 
+    // The public `Synchronizer.getTreeState(height:)` accessor is the whole point
+    // of exposing tree-state retrieval to app-layer code. These tests pin down the
+    // shape of the protocol requirement by exercising the Sourcery-generated
+    // `SynchronizerMock`: a regression in the requirement's signature, or in the
+    // mock generator's handling of it, would break out-of-repo consumers that
+    // mock the synchronizer in their own tests.
+    func testSynchronizerGetTreeStatePassesHeightAndReturnsConfiguredData() async throws {
+        let mock = SynchronizerMock()
+        let expectedBytes = Data([0x01, 0x02, 0x03, 0x04])
+        mock.getTreeStateHeightReturnValue = expectedBytes
+
+        let result = try await mock.getTreeState(height: 2_400_000)
+
+        XCTAssertEqual(result, expectedBytes)
+        XCTAssertEqual(mock.getTreeStateHeightCallsCount, 1)
+        XCTAssertEqual(mock.getTreeStateHeightReceivedHeight, 2_400_000)
+    }
+
+    func testSynchronizerGetTreeStatePropagatesError() async {
+        struct BoomError: Error, Equatable {}
+        let mock = SynchronizerMock()
+        mock.getTreeStateHeightThrowableError = BoomError()
+
+        do {
+            _ = try await mock.getTreeState(height: 1_234_567)
+            XCTFail("getTreeState was expected to throw")
+        } catch let error as BoomError {
+            XCTAssertEqual(error, BoomError())
+        } catch {
+            XCTFail("Unexpected error type \(error)")
+        }
+    }
+
     func synchronizerState(for internalSyncStatus: InternalSyncStatus) -> SynchronizerState {
         SynchronizerState(
             syncSessionID: .nullID,

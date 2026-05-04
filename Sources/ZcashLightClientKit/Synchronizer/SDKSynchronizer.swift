@@ -1052,7 +1052,15 @@ public class SDKSynchronizer: Synchronizer {
     public func debugDatabase(sql: String) -> String {
         transactionRepository.debugDatabase(sql: sql)
     }
-    
+
+    public func getTreeState(height: UInt64) async throws -> Data {
+        let treeState = try await initializer.lightWalletService.getTreeState(
+            BlockID(height: height),
+            mode: await sdkFlags.ifTor(.uniqueTor)
+        )
+        return try treeState.serializedData()
+    }
+
     public func getSingleUseTransparentAddress(accountUUID: AccountUUID) async throws -> SingleUseTransparentAddress {
         try await initializer.rustBackend.getSingleUseTransparentAddress(accountUUID: accountUUID)
     }

@@ -2523,6 +2523,30 @@ class SynchronizerMock: Synchronizer {
         try await rescanFromHeightClosure?(height)
     }
 
+    // MARK: - getTreeState
+
+    var getTreeStateHeightThrowableError: Error?
+    var getTreeStateHeightCallsCount = 0
+    var getTreeStateHeightCalled: Bool {
+        return getTreeStateHeightCallsCount > 0
+    }
+    var getTreeStateHeightReceivedHeight: UInt64?
+    var getTreeStateHeightReturnValue: Data!
+    var getTreeStateHeightClosure: ((UInt64) async throws -> Data)?
+
+    func getTreeState(height: UInt64) async throws -> Data {
+        if let error = getTreeStateHeightThrowableError {
+            throw error
+        }
+        getTreeStateHeightCallsCount += 1
+        getTreeStateHeightReceivedHeight = height
+        if let closure = getTreeStateHeightClosure {
+            return try await closure(height)
+        } else {
+            return getTreeStateHeightReturnValue
+        }
+    }
+
 }
 class TransactionRepositoryMock: TransactionRepository {
 
