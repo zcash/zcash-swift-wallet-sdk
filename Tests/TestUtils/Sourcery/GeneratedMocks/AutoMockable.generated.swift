@@ -1439,6 +1439,75 @@ class SaplingParametersHandlerMock: SaplingParametersHandler {
     }
 
 }
+class BroadcasterMock: Broadcaster {
+
+
+    init(
+    ) {
+    }
+
+    // MARK: - createProposedTransactions
+
+    var createProposedTransactionsProposalSpendingKeyThrowableError: Error?
+    var createProposedTransactionsProposalSpendingKeyCallsCount = 0
+    var createProposedTransactionsProposalSpendingKeyCalled: Bool {
+        return createProposedTransactionsProposalSpendingKeyCallsCount > 0
+    }
+    var createProposedTransactionsProposalSpendingKeyReturnValue: [ZcashTransaction.Overview]!
+    var createProposedTransactionsProposalSpendingKeyClosure: ((Proposal, UnifiedSpendingKey) async throws -> [ZcashTransaction.Overview])?
+
+    func createProposedTransactions(proposal: Proposal, spendingKey: UnifiedSpendingKey) async throws -> [ZcashTransaction.Overview] {
+        if let error = createProposedTransactionsProposalSpendingKeyThrowableError {
+            throw error
+        }
+        createProposedTransactionsProposalSpendingKeyCallsCount += 1
+        if let closure = createProposedTransactionsProposalSpendingKeyClosure {
+            return try await closure(proposal, spendingKey)
+        } else {
+            return createProposedTransactionsProposalSpendingKeyReturnValue
+        }
+    }
+
+    // MARK: - createTransactionFromPCZT
+
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsThrowableError: Error?
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsCallsCount = 0
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsCalled: Bool {
+        return createTransactionFromPCZTPcztWithProofsPcztWithSigsCallsCount > 0
+    }
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsReturnValue: [ZcashTransaction.Overview]!
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsClosure: ((Pczt, Pczt) async throws -> [ZcashTransaction.Overview])?
+
+    func createTransactionFromPCZT(pcztWithProofs: Pczt, pcztWithSigs: Pczt) async throws -> [ZcashTransaction.Overview] {
+        if let error = createTransactionFromPCZTPcztWithProofsPcztWithSigsThrowableError {
+            throw error
+        }
+        createTransactionFromPCZTPcztWithProofsPcztWithSigsCallsCount += 1
+        if let closure = createTransactionFromPCZTPcztWithProofsPcztWithSigsClosure {
+            return try await closure(pcztWithProofs, pcztWithSigs)
+        } else {
+            return createTransactionFromPCZTPcztWithProofsPcztWithSigsReturnValue
+        }
+    }
+
+    // MARK: - submit
+
+    var submitToThrowableError: Error?
+    var submitToCallsCount = 0
+    var submitToCalled: Bool {
+        return submitToCallsCount > 0
+    }
+    var submitToClosure: ((Data, LightWalletEndpoint) async throws -> Void)?
+
+    func submit(_ rawTransaction: Data, to endpoint: LightWalletEndpoint) async throws {
+        if let error = submitToThrowableError {
+            throw error
+        }
+        submitToCallsCount += 1
+        try await submitToClosure?(rawTransaction, endpoint)
+    }
+
+}
 class SynchronizerMock: Synchronizer {
 
 
@@ -1481,6 +1550,10 @@ class SynchronizerMock: Synchronizer {
         get async { return underlyingReceivedTransactions }
     }
     var underlyingReceivedTransactions: [ZcashTransaction.Overview] = []
+    var broadcaster: Broadcaster {
+        get { return underlyingBroadcaster }
+    }
+    var underlyingBroadcaster: Broadcaster!
 
     // MARK: - prepare
 
