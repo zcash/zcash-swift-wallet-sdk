@@ -165,9 +165,11 @@ final class BroadcasterTests: ZcashTestCase {
         )
         var iterator = stream.makeAsyncIterator()
 
-        let submitResult = try XCTUnwrap(try await iterator.next())
+        let maybeSubmitResult = try await iterator.next()
+        let submitResult = try XCTUnwrap(maybeSubmitResult)
         XCTAssertEqual(submitResult, .success(txId: rawID))
-        XCTAssertNil(try await iterator.next())
+        let nextSubmitResult = try await iterator.next()
+        XCTAssertNil(nextSubmitResult)
         XCTAssertEqual(transactionEncoder.receivedCreateArguments?.proposal, proposal)
         XCTAssertEqual(transactionEncoder.receivedCreateArguments?.spendingKey, spendingKey)
         XCTAssertEqual(
@@ -215,9 +217,11 @@ final class BroadcasterTests: ZcashTestCase {
         )
         var iterator = stream.makeAsyncIterator()
 
-        let submitResult = try XCTUnwrap(try await iterator.next())
+        let maybeSubmitResult = try await iterator.next()
+        let submitResult = try XCTUnwrap(maybeSubmitResult)
         XCTAssertEqual(submitResult, .success(txId: rawID))
-        XCTAssertNil(try await iterator.next())
+        let nextSubmitResult = try await iterator.next()
+        XCTAssertNil(nextSubmitResult)
         XCTAssertEqual(
             rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReceivedArguments?.pcztWithProofs,
             pcztWithProofs
