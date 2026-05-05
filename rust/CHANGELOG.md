@@ -6,6 +6,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- zcashlc_rewind_to_height no longer sets the `safe_rewind_ret` parameter;
+  rewinding to an exact height is now reliable.
+
 ## 2.4.6 - 2026-03-12
 
 ### Changed

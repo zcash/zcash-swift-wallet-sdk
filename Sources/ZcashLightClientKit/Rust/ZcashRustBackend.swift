@@ -767,23 +767,20 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
     @DBActor
     func rewindToHeight(height: BlockHeight) async throws -> RewindResult {
-        var safeRewindHeight: Int64 = -1
-        let result = zcashlc_rewind_to_height(dbData.0, dbData.1, UInt32(height), networkType.networkId, &safeRewindHeight)
+        let result = zcashlc_rewind_to_height(dbData.0, dbData.1, UInt32(height), networkType.networkId)
 
         if result >= 0 {
             return .success(BlockHeight(result))
-        } else if result == -1 && safeRewindHeight > 0 {
-            return .requestedHeightTooLow(BlockHeight(safeRewindHeight))
         } else {
             throw ZcashError.rustRewindToHeight(Int32(height), lastErrorMessage(fallback: "`rewindToHeight` failed with unknown error"))
         }
     }
 
     @DBActor
-    func rewindToChainState(chainState: TreeState) async throws {
+    func truncateToChainState(chainState: TreeState) async throws {
         let chainStateBytes = try chainState.serializedData(partial: false).bytes
 
-        let result = zcashlc_rewind_to_chain_state(
+        let result = zcashlc_truncate_to_chain_state(
             dbData.0,
             dbData.1,
             chainStateBytes,
@@ -792,7 +789,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         )
 
         guard result else {
-            throw ZcashError.rustRewindToChainState(lastErrorMessage(fallback: "`rewindToChainState` failed with unknown error"))
+            throw ZcashError.rustTruncateToChainState(lastErrorMessage(fallback: "`truncateToChainState` failed with unknown error"))
         }
     }
 

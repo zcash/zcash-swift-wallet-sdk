@@ -1300,15 +1300,11 @@ pub unsafe extern "C" fn zcashlc_seed_fingerprint(
 
 /// Rewinds the data database to at most the given height.
 ///
-/// If the requested height is greater than or equal to the height of the last scanned block, this
-/// function sets the `safe_rewind_ret` output parameter to `-1` and does nothing else.
+/// The primary effect of this rewind is to update the scan queue to cause all outputs starting
+/// with those created at the given height to be re-scanned, using the full set of viewing keys.
 ///
 /// This procedure returns the height to which the database was actually rewound, or `-1` if no
 /// rewind was performed.
-///
-/// If the requested rewind could not be performed, but a rewind to a different (greater) height
-/// would be valid, the `safe_rewind_ret` output parameter will be set to that value on completion;
-/// otherwise, it will be set to `-1`.
 ///
 /// # Safety
 ///
@@ -1325,32 +1321,21 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
     db_data_len: usize,
     height: u32,
     network_id: u32,
-    safe_rewind_ret: *mut i64,
 ) -> i64 {
-    unsafe {
-        *safe_rewind_ret = -1;
-    }
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let height = BlockHeight::from(height);
-        let result_height = db_data.truncate_to_height(height);
+        let result_height = db_data.rewind_to_height(height);
 
         result_height.map_or_else(
-            |err| match err {
-                SqliteClientError::RequestedRewindInvalid {
-                    safe_rewind_height: Some(h),
-                    ..
-                } => {
-                    unsafe { *safe_rewind_ret = u32::from(h).into() };
-                    Ok(-1)
-                }
-                other => Err(anyhow!(
+            |err| {
+                Err(anyhow!(
                     "Error while rewinding data DB to height {}: {}",
                     height,
-                    other
-                )),
+                    err
+                ))
             },
             |h| Ok(u32::from(h).into()),
         )
@@ -1385,7 +1370,7 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
 /// - The total size `chain_state_len` must be no larger than `isize::MAX`. See the safety
 ///   documentation of pointer::offset.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_rewind_to_chain_state(
+pub unsafe extern "C" fn zcashlc_truncate_to_chain_state(
     db_data: *const u8,
     db_data_len: usize,
     chain_state: *const u8,
@@ -1711,6 +1696,7 @@ pub unsafe extern "C" fn zcashlc_suggest_scan_ranges(
                     ScanPriority::OpenAdjacent => 30,
                     ScanPriority::FoundNote => 40,
                     ScanPriority::ChainTip => 50,
+                    ScanPriority::Anchor => 55,
                     ScanPriority::Verify => 60,
                 },
             })
