@@ -1696,6 +1696,7 @@ pub unsafe extern "C" fn zcashlc_suggest_scan_ranges(
                     ScanPriority::OpenAdjacent => 30,
                     ScanPriority::FoundNote => 40,
                     ScanPriority::ChainTip => 50,
+                    ScanPriority::Anchor => 55,
                     ScanPriority::Verify => 60,
                 },
             })
