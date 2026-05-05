@@ -6,6 +6,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- `zcashlc_voting_compute_share_nullifier`: Compute the 32-byte share-reveal
+  nullifier from a vote commitment, primary blind, and share index. Returns
+  the nullifier as a 64-character hex C-string; the caller must free the
+  returned pointer via `zcashlc_string_free`. Returns `NULL` on error or
+  panic. Pure-function FFI: no wallet DB, voting DB, network, randomness,
+  or secret material involved.
+
+### Changed
+- Added `zcash_voting 0.4` (`default-features = false`) as a Rust dependency.
+- Pinned `orchard` to `=0.13.1` and enabled its `unstable-voting-circuits`
+  feature (required transitively by `zcash_voting`).
+
 ## 2.4.6 - 2026-03-12
 
 ### Changed
