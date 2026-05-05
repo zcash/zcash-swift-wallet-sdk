@@ -3383,23 +3383,23 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
     }
 
-    // MARK: - rewindToChainState
+    // MARK: - truncateToChainState
 
-    var rewindToChainStateChainStateThrowableError: Error?
-    var rewindToChainStateChainStateCallsCount = 0
-    var rewindToChainStateChainStateCalled: Bool {
-        return rewindToChainStateChainStateCallsCount > 0
+    var truncateToChainStateChainStateThrowableError: Error?
+    var truncateToChainStateChainStateCallsCount = 0
+    var truncateToChainStateChainStateCalled: Bool {
+        return truncateToChainStateChainStateCallsCount > 0
     }
-    var rewindToChainStateChainStateReceivedChainState: TreeState?
-    var rewindToChainStateChainStateClosure: ((TreeState) async throws -> Void)?
+    var truncateToChainStateChainStateReceivedChainState: TreeState?
+    var truncateToChainStateChainStateClosure: ((TreeState) async throws -> Void)?
 
-    func rewindToChainState(chainState: TreeState) async throws {
-        if let error = rewindToChainStateChainStateThrowableError {
+    func truncateToChainState(chainState: TreeState) async throws {
+        if let error = truncateToChainStateChainStateThrowableError {
             throw error
         }
-        rewindToChainStateChainStateCallsCount += 1
-        rewindToChainStateChainStateReceivedChainState = chainState
-        try await rewindToChainStateChainStateClosure!(chainState)
+        truncateToChainStateChainStateCallsCount += 1
+        truncateToChainStateChainStateReceivedChainState = chainState
+        try await truncateToChainStateChainStateClosure!(chainState)
     }
 
     // MARK: - rewindCacheToHeight

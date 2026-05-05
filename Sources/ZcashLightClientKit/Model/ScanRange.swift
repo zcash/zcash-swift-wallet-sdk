@@ -15,6 +15,7 @@ struct ScanRange {
         case openAdjacent = 30
         case foundNote = 40
         case chainTip = 50
+        case anchor = 55
         case verify = 60
         
         init(_ value: UInt8) {
