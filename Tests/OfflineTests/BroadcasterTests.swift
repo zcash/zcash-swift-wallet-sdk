@@ -132,12 +132,122 @@ final class BroadcasterTests: ZcashTestCase {
         }
     }
 
+    // MARK: - Legacy Synchronizer APIs
+
+    func testLegacyCreateProposedTransactionsReusesBroadcasterCreationAndSubmitsOnce() async throws {
+        let rawID = Data(repeating: 0xAB, count: 32)
+        let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
+        let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: rawID)]
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
+        let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
+        let foundTransactionsExpectation = XCTestExpectation(description: "found transactions event")
+        foundTransactionsExpectation.expectedFulfillmentCount = 1
+        foundTransactionsExpectation.assertForOverFulfill = true
+        var foundTransactionsEventCount = 0
+
+        synchronizer.eventStream
+            .sink { event in
+                guard case let .foundTransactions(transactions, range) = event else { return }
+                foundTransactionsEventCount += 1
+                XCTAssertNil(range)
+                XCTAssertEqual(transactions.map(\.rawID), [rawID])
+                foundTransactionsExpectation.fulfill()
+            }
+            .store(in: &cancellables)
+
+        await synchronizer.updateStatus(.stopped)
+
+        let proposal = Proposal.testOnlyFakeProposal(totalFee: 10)
+        let spendingKey = TestsData(networkType: .testnet).spendingKey
+        let stream = try await synchronizer.createProposedTransactions(
+            proposal: proposal,
+            spendingKey: spendingKey
+        )
+        var iterator = stream.makeAsyncIterator()
+
+        let submitResult = try XCTUnwrap(try await iterator.next())
+        XCTAssertEqual(submitResult, .success(txId: rawID))
+        XCTAssertNil(try await iterator.next())
+        XCTAssertEqual(transactionEncoder.receivedCreateArguments?.proposal, proposal)
+        XCTAssertEqual(transactionEncoder.receivedCreateArguments?.spendingKey, spendingKey)
+        XCTAssertEqual(
+            transactionEncoder.submittedTransactions,
+            [EncodedTransaction(transactionId: rawID, raw: rawTransaction)]
+        )
+
+        await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
+        XCTAssertEqual(foundTransactionsEventCount, 1)
+    }
+
+    func testLegacyCreateTransactionFromPCZTReusesBroadcasterCreationAndSubmitsOnce() async throws {
+        let rawID = Data(repeating: 0xCD, count: 32)
+        let rawTransaction = Data([0x05, 0x06, 0x07, 0x08])
+        let pcztWithProofs = Pczt([0x10, 0x11])
+        let pcztWithSigs = Pczt([0x12, 0x13])
+        let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: rawID)]
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
+        let rustBackend = ZcashRustBackendWeldingMock()
+        rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReturnValue = rawID
+        let synchronizer = try makeSynchronizer(
+            transactionEncoder: transactionEncoder,
+            rustBackend: rustBackend
+        )
+        let foundTransactionsExpectation = XCTestExpectation(description: "found transactions event")
+        foundTransactionsExpectation.expectedFulfillmentCount = 1
+        foundTransactionsExpectation.assertForOverFulfill = true
+        var foundTransactionsEventCount = 0
+
+        synchronizer.eventStream
+            .sink { event in
+                guard case let .foundTransactions(transactions, range) = event else { return }
+                foundTransactionsEventCount += 1
+                XCTAssertNil(range)
+                XCTAssertEqual(transactions.map(\.rawID), [rawID])
+                foundTransactionsExpectation.fulfill()
+            }
+            .store(in: &cancellables)
+
+        await synchronizer.updateStatus(.stopped)
+
+        let stream = try await synchronizer.createTransactionFromPCZT(
+            pcztWithProofs: pcztWithProofs,
+            pcztWithSigs: pcztWithSigs
+        )
+        var iterator = stream.makeAsyncIterator()
+
+        let submitResult = try XCTUnwrap(try await iterator.next())
+        XCTAssertEqual(submitResult, .success(txId: rawID))
+        XCTAssertNil(try await iterator.next())
+        XCTAssertEqual(
+            rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReceivedArguments?.pcztWithProofs,
+            pcztWithProofs
+        )
+        XCTAssertEqual(
+            rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReceivedArguments?.pcztWithSigs,
+            pcztWithSigs
+        )
+        XCTAssertEqual(transactionEncoder.receivedFetchTxIds, [rawID])
+        XCTAssertEqual(
+            transactionEncoder.submittedTransactions,
+            [EncodedTransaction(transactionId: rawID, raw: rawTransaction)]
+        )
+
+        await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
+        XCTAssertEqual(foundTransactionsEventCount, 1)
+    }
+
     // MARK: - Helpers
 
-    private func makeSynchronizer(transactionEncoder: TransactionEncoder) throws -> SDKSynchronizer {
+    private func makeSynchronizer(
+        transactionEncoder: TransactionEncoder,
+        rustBackend: ZcashRustBackendWelding? = nil
+    ) throws -> SDKSynchronizer {
         let serviceMock = LightWalletServiceMock()
         let transactionRepository = TransactionRepositoryMock()
 
+        if let rustBackend {
+            mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in rustBackend }
+        }
         mockContainer.mock(type: LightWalletService.self, isSingleton: true) { _ in serviceMock }
         mockContainer.mock(type: TransactionRepository.self, isSingleton: true) { _ in transactionRepository }
 
@@ -236,6 +346,8 @@ final class BroadcasterTests: ZcashTestCase {
 private final class StubTransactionEncoder: TransactionEncoder {
     private let createdTransactions: [ZcashTransaction.Overview]
     private(set) var receivedCreateArguments: (proposal: Proposal, spendingKey: UnifiedSpendingKey)?
+    private(set) var receivedFetchTxIds: [Data]?
+    private(set) var submittedTransactions: [EncodedTransaction] = []
 
     init(createdTransactions: [ZcashTransaction.Overview]) {
         self.createdTransactions = createdTransactions
@@ -275,11 +387,14 @@ private final class StubTransactionEncoder: TransactionEncoder {
     }
 
     func submit(transaction: EncodedTransaction) async throws {
-        fatalError("Unused in test")
+        submittedTransactions.append(transaction)
     }
 
     func fetchTransactionsForTxIds(_ txIds: [Data]) async throws -> [ZcashTransaction.Overview] {
-        fatalError("Unused in test")
+        receivedFetchTxIds = txIds
+        return txIds.compactMap { txId in
+            createdTransactions.first { $0.rawID == txId }
+        }
     }
 
     func closeDBConnection() { }
