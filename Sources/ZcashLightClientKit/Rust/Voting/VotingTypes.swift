@@ -1,7 +1,6 @@
-//
-//  VotingTypes.swift
-//  ZcashLightClientKit
-//
+// VotingTypes.swift
+// Swift types matching the JSON serde types in voting.rs.
+// All types are Codable for JSON deserialization across the FFI boundary.
 
 import Foundation
 
@@ -16,7 +15,7 @@ public enum VotingRoundPhase: UInt32, Codable, Sendable {
     case voteReady = 4
 }
 
-/// State of a voting round.
+/// State of a voting round, decoded from FfiRoundState.
 public struct VotingRoundState: Sendable {
     public let roundId: String
     public let phase: VotingRoundPhase
@@ -108,8 +107,8 @@ public struct VotingNoteInfo: Codable, Sendable {
 /// Result of building a voting PCZT.
 public struct VotingPczt: Codable, Sendable {
     public let pcztBytes: [UInt8]
-    /// Randomized verification key (`rk` on the wire).
-    public let randomizedKey: [UInt8]
+    // swiftlint:disable:next identifier_name
+    public let rk: [UInt8]
     public let alpha: [UInt8]
     public let nfSigned: [UInt8]
     public let cmxNew: [UInt8]
@@ -129,8 +128,8 @@ public struct VotingPczt: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case pcztBytes = "pczt_bytes"
-        case randomizedKey = "rk"
-        case alpha
+        // swiftlint:disable:next identifier_name
+        case rk, alpha
         case nfSigned = "nf_signed"
         case cmxNew = "cmx_new"
         case govNullifiers = "gov_nullifiers"
@@ -213,8 +212,8 @@ public struct VotingDelegationProofResult: Codable, Sendable {
     public let cmxNew: [UInt8]
     public let govNullifiers: [[UInt8]]
     public let vanComm: [UInt8]
-    /// Randomized verification key (`rk` on the wire).
-    public let randomizedKey: [UInt8]
+    // swiftlint:disable:next identifier_name
+    public let rk: [UInt8]
 
     enum CodingKeys: String, CodingKey {
         case proof
@@ -223,7 +222,8 @@ public struct VotingDelegationProofResult: Codable, Sendable {
         case cmxNew = "cmx_new"
         case govNullifiers = "gov_nullifiers"
         case vanComm = "van_comm"
-        case randomizedKey = "rk"
+        // swiftlint:disable:next identifier_name
+        case rk
     }
 }
 
@@ -244,8 +244,8 @@ public struct VotingDelegationPirPrecomputeResult: Codable, Sendable {
 
 /// Delegation submission payload.
 public struct VotingDelegationSubmission: Codable, Sendable {
-    /// Randomized verification key (`rk` on the wire).
-    public let randomizedKey: [UInt8]
+    // swiftlint:disable:next identifier_name
+    public let rk: [UInt8]
     public let spendAuthSig: [UInt8]
     public let sighash: [UInt8]
     public let nfSigned: [UInt8]
@@ -256,7 +256,8 @@ public struct VotingDelegationSubmission: Codable, Sendable {
     public let voteRoundId: String
 
     enum CodingKeys: String, CodingKey {
-        case randomizedKey = "rk"
+        // swiftlint:disable:next identifier_name
+        case rk
         case spendAuthSig = "spend_auth_sig"
         case sighash
         case nfSigned = "nf_signed"
@@ -268,9 +269,12 @@ public struct VotingDelegationSubmission: Codable, Sendable {
     }
 }
 
+// MARK: - Encrypted Share (JSON)
+
+/// An encrypted vote share.
 // MARK: - Vote Commitment Bundle (JSON)
 
-/// A vote commitment bundle produced by Voting ZKP.
+/// A vote commitment bundle produced by ZKP #2.
 public struct VotingVoteCommitmentBundle: Codable, Sendable {
     public let vanNullifier: [UInt8]
     public let voteAuthorityNoteNew: [UInt8]
@@ -338,21 +342,24 @@ public struct VotingVoteCommitmentBundle: Codable, Sendable {
 /// Wire-safe encrypted share — contains only the public ciphertext components.
 /// Secrets (plaintextValue, randomness) stay inside Rust and never cross the FFI boundary.
 public struct VotingWireEncryptedShare: Codable, Sendable {
-    /// First ciphertext component (`c1` on the wire).
-    public let ciphertext1: [UInt8]
-    /// Second ciphertext component (`c2` on the wire).
-    public let ciphertext2: [UInt8]
+    // swiftlint:disable:next identifier_name
+    public let c1: [UInt8]
+    // swiftlint:disable:next identifier_name
+    public let c2: [UInt8]
     public let shareIndex: UInt32
 
     enum CodingKeys: String, CodingKey {
-        case ciphertext1 = "c1"
-        case ciphertext2 = "c2"
+        // swiftlint:disable:next identifier_name
+        case c1
+        // swiftlint:disable:next identifier_name
+        case c2
         case shareIndex = "share_index"
     }
 
-    public init(ciphertext1: [UInt8], ciphertext2: [UInt8], shareIndex: UInt32) {
-        self.ciphertext1 = ciphertext1
-        self.ciphertext2 = ciphertext2
+    // swiftlint:disable:next identifier_name
+    public init(c1: [UInt8], c2: [UInt8], shareIndex: UInt32) {
+        self.c1 = c1
+        self.c2 = c2
         self.shareIndex = shareIndex
     }
 }
@@ -418,7 +425,7 @@ public struct VotingDelegationInputs: Codable, Sendable {
 
 // MARK: - VAN Witness (JSON)
 
-/// VAN Merkle witness for voting ZKP.
+/// VAN Merkle witness for ZKP #2.
 public struct VotingVanWitness: Codable, Sendable {
     public let authPath: [[UInt8]]
     public let position: UInt32
@@ -434,6 +441,13 @@ public struct VotingVanWitness: Codable, Sendable {
 // MARK: - TX hash lookup
 
 /// Result of a stored-tx-hash lookup for a delegation or vote bundle.
+///
+/// Making "the DB has no row for this key" an explicit case — rather than
+/// letting it ride on an optional `String?` — disambiguates it from the
+/// `throws` path, which covers FFI-level failures (null handle, serde decode
+/// error, DB I/O error). Callers that only need to know "do we have a hash"
+/// can pattern-match `.present(let hash)`; callers that need to branch on
+/// absence-without-error can match `.notFound`.
 public enum VotingTxHashLookup: Equatable, Sendable {
     /// No record exists for the given key (round/bundle or round/bundle/proposal).
     case notFound

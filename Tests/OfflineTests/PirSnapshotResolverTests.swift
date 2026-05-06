@@ -1,6 +1,6 @@
 // PirSnapshotResolverTests.swift
 // Verifies the PIR endpoint snapshot-match selection used by `buildAndProveDelegation`.
-// See PirSnapshotResolver.swift for context.
+// See PirSnapshotResolver.swift for context (ZCA-229).
 
 import Foundation
 import XCTest
@@ -19,10 +19,10 @@ final class PirSnapshotResolverTests: XCTestCase {
         }
     }
 
-    func testMatchingEndpointIsChosenFromMatchingCandidates() async throws {
+    func testFirstMatchingEndpointInConfigOrderIsChosen() async throws {
         // Mix of mismatched (behind), matching, and matching: matching endpoints all
-        // share the same height (= expected) by definition, so any matching endpoint
-        // is acceptable.
+        // share the same height (= expected) by definition, so the resolver picks
+        // the first one in config order regardless of how many are matching.
         let probe = StubProbe(outcomes: [
             "https://a": .mismatched(height: 90),
             "https://b": .matching(height: 100),
@@ -34,32 +34,7 @@ final class PirSnapshotResolverTests: XCTestCase {
             endpoints: ["https://a", "https://b", "https://c"],
             expectedSnapshotHeight: 100
         )
-        XCTAssertTrue(["https://b", "https://c"].contains(chosen))
-    }
-
-    func testMatchingEndpointSelectionOnlyReceivesMatchingCandidates() async throws {
-        let probe = StubProbe(outcomes: [
-            "https://a": .mismatched(height: 90),
-            "https://b": .matching(height: 100),
-            "https://c": .matching(height: 100),
-            "https://d": .unreachable(reason: "timeout")
-        ])
-        nonisolated(unsafe) var candidates: [String] = []
-        let resolver = PirSnapshotResolver(
-            probe: probe,
-            matchingEndpointSelector: { outcomes in
-                candidates = outcomes.map(\.url)
-                return outcomes.last
-            }
-        )
-
-        let chosen = try await resolver.resolve(
-            endpoints: ["https://a", "https://b", "https://c", "https://d"],
-            expectedSnapshotHeight: 100
-        )
-
-        XCTAssertEqual(candidates, ["https://b", "https://c"])
-        XCTAssertEqual(chosen, "https://c")
+        XCTAssertEqual(chosen, "https://b")
     }
 
     func testMatchingEndpointAfterMismatchIsChosen() async throws {
@@ -275,7 +250,7 @@ final class HTTPPirSnapshotProbeTests: XCTestCase {
         return HTTPPirSnapshotProbe(session: URLSession(configuration: config))
     }
 
-    private func rootInfoJSON(height: BlockHeight?) -> Data {
+    private func rootInfoJSON(height: UInt64?) -> Data {
         let heightField = height.map { "\"height\": \($0)" } ?? "\"height\": null"
         return """
         {
@@ -298,7 +273,8 @@ final class HTTPPirSnapshotProbeTests: XCTestCase {
         XCTAssertEqual(outcome.status, .matching(height: 100))
     }
 
-    /// A server behind the round's snapshot must not be selected.
+    /// Strict-equality regression — `height < expected` must classify as `.mismatched`,
+    /// not `.matching`. This is the "behind / catching up" case.
     func testProbeReturnsMismatchedWhenHeightBelowExpected() async {
         StubURLProtocol.handler = { _ in (200, self.rootInfoJSON(height: 99)) }
 
@@ -307,7 +283,9 @@ final class HTTPPirSnapshotProbeTests: XCTestCase {
         XCTAssertEqual(outcome.status, .mismatched(height: 99))
     }
 
-    /// A server ahead of the round's snapshot must not be selected.
+    /// Strict-equality regression — `height > expected` must ALSO classify as
+    /// `.mismatched`. Under the previous `>=` policy this case would have been
+    /// `.fresh`/`.matching`, which is exactly the bug the `==` change closes.
     func testProbeReturnsMismatchedWhenHeightAboveExpected() async {
         StubURLProtocol.handler = { _ in (200, self.rootInfoJSON(height: 101)) }
 
@@ -377,20 +355,6 @@ final class HTTPPirSnapshotProbeTests: XCTestCase {
         await assertProbeHits(baseUrl: "https://pir.test/", expectedPath: "/root")
     }
 
-    /// Snapshot-height probes must bypass local cache so stale `/root` metadata
-    /// cannot make an out-of-date PIR server look usable.
-    func testProbeBypassesLocalCache() async {
-        nonisolated(unsafe) var cachePolicy: URLRequest.CachePolicy?
-        StubURLProtocol.handler = { request in
-            cachePolicy = request.cachePolicy
-            return (200, self.rootInfoJSON(height: 100))
-        }
-
-        _ = await makeProbe().probe(url: "https://pir.test", expectedSnapshotHeight: 100)
-
-        XCTAssertEqual(cachePolicy, .reloadIgnoringLocalCacheData)
-    }
-
     private func assertProbeHits(baseUrl: String, expectedPath: String) async {
         nonisolated(unsafe) var capturedURL: URL?
         StubURLProtocol.handler = { request in
@@ -436,7 +400,7 @@ final class HTTPPirSnapshotProbeWireShapeTests: XCTestCase {
         """.data(using: .utf8)!
 
         let object = try JSONSerialization.jsonObject(with: json) as? [String: Any]
-        XCTAssertEqual(object?["height"] as? Int, 173)
+        XCTAssertEqual(object?["height"] as? UInt64, 173)
         XCTAssertEqual(object?["num_ranges"] as? Int, 42)
         XCTAssertEqual(object?["pir_depth"] as? Int, 25)
     }
@@ -446,8 +410,8 @@ final class HTTPPirSnapshotProbeWireShapeTests: XCTestCase {
 
 /// Records every probe call so tests can assert what the resolver asked for.
 private actor ProbeCallLog {
-    private(set) var calls: [(url: String, expected: BlockHeight)] = []
-    func record(_ url: String, _ expected: BlockHeight) {
+    private(set) var calls: [(url: String, expected: UInt64)] = []
+    func record(_ url: String, _ expected: UInt64) {
         calls.append((url, expected))
     }
 }
@@ -460,13 +424,13 @@ private struct StubProbe: PirSnapshotProbing {
         self.outcomes = outcomes
     }
 
-    func probe(url: String, expectedSnapshotHeight: BlockHeight) async -> PirSnapshotProbeOutcome {
+    func probe(url: String, expectedSnapshotHeight: UInt64) async -> PirSnapshotProbeOutcome {
         await log.record(url, expectedSnapshotHeight)
         let status = outcomes[url] ?? .unreachable(reason: "no stub")
         return PirSnapshotProbeOutcome(url: url, status: status)
     }
 
-    var callsMade: [(url: String, expected: BlockHeight)] {
+    var callsMade: [(url: String, expected: UInt64)] {
         get async { await log.calls }
     }
 }

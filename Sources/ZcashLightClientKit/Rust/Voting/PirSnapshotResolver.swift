@@ -2,20 +2,20 @@
 // Filters PIR endpoints by snapshot match before delegation proofing.
 //
 // Wallet clients receive a list of PIR endpoints in the voting service config
-// alongside an `expected snapshot height` for the active round. This resolver
-// assumes those endpoints expose the vote-nullifier-pir `/root` API
-// (https://github.com/valargroup/vote-nullifier-pir), where `RootInfo.height`
-// reports the served snapshot height. The delegation proof is bound to the
-// round's snapshot, so a PIR server serving any other snapshot — whether behind
-// (still catching up) or ahead (already moved past the round's snapshot) —
-// would answer nullifier-non-membership queries against the wrong tree and
-// produce a proof the chain rejects.
+// alongside an `expected snapshot height` for the active round. PIR servers
+// publish their served snapshot height via `GET /root` (`RootInfo.height`,
+// see vote-nullifier-pir/pir/types). The delegation proof is bound to the
+// round's snapshot, so a PIR server serving any other snapshot — whether
+// behind (still catching up) or ahead (already moved past the round's
+// snapshot) — would answer nullifier-non-membership queries against the
+// wrong tree and produce a proof the chain rejects.
 //
-// To avoid that, the resolver probes every configured endpoint and randomly
-// selects one whose served height is exactly equal to `expectedSnapshotHeight`.
-// Endpoints that are missing snapshot metadata, unreachable, or report any
-// other height are excluded. If no endpoint matches, `resolve(...)` throws —
-// the SDK refuses to proceed instead of falling back to a mismatched server.
+// To avoid that, the resolver probes every configured endpoint and selects
+// the first one whose served height is exactly equal to `expectedSnapshotHeight`,
+// in config order. Endpoints that are missing snapshot metadata, unreachable,
+// or report any other height are excluded. If no endpoint matches,
+// `resolve(...)` throws — the SDK refuses to proceed instead of falling back
+// to a mismatched server (per ZCA-229).
 
 import Foundation
 
@@ -26,7 +26,7 @@ public enum PirSnapshotResolverError: LocalizedError, Equatable {
     /// Every probed endpoint was unreachable, malformed, or reported a snapshot
     /// height different from `expectedSnapshotHeight` (either behind or ahead).
     /// `details` is a per-endpoint summary for diagnostics.
-    case noMatchingEndpoint(expected: BlockHeight, details: [PirSnapshotProbeOutcome])
+    case noMatchingEndpoint(expected: UInt64, details: [PirSnapshotProbeOutcome])
 
     public var errorDescription: String? {
         switch self {
@@ -45,10 +45,10 @@ public enum PirSnapshotResolverError: LocalizedError, Equatable {
 public struct PirSnapshotProbeOutcome: Equatable, Sendable {
     public enum Status: Equatable, Sendable {
         /// Endpoint reported a snapshot height that matches the expected snapshot exactly.
-        case matching(height: BlockHeight)
+        case matching(height: UInt64)
         /// Endpoint reported a snapshot height that is not equal to the expected snapshot
         /// (either behind or ahead).
-        case mismatched(height: BlockHeight)
+        case mismatched(height: UInt64)
         /// Endpoint returned a response without a usable height field.
         case missingHeight
         /// Endpoint failed to respond, returned non-200, or the response could not be parsed.
@@ -84,28 +84,18 @@ public struct PirSnapshotProbeOutcome: Equatable, Sendable {
 /// resolver collect per-endpoint diagnostics across the whole list before
 /// deciding to fail.
 public protocol PirSnapshotProbing: Sendable {
-    func probe(url: String, expectedSnapshotHeight: BlockHeight) async -> PirSnapshotProbeOutcome
+    func probe(url: String, expectedSnapshotHeight: UInt64) async -> PirSnapshotProbeOutcome
 }
 
 /// Selects a PIR endpoint whose served snapshot height equals `expectedSnapshotHeight` exactly.
 public struct PirSnapshotResolver: Sendable {
     private let probe: PirSnapshotProbing
-    private let matchingEndpointSelector: @Sendable ([PirSnapshotProbeOutcome]) -> PirSnapshotProbeOutcome?
 
     public init(probe: PirSnapshotProbing = HTTPPirSnapshotProbe()) {
         self.probe = probe
-        matchingEndpointSelector = { $0.randomElement() }
     }
 
-    init(
-        probe: PirSnapshotProbing,
-        matchingEndpointSelector: @escaping @Sendable ([PirSnapshotProbeOutcome]) -> PirSnapshotProbeOutcome?
-    ) {
-        self.probe = probe
-        self.matchingEndpointSelector = matchingEndpointSelector
-    }
-
-    /// Probe all `endpoints` in parallel and return a randomly selected URL
+    /// Probe all `endpoints` in parallel and return the first URL (in config order)
     /// whose served snapshot height equals `expectedSnapshotHeight` exactly.
     ///
     /// Strict equality — not `>=` — because the delegation proof is bound to the
@@ -118,7 +108,7 @@ public struct PirSnapshotResolver: Sendable {
     /// is missing metadata, or is unreachable.
     public func resolve(
         endpoints: [String],
-        expectedSnapshotHeight: BlockHeight
+        expectedSnapshotHeight: UInt64
     ) async throws -> String {
         guard !endpoints.isEmpty else {
             throw PirSnapshotResolverError.noEndpointsConfigured
@@ -134,7 +124,8 @@ public struct PirSnapshotResolver: Sendable {
                     return (index, outcome)
                 }
             }
-            // Preserve input order for stable diagnostics when no endpoint matches.
+            // Preserve input order so endpoint priority (config order) is kept
+            // when multiple endpoints match.
             var collected: [(Int, PirSnapshotProbeOutcome)] = []
             for await item in group {
                 collected.append(item)
@@ -143,11 +134,12 @@ public struct PirSnapshotResolver: Sendable {
             return collected.map(\.1)
         }
 
-        let matchingOutcomes = outcomes.filter { outcome in
+        // All matching endpoints share the same height (= expected) by definition,
+        // so we just pick the first one in config order.
+        let chosen = outcomes.first { outcome in
             if case .matching = outcome.status { return true }
             return false
         }
-        let chosen = matchingEndpointSelector(matchingOutcomes)
 
         guard let chosen else {
             throw PirSnapshotResolverError.noMatchingEndpoint(
@@ -164,40 +156,32 @@ public struct PirSnapshotResolver: Sendable {
 /// Default probe implementation that calls `GET <url>/root` and parses
 /// `vote-nullifier-pir`'s `RootInfo` response.
 public struct HTTPPirSnapshotProbe: PirSnapshotProbing {
-    private let session: URLSession?
-    private let timeout: TimeInterval
+    private let session: URLSession
 
     /// - Parameters:
     ///   - session: Optional `URLSession` to reuse. When `nil`, a new session
-    ///     is created for each probe, with `timeout` applied to both request
-    ///     and (2×) resource timeouts, then invalidated after the probe finishes.
-    ///     Pass a custom session in tests; in that case `timeout` is ignored
-    ///     because the session already carries its own configuration.
+    ///     is created with `timeout` applied to both request and (2×) resource
+    ///     timeouts. Pass a custom session in tests; in that case `timeout` is
+    ///     ignored because the session already carries its own configuration.
     ///   - timeout: Per-request timeout in seconds for the default session.
     public init(session: URLSession? = nil, timeout: TimeInterval = 5) {
-        self.session = session
-        self.timeout = timeout
+        if let session {
+            self.session = session
+        } else {
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = timeout
+            config.timeoutIntervalForResource = timeout * 2
+            self.session = URLSession(configuration: config)
+        }
     }
 
-    public func probe(url: String, expectedSnapshotHeight: BlockHeight) async -> PirSnapshotProbeOutcome {
+    public func probe(url: String, expectedSnapshotHeight: UInt64) async -> PirSnapshotProbeOutcome {
         guard let endpoint = URL(string: "\(url.trimmedTrailingSlash)/root") else {
             return PirSnapshotProbeOutcome(url: url, status: .unreachable(reason: "invalid URL"))
         }
 
-        let ownsSession = session == nil
-        let session = session ?? Self.makeSession(timeout: timeout)
-        defer {
-            if ownsSession {
-                session.finishTasksAndInvalidate()
-            }
-        }
-
         do {
-            let request = URLRequest(
-                url: endpoint,
-                cachePolicy: .reloadIgnoringLocalCacheData
-            )
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await session.data(from: endpoint)
             guard let http = response as? HTTPURLResponse else {
                 return PirSnapshotProbeOutcome(url: url, status: .unreachable(reason: "non-HTTP response"))
             }
@@ -240,7 +224,7 @@ public struct HTTPPirSnapshotProbe: PirSnapshotProbing {
         let root25: String?
         let numRanges: Int?
         let pirDepth: Int?
-        let height: BlockHeight?
+        let height: UInt64?
 
         enum CodingKeys: String, CodingKey {
             case root29
@@ -249,15 +233,6 @@ public struct HTTPPirSnapshotProbe: PirSnapshotProbing {
             case pirDepth = "pir_depth"
             case height
         }
-    }
-
-    private static func makeSession(timeout: TimeInterval) -> URLSession {
-        let config = URLSessionConfiguration.default
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        config.timeoutIntervalForRequest = timeout
-        config.timeoutIntervalForResource = timeout * 2
-        config.urlCache = nil
-        return URLSession(configuration: config)
     }
 }
 
