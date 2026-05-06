@@ -2547,6 +2547,7 @@ dependencies = [
  "sapling-crypto",
  "secrecy",
  "serde",
+ "serde_json",
  "sharded-slab",
  "tonic",
  "tor-rtcompat",

@@ -15,6 +15,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or secret material involved.
 - `zcashlc_voting_validate_pir_proof`: Validate a PIR-fetched IMT
   non-membership proof against an expected root.
+- `zcashlc_voting_db_open`, `zcashlc_voting_db_free`, and
+  `zcashlc_voting_set_wallet_id`: Manage the voting database handle used by
+  stateful voting FFI calls.
+- `zcashlc_voting_precompute_delegation_pir`: Precompute and cache delegation
+  PIR IMT proofs for a voting bundle using the configured voting database and
+  caller-supplied PIR endpoint.
 - Added `zcash_voting 0.5.2` (`default-features = false`, `client-pir`) as a
   Rust dependency.
 
