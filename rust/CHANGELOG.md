@@ -43,6 +43,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `VotingDatabaseHandle` now also carries a
   `zcash_voting::tree_sync::VoteTreeSync`, constructed in
   `zcashlc_voting_db_open` and consumed by the tree-sync FFI above.
+- `zcashlc_voting_init_round`, `zcashlc_voting_get_round_state`,
+  `zcashlc_voting_list_rounds`, `zcashlc_voting_get_votes`,
+  `zcashlc_voting_clear_round`, `zcashlc_voting_delete_skipped_bundles`,
+  recovery-state transaction/hash/signature helpers, and share-delegation
+  tracking helpers for persisted voting round state.
 - `zcashlc_voting_get_wallet_notes`: Load unspent Orchard notes for a wallet
   account at a snapshot height and return them as JSON-encoded
   `Vec<NoteInfo>` in a `*mut FfiBoxedSlice`. `account_uuid` must be a non-null

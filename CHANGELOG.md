@@ -24,6 +24,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `libzcashlc` voting key-utility FFI: `zcashlc_voting_extract_orchard_fvk_from_ufvk`. Decodes a UFVK string and returns the raw 96-byte Orchard FVK. Returns null on missing Orchard component, malformed UFVK, or invalid `network_id`.
 - `libzcashlc` voting utility FFI: `zcashlc_voting_warm_proving_caches`, `zcashlc_voting_decompose_weight`, `zcashlc_voting_generate_delegation_inputs`, `zcashlc_voting_generate_delegation_inputs_with_fvk`, `zcashlc_voting_extract_pczt_sighash`, `zcashlc_voting_extract_spend_auth_sig`, `zcashlc_voting_extract_nc_root`, and `zcashlc_voting_verify_witness`. These cover voting proof setup, PCZT/signature extraction, note-commitment root extraction, and witness verification.
 - `libzcashlc` voting FFI return structs and free helpers for round state, hotkeys, bundle setup results, round summaries, and vote records.
+- `libzcashlc` voting round, recovery, and share-delegation tracking FFI for persisted round state and crash-recovery metadata. No Swift API surface is added in this step.
 
 ## Changed
 - Bumped Rust dependencies to current crates.io releases (`zcash_address` 0.10→0.11, `zcash_client_backend` 0.21→0.22, `zcash_client_sqlite` 0.19→0.20, `zcash_primitives`/`zcash_proofs` 0.26→0.27, `zcash_protocol` 0.7→0.8, `zcash_transparent` 0.6→0.7, `sapling-crypto` 0.6→0.7, `orchard` 0.12→0.13, `pczt` 0.5→0.6) and removed the `[patch.crates-io]` git-rev overrides. No public Swift API changes.
