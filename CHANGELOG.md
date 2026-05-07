@@ -13,7 +13,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `zcash_voting` dependency foundation: SDK Rust crate now depends on `zcash_voting 0.5.2` (`default-features = false`, `client-pir`) and exposes pure-function FFI symbols for share-nullifier computation and PIR proof validation. No Swift API surface is added in this step.
 - `PirSnapshotResolver`, `PirSnapshotResolverError`, `PirSnapshotProbeOutcome`, `PirSnapshotProbing`, and `HTTPPirSnapshotProbe`: Select a vote-nullifier PIR endpoint whose `/root` metadata exactly matches a voting round's expected snapshot height.
 - `Voting*` Swift types: public type contract for the shielded voting FFI boundary, in `Sources/ZcashLightClientKit/Rust/Voting/VotingTypes.swift`.
-- `VotingRustBackend`: Swift wrapper for the voting `libzcashlc` surface. Exposes the static `computeShareNullifier` over `zcashlc_voting_compute_share_nullifier` and the `VotingRustBackendError` error type.
+- `VotingRustBackend`: Swift wrapper for the voting `libzcashlc` surface. A `final class` that owns an opaque `VotingDatabaseHandle` for the duration of a voting session. Exposes:
+  - Database lifecycle: `init()`, `open(path:)`, `close()` (idempotent), and `deinit` cleanup, over `zcashlc_voting_db_open` / `zcashlc_voting_db_free`.
+  - `setWalletId(_:)` over `zcashlc_voting_set_wallet_id`.
+  - `precomputeDelegationPir(roundId:bundleIndex:notes:pirEndpoints:expectedSnapshotHeight:networkId:pirResolver:)` over `zcashlc_voting_precompute_delegation_pir`, with `PirSnapshotResolver`-driven endpoint selection.
+  - Vote-tree sync: `syncVoteTree(roundId:nodeUrl:)`, `generateVanWitness(roundId:bundleIndex:anchorHeight:)`, and `resetTreeClient(roundId:)` over the corresponding `zcashlc_voting_sync_vote_tree` / `_generate_van_witness` / `_reset_tree_client` FFI.
+  - The static `computeShareNullifier(voteCommitment:shareIndex:primaryBlind:)` over `zcashlc_voting_compute_share_nullifier`, with 32-byte input validation.
+  - `VotingRustBackendError` cases `databaseAlreadyOpen` / `databaseNotOpen` for handle-state errors, alongside the existing `rustError` and `invalidData`.
 - `Broadcaster` protocol — separates transaction creation from submission, enabling custom broadcast strategies (e.g. submitting to multiple lightwalletd servers in parallel).
   - `Broadcaster.createProposedTransactions(proposal:spendingKey:)` — creates transactions locally without broadcasting, returning `[ZcashTransaction.Overview]` with raw bytes.
   - `Broadcaster.createTransactionFromPCZT(pcztWithProofs:pcztWithSigs:)` — extracts and stores a transaction from PCZT data without submitting.
