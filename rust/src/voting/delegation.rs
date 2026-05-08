@@ -1038,10 +1038,7 @@ mod tests {
             assert_eq!(witness.note_commitment, note_leaf.to_bytes().to_vec());
             assert_eq!(witness.position, u64::from(*position));
             assert_eq!(witness.root, expected_root);
-            assert_eq!(
-                witness.auth_path.len(),
-                orchard::NOTE_COMMITMENT_TREE_DEPTH as usize
-            );
+            assert_eq!(witness.auth_path.len(), orchard::NOTE_COMMITMENT_TREE_DEPTH);
 
             let path = incrementalmerkletree::MerklePath::<
                 MerkleHashOrchard,
