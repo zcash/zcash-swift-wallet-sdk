@@ -15,7 +15,7 @@ use super::ffi_types::FfiVotingHotkey;
 // Helper functions
 // =============================================================================
 
-const MIN_SEED_LEN: usize = 32;
+pub(super) const MIN_SEED_LEN: usize = 32;
 
 /// Borrow a byte slice from a raw `(ptr, len)` pair.
 ///

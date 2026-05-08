@@ -241,7 +241,6 @@ impl From<JsonWireEncryptedShare> for voting::WireEncryptedShare {
 }
 
 /// JSON-serializable VoteCommitmentBundle.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JsonVoteCommitmentBundle {
     pub van_nullifier: Vec<u8>,
@@ -279,8 +278,29 @@ impl From<voting::VoteCommitmentBundle> for JsonVoteCommitmentBundle {
     }
 }
 
+impl From<JsonVoteCommitmentBundle> for voting::VoteCommitmentBundle {
+    fn from(b: JsonVoteCommitmentBundle) -> Self {
+        Self {
+            van_nullifier: b.van_nullifier,
+            vote_authority_note_new: b.vote_authority_note_new,
+            vote_commitment: b.vote_commitment,
+            proposal_id: b.proposal_id,
+            proof: b.proof,
+            // The JSON only carries wire-safe encrypted shares. The core
+            // commitment cannot reconstruct the secret share fields from them.
+            enc_shares: Vec::new(),
+            anchor_height: b.anchor_height,
+            vote_round_id: b.vote_round_id,
+            shares_hash: b.shares_hash,
+            share_blinds: b.share_blinds,
+            share_comms: b.share_comms,
+            r_vpk_bytes: b.r_vpk_bytes,
+            alpha_v: b.alpha_v,
+        }
+    }
+}
+
 /// JSON-serializable SharePayload.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JsonSharePayload {
     pub shares_hash: Vec<u8>,
@@ -321,7 +341,6 @@ impl From<voting::SharePayload> for JsonSharePayload {
 }
 
 /// JSON-serializable CastVoteSignature.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JsonCastVoteSignature {
     pub vote_auth_sig: Vec<u8>,

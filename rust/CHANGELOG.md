@@ -58,6 +58,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zcashlc_voting_get_delegation_submission`,
   `zcashlc_voting_get_delegation_submission_with_keystone_sig`, and
   `zcashlc_voting_store_van_position` for the delegation workflow FFI.
+- `zcashlc_voting_encrypt_shares`, `zcashlc_voting_build_vote_commitment`,
+  `zcashlc_voting_build_share_payloads`, `zcashlc_voting_mark_vote_submitted`,
+  and `zcashlc_voting_sign_cast_vote` for the vote-casting FFI.
 - `zcashlc_voting_get_wallet_notes`: Load unspent Orchard notes for a wallet
   account at a snapshot height and return them as JSON-encoded
   `Vec<NoteInfo>` in a `*mut FfiBoxedSlice`. `account_uuid` must be a non-null
