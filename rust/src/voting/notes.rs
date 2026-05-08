@@ -59,7 +59,7 @@ pub unsafe extern "C" fn zcashlc_voting_get_wallet_notes(
 
         let wallet_db = open_wallet_db(&wallet_path_str, network_id)?;
 
-        let uuid_bytes = unsafe { bytes_from_ptr(account_uuid, account_uuid_len) }?;
+        let uuid_bytes: &[u8] = unsafe { bytes_from_ptr(account_uuid, account_uuid_len) }?;
         let arr: [u8; ACCOUNT_UUID_BYTE_LEN] = uuid_bytes
             .try_into()
             .map_err(|_| anyhow!("account_uuid must be {} bytes", ACCOUNT_UUID_BYTE_LEN))?;

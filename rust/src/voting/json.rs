@@ -279,6 +279,28 @@ impl From<voting::VoteCommitmentBundle> for JsonVoteCommitmentBundle {
     }
 }
 
+impl From<JsonVoteCommitmentBundle> for voting::VoteCommitmentBundle {
+    fn from(b: JsonVoteCommitmentBundle) -> Self {
+        Self {
+            van_nullifier: b.van_nullifier,
+            vote_authority_note_new: b.vote_authority_note_new,
+            vote_commitment: b.vote_commitment,
+            proposal_id: b.proposal_id,
+            proof: b.proof,
+            // enc_shares with secrets are not sent across FFI; wire shares are
+            // passed separately to build_share_payloads, so this is unused.
+            enc_shares: Vec::new(),
+            anchor_height: b.anchor_height,
+            vote_round_id: b.vote_round_id,
+            shares_hash: b.shares_hash,
+            share_blinds: b.share_blinds,
+            share_comms: b.share_comms,
+            r_vpk_bytes: b.r_vpk_bytes,
+            alpha_v: b.alpha_v,
+        }
+    }
+}
+
 /// JSON-serializable SharePayload.
 #[allow(dead_code)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -335,7 +357,7 @@ impl From<voting::CastVoteSignature> for JsonCastVoteSignature {
     }
 }
 
-/// JSON-serializable DelegationInputs.
+/// JSON-serializable DelegationInputs (mirror of Swift `VotingDelegationInputs`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JsonDelegationInputs {
     pub fvk_bytes: Vec<u8>,

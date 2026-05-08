@@ -4,7 +4,7 @@ use prost::Message;
 use zcash_client_backend::proto::service::TreeState;
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_voting as voting;
-use zip32::AccountId;
+use zip32::{AccountId, fingerprint::SeedFingerprint};
 
 use crate::{unwrap_exc_or, unwrap_exc_or_null};
 
@@ -90,7 +90,7 @@ pub unsafe extern "C" fn zcashlc_voting_generate_delegation_inputs(
         // zcash_voting derives the hotkey spending key at account 0 during signing.
         let hotkey_inputs = derive_hotkey_side_inputs(hotkey, network_id, hotkey_account())?;
 
-        let seed_fp = zip32::fingerprint::SeedFingerprint::from_seed(sender)
+        let seed_fp = SeedFingerprint::from_seed(sender)
             .ok_or_else(|| anyhow!("failed to compute seed fingerprint (seed too short?)"))?;
 
         let inputs = JsonDelegationInputs {
