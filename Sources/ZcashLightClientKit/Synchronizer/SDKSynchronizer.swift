@@ -55,12 +55,15 @@ public class SDKSynchronizer: Synchronizer {
     private let syncSessionTicker: SessionTicker
     var latestBlocksDataProvider: LatestBlocksDataProvider
 
-    private var broadcasterStorage: Broadcaster?
-    public var broadcaster: Broadcaster {
+    private var broadcasterStorage: SDKBroadcaster?
+    private var sdkBroadcaster: SDKBroadcaster {
         guard let broadcaster = broadcasterStorage else {
             preconditionFailure("Broadcaster accessed before initialization")
         }
         return broadcaster
+    }
+    public var broadcaster: Broadcaster {
+        sdkBroadcaster
     }
 
     /// Creates an SDKSynchronizer instance
@@ -108,6 +111,7 @@ public class SDKSynchronizer: Synchronizer {
             sdkFlags: sdkFlags,
             logger: logger,
             eventSubject: eventSubject,
+            automaticTxResubmissionGuard: initializer.container.resolve(AutomaticTxResubmissionGuard.self),
             statusCheck: { [weak self] in
                 guard let self else {
                     throw ZcashError.synchronizerNotPrepared
@@ -460,7 +464,7 @@ public class SDKSynchronizer: Synchronizer {
         proposal: Proposal,
         spendingKey: UnifiedSpendingKey
     ) async throws -> AsyncThrowingStream<TransactionSubmitResult, Error> {
-        let transactions = try await broadcaster.createProposedTransactions(
+        let transactions = try await sdkBroadcaster.createProposedTransactionsForSDKSubmission(
             proposal: proposal,
             spendingKey: spendingKey
         )
@@ -532,7 +536,7 @@ public class SDKSynchronizer: Synchronizer {
     }
     
     public func createTransactionFromPCZT(pcztWithProofs: Pczt, pcztWithSigs: Pczt) async throws -> AsyncThrowingStream<TransactionSubmitResult, Error> {
-        let transactions = try await broadcaster.createTransactionFromPCZT(
+        let transactions = try await sdkBroadcaster.createTransactionFromPCZTForSDKSubmission(
             pcztWithProofs: pcztWithProofs,
             pcztWithSigs: pcztWithSigs
         )

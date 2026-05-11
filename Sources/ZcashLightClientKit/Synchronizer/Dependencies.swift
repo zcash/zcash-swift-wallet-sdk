@@ -144,6 +144,15 @@ enum Dependencies {
         container.register(type: SyncSessionIDGenerator.self, isSingleton: false) { _ in
             UniqueSyncSessionIDGenerator()
         }
+
+        container.register(type: AutomaticTxResubmissionGuard.self, isSingleton: true) { di in
+            let logger = di.resolve(Logger.self)
+
+            return AutomaticTxResubmissionGuard(
+                storageURL: urls.generalStorageURL,
+                logger: logger
+            )
+        }
         
         container.register(type: ZcashFileManager.self, isSingleton: true) { _ in
             FileManager.default

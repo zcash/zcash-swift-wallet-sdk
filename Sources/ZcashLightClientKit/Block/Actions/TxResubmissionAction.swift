@@ -16,11 +16,13 @@ final class TxResubmissionAction {
     let transactionRepository: TransactionRepository
     var transactionEncoder: TransactionEncoder
     let logger: Logger
+    let automaticTxResubmissionGuard: AutomaticTxResubmissionGuard
 
     init(container: DIContainer) {
         transactionRepository = container.resolve(TransactionRepository.self)
         transactionEncoder = container.resolve(TransactionEncoder.self)
         logger = container.resolve(Logger.self)
+        automaticTxResubmissionGuard = container.resolve(AutomaticTxResubmissionGuard.self)
     }
 }
 
@@ -33,7 +35,8 @@ extension TxResubmissionAction: Action {
         // find all candidates for the resubmission
         do {
             logger.info("TxResubmissionAction check started at \(latestBlockHeight) height.")
-            let transactions = try await transactionRepository.findForResubmission(upTo: latestBlockHeight)
+            let candidates = try await transactionRepository.findForResubmission(upTo: latestBlockHeight)
+            let transactions = await automaticTxResubmissionGuard.filterAutomaticallyResubmittable(candidates)
 
             // no candidates, update the time and continue with the next action
             if transactions.isEmpty {

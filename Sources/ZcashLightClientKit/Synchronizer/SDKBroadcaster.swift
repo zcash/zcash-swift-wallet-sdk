@@ -14,6 +14,7 @@ class SDKBroadcaster: Broadcaster {
     private let sdkFlags: SDKFlags
     private let logger: Logger
     private let eventSubject: PassthroughSubject<SynchronizerEvent, Never>
+    private let automaticTxResubmissionGuard: AutomaticTxResubmissionGuard
     private let statusCheck: () throws -> Void
 
     init(
@@ -22,6 +23,7 @@ class SDKBroadcaster: Broadcaster {
         sdkFlags: SDKFlags,
         logger: Logger,
         eventSubject: PassthroughSubject<SynchronizerEvent, Never>,
+        automaticTxResubmissionGuard: AutomaticTxResubmissionGuard,
         statusCheck: @escaping () throws -> Void
     ) {
         self.transactionEncoder = transactionEncoder
@@ -29,12 +31,58 @@ class SDKBroadcaster: Broadcaster {
         self.sdkFlags = sdkFlags
         self.logger = logger
         self.eventSubject = eventSubject
+        self.automaticTxResubmissionGuard = automaticTxResubmissionGuard
         self.statusCheck = statusCheck
     }
 
     func createProposedTransactions(
         proposal: Proposal,
         spendingKey: UnifiedSpendingKey
+    ) async throws -> [ZcashTransaction.Overview] {
+        try await createProposedTransactions(
+            proposal: proposal,
+            spendingKey: spendingKey,
+            excludeFromAutomaticResubmission: true
+        )
+    }
+
+    func createProposedTransactionsForSDKSubmission(
+        proposal: Proposal,
+        spendingKey: UnifiedSpendingKey
+    ) async throws -> [ZcashTransaction.Overview] {
+        try await createProposedTransactions(
+            proposal: proposal,
+            spendingKey: spendingKey,
+            excludeFromAutomaticResubmission: false
+        )
+    }
+
+    func createTransactionFromPCZT(
+        pcztWithProofs: Pczt,
+        pcztWithSigs: Pczt
+    ) async throws -> [ZcashTransaction.Overview] {
+        try await createTransactionFromPCZT(
+            pcztWithProofs: pcztWithProofs,
+            pcztWithSigs: pcztWithSigs,
+            excludeFromAutomaticResubmission: true
+        )
+    }
+
+    func createTransactionFromPCZTForSDKSubmission(
+        pcztWithProofs: Pczt,
+        pcztWithSigs: Pczt
+    ) async throws -> [ZcashTransaction.Overview] {
+        try await createTransactionFromPCZT(
+            pcztWithProofs: pcztWithProofs,
+            pcztWithSigs: pcztWithSigs,
+            excludeFromAutomaticResubmission: false
+        )
+    }
+
+    private func createProposedTransactions(
+        proposal: Proposal,
+        spendingKey: UnifiedSpendingKey,
+        excludeFromAutomaticResubmission: Bool
     ) async throws -> [ZcashTransaction.Overview] {
         try statusCheck()
 
@@ -51,16 +99,18 @@ class SDKBroadcaster: Broadcaster {
             spendingKey: spendingKey
         )
 
-        if !transactions.isEmpty {
-            eventSubject.send(.foundTransactions(transactions, nil))
-        }
+        await finishTransactionCreation(
+            transactions,
+            excludeFromAutomaticResubmission: excludeFromAutomaticResubmission
+        )
 
         return transactions
     }
 
-    func createTransactionFromPCZT(
+    private func createTransactionFromPCZT(
         pcztWithProofs: Pczt,
-        pcztWithSigs: Pczt
+        pcztWithSigs: Pczt,
+        excludeFromAutomaticResubmission: Bool
     ) async throws -> [ZcashTransaction.Overview] {
         try statusCheck()
 
@@ -79,11 +129,25 @@ class SDKBroadcaster: Broadcaster {
 
         let transactions = try await transactionEncoder.fetchTransactionsForTxIds([txId])
 
-        if !transactions.isEmpty {
-            eventSubject.send(.foundTransactions(transactions, nil))
-        }
+        await finishTransactionCreation(
+            transactions,
+            excludeFromAutomaticResubmission: excludeFromAutomaticResubmission
+        )
 
         return transactions
+    }
+
+    private func finishTransactionCreation(
+        _ transactions: [ZcashTransaction.Overview],
+        excludeFromAutomaticResubmission: Bool
+    ) async {
+        guard !transactions.isEmpty else { return }
+
+        if excludeFromAutomaticResubmission {
+            await automaticTxResubmissionGuard.excludeFromAutomaticResubmission(transactions)
+        }
+
+        eventSubject.send(.foundTransactions(transactions, nil))
     }
 
     func submit(

@@ -58,6 +58,60 @@ final class BroadcasterTests: ZcashTestCase {
         XCTAssertEqual(transactions.map(\.rawID), createdTransactions.map(\.rawID))
         XCTAssertEqual(try transactions.map { try XCTUnwrap($0.raw) }, [rawTransaction])
 
+        let resubmissionGuard = synchronizer.initializer.container.resolve(AutomaticTxResubmissionGuard.self)
+        let resubmittableTransactions = await resubmissionGuard.filterAutomaticallyResubmittable(transactions)
+        XCTAssertTrue(resubmittableTransactions.isEmpty)
+
+        await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
+    }
+
+    func testCreateTransactionFromPCZTExcludesFromAutomaticResubmissionAndEmitsEvent() async throws {
+        let rawID = Data(repeating: 0xCD, count: 32)
+        let rawTransaction = Data([0x05, 0x06, 0x07, 0x08])
+        let pcztWithProofs = Pczt([0x10, 0x11])
+        let pcztWithSigs = Pczt([0x12, 0x13])
+        let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: rawID)]
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
+        let rustBackend = ZcashRustBackendWeldingMock()
+        rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReturnValue = rawID
+        let synchronizer = try makeSynchronizer(
+            transactionEncoder: transactionEncoder,
+            rustBackend: rustBackend
+        )
+        let foundTransactionsExpectation = XCTestExpectation(description: "found transactions event")
+
+        synchronizer.eventStream
+            .sink { event in
+                guard case let .foundTransactions(transactions, range) = event else { return }
+                XCTAssertNil(range)
+                XCTAssertEqual(transactions.map(\.rawID), [rawID])
+                foundTransactionsExpectation.fulfill()
+            }
+            .store(in: &cancellables)
+
+        await synchronizer.updateStatus(.stopped)
+
+        let transactions = try await synchronizer.broadcaster.createTransactionFromPCZT(
+            pcztWithProofs: pcztWithProofs,
+            pcztWithSigs: pcztWithSigs
+        )
+
+        XCTAssertEqual(
+            rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReceivedArguments?.pcztWithProofs,
+            pcztWithProofs
+        )
+        XCTAssertEqual(
+            rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReceivedArguments?.pcztWithSigs,
+            pcztWithSigs
+        )
+        XCTAssertEqual(transactionEncoder.receivedFetchTxIds, [rawID])
+        XCTAssertEqual(transactions.map(\.rawID), [rawID])
+        XCTAssertEqual(try transactions.map { try XCTUnwrap($0.raw) }, [rawTransaction])
+
+        let resubmissionGuard = synchronizer.initializer.container.resolve(AutomaticTxResubmissionGuard.self)
+        let resubmittableTransactions = await resubmissionGuard.filterAutomaticallyResubmittable(transactions)
+        XCTAssertTrue(resubmittableTransactions.isEmpty)
+
         await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
     }
 
@@ -197,6 +251,10 @@ final class BroadcasterTests: ZcashTestCase {
             [EncodedTransaction(transactionId: rawID, raw: rawTransaction)]
         )
 
+        let resubmissionGuard = synchronizer.initializer.container.resolve(AutomaticTxResubmissionGuard.self)
+        let resubmittableTransactions = await resubmissionGuard.filterAutomaticallyResubmittable(createdTransactions)
+        XCTAssertEqual(resubmittableTransactions.map(\.rawID), [rawID])
+
         await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
         XCTAssertEqual(foundTransactionsEventCount, 1)
     }
@@ -255,6 +313,10 @@ final class BroadcasterTests: ZcashTestCase {
             transactionEncoder.submittedTransactions,
             [EncodedTransaction(transactionId: rawID, raw: rawTransaction)]
         )
+
+        let resubmissionGuard = synchronizer.initializer.container.resolve(AutomaticTxResubmissionGuard.self)
+        let resubmittableTransactions = await resubmissionGuard.filterAutomaticallyResubmittable(createdTransactions)
+        XCTAssertEqual(resubmittableTransactions.map(\.rawID), [rawID])
 
         await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
         XCTAssertEqual(foundTransactionsEventCount, 1)
