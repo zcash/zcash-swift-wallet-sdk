@@ -371,7 +371,7 @@ public class SDKSynchronizer: Synchronizer {
             await httpTor?.sleep()
             stopped = true
         }
-        
+
         // called when a new account is imported
         let chainTip = try? await UInt32(
             initializer.lightWalletService.latestBlockHeight(
@@ -384,7 +384,7 @@ public class SDKSynchronizer: Synchronizer {
         guard let chainTip else {
             throw ZcashError.synchronizerNotPrepared
         }
-        
+
         let checkpoint = checkpointSource.birthday(for: birthday ?? BlockHeight(chainTip))
 
         let accountUUID = try await initializer.rustBackend.importAccount(
@@ -402,7 +402,7 @@ public class SDKSynchronizer: Synchronizer {
         if stopped {
             try await start(retry: false)
         }
-        
+
         return accountUUID
     }
 
