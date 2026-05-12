@@ -33,7 +33,7 @@ extension Connection {
     }
 }
 
-class TransactionSQLDAO: TransactionRepository {
+class TransactionSQLDAO: TransactionRepository, RawTransactionLookup {
     enum NotesTableStructure {
         static let transactionID = SQLite.Expression<Int>("tx")
         static let memo = SQLite.Expression<Blob>("memo")
@@ -141,6 +141,14 @@ class TransactionSQLDAO: TransactionRepository {
     func find(rawID: Data) async throws -> ZcashTransaction.Overview {
         let query = transactionsView
             .filter(ZcashTransaction.Overview.Column.rawID == Blob(bytes: rawID.bytes))
+            .limit(1)
+
+        return try await execute(query) { try ZcashTransaction.Overview(row: $0) }
+    }
+
+    func find(rawTransaction: Data) async throws -> ZcashTransaction.Overview {
+        let query = transactionsView
+            .filter(ZcashTransaction.Overview.Column.raw == Blob(bytes: rawTransaction.bytes))
             .limit(1)
 
         return try await execute(query) { try ZcashTransaction.Overview(row: $0) }

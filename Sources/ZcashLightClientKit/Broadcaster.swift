@@ -16,6 +16,11 @@ import Foundation
 /// strategies such as submitting to multiple lightwalletd servers
 /// in parallel.
 ///
+/// Transactions created through this API wait for the caller to submit them.
+/// Once submitted, automatic retry uses the submitted endpoints instead of the
+/// synchronizer's default endpoint. Retry tries the recorded endpoints in order
+/// until one submit succeeds.
+///
 /// Typical usage:
 /// ```swift
 /// // 1. Create the transaction(s)
@@ -68,6 +73,9 @@ public protocol Broadcaster: AnyObject {
     /// Creates an ephemeral connection to the given endpoint, submits the
     /// transaction, and tears down the connection. Respects the current
     /// Tor configuration.
+    ///
+    /// If the transaction was created through this `Broadcaster`, the endpoint
+    /// is remembered for automatic retry.
     ///
     /// - Parameter rawTransaction: the raw serialized transaction bytes.
     /// - Parameter endpoint: the `LightWalletEndpoint` to submit to.

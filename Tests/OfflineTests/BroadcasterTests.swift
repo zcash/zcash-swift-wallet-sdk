@@ -30,7 +30,11 @@ final class BroadcasterTests: ZcashTestCase {
         let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
         let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: Data(repeating: 0xAB, count: 32))]
         let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
-        let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
+        let pendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger())
+        let synchronizer = try makeSynchronizer(
+            transactionEncoder: transactionEncoder,
+            pendingSubmitPlanStore: pendingSubmitPlanStore
+        )
 
         let foundTransactionsExpectation = XCTestExpectation(description: "found transactions event")
 
@@ -57,6 +61,12 @@ final class BroadcasterTests: ZcashTestCase {
         XCTAssertEqual(transactionEncoder.receivedCreateArguments?.spendingKey, spendingKey)
         XCTAssertEqual(transactions.map(\.rawID), createdTransactions.map(\.rawID))
         XCTAssertEqual(try transactions.map { try XCTUnwrap($0.raw) }, [rawTransaction])
+        switch await pendingSubmitPlanStore.getSubmitPlan(for: createdTransactions[0].rawID) {
+        case .awaitingPlan:
+            break
+        default:
+            XCTFail("Expected created broadcaster transaction to wait for a submit plan.")
+        }
 
         await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
     }
@@ -86,9 +96,13 @@ final class BroadcasterTests: ZcashTestCase {
         let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
         let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: Data(repeating: 0xAB, count: 32))]
         let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
+        let pendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger())
         let service = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: 0, errorMessage: ""))
         defer { try? service.stop() }
-        let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
+        let synchronizer = try makeSynchronizer(
+            transactionEncoder: transactionEncoder,
+            pendingSubmitPlanStore: pendingSubmitPlanStore
+        )
 
         await synchronizer.updateStatus(.stopped)
 
@@ -108,6 +122,15 @@ final class BroadcasterTests: ZcashTestCase {
         try await synchronizer.broadcaster.submit(raw, to: service.endpoint)
 
         XCTAssertEqual(service.recordedTransactions(), [rawTransaction])
+        switch await pendingSubmitPlanStore.getSubmitPlan(for: createdTransactions[0].rawID) {
+        case .ready(let plan):
+            XCTAssertEqual(plan.endpoints.count, 1)
+            XCTAssertEqual(plan.endpoints[0].host, service.endpoint.host)
+            XCTAssertEqual(plan.endpoints[0].port, service.endpoint.port)
+            XCTAssertEqual(plan.endpoints[0].secure, service.endpoint.secure)
+        default:
+            XCTFail("Expected submit endpoint to be registered for retry.")
+        }
     }
 
     func testBroadcasterThrowsWhenNotPrepared() async throws {
@@ -264,7 +287,8 @@ final class BroadcasterTests: ZcashTestCase {
 
     private func makeSynchronizer(
         transactionEncoder: TransactionEncoder,
-        rustBackend: ZcashRustBackendWelding? = nil
+        rustBackend: ZcashRustBackendWelding? = nil,
+        pendingSubmitPlanStore: PendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger())
     ) throws -> SDKSynchronizer {
         let serviceMock = LightWalletServiceMock()
         let transactionRepository = TransactionRepositoryMock()
@@ -274,6 +298,7 @@ final class BroadcasterTests: ZcashTestCase {
         }
         mockContainer.mock(type: LightWalletService.self, isSingleton: true) { _ in serviceMock }
         mockContainer.mock(type: TransactionRepository.self, isSingleton: true) { _ in transactionRepository }
+        mockContainer.mock(type: PendingSubmitPlanStore.self, isSingleton: true) { _ in pendingSubmitPlanStore }
 
         let initializer = Initializer(
             container: mockContainer,
