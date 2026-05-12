@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Fixed
+- Prevent transactions created through `Broadcaster` from being automatically resubmitted by the SDK.
+
 # 2.5.0 - 2026-05-11
 
 ## Added

@@ -16,6 +16,10 @@ import Foundation
 /// strategies such as submitting to multiple lightwalletd servers
 /// in parallel.
 ///
+/// Transactions created through this API are caller-managed. The SDK
+/// stores them in the wallet database, but it will not automatically
+/// resubmit them; callers own submission and retry behavior.
+///
 /// Typical usage:
 /// ```swift
 /// // 1. Create the transaction(s)
@@ -39,6 +43,9 @@ public protocol Broadcaster: AnyObject {
     ///   property contains the serialized transaction bytes suitable for
     ///   later submission via ``submit(_:to:)``.
     ///
+    /// Transactions returned by this method are not automatically resubmitted
+    /// by the SDK.
+    ///
     /// If `prepare()` hasn't already been called since creation of the
     /// synchronizer instance or since the last wipe then this method throws
     /// `ZcashError.synchronizerNotPrepared`.
@@ -54,6 +61,9 @@ public protocol Broadcaster: AnyObject {
     /// - Parameter pcztWithProofs: the PCZT with proofs added.
     /// - Parameter pcztWithSigs: the PCZT with signatures added.
     /// - Returns: An array of transaction overviews with `raw` bytes.
+    ///
+    /// Transactions returned by this method are not automatically resubmitted
+    /// by the SDK.
     ///
     /// If `prepare()` hasn't already been called since creation of the
     /// synchronizer instance or since the last wipe then this method throws
