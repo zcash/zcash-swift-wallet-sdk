@@ -81,14 +81,22 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
 
     func testPrunesPlansThatAreNoLongerResubmissionCandidates() async throws {
         let persistence = InMemorySubmitPlanPersistence()
-        let retainedTransaction = makeTransaction(rawID: Data(repeating: 0xAB, count: 32))
-        let prunedTransaction = makeTransaction(rawID: Data(repeating: 0xCD, count: 32))
+        let prunedRawTransaction = Data([0x03, 0x04])
+        let retainedTransaction = makeTransaction(
+            rawID: Data(repeating: 0xAB, count: 32),
+            raw: Data([0x01, 0x02])
+        )
+        let prunedTransaction = makeTransaction(
+            rawID: Data(repeating: 0xCD, count: 32),
+            raw: prunedRawTransaction
+        )
         let store = PendingSubmitPlanStore(persistence: persistence, logger: NullLogger())
 
         await store.markAwaitingSubmitPlan([retainedTransaction, prunedTransaction])
         await store.addSubmitEndpoint(transaction: retainedTransaction, endpoint: LightWalletEndpointBuilder.default)
         await store.addSubmitEndpoint(transaction: prunedTransaction, endpoint: LightWalletEndpointBuilder.eccTestnet)
         await store.retainPlans(for: [retainedTransaction.rawID])
+        await store.addSubmitEndpoint(rawTransaction: prunedRawTransaction, endpoint: LightWalletEndpointBuilder.eccTestnet)
 
         let reloadedStore = PendingSubmitPlanStore(persistence: persistence, logger: NullLogger())
         let retainedPlan = await reloadedStore.getSubmitPlan(for: retainedTransaction.rawID)

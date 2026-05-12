@@ -105,10 +105,11 @@ actor PendingSubmitPlanStore {
         loadFromPersistenceIfNeeded()
 
         let retainedTransactionIds = Set(transactionIds.map(\.stablePlanKey))
-        let previousCount = plansByTransactionId.count
+        let previousPlanCount = plansByTransactionId.count
         plansByTransactionId = plansByTransactionId.filter { retainedTransactionIds.contains($0.key) }
+        transactionIdsByRawTransaction = transactionIdsByRawTransaction.filter { retainedTransactionIds.contains($0.value) }
 
-        if plansByTransactionId.count != previousCount {
+        if plansByTransactionId.count != previousPlanCount {
             saveToPersistence()
         }
     }
