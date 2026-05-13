@@ -133,6 +133,39 @@ final class BroadcasterTests: ZcashTestCase {
         }
     }
 
+    func testSubmitUsesRawTransactionLookupWhenRawMappingIsNotInMemory() async throws {
+        let rawID = Data(repeating: 0xAB, count: 32)
+        let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
+        let pendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger())
+        let storedTransaction = makeTransaction(raw: nil, rawID: rawID)
+        let lookupTransaction = makeTransaction(raw: rawTransaction, rawID: rawID)
+        let transactionRepository = LookupTransactionRepository(transaction: lookupTransaction)
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: [])
+        let service = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: 0, errorMessage: ""))
+        defer { try? service.stop() }
+        let synchronizer = try makeSynchronizer(
+            transactionEncoder: transactionEncoder,
+            pendingSubmitPlanStore: pendingSubmitPlanStore,
+            transactionRepository: transactionRepository
+        )
+
+        await pendingSubmitPlanStore.markAwaitingSubmitPlan([storedTransaction])
+
+        try await synchronizer.broadcaster.submit(rawTransaction, to: service.endpoint)
+
+        XCTAssertEqual(transactionRepository.receivedRawTransactions, [rawTransaction])
+        XCTAssertEqual(service.recordedTransactions(), [rawTransaction])
+        switch await pendingSubmitPlanStore.getSubmitPlan(for: rawID) {
+        case .ready(let plan):
+            XCTAssertEqual(plan.endpoints.count, 1)
+            XCTAssertEqual(plan.endpoints[0].host, service.endpoint.host)
+            XCTAssertEqual(plan.endpoints[0].port, service.endpoint.port)
+            XCTAssertEqual(plan.endpoints[0].secure, service.endpoint.secure)
+        default:
+            XCTFail("Expected raw lookup path to register the endpoint for retry.")
+        }
+    }
+
     func testBroadcasterThrowsWhenNotPrepared() async throws {
         let transactionEncoder = StubTransactionEncoder(createdTransactions: [])
         let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
@@ -288,10 +321,10 @@ final class BroadcasterTests: ZcashTestCase {
     private func makeSynchronizer(
         transactionEncoder: TransactionEncoder,
         rustBackend: ZcashRustBackendWelding? = nil,
-        pendingSubmitPlanStore: PendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger())
+        pendingSubmitPlanStore: PendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger()),
+        transactionRepository: TransactionRepository = TransactionRepositoryMock()
     ) throws -> SDKSynchronizer {
         let serviceMock = LightWalletServiceMock()
-        let transactionRepository = TransactionRepositoryMock()
 
         if let rustBackend {
             mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in rustBackend }
@@ -331,7 +364,7 @@ final class BroadcasterTests: ZcashTestCase {
         )
     }
 
-    private func makeTransaction(raw: Data, rawID: Data) -> ZcashTransaction.Overview {
+    private func makeTransaction(raw: Data?, rawID: Data) -> ZcashTransaction.Overview {
         ZcashTransaction.Overview(
             accountUUID: TestsData.mockedAccountUUID,
             blockTime: nil,
@@ -445,6 +478,84 @@ private final class StubTransactionEncoder: TransactionEncoder {
     }
 
     func closeDBConnection() { }
+}
+
+private final class LookupTransactionRepository: TransactionRepository, RawTransactionLookup {
+    private let transaction: ZcashTransaction.Overview
+    private(set) var receivedRawTransactions: [Data] = []
+
+    init(transaction: ZcashTransaction.Overview) {
+        self.transaction = transaction
+    }
+
+    func closeDBConnection() { }
+
+    func countAll() async throws -> Int { fatalError("Unused in test") }
+
+    func countUnmined() async throws -> Int { fatalError("Unused in test") }
+
+    func isInitialized() async throws -> Bool { fatalError("Unused in test") }
+
+    func fetchTxidsWithMemoContaining(searchTerm: String) async throws -> [Data] {
+        fatalError("Unused in test")
+    }
+
+    func find(rawID: Data) async throws -> ZcashTransaction.Overview {
+        fatalError("Unused in test")
+    }
+
+    func find(offset: Int, limit: Int, kind: TransactionKind) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func find(in range: CompactBlockRange, limit: Int, kind: TransactionKind) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func find(from: ZcashTransaction.Overview, limit: Int, kind: TransactionKind) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func findPendingTransactions(latestHeight: BlockHeight, offset: Int, limit: Int) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func findReceived(offset: Int, limit: Int) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func findSent(offset: Int, limit: Int) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func findForResubmission(upTo: BlockHeight) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func findMemos(for rawID: Data) async throws -> [Memo] {
+        fatalError("Unused in test")
+    }
+
+    func findMemos(for transaction: ZcashTransaction.Overview) async throws -> [Memo] {
+        fatalError("Unused in test")
+    }
+
+    func getRecipients(for rawID: Data) async throws -> [TransactionRecipient] {
+        fatalError("Unused in test")
+    }
+
+    func getTransactionOutputs(for rawID: Data) async throws -> [ZcashTransaction.Output] {
+        fatalError("Unused in test")
+    }
+
+    func debugDatabase(sql: String) -> String {
+        fatalError("Unused in test")
+    }
+
+    func find(rawTransaction: Data) async throws -> ZcashTransaction.Overview {
+        receivedRawTransactions.append(rawTransaction)
+        return transaction
+    }
 }
 
 private final class RecordingCompactTxStreamerService: CompactTxStreamerProvider {
