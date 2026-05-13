@@ -31,6 +31,7 @@ actor PendingSubmitPlanStore {
 
     private let persistence: PendingSubmitPlanPersistence?
     private let logger: Logger
+    private let lock = AsyncLock()
 
     private var plansByTransactionId: [String: [StoredEndpoint]] = [:]
     // In-memory cache only. After restart, raw transaction submissions recover
@@ -46,9 +47,85 @@ actor PendingSubmitPlanStore {
         self.logger = logger
     }
 
-    func markAwaitingSubmitPlan(_ transactions: [ZcashTransaction.Overview]) {
-        loadFromPersistenceIfNeeded()
+    func createAndMarkAwaitingSubmitPlan(
+        createTransactions: () async throws -> [ZcashTransaction.Overview]
+    ) async rethrows -> [ZcashTransaction.Overview] {
+        try await lock.withLock {
+            loadFromPersistenceIfNeeded()
+            let transactions = try await createTransactions()
+            markAwaitingSubmitPlanWithoutLock(transactions)
+            return transactions
+        }
+    }
 
+    func addSubmitEndpoint(
+        rawTransaction: Data,
+        endpoint: LightWalletEndpoint
+    ) async {
+        await lock.withLock {
+            loadFromPersistenceIfNeeded()
+
+            guard let transactionId = transactionIdsByRawTransaction[rawTransaction.stablePlanKey] else {
+                return
+            }
+
+            addSubmitEndpoint(transactionId: transactionId, endpoint: endpoint)
+        }
+    }
+
+    func addSubmitEndpoint(
+        transaction: ZcashTransaction.Overview,
+        endpoint: LightWalletEndpoint
+    ) async {
+        await lock.withLock {
+            loadFromPersistenceIfNeeded()
+            if let raw = transaction.raw {
+                transactionIdsByRawTransaction[raw.stablePlanKey] = transaction.rawID.stablePlanKey
+            }
+            addSubmitEndpoint(transactionId: transaction.rawID.stablePlanKey, endpoint: endpoint)
+        }
+    }
+
+    func getSubmitPlan(for transactionId: Data) async -> StoredSubmitPlan? {
+        await lock.withLock {
+            loadFromPersistenceIfNeeded()
+
+            switch plansByTransactionId[transactionId.stablePlanKey] {
+            case nil:
+                return nil
+            case let endpoints? where endpoints.isEmpty:
+                return .awaitingPlan
+            case let endpoints?:
+                return .ready(TransactionSubmitPlan(endpoints: endpoints.map(\.endpoint)))
+            }
+        }
+    }
+
+    func loadTransactionsAndRetainSubmitPlans<T>(
+        loadTransactions: () async throws -> [T],
+        transactionId: (T) -> Data
+    ) async rethrows -> [T] {
+        try await lock.withLock {
+            loadFromPersistenceIfNeeded()
+            let transactions = try await loadTransactions()
+            retainPlansWithoutLock(for: transactions.map(transactionId))
+            return transactions
+        }
+    }
+
+    func clear() async {
+        await lock.withLock {
+            plansByTransactionId.removeAll()
+            transactionIdsByRawTransaction.removeAll()
+            do {
+                try persistence?.clear()
+            } catch {
+                logger.warn("Failed to clear pending submit plans: \(error)")
+            }
+        }
+    }
+
+    private func markAwaitingSubmitPlanWithoutLock(_ transactions: [ZcashTransaction.Overview]) {
         var changed = false
         for transaction in transactions {
             let transactionId = transaction.rawID.stablePlanKey
@@ -66,66 +143,6 @@ actor PendingSubmitPlanStore {
         }
     }
 
-    func addSubmitEndpoint(
-        rawTransaction: Data,
-        endpoint: LightWalletEndpoint
-    ) {
-        loadFromPersistenceIfNeeded()
-
-        guard let transactionId = transactionIdsByRawTransaction[rawTransaction.stablePlanKey] else {
-            return
-        }
-
-        addSubmitEndpoint(transactionId: transactionId, endpoint: endpoint)
-    }
-
-    func addSubmitEndpoint(
-        transaction: ZcashTransaction.Overview,
-        endpoint: LightWalletEndpoint
-    ) {
-        loadFromPersistenceIfNeeded()
-        if let raw = transaction.raw {
-            transactionIdsByRawTransaction[raw.stablePlanKey] = transaction.rawID.stablePlanKey
-        }
-        addSubmitEndpoint(transactionId: transaction.rawID.stablePlanKey, endpoint: endpoint)
-    }
-
-    func getSubmitPlan(for transactionId: Data) -> StoredSubmitPlan? {
-        loadFromPersistenceIfNeeded()
-
-        switch plansByTransactionId[transactionId.stablePlanKey] {
-        case nil:
-            return nil
-        case let endpoints? where endpoints.isEmpty:
-            return .awaitingPlan
-        case let endpoints?:
-            return .ready(TransactionSubmitPlan(endpoints: endpoints.map(\.endpoint)))
-        }
-    }
-
-    func retainPlans(for transactionIds: [Data]) {
-        loadFromPersistenceIfNeeded()
-
-        let retainedTransactionIds = Set(transactionIds.map(\.stablePlanKey))
-        let previousPlanCount = plansByTransactionId.count
-        plansByTransactionId = plansByTransactionId.filter { retainedTransactionIds.contains($0.key) }
-        transactionIdsByRawTransaction = transactionIdsByRawTransaction.filter { retainedTransactionIds.contains($0.value) }
-
-        if plansByTransactionId.count != previousPlanCount {
-            saveToPersistence()
-        }
-    }
-
-    func clear() {
-        plansByTransactionId.removeAll()
-        transactionIdsByRawTransaction.removeAll()
-        do {
-            try persistence?.clear()
-        } catch {
-            logger.warn("Failed to clear pending submit plans: \(error)")
-        }
-    }
-
     private func addSubmitEndpoint(
         transactionId: String,
         endpoint: LightWalletEndpoint
@@ -137,6 +154,17 @@ actor PendingSubmitPlanStore {
         endpoints.append(storedEndpoint)
         plansByTransactionId[transactionId] = endpoints
         saveToPersistence()
+    }
+
+    private func retainPlansWithoutLock(for transactionIds: [Data]) {
+        let retainedTransactionIds = Set(transactionIds.map(\.stablePlanKey))
+        let previousPlanCount = plansByTransactionId.count
+        plansByTransactionId = plansByTransactionId.filter { retainedTransactionIds.contains($0.key) }
+        transactionIdsByRawTransaction = transactionIdsByRawTransaction.filter { retainedTransactionIds.contains($0.value) }
+
+        if plansByTransactionId.count != previousPlanCount {
+            saveToPersistence()
+        }
     }
 
     private func loadFromPersistenceIfNeeded() {
@@ -219,6 +247,49 @@ private struct StoredEndpoint: Codable, Equatable {
 
 private extension Data {
     var stablePlanKey: String { hexEncodedString() }
+}
+
+private final class AsyncLock {
+    private let state = State()
+
+    func withLock<T>(_ operation: () async throws -> T) async rethrows -> T {
+        await state.acquire()
+        do {
+            let result = try await operation()
+            await state.release()
+            return result
+        } catch {
+            await state.release()
+            throw error
+        }
+    }
+
+    private actor State {
+        private var isLocked = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func acquire() async {
+            if !isLocked {
+                isLocked = true
+                return
+            }
+
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+
+        func release() {
+            precondition(isLocked, "Attempted to release an unlocked AsyncLock.")
+            guard !waiters.isEmpty else {
+                isLocked = false
+                return
+            }
+
+            let continuation = waiters.removeFirst()
+            continuation.resume()
+        }
+    }
 }
 
 struct KeychainSubmitPlanPersistence: PendingSubmitPlanPersistence {

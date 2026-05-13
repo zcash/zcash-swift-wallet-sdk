@@ -12,7 +12,7 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
         let transaction = makeTransaction(rawID: Data(repeating: 0xAB, count: 32))
         let store = PendingSubmitPlanStore(logger: NullLogger())
 
-        await store.markAwaitingSubmitPlan([transaction])
+        await markAwaiting([transaction], in: store)
 
         switch await store.getSubmitPlan(for: transaction.rawID) {
         case .awaitingPlan:
@@ -28,7 +28,7 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
         let endpoint = LightWalletEndpointBuilder.default
         let firstStore = PendingSubmitPlanStore(persistence: persistence, logger: NullLogger())
 
-        await firstStore.markAwaitingSubmitPlan([transaction])
+        await markAwaiting([transaction], in: firstStore)
         await firstStore.addSubmitEndpoint(transaction: transaction, endpoint: endpoint)
 
         let secondStore = PendingSubmitPlanStore(persistence: persistence, logger: NullLogger())
@@ -73,7 +73,7 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
         let secondEndpoint = LightWalletEndpoint(address: "b.z.cash", port: 443, secure: true)
         let store = PendingSubmitPlanStore(logger: NullLogger())
 
-        await store.markAwaitingSubmitPlan([transaction])
+        await markAwaiting([transaction], in: store)
         await store.addSubmitEndpoint(transaction: transaction, endpoint: firstEndpoint)
         await store.addSubmitEndpoint(transaction: transaction, endpoint: secondEndpoint)
 
@@ -93,7 +93,7 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
         let endpoint = LightWalletEndpoint(address: "submit.z.cash", port: 443, secure: true)
         let store = PendingSubmitPlanStore(logger: NullLogger())
 
-        await store.markAwaitingSubmitPlan([transaction])
+        await markAwaiting([transaction], in: store)
         await store.addSubmitEndpoint(rawTransaction: rawTransaction, endpoint: endpoint)
 
         switch await store.getSubmitPlan(for: transaction.rawID) {
@@ -118,10 +118,10 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
         )
         let store = PendingSubmitPlanStore(persistence: persistence, logger: NullLogger())
 
-        await store.markAwaitingSubmitPlan([retainedTransaction, prunedTransaction])
+        await markAwaiting([retainedTransaction, prunedTransaction], in: store)
         await store.addSubmitEndpoint(transaction: retainedTransaction, endpoint: LightWalletEndpointBuilder.default)
         await store.addSubmitEndpoint(transaction: prunedTransaction, endpoint: LightWalletEndpointBuilder.eccTestnet)
-        await store.retainPlans(for: [retainedTransaction.rawID])
+        await loadAndRetain([retainedTransaction], in: store)
         await store.addSubmitEndpoint(rawTransaction: prunedRawTransaction, endpoint: LightWalletEndpointBuilder.eccTestnet)
 
         let reloadedStore = PendingSubmitPlanStore(persistence: persistence, logger: NullLogger())
@@ -152,7 +152,7 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
         }
         mockContainer.mock(type: Logger.self, isSingleton: true) { _ in NullLogger() }
 
-        await store.markAwaitingSubmitPlan([awaitingTransaction])
+        await markAwaiting([awaitingTransaction], in: store)
 
         let action = TxResubmissionAction(container: mockContainer)
         action.latestResolvedTime = 0
@@ -180,7 +180,7 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
         }
         mockContainer.mock(type: Logger.self, isSingleton: true) { _ in NullLogger() }
 
-        await store.markAwaitingSubmitPlan([transaction])
+        await markAwaiting([transaction], in: store)
         await store.addSubmitEndpoint(transaction: transaction, endpoint: endpoint)
 
         let action = TxResubmissionAction(container: mockContainer)
@@ -192,6 +192,53 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
         assertEndpoint(try XCTUnwrap(submitter.submissions.first?.endpoint), equals: endpoint)
     }
 
+    func testTxResubmissionDoesNotPrunePlanCreatedAfterCandidateLookup() async throws {
+        let createdTransaction = makeTransaction(rawID: Data(repeating: 0xAB, count: 32))
+        let transactionRepository = TransactionRepositoryMock()
+        let transactionEncoder = RecordingTransactionEncoder()
+        let store = PendingSubmitPlanStore(logger: NullLogger())
+        let submitter = RecordingTransactionSubmitter()
+        let createCompleted = AsyncFlag()
+        var createTask: Task<Void, Never>?
+
+        transactionRepository.findForResubmissionUpToClosure = { _ in
+            createTask = Task {
+                await self.markAwaiting([createdTransaction], in: store)
+                await createCompleted.set()
+            }
+
+            try await Task.sleep(nanoseconds: 20_000_000)
+            let didCreateComplete = await createCompleted.get()
+            XCTAssertFalse(didCreateComplete)
+            return []
+        }
+
+        mockContainer.mock(type: TransactionRepository.self, isSingleton: true) { _ in transactionRepository }
+        mockContainer.mock(type: TransactionEncoder.self, isSingleton: true) { _ in transactionEncoder }
+        mockContainer.mock(type: PendingSubmitPlanStore.self, isSingleton: true) { _ in store }
+        mockContainer.mock(type: SubmitPlanExecutor.self, isSingleton: true) { _ in
+            SubmitPlanExecutor(transactionSubmitter: submitter)
+        }
+        mockContainer.mock(type: Logger.self, isSingleton: true) { _ in NullLogger() }
+
+        let action = TxResubmissionAction(container: mockContainer)
+        action.latestResolvedTime = 0
+        _ = try await action.run(with: resubmissionContext()) { _ in }
+
+        guard let createTask else {
+            XCTFail("Expected test to start concurrent transaction creation.")
+            return
+        }
+        await createTask.value
+
+        switch await store.getSubmitPlan(for: createdTransaction.rawID) {
+        case .awaitingPlan:
+            break
+        default:
+            XCTFail("Expected concurrent broadcaster transaction plan to survive pruning.")
+        }
+    }
+
     private func resubmissionContext() -> ActionContextMock {
         let context = ActionContextMock.default()
         context.underlyingSyncControlData = SyncControlData(
@@ -200,6 +247,25 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
             firstUnenhancedHeight: nil
         )
         return context
+    }
+
+    @discardableResult
+    private func markAwaiting(
+        _ transactions: [ZcashTransaction.Overview],
+        in store: PendingSubmitPlanStore
+    ) async -> [ZcashTransaction.Overview] {
+        await store.createAndMarkAwaitingSubmitPlan { transactions }
+    }
+
+    @discardableResult
+    private func loadAndRetain(
+        _ transactions: [ZcashTransaction.Overview],
+        in store: PendingSubmitPlanStore
+    ) async -> [ZcashTransaction.Overview] {
+        await store.loadTransactionsAndRetainSubmitPlans(
+            loadTransactions: { transactions },
+            transactionId: { $0.rawID }
+        )
     }
 
     private func makeTransaction(
@@ -333,5 +399,17 @@ private final class RecordingTransactionSubmitter: TransactionSubmitter {
         to endpoint: LightWalletEndpoint
     ) async throws {
         submissions.append(Submission(transaction: transaction, endpoint: endpoint))
+    }
+}
+
+private actor AsyncFlag {
+    private var value = false
+
+    func set() {
+        value = true
+    }
+
+    func get() -> Bool {
+        value
     }
 }

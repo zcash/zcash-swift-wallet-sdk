@@ -37,8 +37,12 @@ extension TxResubmissionAction: Action {
         // find all candidates for the resubmission
         do {
             logger.info("TxResubmissionAction check started at \(latestBlockHeight) height.")
-            let transactions = try await transactionRepository.findForResubmission(upTo: latestBlockHeight)
-            await pendingSubmitPlanStore.retainPlans(for: transactions.map(\.rawID))
+            let transactions = try await pendingSubmitPlanStore.loadTransactionsAndRetainSubmitPlans(
+                loadTransactions: {
+                    try await transactionRepository.findForResubmission(upTo: latestBlockHeight)
+                },
+                transactionId: { $0.rawID }
+            )
 
             // no candidates, update the time and continue with the next action
             if transactions.isEmpty {

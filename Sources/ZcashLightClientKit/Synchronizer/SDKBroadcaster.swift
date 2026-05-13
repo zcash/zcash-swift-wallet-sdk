@@ -52,12 +52,12 @@ class SDKBroadcaster: Broadcaster {
             logger: logger
         )
 
-        let transactions = try await transactionEncoder.createProposedTransactions(
-            proposal: proposal,
-            spendingKey: spendingKey
-        )
-
-        await pendingSubmitPlanStore.markAwaitingSubmitPlan(transactions)
+        let transactions = try await pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
+            try await transactionEncoder.createProposedTransactions(
+                proposal: proposal,
+                spendingKey: spendingKey
+            )
+        }
         sendFoundTransactionsEvent(transactions)
 
         return transactions
@@ -89,13 +89,14 @@ class SDKBroadcaster: Broadcaster {
             logger: logger
         )
 
-        let txId = try await initializer.rustBackend.extractAndStoreTxFromPCZT(
-            pcztWithProofs: pcztWithProofs,
-            pcztWithSigs: pcztWithSigs
-        )
+        let transactions = try await pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan {
+            let txId = try await initializer.rustBackend.extractAndStoreTxFromPCZT(
+                pcztWithProofs: pcztWithProofs,
+                pcztWithSigs: pcztWithSigs
+            )
 
-        let transactions = try await transactionEncoder.fetchTransactionsForTxIds([txId])
-        await pendingSubmitPlanStore.markAwaitingSubmitPlan(transactions)
+            return try await transactionEncoder.fetchTransactionsForTxIds([txId])
+        }
         sendFoundTransactionsEvent(transactions)
 
         return transactions
