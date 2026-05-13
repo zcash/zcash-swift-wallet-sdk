@@ -57,7 +57,7 @@ fn validate_cached_tree_state_for_round(
 // VotingDatabase methods — Delegation proof
 // =============================================================================
 
-/// Generate a voting hotkey for a round.
+/// Generate a voting hotkey.
 ///
 /// Returns a pointer to `FfiVotingHotkey` on success, or null on error.
 /// Call `zcashlc_voting_free_hotkey` to free the returned pointer.
@@ -68,8 +68,6 @@ fn validate_cached_tree_state_for_round(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_generate_hotkey(
     db: *mut VotingDatabaseHandle,
-    round_id: *const u8,
-    round_id_len: usize,
     seed: *const u8,
     seed_len: usize,
 ) -> *mut FfiVotingHotkey {
@@ -77,12 +75,11 @@ pub unsafe extern "C" fn zcashlc_voting_generate_hotkey(
     let res = catch_panic(|| {
         let handle =
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
-        let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
         let seed_bytes = unsafe { bytes_from_ptr(seed, seed_len) }?;
 
         let hotkey = handle
             .db
-            .generate_hotkey(&round_id_str, seed_bytes)
+            .generate_hotkey(seed_bytes)
             .map_err(|e| anyhow!("generate_hotkey failed: {}", e))?;
 
         Ok(Box::into_raw(Box::new(voting_hotkey_to_ffi(hotkey)?)))
@@ -1121,13 +1118,7 @@ mod tests {
 
         assert!(
             unsafe {
-                zcashlc_voting_generate_hotkey(
-                    std::ptr::null_mut(),
-                    round.as_ptr(),
-                    round.len(),
-                    bytes.as_ptr(),
-                    bytes.len(),
-                )
+                zcashlc_voting_generate_hotkey(std::ptr::null_mut(), bytes.as_ptr(), bytes.len())
             }
             .is_null()
         );
@@ -1254,17 +1245,8 @@ mod tests {
     fn generate_hotkey_returns_freeable_ffi_value() {
         let db = open_memory_voting_db();
         let seed = [7u8; 32];
-        let round = TEST_ROUND_ID.as_bytes();
 
-        let hotkey = unsafe {
-            zcashlc_voting_generate_hotkey(
-                db,
-                round.as_ptr(),
-                round.len(),
-                seed.as_ptr(),
-                seed.len(),
-            )
-        };
+        let hotkey = unsafe { zcashlc_voting_generate_hotkey(db, seed.as_ptr(), seed.len()) };
 
         assert!(!hotkey.is_null());
         let hotkey_ref = unsafe { hotkey.as_ref() }.expect("hotkey");
@@ -1284,17 +1266,8 @@ mod tests {
     fn generate_hotkey_rejects_short_seed() {
         let db = open_memory_voting_db();
         let seed = [7u8; 31];
-        let round = TEST_ROUND_ID.as_bytes();
 
-        let hotkey = unsafe {
-            zcashlc_voting_generate_hotkey(
-                db,
-                round.as_ptr(),
-                round.len(),
-                seed.as_ptr(),
-                seed.len(),
-            )
-        };
+        let hotkey = unsafe { zcashlc_voting_generate_hotkey(db, seed.as_ptr(), seed.len()) };
 
         assert!(hotkey.is_null());
         unsafe { zcashlc_voting_db_free(db) };

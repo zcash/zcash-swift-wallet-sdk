@@ -84,7 +84,7 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 xz2 = { version = "0.1", features = ["static"] }
 
 # Voting
-zcash_voting = { version = "0.6.0", default-features = false, features = [
+zcash_voting = { version = "0.7.0", default-features = false, features = [
     "client-pir",
     "client-tree-sync",
 ] }
@@ -92,7 +92,7 @@ zcash_keys = { version = "0.13", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
 
 [dev-dependencies]
-zcash_voting = { version = "0.6.0", default-features = false, features = ["test-fixtures"] }
+zcash_voting = { version = "0.7.0", default-features = false, features = ["test-fixtures"] }
 
 [build-dependencies]
 bindgen = "0.72"

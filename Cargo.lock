@@ -7149,9 +7149,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_voting"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0a85b72657ecf9f7f2fdbca47ac108284568b67b16511100dfd5095f266a923"
+checksum = "eb4c54bb4850795760612921fa2ac0a1b5e90f5af756d3f433b3990b916d8cfe"
 dependencies = [
  "anyhow",
  "blake2b_simd",

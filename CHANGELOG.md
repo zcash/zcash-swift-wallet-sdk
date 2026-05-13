@@ -7,8 +7,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 # Unreleased
 
 ## Changed
-- Bumped `zcash_voting` to `0.6.0` for paginated vote commitment tree sync
-  responses with per-block roots. No public Swift API changes.
+- Bumped `zcash_voting` to `0.7.0` for required voting input validation and paginated vote commitment tree sync
+  responses with per-block roots. Updated hotkey generation APIs to drop the unused round ID.
 
 # 2.5.0 - 2026-05-11
 
@@ -72,7 +72,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `addSentServers(roundId:bundleIndex:proposalId:shareIndex:newURLs:)` → `zcashlc_voting_add_sent_servers`
 
   Delegation workflow
-  - `generateHotkey(roundId:seed:)` → `zcashlc_voting_generate_hotkey` (frees `FfiVotingHotkey` via `zcashlc_voting_free_hotkey`)
+  - `generateHotkey(seed:)` → `zcashlc_voting_generate_hotkey` (frees `FfiVotingHotkey` via `zcashlc_voting_free_hotkey`)
   - `setupBundles(roundId:notes:)` → `zcashlc_voting_setup_bundles` (frees `FfiBundleSetupResult` via `zcashlc_voting_free_bundle_setup_result`)
   - `getBundleCount(roundId:)` → `zcashlc_voting_get_bundle_count`
   - `buildPczt(_:)` → `zcashlc_voting_build_pczt` (takes `VotingBuildPcztParams`)

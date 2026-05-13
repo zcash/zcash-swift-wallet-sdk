@@ -1390,25 +1390,19 @@ extension VotingRustBackend {
 // MARK: - Delegation workflow
 
 extension VotingRustBackend {
-    /// Generate a voting hotkey for a round.
+    /// Generate a voting hotkey.
     ///
     /// The returned secret key is owned by Swift after this call. The Rust
     /// allocation is freed before this method returns; callers should treat
     /// the secret bytes with the same care as any other key material.
-    public func generateHotkey(roundId: String, seed: [UInt8]) throws -> VotingHotkey {
-        let roundIdBytes = [UInt8](roundId.utf8)
-
+    public func generateHotkey(seed: [UInt8]) throws -> VotingHotkey {
         let ptr: UnsafeMutablePointer<FfiVotingHotkey> = try withHandle { dbh in
-            let ptr: UnsafeMutablePointer<FfiVotingHotkey>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
-                seed.withUnsafeBufferPointer { seedBuf in
-                    zcashlc_voting_generate_hotkey(
-                        dbh,
-                        ridBuf.baseAddress,
-                        UInt(ridBuf.count),
-                        seedBuf.baseAddress,
-                        UInt(seedBuf.count)
-                    )
-                }
+            let ptr: UnsafeMutablePointer<FfiVotingHotkey>? = seed.withUnsafeBufferPointer { seedBuf in
+                zcashlc_voting_generate_hotkey(
+                    dbh,
+                    seedBuf.baseAddress,
+                    UInt(seedBuf.count)
+                )
             }
             guard let ptr else {
                 throw VotingRustBackendError.rustError(
