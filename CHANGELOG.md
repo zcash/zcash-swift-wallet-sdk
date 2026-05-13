@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Changed
+- `Broadcaster` transactions now remain eligible for SDK automatic retry after submission. The SDK records the submitted endpoints privately and retries with those endpoints instead of the synchronizer's default endpoint.
+
 # 2.5.0 - 2026-05-11
 
 ## Added

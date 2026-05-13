@@ -15,11 +15,15 @@ final class TxResubmissionAction {
     var latestResolvedTime: TimeInterval = 0
     let transactionRepository: TransactionRepository
     var transactionEncoder: TransactionEncoder
+    let pendingSubmitPlanStore: PendingSubmitPlanStore
+    let submitPlanExecutor: SubmitPlanExecutor
     let logger: Logger
 
     init(container: DIContainer) {
         transactionRepository = container.resolve(TransactionRepository.self)
         transactionEncoder = container.resolve(TransactionEncoder.self)
+        pendingSubmitPlanStore = container.resolve(PendingSubmitPlanStore.self)
+        submitPlanExecutor = container.resolve(SubmitPlanExecutor.self)
         logger = container.resolve(Logger.self)
     }
 }
@@ -33,7 +37,12 @@ extension TxResubmissionAction: Action {
         // find all candidates for the resubmission
         do {
             logger.info("TxResubmissionAction check started at \(latestBlockHeight) height.")
-            let transactions = try await transactionRepository.findForResubmission(upTo: latestBlockHeight)
+            let transactions = try await pendingSubmitPlanStore.loadTransactionsAndRetainSubmitPlans(
+                loadTransactions: {
+                    try await transactionRepository.findForResubmission(upTo: latestBlockHeight)
+                },
+                transactionId: { $0.rawID }
+            )
 
             // no candidates, update the time and continue with the next action
             if transactions.isEmpty {
@@ -47,10 +56,29 @@ extension TxResubmissionAction: Action {
                     // resubmission
                     do {
                         for transaction in transactions {
+                            let submitPlan = await pendingSubmitPlanStore.getSubmitPlan(for: transaction.rawID)
+                            if case .awaitingPlan = submitPlan {
+                                logger.info(
+                                    "TxResubmissionAction skipping transaction \(transaction.rawID.toHexStringTxId()) " +
+                                    "until a submit plan is registered."
+                                )
+                                continue
+                            }
+
                             logger.info("TxResubmissionAction trying to resubmit transaction \(transaction.rawID.toHexStringTxId()).")
                             let encodedTransaction = try transaction.encodedTransaction()
                             
-                            try await transactionEncoder.submit(transaction: encodedTransaction)
+                            switch submitPlan {
+                            case .none:
+                                try await transactionEncoder.submit(transaction: encodedTransaction)
+                            case .ready(let plan):
+                                try await submitPlanExecutor.submit(
+                                    transaction: encodedTransaction,
+                                    submitPlan: plan
+                                )
+                            case .awaitingPlan:
+                                break
+                            }
                         }
                     } catch {
                         logger.error("TxResubmissionAction failed to resubmit candidates.")

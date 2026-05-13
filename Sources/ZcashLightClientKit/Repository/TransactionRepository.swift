@@ -29,3 +29,7 @@ protocol TransactionRepository {
     func getTransactionOutputs(for rawID: Data) async throws -> [ZcashTransaction.Output]
     func debugDatabase(sql: String) -> String
 }
+
+protocol RawTransactionLookup {
+    func find(rawTransaction: Data) async throws -> ZcashTransaction.Overview
+}

@@ -30,7 +30,11 @@ final class BroadcasterTests: ZcashTestCase {
         let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
         let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: Data(repeating: 0xAB, count: 32))]
         let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
-        let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
+        let pendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger())
+        let synchronizer = try makeSynchronizer(
+            transactionEncoder: transactionEncoder,
+            pendingSubmitPlanStore: pendingSubmitPlanStore
+        )
 
         let foundTransactionsExpectation = XCTestExpectation(description: "found transactions event")
 
@@ -57,8 +61,65 @@ final class BroadcasterTests: ZcashTestCase {
         XCTAssertEqual(transactionEncoder.receivedCreateArguments?.spendingKey, spendingKey)
         XCTAssertEqual(transactions.map(\.rawID), createdTransactions.map(\.rawID))
         XCTAssertEqual(try transactions.map { try XCTUnwrap($0.raw) }, [rawTransaction])
+        switch await pendingSubmitPlanStore.getSubmitPlan(for: createdTransactions[0].rawID) {
+        case .awaitingPlan:
+            break
+        default:
+            XCTFail("Expected created broadcaster transaction to wait for a submit plan.")
+        }
 
         await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
+    }
+
+    func testCreateProposedTransactionsMarksPendingPlanBeforeStoreReadsProceed() async throws {
+        let rawID = Data(repeating: 0xAB, count: 32)
+        let createdTransactions = [makeTransaction(raw: Data([0x01, 0x02]), rawID: rawID)]
+        let createStarted = AsyncSignal()
+        let allowCreateToReturn = AsyncSignal()
+        let retainCompleted = AsyncFlag()
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions) {
+            await createStarted.signal()
+            await allowCreateToReturn.wait()
+        }
+        let pendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger())
+        let synchronizer = try makeSynchronizer(
+            transactionEncoder: transactionEncoder,
+            pendingSubmitPlanStore: pendingSubmitPlanStore
+        )
+
+        await synchronizer.updateStatus(.stopped)
+
+        let createTask = Task {
+            try await synchronizer.broadcaster.createProposedTransactions(
+                proposal: Proposal.testOnlyFakeProposal(totalFee: 10),
+                spendingKey: TestsData(networkType: .testnet).spendingKey
+            )
+        }
+        await createStarted.wait()
+
+        let retainTask = Task {
+            _ = await pendingSubmitPlanStore.loadTransactionsAndRetainSubmitPlans(
+                loadTransactions: { createdTransactions },
+                transactionId: { $0.rawID }
+            )
+            await retainCompleted.set()
+        }
+
+        try await Task.sleep(nanoseconds: 20_000_000)
+        let didRetainComplete = await retainCompleted.get()
+        XCTAssertFalse(didRetainComplete)
+
+        await allowCreateToReturn.signal()
+
+        let transactions = try await createTask.value
+        await retainTask.value
+        XCTAssertEqual(transactions.map(\.rawID), [rawID])
+        switch await pendingSubmitPlanStore.getSubmitPlan(for: rawID) {
+        case .awaitingPlan:
+            break
+        default:
+            XCTFail("Expected created broadcaster transaction to wait for a submit plan.")
+        }
     }
 
     // MARK: - submit
@@ -86,9 +147,13 @@ final class BroadcasterTests: ZcashTestCase {
         let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
         let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: Data(repeating: 0xAB, count: 32))]
         let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
+        let pendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger())
         let service = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: 0, errorMessage: ""))
         defer { try? service.stop() }
-        let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
+        let synchronizer = try makeSynchronizer(
+            transactionEncoder: transactionEncoder,
+            pendingSubmitPlanStore: pendingSubmitPlanStore
+        )
 
         await synchronizer.updateStatus(.stopped)
 
@@ -108,6 +173,48 @@ final class BroadcasterTests: ZcashTestCase {
         try await synchronizer.broadcaster.submit(raw, to: service.endpoint)
 
         XCTAssertEqual(service.recordedTransactions(), [rawTransaction])
+        switch await pendingSubmitPlanStore.getSubmitPlan(for: createdTransactions[0].rawID) {
+        case .ready(let plan):
+            XCTAssertEqual(plan.endpoints.count, 1)
+            XCTAssertEqual(plan.endpoints[0].host, service.endpoint.host)
+            XCTAssertEqual(plan.endpoints[0].port, service.endpoint.port)
+            XCTAssertEqual(plan.endpoints[0].secure, service.endpoint.secure)
+        default:
+            XCTFail("Expected submit endpoint to be registered for retry.")
+        }
+    }
+
+    func testSubmitUsesRawTransactionLookupWhenRawMappingIsNotInMemory() async throws {
+        let rawID = Data(repeating: 0xAB, count: 32)
+        let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
+        let pendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger())
+        let storedTransaction = makeTransaction(raw: nil, rawID: rawID)
+        let lookupTransaction = makeTransaction(raw: rawTransaction, rawID: rawID)
+        let transactionRepository = LookupTransactionRepository(transaction: lookupTransaction)
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: [])
+        let service = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: 0, errorMessage: ""))
+        defer { try? service.stop() }
+        let synchronizer = try makeSynchronizer(
+            transactionEncoder: transactionEncoder,
+            pendingSubmitPlanStore: pendingSubmitPlanStore,
+            transactionRepository: transactionRepository
+        )
+
+        _ = await pendingSubmitPlanStore.createAndMarkAwaitingSubmitPlan { [storedTransaction] }
+
+        try await synchronizer.broadcaster.submit(rawTransaction, to: service.endpoint)
+
+        XCTAssertEqual(transactionRepository.receivedRawTransactions, [rawTransaction])
+        XCTAssertEqual(service.recordedTransactions(), [rawTransaction])
+        switch await pendingSubmitPlanStore.getSubmitPlan(for: rawID) {
+        case .ready(let plan):
+            XCTAssertEqual(plan.endpoints.count, 1)
+            XCTAssertEqual(plan.endpoints[0].host, service.endpoint.host)
+            XCTAssertEqual(plan.endpoints[0].port, service.endpoint.port)
+            XCTAssertEqual(plan.endpoints[0].secure, service.endpoint.secure)
+        default:
+            XCTFail("Expected raw lookup path to register the endpoint for retry.")
+        }
     }
 
     func testBroadcasterThrowsWhenNotPrepared() async throws {
@@ -264,16 +371,18 @@ final class BroadcasterTests: ZcashTestCase {
 
     private func makeSynchronizer(
         transactionEncoder: TransactionEncoder,
-        rustBackend: ZcashRustBackendWelding? = nil
+        rustBackend: ZcashRustBackendWelding? = nil,
+        pendingSubmitPlanStore: PendingSubmitPlanStore = PendingSubmitPlanStore(logger: NullLogger()),
+        transactionRepository: TransactionRepository = TransactionRepositoryMock()
     ) throws -> SDKSynchronizer {
         let serviceMock = LightWalletServiceMock()
-        let transactionRepository = TransactionRepositoryMock()
 
         if let rustBackend {
             mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in rustBackend }
         }
         mockContainer.mock(type: LightWalletService.self, isSingleton: true) { _ in serviceMock }
         mockContainer.mock(type: TransactionRepository.self, isSingleton: true) { _ in transactionRepository }
+        mockContainer.mock(type: PendingSubmitPlanStore.self, isSingleton: true) { _ in pendingSubmitPlanStore }
 
         let initializer = Initializer(
             container: mockContainer,
@@ -306,7 +415,7 @@ final class BroadcasterTests: ZcashTestCase {
         )
     }
 
-    private func makeTransaction(raw: Data, rawID: Data) -> ZcashTransaction.Overview {
+    private func makeTransaction(raw: Data?, rawID: Data) -> ZcashTransaction.Overview {
         ZcashTransaction.Overview(
             accountUUID: TestsData.mockedAccountUUID,
             blockTime: nil,
@@ -367,12 +476,17 @@ final class BroadcasterTests: ZcashTestCase {
 
 private final class StubTransactionEncoder: TransactionEncoder {
     private let createdTransactions: [ZcashTransaction.Overview]
+    private let beforeReturningCreatedTransactions: () async -> Void
     private(set) var receivedCreateArguments: (proposal: Proposal, spendingKey: UnifiedSpendingKey)?
     private(set) var receivedFetchTxIds: [Data]?
     private(set) var submittedTransactions: [EncodedTransaction] = []
 
-    init(createdTransactions: [ZcashTransaction.Overview]) {
+    init(
+        createdTransactions: [ZcashTransaction.Overview],
+        beforeReturningCreatedTransactions: @escaping () async -> Void = {}
+    ) {
         self.createdTransactions = createdTransactions
+        self.beforeReturningCreatedTransactions = beforeReturningCreatedTransactions
     }
 
     func proposeTransfer(
@@ -398,6 +512,7 @@ private final class StubTransactionEncoder: TransactionEncoder {
         spendingKey: UnifiedSpendingKey
     ) async throws -> [ZcashTransaction.Overview] {
         receivedCreateArguments = (proposal, spendingKey)
+        await beforeReturningCreatedTransactions()
         return createdTransactions
     }
 
@@ -420,6 +535,117 @@ private final class StubTransactionEncoder: TransactionEncoder {
     }
 
     func closeDBConnection() { }
+}
+
+private final class LookupTransactionRepository: TransactionRepository, RawTransactionLookup {
+    private let transaction: ZcashTransaction.Overview
+    private(set) var receivedRawTransactions: [Data] = []
+
+    init(transaction: ZcashTransaction.Overview) {
+        self.transaction = transaction
+    }
+
+    func closeDBConnection() { }
+
+    func countAll() async throws -> Int { fatalError("Unused in test") }
+
+    func countUnmined() async throws -> Int { fatalError("Unused in test") }
+
+    func isInitialized() async throws -> Bool { fatalError("Unused in test") }
+
+    func fetchTxidsWithMemoContaining(searchTerm: String) async throws -> [Data] {
+        fatalError("Unused in test")
+    }
+
+    func find(rawID: Data) async throws -> ZcashTransaction.Overview {
+        fatalError("Unused in test")
+    }
+
+    func find(offset: Int, limit: Int, kind: TransactionKind) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func find(in range: CompactBlockRange, limit: Int, kind: TransactionKind) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func find(from: ZcashTransaction.Overview, limit: Int, kind: TransactionKind) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func findPendingTransactions(latestHeight: BlockHeight, offset: Int, limit: Int) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func findReceived(offset: Int, limit: Int) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func findSent(offset: Int, limit: Int) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func findForResubmission(upTo: BlockHeight) async throws -> [ZcashTransaction.Overview] {
+        fatalError("Unused in test")
+    }
+
+    func findMemos(for rawID: Data) async throws -> [Memo] {
+        fatalError("Unused in test")
+    }
+
+    func findMemos(for transaction: ZcashTransaction.Overview) async throws -> [Memo] {
+        fatalError("Unused in test")
+    }
+
+    func getRecipients(for rawID: Data) async throws -> [TransactionRecipient] {
+        fatalError("Unused in test")
+    }
+
+    func getTransactionOutputs(for rawID: Data) async throws -> [ZcashTransaction.Output] {
+        fatalError("Unused in test")
+    }
+
+    func debugDatabase(sql: String) -> String {
+        fatalError("Unused in test")
+    }
+
+    func find(rawTransaction: Data) async throws -> ZcashTransaction.Overview {
+        receivedRawTransactions.append(rawTransaction)
+        return transaction
+    }
+}
+
+private actor AsyncSignal {
+    private var isSignaled = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func signal() {
+        isSignaled = true
+        continuation?.resume()
+        continuation = nil
+    }
+
+    func wait() async {
+        if isSignaled {
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+}
+
+private actor AsyncFlag {
+    private var value = false
+
+    func set() {
+        value = true
+    }
+
+    func get() -> Bool {
+        value
+    }
 }
 
 private final class RecordingCompactTxStreamerService: CompactTxStreamerProvider {

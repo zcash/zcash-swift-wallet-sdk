@@ -49,13 +49,14 @@ public class SDKSynchronizer: Synchronizer {
     public let network: ZcashNetwork
     private var transactionEncoder: TransactionEncoder
     private let transactionRepository: TransactionRepository
+    private let pendingSubmitPlanStore: PendingSubmitPlanStore
 
     private let syncSessionIDGenerator: SyncSessionIDGenerator
     private let syncSession: SyncSession
     private let syncSessionTicker: SessionTicker
     var latestBlocksDataProvider: LatestBlocksDataProvider
 
-    private var broadcasterStorage: Broadcaster?
+    private var broadcasterStorage: SDKBroadcaster?
     public var broadcaster: Broadcaster {
         guard let broadcaster = broadcasterStorage else {
             preconditionFailure("Broadcaster accessed before initialization")
@@ -101,13 +102,16 @@ public class SDKSynchronizer: Synchronizer {
         self.syncSessionTicker = syncSessionTicker
         self.latestBlocksDataProvider = initializer.container.resolve(LatestBlocksDataProvider.self)
         self.sdkFlags = initializer.container.resolve(SDKFlags.self)
+        self.pendingSubmitPlanStore = initializer.container.resolve(PendingSubmitPlanStore.self)
 
         self.broadcasterStorage = SDKBroadcaster(
             transactionEncoder: transactionEncoder,
             initializer: initializer,
-            sdkFlags: sdkFlags,
             logger: logger,
             eventSubject: eventSubject,
+            pendingSubmitPlanStore: pendingSubmitPlanStore,
+            transactionSubmitter: initializer.container.resolve(TransactionSubmitter.self),
+            rawTransactionLookup: transactionRepository as? RawTransactionLookup,
             statusCheck: { [weak self] in
                 guard let self else {
                     throw ZcashError.synchronizerNotPrepared
@@ -460,7 +464,7 @@ public class SDKSynchronizer: Synchronizer {
         proposal: Proposal,
         spendingKey: UnifiedSpendingKey
     ) async throws -> AsyncThrowingStream<TransactionSubmitResult, Error> {
-        let transactions = try await broadcaster.createProposedTransactions(
+        let transactions = try await sdkBroadcaster().createProposedTransactionsForLegacySubmit(
             proposal: proposal,
             spendingKey: spendingKey
         )
@@ -532,7 +536,7 @@ public class SDKSynchronizer: Synchronizer {
     }
     
     public func createTransactionFromPCZT(pcztWithProofs: Pczt, pcztWithSigs: Pczt) async throws -> AsyncThrowingStream<TransactionSubmitResult, Error> {
-        let transactions = try await broadcaster.createTransactionFromPCZT(
+        let transactions = try await sdkBroadcaster().createTransactionFromPCZTForLegacySubmit(
             pcztWithProofs: pcztWithProofs,
             pcztWithSigs: pcztWithSigs
         )
@@ -760,6 +764,9 @@ public class SDKSynchronizer: Synchronizer {
                     self?.transactionRepository.closeDBConnection()
                 },
                 completion: { [weak self] possibleError in
+                    if possibleError == nil {
+                        await self?.pendingSubmitPlanStore.clear()
+                    }
                     await self?.updateStatus(.unprepared)
                     if let error = possibleError {
                         subject.send(completion: .failure(error))
@@ -781,6 +788,13 @@ public class SDKSynchronizer: Synchronizer {
 
     public func isSeedRelevantToAnyDerivedAccount(seed: [UInt8]) async throws -> Bool {
         try await initializer.rustBackend.isSeedRelevantToAnyDerivedAccount(seed: seed)
+    }
+
+    private func sdkBroadcaster() -> SDKBroadcaster {
+        guard let broadcaster = broadcasterStorage else {
+            preconditionFailure("Broadcaster accessed before initialization")
+        }
+        return broadcaster
     }
 
     /// Takes the list of endpoints and runs it through a series of checks to evaluate its performance.

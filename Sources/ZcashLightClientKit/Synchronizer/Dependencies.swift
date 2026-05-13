@@ -92,6 +92,17 @@ enum Dependencies {
             TorClient(torDir: urls.torDirURL)
         }
 
+        container.register(type: PendingSubmitPlanStore.self, isSingleton: true) { di in
+            let logger = di.resolve(Logger.self)
+            return PendingSubmitPlanStore(
+                persistence: KeychainSubmitPlanPersistence(
+                    alias: alias,
+                    networkType: networkType
+                ),
+                logger: logger
+            )
+        }
+
         container.register(type: LightWalletService.self, isSingleton: true) { di in
             let torClient = di.resolve(TorClient.self)
             
@@ -147,6 +158,17 @@ enum Dependencies {
         
         container.register(type: ZcashFileManager.self, isSingleton: true) { _ in
             FileManager.default
+        }
+
+        container.register(type: TransactionSubmitter.self, isSingleton: true) { di in
+            EndpointTransactionSubmitter(
+                torClient: di.resolve(TorClient.self),
+                sdkFlags: di.resolve(SDKFlags.self)
+            )
+        }
+
+        container.register(type: SubmitPlanExecutor.self, isSingleton: true) { di in
+            SubmitPlanExecutor(transactionSubmitter: di.resolve(TransactionSubmitter.self))
         }
         
         container.register(type: TransactionEncoder.self, isSingleton: true) { di in
