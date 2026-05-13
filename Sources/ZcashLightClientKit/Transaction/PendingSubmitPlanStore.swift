@@ -33,6 +33,8 @@ actor PendingSubmitPlanStore {
     private let logger: Logger
 
     private var plansByTransactionId: [String: [StoredEndpoint]] = [:]
+    // In-memory cache only. After restart, raw transaction submissions recover
+    // the transaction id through RawTransactionLookup before recording endpoints.
     private var transactionIdsByRawTransaction: [String: String] = [:]
     private var loadedFromPersistence = false
 
@@ -150,6 +152,9 @@ actor PendingSubmitPlanStore {
             }
 
             let storedPlans = try JSONDecoder().decode(StoredPlans.self, from: data)
+            guard storedPlans.version == StoredPlans.currentVersion else {
+                throw PendingSubmitPlanStoreError.unsupportedVersion(storedPlans.version)
+            }
             plansByTransactionId = storedPlans.plansByTransactionId
         } catch {
             logger.warn("Failed to load pending submit plans: \(error)")
@@ -171,13 +176,19 @@ private struct StoredPlans: Codable {
     let version: Int
     let plansByTransactionId: [String: [StoredEndpoint]]
 
+    static let currentVersion = 1
+
     init(
-        version: Int = 1,
+        version: Int = Self.currentVersion,
         plansByTransactionId: [String: [StoredEndpoint]]
     ) {
         self.version = version
         self.plansByTransactionId = plansByTransactionId
     }
+}
+
+private enum PendingSubmitPlanStoreError: Error {
+    case unsupportedVersion(Int)
 }
 
 private struct StoredEndpoint: Codable, Equatable {

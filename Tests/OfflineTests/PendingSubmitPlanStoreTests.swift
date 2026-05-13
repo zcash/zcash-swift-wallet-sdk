@@ -41,6 +41,32 @@ final class PendingSubmitPlanStoreTests: ZcashTestCase {
         }
     }
 
+    func testIgnoresPersistedSubmitPlansWithUnsupportedVersion() async throws {
+        let persistence = InMemorySubmitPlanPersistence()
+        let transaction = makeTransaction(rawID: Data(repeating: 0xAB, count: 32))
+        persistence.data = """
+        {
+            "version": 2,
+            "plansByTransactionId": {
+                "\(transaction.rawID.hexEncodedString())": [
+                    {
+                        "host": "submit.z.cash",
+                        "port": 443,
+                        "secure": true,
+                        "singleCallTimeoutInMillis": 1000,
+                        "streamingCallTimeoutInMillis": 2000
+                    }
+                ]
+            }
+        }
+        """.data(using: .utf8)
+
+        let store = PendingSubmitPlanStore(persistence: persistence, logger: NullLogger())
+        let plan = await store.getSubmitPlan(for: transaction.rawID)
+
+        XCTAssertNil(plan)
+    }
+
     func testAddsSubmittedEndpointsToExistingPlan() async throws {
         let transaction = makeTransaction(rawID: Data(repeating: 0xAB, count: 32))
         let firstEndpoint = LightWalletEndpoint(address: "a.z.cash", port: 443, secure: true)
