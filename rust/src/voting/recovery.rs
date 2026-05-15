@@ -5,12 +5,9 @@ use ffi_helpers::panic::catch_panic;
 
 use crate::{unwrap_exc_or, unwrap_exc_or_null};
 
+use super::constants::{KEYSTONE_SIGNATURE_LEN, PCZT_SIGHASH_LEN, RANDOMIZED_KEY_LEN};
 use super::db::VotingDatabaseHandle;
 use super::helpers::{bytes_from_ptr, json_to_boxed_slice, str_from_ptr};
-
-const KEYSTONE_SIGNATURE_LEN: usize = 64;
-const PCZT_SIGHASH_LEN: usize = 32;
-const RANDOMIZED_KEY_LEN: usize = 32;
 
 #[derive(serde::Serialize)]
 struct JsonKeystoneSignatureRecord {

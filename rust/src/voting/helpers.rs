@@ -8,7 +8,7 @@ use zcash_protocol::consensus::Network;
 use zcash_voting as voting;
 use zip32::{AccountId, Scope};
 
-use super::constants::MIN_SEED_LEN;
+use super::constants::{HOTKEY_RAW_ADDRESS_LEN, MIN_SEED_LEN};
 use super::ffi_types::FfiVotingHotkey;
 
 // =============================================================================
@@ -129,12 +129,12 @@ pub(super) fn derive_hotkey_side_inputs(
     let hotkey_addr = hotkey_orchard_fvk.address_at(0u32, Scope::External);
     let hotkey_raw_address = hotkey_addr.to_raw_address_bytes().to_vec();
 
-    let hotkey_addr_43: [u8; 43] = hotkey_raw_address
+    let hotkey_addr_bytes: [u8; HOTKEY_RAW_ADDRESS_LEN] = hotkey_raw_address
         .as_slice()
         .try_into()
-        .map_err(|_| anyhow!("address serialization must be 43 bytes"))?;
+        .map_err(|_| anyhow!("address serialization must be {HOTKEY_RAW_ADDRESS_LEN} bytes"))?;
     let (g_d_new_x, pk_d_new_x) =
-        voting::action::derive_hotkey_x_coords_from_raw_address(&hotkey_addr_43)
+        voting::action::derive_hotkey_x_coords_from_raw_address(&hotkey_addr_bytes)
             .map_err(|e| anyhow!("derive_hotkey_x_coords failed: {}", e))?;
 
     Ok(HotkeySideInputs {

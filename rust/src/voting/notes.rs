@@ -6,6 +6,7 @@ use zcash_client_backend::data_api::{Account, WalletRead};
 
 use crate::unwrap_exc_or_null;
 
+use super::constants::ACCOUNT_UUID_BYTE_LEN;
 use super::db::VotingDatabaseHandle;
 use super::helpers::{bytes_from_ptr, json_to_boxed_slice, open_wallet_db, str_from_ptr};
 use super::json::JsonNoteInfo;
@@ -13,9 +14,6 @@ use super::json::JsonNoteInfo;
 // =============================================================================
 // VotingDatabase methods — Wallet notes
 // =============================================================================
-
-/// Byte length of the binary account UUID passed as `account_uuid` / `account_uuid_len`.
-const ACCOUNT_UUID_BYTE_LEN: usize = 16;
 
 /// Get wallet notes eligible for voting at the given snapshot height.
 ///

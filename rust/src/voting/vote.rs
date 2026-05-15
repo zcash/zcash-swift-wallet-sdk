@@ -104,11 +104,12 @@ pub unsafe extern "C" fn zcashlc_voting_build_vote_commitment(
         let auth_path_bytes =
             unsafe { bytes_from_ptr(van_auth_path_json, van_auth_path_json_len) }?;
         let auth_path_vecs: Vec<Vec<u8>> = serde_json::from_slice(auth_path_bytes)?;
-        let auth_path: Vec<[u8; 32]> = auth_path_vecs
+        let auth_path: Vec<[u8; CANONICAL_FIELD_LEN]> = auth_path_vecs
             .into_iter()
             .map(|v| {
-                v.try_into()
-                    .map_err(|_| anyhow!("each auth_path sibling must be 32 bytes"))
+                v.try_into().map_err(|_| {
+                    anyhow!("each auth_path sibling must be {CANONICAL_FIELD_LEN} bytes")
+                })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 

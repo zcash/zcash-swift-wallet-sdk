@@ -10,10 +10,9 @@ use zcash_voting as voting;
 
 use crate::{unwrap_exc_or, unwrap_exc_or_null};
 
+use super::constants::{CANONICAL_FIELD_LEN, SHARE_NULLIFIER_HEX_LEN, SHARE_NULLIFIER_LEN};
 use super::db::VotingDatabaseHandle;
 use super::helpers::{bytes_from_ptr, json_to_boxed_slice, str_from_ptr};
-
-const SHARE_NULLIFIER_LEN: usize = 32;
 
 /// JSON representation for share delegation records crossing the FFI boundary.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,10 +64,10 @@ fn hex_nibble(byte: u8) -> anyhow::Result<u8> {
 }
 
 fn decode_share_nullifier_hex(hex: &str) -> anyhow::Result<[u8; SHARE_NULLIFIER_LEN]> {
-    if hex.len() != SHARE_NULLIFIER_LEN * 2 {
+    if hex.len() != SHARE_NULLIFIER_HEX_LEN {
         return Err(anyhow!(
             "nullifier must be {} hex chars, got {}",
-            SHARE_NULLIFIER_LEN * 2,
+            SHARE_NULLIFIER_HEX_LEN,
             hex.len()
         ));
     }
@@ -95,12 +94,18 @@ pub unsafe extern "C" fn zcashlc_voting_compute_share_nullifier(
     share_index: u32,
 ) -> *mut c_char {
     let res = catch_panic(|| {
-        let vc: [u8; 32] = unsafe { std::slice::from_raw_parts(vote_commitment, 32) }
-            .try_into()
-            .map_err(|_| anyhow!("vote_commitment must be exactly 32 bytes"))?;
-        let blind: [u8; 32] = unsafe { std::slice::from_raw_parts(primary_blind, 32) }
-            .try_into()
-            .map_err(|_| anyhow!("primary_blind must be exactly 32 bytes"))?;
+        let vc: [u8; CANONICAL_FIELD_LEN] =
+            unsafe { std::slice::from_raw_parts(vote_commitment, CANONICAL_FIELD_LEN) }
+                .try_into()
+                .map_err(|_| {
+                    anyhow!("vote_commitment must be exactly {CANONICAL_FIELD_LEN} bytes")
+                })?;
+        let blind: [u8; CANONICAL_FIELD_LEN] =
+            unsafe { std::slice::from_raw_parts(primary_blind, CANONICAL_FIELD_LEN) }
+                .try_into()
+                .map_err(|_| {
+                    anyhow!("primary_blind must be exactly {CANONICAL_FIELD_LEN} bytes")
+                })?;
 
         let nullifier = voting::share_tracking::compute_share_nullifier(&vc, share_index, &blind)
             .map_err(|e| anyhow!("compute_share_nullifier failed: {}", e))?;

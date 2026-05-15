@@ -1734,9 +1734,9 @@ extension VotingRustBackend {
                 "nullifier must be exactly \(votingPirNullifierByteCount) bytes"
             )
         }
-        guard proof.expectedRoot.count == votingPirExpectedRootByteCount else {
+        guard proof.expectedRoot.count == votingPirRootByteCount else {
             throw VotingRustBackendError.invalidData(
-                "expectedRoot must be exactly \(votingPirExpectedRootByteCount) bytes"
+                "expectedRoot must be exactly \(votingPirRootByteCount) bytes"
             )
         }
 

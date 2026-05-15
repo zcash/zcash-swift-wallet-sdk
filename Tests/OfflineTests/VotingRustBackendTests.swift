@@ -25,18 +25,16 @@ private let roundTripHelperBURL = "https://helper-b.example"
 private let roundTripFirstSubmitAt: UInt64 = 1000
 private let roundTripSecondSubmitAt: UInt64 = 2000
 private let roundTripCreatedAt: Int64 = 1_000
-private let roundTripFieldElementByteCount = 32
-private let roundTripKeystoneSignatureByteCount = 64
 private let roundTripDiversifierByteCount = 11
 private let roundTripEligibleNoteValue: UInt64 = 13_000_000
 private let roundTripSQLiteSuccessCode = SQLITE_OK
 private let roundTripSQLiteDoneCode = SQLITE_DONE
-private let roundTripRoundParameter = [UInt8](repeating: 0x07, count: roundTripFieldElementByteCount)
-private let roundTripKeystoneSignature = [UInt8](repeating: 0x01, count: roundTripKeystoneSignatureByteCount)
-private let roundTripPcztSighash = [UInt8](repeating: 0x02, count: roundTripFieldElementByteCount)
-private let roundTripRandomizedKey = [UInt8](repeating: 0x03, count: roundTripFieldElementByteCount)
-private let roundTripShareNullifier = String(repeating: "dd", count: roundTripFieldElementByteCount)
-private let roundTripVoteCommitment = [UInt8](repeating: 0xAA, count: roundTripFieldElementByteCount)
+private let roundTripRoundParameter = [UInt8](repeating: 0x07, count: votingFieldElementByteCount)
+private let roundTripKeystoneSignature = [UInt8](repeating: 0x01, count: votingKeystoneSignatureByteCount)
+private let roundTripPcztSighash = [UInt8](repeating: 0x02, count: votingPcztSighashByteCount)
+private let roundTripRandomizedKey = [UInt8](repeating: 0x03, count: votingRandomizedKeyByteCount)
+private let roundTripShareNullifier = String(repeating: "dd", count: votingShareNullifierByteCount)
+private let roundTripVoteCommitment = [UInt8](repeating: 0xAA, count: votingFieldElementByteCount)
 
 final class VotingRustBackendTests: XCTestCase {
     private var dbPath: String?
@@ -52,9 +50,9 @@ final class VotingRustBackendTests: XCTestCase {
     // MARK: - computeShareNullifier
 
     func test_computeShareNullifier_returnsExpectedValueForKnownFixture() throws {
-        var voteCommitment = [UInt8](repeating: 0, count: 32)
+        var voteCommitment = [UInt8](repeating: 0, count: votingFieldElementByteCount)
         voteCommitment[0] = 0x01
-        var primaryBlind = [UInt8](repeating: 0, count: 32)
+        var primaryBlind = [UInt8](repeating: 0, count: votingFieldElementByteCount)
         primaryBlind[0] = 0x03
 
         let nullifier = try VotingRustBackend.computeShareNullifier(
@@ -73,9 +71,9 @@ final class VotingRustBackendTests: XCTestCase {
     }
 
     func test_computeShareNullifier_throwsInvalidData_whenInputsAreNot32Bytes() {
-        let valid = [UInt8](repeating: 0x01, count: 32)
-        let tooShort = [UInt8](repeating: 0x01, count: 31)
-        let tooLong = [UInt8](repeating: 0x01, count: 33)
+        let valid = [UInt8](repeating: 0x01, count: votingFieldElementByteCount)
+        let tooShort = [UInt8](repeating: 0x01, count: votingFieldElementByteCount - 1)
+        let tooLong = [UInt8](repeating: 0x01, count: votingFieldElementByteCount + 1)
 
         for (vc, blind, label) in [
             (tooShort, valid, "voteCommitment too short"),
@@ -238,8 +236,8 @@ final class VotingRustBackendTests: XCTestCase {
     }
 
     func test_generateDelegationInputs_rejectsShortSeeds() {
-        let short = [UInt8](repeating: 0x01, count: 31)
-        let valid = [UInt8](repeating: 0x02, count: 32)
+        let short = [UInt8](repeating: 0x01, count: votingMinSeedByteCount - 1)
+        let valid = [UInt8](repeating: 0x02, count: votingMinSeedByteCount)
         XCTAssertThrowsError(
             try VotingRustBackend.generateDelegationInputs(
                 senderSeed: short,
@@ -263,13 +261,13 @@ final class VotingRustBackendTests: XCTestCase {
             let label: String
         }
 
-        let validHotkey = [UInt8](repeating: 0x02, count: 32)
-        let validFvk = [UInt8](repeating: 0x03, count: 96)
-        let validFp = [UInt8](repeating: 0x04, count: 32)
+        let validHotkey = [UInt8](repeating: 0x02, count: votingMinSeedByteCount)
+        let validFvk = [UInt8](repeating: 0x03, count: votingOrchardFvkByteCount)
+        let validFp = [UInt8](repeating: 0x04, count: votingSeedFingerprintByteCount)
         let cases: [Case] = [
-            .init(fvk: [UInt8](repeating: 0, count: 95), hotkey: validHotkey, fingerprint: validFp, label: "fvk too short"),
-            .init(fvk: validFvk, hotkey: [UInt8](repeating: 0, count: 31), fingerprint: validFp, label: "hotkey too short"),
-            .init(fvk: validFvk, hotkey: validHotkey, fingerprint: [UInt8](repeating: 0, count: 31), label: "fingerprint too short")
+            .init(fvk: [UInt8](repeating: 0, count: votingOrchardFvkByteCount - 1), hotkey: validHotkey, fingerprint: validFp, label: "fvk too short"),
+            .init(fvk: validFvk, hotkey: [UInt8](repeating: 0, count: votingMinSeedByteCount - 1), fingerprint: validFp, label: "hotkey too short"),
+            .init(fvk: validFvk, hotkey: validHotkey, fingerprint: [UInt8](repeating: 0, count: votingSeedFingerprintByteCount - 1), label: "fingerprint too short")
         ]
         for testCase in cases {
             let fvk = testCase.fvk
@@ -325,53 +323,56 @@ final class VotingRustBackendTests: XCTestCase {
             let label: String
         }
 
-        let valid32 = [UInt8](repeating: 0x01, count: 32)
-        let valid96 = [UInt8](repeating: 0x02, count: 96)
-        let valid928 = [UInt8](repeating: 0x03, count: 928)
+        let validRoot = [UInt8](repeating: 0x01, count: votingPirRootByteCount)
+        let validBounds = [UInt8](repeating: 0x02, count: votingPirNullifierBoundsByteCount)
+        let validPath = [UInt8](repeating: 0x03, count: votingPirPathByteCount)
+        let validNullifier = [UInt8](repeating: 0x04, count: votingPirNullifierByteCount)
+        let validExpectedRoot = [UInt8](repeating: 0x05, count: votingPirRootByteCount)
 
-        let bad31 = [UInt8](repeating: 0, count: 31)
-        let bad95 = [UInt8](repeating: 0, count: 95)
-        let bad927 = [UInt8](repeating: 0, count: 927)
+        let badRoot = [UInt8](repeating: 0, count: votingPirRootByteCount - 1)
+        let badBounds = [UInt8](repeating: 0, count: votingPirNullifierBoundsByteCount - 1)
+        let badPath = [UInt8](repeating: 0, count: votingPirPathByteCount - 1)
+        let badNullifier = [UInt8](repeating: 0, count: votingPirNullifierByteCount - 1)
 
         let cases: [Case] = [
             .init(
-                root: bad31,
-                nfBounds: valid96,
-                path: valid928,
-                nullifier: valid32,
-                expectedRoot: valid32,
+                root: badRoot,
+                nfBounds: validBounds,
+                path: validPath,
+                nullifier: validNullifier,
+                expectedRoot: validExpectedRoot,
                 label: "root too short"
             ),
             .init(
-                root: valid32,
-                nfBounds: bad95,
-                path: valid928,
-                nullifier: valid32,
-                expectedRoot: valid32,
+                root: validRoot,
+                nfBounds: badBounds,
+                path: validPath,
+                nullifier: validNullifier,
+                expectedRoot: validExpectedRoot,
                 label: "nfBounds too short"
             ),
             .init(
-                root: valid32,
-                nfBounds: valid96,
-                path: bad927,
-                nullifier: valid32,
-                expectedRoot: valid32,
+                root: validRoot,
+                nfBounds: validBounds,
+                path: badPath,
+                nullifier: validNullifier,
+                expectedRoot: validExpectedRoot,
                 label: "path too short"
             ),
             .init(
-                root: valid32,
-                nfBounds: valid96,
-                path: valid928,
-                nullifier: bad31,
-                expectedRoot: valid32,
+                root: validRoot,
+                nfBounds: validBounds,
+                path: validPath,
+                nullifier: badNullifier,
+                expectedRoot: validExpectedRoot,
                 label: "nullifier too short"
             ),
             .init(
-                root: valid32,
-                nfBounds: valid96,
-                path: valid928,
-                nullifier: valid32,
-                expectedRoot: bad31,
+                root: validRoot,
+                nfBounds: validBounds,
+                path: validPath,
+                nullifier: validNullifier,
+                expectedRoot: badRoot,
                 label: "expectedRoot too short"
             )
         ]
@@ -402,7 +403,7 @@ final class VotingRustBackendTests: XCTestCase {
         let backend = try makeReadyBackend()
         defer { backend.close() }
 
-        let valid = [UInt8](repeating: 0x07, count: 32)
+        let valid = [UInt8](repeating: 0x07, count: votingFieldElementByteCount)
         try backend.initRound(
             roundId: "round-1",
             snapshotHeight: 1234,
@@ -424,8 +425,8 @@ final class VotingRustBackendTests: XCTestCase {
         let backend = try makeReadyBackend()
         defer { backend.close() }
 
-        let valid = [UInt8](repeating: 0x07, count: 32)
-        let short = [UInt8](repeating: 0x07, count: 31)
+        let valid = [UInt8](repeating: 0x07, count: votingFieldElementByteCount)
+        let short = [UInt8](repeating: 0x07, count: votingFieldElementByteCount - 1)
 
         XCTAssertThrowsError(
             try backend.initRound(
@@ -455,7 +456,7 @@ final class VotingRustBackendTests: XCTestCase {
         let backend = try makeReadyBackend()
         defer { backend.close() }
 
-        let valid = [UInt8](repeating: 0x07, count: 32)
+        let valid = [UInt8](repeating: 0x07, count: votingFieldElementByteCount)
         try backend.initRound(
             roundId: "round-1",
             snapshotHeight: 42,
@@ -480,7 +481,7 @@ final class VotingRustBackendTests: XCTestCase {
         let backend = try makeReadyBackend()
         defer { backend.close() }
 
-        let valid = [UInt8](repeating: 0x07, count: 32)
+        let valid = [UInt8](repeating: 0x07, count: votingFieldElementByteCount)
         try backend.initRound(
             roundId: "round",
             snapshotHeight: 1,
@@ -643,7 +644,7 @@ final class VotingRustBackendTests: XCTestCase {
         let backend = try makeReadyBackend()
         defer { backend.close() }
 
-        let valid = [UInt8](repeating: 0x07, count: 32)
+        let valid = [UInt8](repeating: 0x07, count: votingFieldElementByteCount)
         try backend.initRound(
             roundId: "round",
             snapshotHeight: 1,
@@ -659,14 +660,14 @@ final class VotingRustBackendTests: XCTestCase {
             let label: String
         }
 
-        let validSig = [UInt8](repeating: 0x01, count: 64)
-        let validSighash = [UInt8](repeating: 0x02, count: 32)
-        let validRk = [UInt8](repeating: 0x03, count: 32)
+        let validSig = [UInt8](repeating: 0x01, count: votingKeystoneSignatureByteCount)
+        let validSighash = [UInt8](repeating: 0x02, count: votingPcztSighashByteCount)
+        let validRk = [UInt8](repeating: 0x03, count: votingRandomizedKeyByteCount)
 
         let cases: [Case] = [
-            .init(sig: [UInt8](repeating: 0, count: 63), sighash: validSighash, randomizedKey: validRk, label: "sig too short"),
-            .init(sig: validSig, sighash: [UInt8](repeating: 0, count: 31), randomizedKey: validRk, label: "sighash too short"),
-            .init(sig: validSig, sighash: validSighash, randomizedKey: [UInt8](repeating: 0, count: 31), label: "rk too short")
+            .init(sig: [UInt8](repeating: 0, count: votingKeystoneSignatureByteCount - 1), sighash: validSighash, randomizedKey: validRk, label: "sig too short"),
+            .init(sig: validSig, sighash: [UInt8](repeating: 0, count: votingPcztSighashByteCount - 1), randomizedKey: validRk, label: "sighash too short"),
+            .init(sig: validSig, sighash: validSighash, randomizedKey: [UInt8](repeating: 0, count: votingRandomizedKeyByteCount - 1), label: "rk too short")
         ]
         for testCase in cases {
             XCTAssertThrowsError(
@@ -764,7 +765,7 @@ final class VotingRustBackendTests: XCTestCase {
         let backend = try makeReadyBackend()
         defer { backend.close() }
 
-        let bad = String(repeating: "aa", count: 31)
+        let bad = String(repeating: "aa", count: votingShareNullifierByteCount - 1)
         XCTAssertThrowsError(
             try backend.recordShareDelegation(
                 roundId: "round",
@@ -797,7 +798,7 @@ final class VotingRustBackendTests: XCTestCase {
         let backend = try makeReadyBackend()
         defer { backend.close() }
 
-        let valid = [UInt8](repeating: 0x07, count: 32)
+        let valid = [UInt8](repeating: 0x07, count: votingFieldElementByteCount)
         try backend.initRound(
             roundId: "round",
             snapshotHeight: 1,
@@ -820,11 +821,11 @@ final class VotingRustBackendTests: XCTestCase {
             roundId: "round",
             bundleIndex: 0,
             notes: [],
-            fvk: [UInt8](repeating: 0, count: 96),
-            hotkeyRawAddress: [UInt8](repeating: 0, count: 43),
+            fvk: [UInt8](repeating: 0, count: votingOrchardFvkByteCount),
+            hotkeyRawAddress: [UInt8](repeating: 0, count: votingHotkeyRawAddressByteCount),
             consensusBranchId: 0,
             coinType: 0,
-            seedFingerprint: [UInt8](repeating: 0, count: 31),
+            seedFingerprint: [UInt8](repeating: 0, count: votingSeedFingerprintByteCount - 1),
             accountIndex: 0,
             roundName: "Round",
             addressIndex: 0
@@ -845,8 +846,8 @@ final class VotingRustBackendTests: XCTestCase {
             try backend.getDelegationSubmission(
                 roundId: "round",
                 bundleIndex: 0,
-                keystoneSig: [UInt8](repeating: 0, count: 63),
-                sighash: [UInt8](repeating: 0, count: 32)
+                keystoneSig: [UInt8](repeating: 0, count: votingKeystoneSignatureByteCount - 1),
+                sighash: [UInt8](repeating: 0, count: votingPcztSighashByteCount)
             )
         ) { error in
             guard case VotingRustBackendError.invalidData = error else {
@@ -858,8 +859,8 @@ final class VotingRustBackendTests: XCTestCase {
             try backend.getDelegationSubmission(
                 roundId: "round",
                 bundleIndex: 0,
-                keystoneSig: [UInt8](repeating: 0, count: 64),
-                sighash: [UInt8](repeating: 0, count: 31)
+                keystoneSig: [UInt8](repeating: 0, count: votingKeystoneSignatureByteCount),
+                sighash: [UInt8](repeating: 0, count: votingPcztSighashByteCount - 1)
             )
         ) { error in
             guard case VotingRustBackendError.invalidData = error else {
@@ -873,7 +874,7 @@ final class VotingRustBackendTests: XCTestCase {
 
     func test_initRound_beforeOpen_throwsDatabaseNotOpen() {
         let backend = VotingRustBackend()
-        let valid = [UInt8](repeating: 0, count: 32)
+        let valid = [UInt8](repeating: 0, count: votingFieldElementByteCount)
         XCTAssertThrowsError(
             try backend.initRound(
                 roundId: "r",
@@ -973,9 +974,9 @@ final class VotingRustBackendTests: XCTestCase {
             try backend.storeKeystoneSignature(
                 roundId: "r",
                 bundleIndex: 0,
-                sig: [UInt8](repeating: 0, count: 64),
-                sighash: [UInt8](repeating: 0, count: 32),
-                randomizedKey: [UInt8](repeating: 0, count: 32)
+                sig: [UInt8](repeating: 0, count: votingKeystoneSignatureByteCount),
+                sighash: [UInt8](repeating: 0, count: votingPcztSighashByteCount),
+                randomizedKey: [UInt8](repeating: 0, count: votingRandomizedKeyByteCount)
             )
         ) { error in
             guard case VotingRustBackendError.databaseNotOpen = error else {
@@ -1010,7 +1011,7 @@ final class VotingRustBackendTests: XCTestCase {
                 roundId: "r",
                 bundleIndex: 0,
                 notes: [],
-                hotkeyRawAddress: [UInt8](repeating: 0, count: 43),
+                hotkeyRawAddress: [UInt8](repeating: 0, count: votingHotkeyRawAddressByteCount),
                 pirEndpoints: ["https://stub"],
                 expectedSnapshotHeight: 0,
                 networkId: 1,
@@ -1078,13 +1079,13 @@ final class VotingRustBackendTests: XCTestCase {
             _ = try await backend.buildVoteCommitment(
                 roundId: "round1",
                 bundleIndex: 0,
-                hotkeySeed: [UInt8](repeating: 1, count: 32),
+                hotkeySeed: [UInt8](repeating: 1, count: votingMinSeedByteCount),
                 networkId: 1,
                 proposalId: 0,
                 choice: 0,
                 numOptions: 2,
                 vanWitness: VotingVanWitness(
-                    authPath: [[UInt8](repeating: 1, count: 32)],
+                    authPath: [[UInt8](repeating: 1, count: votingFieldElementByteCount)],
                     position: 0,
                     anchorHeight: 0
                 ),
@@ -1111,7 +1112,7 @@ final class VotingRustBackendTests: XCTestCase {
             _ = try await backend.buildVoteCommitment(
                 roundId: "round1",
                 bundleIndex: 0,
-                hotkeySeed: [UInt8](repeating: 1, count: 31),
+                hotkeySeed: [UInt8](repeating: 1, count: votingMinSeedByteCount - 1),
                 networkId: 1,
                 proposalId: 0,
                 choice: 0,
@@ -1205,10 +1206,10 @@ final class VotingRustBackendTests: XCTestCase {
             shareIndex: payloads[0].encShare.shareIndex,
             primaryBlind: payloads[0].primaryBlind
         )
-        XCTAssertEqual(nullifier.count, 64)
+        XCTAssertEqual(nullifier.count, votingShareNullifierHexCharacterCount)
 
         let signature = try VotingRustBackend.signCastVote(
-            hotkeySeed: [UInt8](repeating: 1, count: 32),
+            hotkeySeed: [UInt8](repeating: 1, count: votingMinSeedByteCount),
             networkId: 1,
             commitment: commitment
         )
@@ -1241,7 +1242,7 @@ final class VotingRustBackendTests: XCTestCase {
     func test_signCastVote_invalidCommitment_throwsRustError() {
         XCTAssertThrowsError(
             try VotingRustBackend.signCastVote(
-                hotkeySeed: [UInt8](repeating: 1, count: 32),
+                hotkeySeed: [UInt8](repeating: 1, count: votingMinSeedByteCount),
                 networkId: 1,
                 commitment: makeVoteCommitmentBundle(voteRoundId: "too-short")
             )
@@ -1256,7 +1257,7 @@ final class VotingRustBackendTests: XCTestCase {
     func test_signCastVote_rejectsShortSeed() {
         XCTAssertThrowsError(
             try VotingRustBackend.signCastVote(
-                hotkeySeed: [UInt8](repeating: 1, count: 31),
+                hotkeySeed: [UInt8](repeating: 1, count: votingMinSeedByteCount - 1),
                 networkId: 1,
                 commitment: makeVoteCommitmentBundle()
             )
@@ -1270,7 +1271,7 @@ final class VotingRustBackendTests: XCTestCase {
     }
 
     func test_signCastVote_rejectsWrongSizedCanonicalFields() {
-        let short = [UInt8](repeating: 1, count: 31)
+        let short = [UInt8](repeating: 1, count: votingFieldElementByteCount - 1)
 
         let cases: [(String, VotingVoteCommitmentBundle, String)] = [
             (
@@ -1303,7 +1304,7 @@ final class VotingRustBackendTests: XCTestCase {
         for (label, commitment, expectedMessage) in cases {
             XCTAssertThrowsError(
                 try VotingRustBackend.signCastVote(
-                    hotkeySeed: [UInt8](repeating: 1, count: 32),
+                    hotkeySeed: [UInt8](repeating: 1, count: votingMinSeedByteCount),
                     networkId: 1,
                     commitment: commitment
                 ),
@@ -1323,7 +1324,7 @@ final class VotingRustBackendTests: XCTestCase {
 
     func test_signCastVote_validFixture_returnsSignature() throws {
         let signature = try VotingRustBackend.signCastVote(
-            hotkeySeed: [UInt8](repeating: 1, count: 32),
+            hotkeySeed: [UInt8](repeating: 1, count: votingMinSeedByteCount),
             networkId: 1,
             commitment: makeVoteCommitmentBundle()
         )
@@ -1416,13 +1417,13 @@ final class VotingRustBackendTests: XCTestCase {
 
     private func makeEligibleNote() -> VotingNoteInfo {
         VotingNoteInfo(
-            commitment: [UInt8](repeating: 0x01, count: roundTripFieldElementByteCount),
-            nullifier: [UInt8](repeating: 0x02, count: roundTripFieldElementByteCount),
+            commitment: [UInt8](repeating: 0x01, count: votingFieldElementByteCount),
+            nullifier: [UInt8](repeating: 0x02, count: votingFieldElementByteCount),
             value: roundTripEligibleNoteValue,
             position: 0,
             diversifier: [UInt8](repeating: 0, count: roundTripDiversifierByteCount),
-            rho: [UInt8](repeating: 0, count: roundTripFieldElementByteCount),
-            rseed: [UInt8](repeating: 0, count: roundTripFieldElementByteCount),
+            rho: [UInt8](repeating: 0, count: votingFieldElementByteCount),
+            rseed: [UInt8](repeating: 0, count: votingFieldElementByteCount),
             scope: 0,
             ufvkStr: ""
         )
@@ -1554,20 +1555,20 @@ final class VotingRustBackendTests: XCTestCase {
     }
 
     private func makeVoteCommitmentBundle(
-        voteRoundId: String = String(repeating: "a", count: 64),
-        vanNullifier: [UInt8] = [UInt8](repeating: 1, count: 32),
-        voteAuthorityNoteNew: [UInt8] = [UInt8](repeating: 2, count: 32),
-        voteCommitment: [UInt8] = [UInt8](repeating: 3, count: 32),
+        voteRoundId: String = String(repeating: "a", count: votingVoteRoundIdHexCharacterCount),
+        vanNullifier: [UInt8] = [UInt8](repeating: 1, count: votingFieldElementByteCount),
+        voteAuthorityNoteNew: [UInt8] = [UInt8](repeating: 2, count: votingFieldElementByteCount),
+        voteCommitment: [UInt8] = [UInt8](repeating: 3, count: votingFieldElementByteCount),
         proposalId: UInt32 = 0,
         encShares: [VotingWireEncryptedShare] = [
             VotingWireEncryptedShare(
-                ciphertext1: [UInt8](repeating: 5, count: 32),
-                ciphertext2: [UInt8](repeating: 6, count: 32),
+                ciphertext1: [UInt8](repeating: 5, count: votingFieldElementByteCount),
+                ciphertext2: [UInt8](repeating: 6, count: votingFieldElementByteCount),
                 shareIndex: 0
             )
         ],
-        rVpkBytes: [UInt8] = [UInt8](repeating: 10, count: 32),
-        alphaV: [UInt8] = [UInt8](repeating: 11, count: 32)
+        rVpkBytes: [UInt8] = [UInt8](repeating: 10, count: votingFieldElementByteCount),
+        alphaV: [UInt8] = [UInt8](repeating: 11, count: votingFieldElementByteCount)
     ) -> VotingVoteCommitmentBundle {
         VotingVoteCommitmentBundle(
             vanNullifier: vanNullifier,
@@ -1579,8 +1580,8 @@ final class VotingRustBackendTests: XCTestCase {
             anchorHeight: 1,
             voteRoundId: voteRoundId,
             sharesHash: [7],
-            shareBlinds: [[UInt8](repeating: 8, count: 32)],
-            shareComms: [[UInt8](repeating: 9, count: 32)],
+            shareBlinds: [[UInt8](repeating: 8, count: votingFieldElementByteCount)],
+            shareComms: [[UInt8](repeating: 9, count: votingFieldElementByteCount)],
             rVpkBytes: rVpkBytes,
             alphaV: alphaV
         )

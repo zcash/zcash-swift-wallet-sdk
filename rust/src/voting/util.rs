@@ -8,7 +8,7 @@ use zip32::AccountId;
 
 use crate::{unwrap_exc_or, unwrap_exc_or_null};
 
-use super::constants::SEED_FINGERPRINT_LEN;
+use super::constants::{ORCHARD_FVK_LEN, SEED_FINGERPRINT_LEN};
 use super::helpers::{
     bytes_from_ptr, derive_hotkey_side_inputs, json_to_boxed_slice, str_from_ptr, usk_from_seed,
 };
@@ -130,8 +130,12 @@ pub unsafe extern "C" fn zcashlc_voting_generate_delegation_inputs_with_fvk(
         let hotkey = unsafe { bytes_from_ptr(hotkey_seed, hotkey_seed_len) }?;
         let seed_fp = unsafe { bytes_from_ptr(seed_fingerprint, seed_fingerprint_len) }?.to_vec();
 
-        if fvk.len() != 96 {
-            return Err(anyhow!("fvk_bytes must be 96 bytes, got {}", fvk.len()));
+        if fvk.len() != ORCHARD_FVK_LEN {
+            return Err(anyhow!(
+                "fvk_bytes must be {} bytes, got {}",
+                ORCHARD_FVK_LEN,
+                fvk.len()
+            ));
         }
         if seed_fp.len() != SEED_FINGERPRINT_LEN {
             return Err(anyhow!(
@@ -305,7 +309,7 @@ mod tests {
         bytes
     }
 
-    fn derive_test_ufvk(network: Network) -> (String, [u8; 96]) {
+    fn derive_test_ufvk(network: Network) -> (String, [u8; ORCHARD_FVK_LEN]) {
         let seed = [0u8; 32];
         let account = AccountId::try_from(0).expect("account 0");
         let usk = UnifiedSpendingKey::from_seed(&network, &seed, account).expect("from_seed");
@@ -433,7 +437,11 @@ mod tests {
         let actual = unsafe { (*result).as_slice() }.to_vec();
         free(result);
 
-        assert_eq!(actual.len(), 96, "Orchard FVK must be 96 bytes");
+        assert_eq!(
+            actual.len(),
+            ORCHARD_FVK_LEN,
+            "Orchard FVK must be {ORCHARD_FVK_LEN} bytes"
+        );
         assert_eq!(actual, expected.to_vec(), "FVK bytes must match");
     }
 
@@ -452,7 +460,11 @@ mod tests {
         let actual = unsafe { (*result).as_slice() }.to_vec();
         free(result);
 
-        assert_eq!(actual.len(), 96, "Orchard FVK must be 96 bytes");
+        assert_eq!(
+            actual.len(),
+            ORCHARD_FVK_LEN,
+            "Orchard FVK must be {ORCHARD_FVK_LEN} bytes"
+        );
         assert_eq!(actual, expected.to_vec(), "FVK bytes must match");
     }
 
