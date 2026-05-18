@@ -6,6 +6,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- Bumped `zcash_voting` to `0.8.1` for the pre-launch voting SQLite schema
+  reset, crate-owned recovery store missing-row errors, required voting input
+  validation, paginated vote commitment tree sync responses with per-block
+  roots, and the shared Orchard note conversion used by
+  `zcashlc_voting_get_wallet_notes`. Dropped the unused round ID from
+  `zcashlc_voting_generate_hotkey`.
+
 ## 2.5.0 - 2026-05-11
 
 ### Added
@@ -31,9 +39,38 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`auth_path`, `position`, `anchor_height`) in a `*mut FfiBoxedSlice`.
 - `zcashlc_voting_reset_tree_client`: Drop the in-memory tree client for a
   round so the next `zcashlc_voting_sync_vote_tree` call creates a fresh one.
+- `zcashlc_voting_warm_proving_caches`, `zcashlc_voting_decompose_weight`,
+  `zcashlc_voting_generate_delegation_inputs`,
+  `zcashlc_voting_generate_delegation_inputs_with_fvk`,
+  `zcashlc_voting_extract_pczt_sighash`,
+  `zcashlc_voting_extract_spend_auth_sig`,
+  `zcashlc_voting_extract_nc_root`, and `zcashlc_voting_verify_witness`:
+  Utility FFI for voting proof setup, PCZT/signature extraction,
+  note-commitment root extraction, and witness verification.
+- `FfiRoundState`, `FfiVotingHotkey`, `FfiBundleSetupResult`,
+  `FfiRoundSummaries`, and `FfiVoteRecords`, plus their
+  `zcashlc_voting_free_*` helpers, for C-compatible voting return values.
+- `zcashlc_voting_generate_note_witnesses`: Generate Orchard Merkle inclusion
+  witnesses for the notes in a voting bundle, anchored at the round's snapshot
+  height.
 - `VotingDatabaseHandle` now also carries a
   `zcash_voting::tree_sync::VoteTreeSync`, constructed in
   `zcashlc_voting_db_open` and consumed by the tree-sync FFI above.
+- `zcashlc_voting_init_round`, `zcashlc_voting_get_round_state`,
+  `zcashlc_voting_list_rounds`, `zcashlc_voting_get_votes`,
+  `zcashlc_voting_clear_round`, `zcashlc_voting_delete_skipped_bundles`,
+  recovery-state transaction/hash/signature helpers, and share-delegation
+  tracking helpers for persisted voting round state.
+- `zcashlc_voting_generate_hotkey`, `zcashlc_voting_setup_bundles`,
+  `zcashlc_voting_get_bundle_count`, `zcashlc_voting_build_pczt`,
+  `zcashlc_voting_store_tree_state`,
+  `zcashlc_voting_build_and_prove_delegation`,
+  `zcashlc_voting_get_delegation_submission`,
+  `zcashlc_voting_get_delegation_submission_with_keystone_sig`, and
+  `zcashlc_voting_store_van_position` for the delegation workflow FFI.
+- `zcashlc_voting_encrypt_shares`, `zcashlc_voting_build_vote_commitment`,
+  `zcashlc_voting_build_share_payloads`, `zcashlc_voting_mark_vote_submitted`,
+  and `zcashlc_voting_sign_cast_vote` for the vote-casting FFI.
 - `zcashlc_voting_get_wallet_notes`: Load unspent Orchard notes for a wallet
   account at a snapshot height and return them as JSON-encoded
   `Vec<NoteInfo>` in a `*mut FfiBoxedSlice`. `account_uuid` must be a non-null
@@ -44,11 +81,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   return the raw 96-byte Orchard full viewing key in a
   `*mut FfiBoxedSlice`. Returns `NULL` on missing Orchard component,
   malformed UFVK, or invalid `network_id`.
-- Added `zcash_voting 0.5.3` (`default-features = false`, `client-pir`,
+- Added `zcash_voting 0.5.7` (`default-features = false`, `client-pir`,
   `client-tree-sync`) as a Rust dependency.
 - Added `zcash_keys 0.13` (`orchard` feature) as a Rust dependency, used by
   the new wallet-notes and key-utility FFI for voting to decode UFVKs and derive
   Orchard FVKs.
+- Added `incrementalmerkletree 0.8` (`default-features = false`) as a direct
+  Rust dependency, used by `zcashlc_voting_generate_note_witnesses` for
+  `Position` and the `MerklePath` returned by the wallet DB.
 
 ### Changed
 - Pinned `orchard` to `=0.13.1` and enabled its `unstable-voting-circuits`

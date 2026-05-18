@@ -6,16 +6,83 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+# 2.5.1 - 2026-05-14
+
+## Fixed
+- Fixed a bug that could cause transactions shielding more than 150 transparent
+  P2PKH inputs to fail due to incorrect fee computation.
+
 # 2.5.0 - 2026-05-11
 
 ## Added
 - `SDKSynchronizer.rescanFrom(height:)`: Rescans the chain from the given BlockHeight.
 - `SynchronizerState.fullyScannedHeight`: Contiguous-from-birthday scan high-water mark published on `stateStream`/`latestState`. Callers that need an authoritative view of the wallet's note and nullifier state at a specific height (for example, balance anchored at a poll snapshot) should gate on this rather than `latestBlockHeight` (chain tip) or `maxScannedHeight` (head-first scan progress, which can race ahead under Spend-before-Sync).
 - `Synchronizer.getTreeState(height:)`: Fetches the commitment tree state at the given block height from lightwalletd and returns the protobuf-serialized `TreeState` bytes, for app-layer consumers that need to hand tree state to an external component (for example, witness generation via FFI). A throwing default implementation keeps the addition source-compatible for downstream `Synchronizer` conformers.
-- `zcash_voting` dependency foundation: SDK Rust crate now depends on `zcash_voting 0.5.3` (`default-features = false`, `client-pir`) and exposes pure-function FFI symbols for share-nullifier computation and PIR proof validation. No Swift API surface is added in this step.
+- `zcash_voting` dependency foundation: SDK Rust crate now depends on `zcash_voting 0.5.7` (`default-features = false`, `client-pir`, `client-tree-sync`) and exposes pure-function FFI symbols for share-nullifier computation and PIR proof validation.
 - `PirSnapshotResolver`, `PirSnapshotResolverError`, `PirSnapshotProbeOutcome`, `PirSnapshotProbing`, and `HTTPPirSnapshotProbe`: Select a vote-nullifier PIR endpoint whose `/root` metadata exactly matches a voting round's expected snapshot height.
 - `Voting*` Swift types: public type contract for the shielded voting FFI boundary, in `Sources/ZcashLightClientKit/Rust/Voting/VotingTypes.swift`.
-- `VotingRustBackend`: Swift wrapper for the voting `libzcashlc` surface. Exposes the static `computeShareNullifier` over `zcashlc_voting_compute_share_nullifier` and the `VotingRustBackendError` error type.
+- `VotingRustBackend`: Swift wrapper for the voting `libzcashlc` surface. A `final class` that owns an opaque `VotingDatabaseHandle` for the duration of a voting session. Exposes:
+  - Database lifecycle: `init()`, `open(path:)`, `close()` (idempotent), and `deinit` cleanup, over `zcashlc_voting_db_open` / `zcashlc_voting_db_free`.
+  - `setWalletId(_:)` over `zcashlc_voting_set_wallet_id`.
+  - `precomputeDelegationPir(roundId:bundleIndex:notes:pirEndpoints:expectedSnapshotHeight:networkId:pirResolver:)` over `zcashlc_voting_precompute_delegation_pir`, with `PirSnapshotResolver`-driven endpoint selection.
+  - `generateNoteWitnesses(roundId:bundleIndex:walletDbPath:notes:networkId:)` over `zcashlc_voting_generate_note_witnesses`.
+  - Vote-tree sync: `syncVoteTree(roundId:nodeUrl:)`, `generateVanWitness(roundId:bundleIndex:anchorHeight:)`, and `resetTreeClient(roundId:)` over the corresponding `zcashlc_voting_sync_vote_tree` / `_generate_van_witness` / `_reset_tree_client` FFI.
+  - Vote casting: `encryptShares(roundId:shares:)`, `buildVoteCommitment(roundId:bundleIndex:hotkeySeed:networkId:proposalId:choice:numOptions:vanWitness:singleShare:progress:)`, `buildSharePayloads(commitment:voteDecision:numOptions:voteCommitmentTreePosition:singleShare:)`, `markVoteSubmitted(roundId:bundleIndex:proposalId:)`, and `signCastVote(hotkeySeed:networkId:commitment:)`.
+  - The static `computeShareNullifier(voteCommitment:shareIndex:primaryBlind:)` over `zcashlc_voting_compute_share_nullifier`, with 32-byte input validation.
+  - `VotingRustBackendError` cases `databaseAlreadyOpen` / `databaseNotOpen` for handle-state errors, alongside the existing `rustError` and `invalidData`.
+- Extends `VotingRustBackend` with additional FFI wrappers and their FFI mappings:
+
+  Foundation helpers (static)
+  - `warmProvingCaches()` → `zcashlc_voting_warm_proving_caches`
+  - `decomposeWeight(_:)` → `zcashlc_voting_decompose_weight`
+  - `generateDelegationInputs(senderSeed:hotkeySeed:networkId:accountIndex:)` → `zcashlc_voting_generate_delegation_inputs`
+  - `generateDelegationInputs(senderFvk:hotkeySeed:networkId:seedFingerprint:)` → `zcashlc_voting_generate_delegation_inputs_with_fvk`
+  - `extractPcztSighash(pczt:)` → `zcashlc_voting_extract_pczt_sighash`
+  - `extractSpendAuthSig(signedPczt:actionIndex:)` → `zcashlc_voting_extract_spend_auth_sig`
+  - `extractOrchardFvk(ufvk:networkId:)` → `zcashlc_voting_extract_orchard_fvk_from_ufvk`
+  - `extractNcRoot(treeState:)` → `zcashlc_voting_extract_nc_root`
+  - `verifyWitness(_:)` → `zcashlc_voting_verify_witness`
+  - `validatePirProof(_:)` → `zcashlc_voting_validate_pir_proof` (takes `VotingPirProof`)
+
+  Round lifecycle
+  - `initRound(roundId:snapshotHeight:eaPublicKey:ncRoot:nullifierImtRoot:sessionJson:)` → `zcashlc_voting_init_round`
+  - `getRoundState(roundId:)` → `zcashlc_voting_get_round_state` (frees `FfiRoundState` via `zcashlc_voting_free_round_state`)
+  - `listRounds()` → `zcashlc_voting_list_rounds` (frees `FfiRoundSummaries` via `zcashlc_voting_free_round_summaries`)
+  - `getVotes(roundId:)` → `zcashlc_voting_get_votes` (frees `FfiVoteRecords` via `zcashlc_voting_free_vote_records`)
+  - `clearRound(roundId:)` → `zcashlc_voting_clear_round`
+  - `deleteSkippedBundles(roundId:keepCount:)` → `zcashlc_voting_delete_skipped_bundles`
+
+  Wallet notes
+  - `getWalletNotes(accountUuidBytes:dataDbPath:snapshotHeight:networkId:)` → `zcashlc_voting_get_wallet_notes`
+
+  Recovery state
+  - `storeDelegationTxHash(roundId:bundleIndex:txHash:)` → `zcashlc_voting_store_delegation_tx_hash`
+  - `getDelegationTxHash(roundId:bundleIndex:)` → `zcashlc_voting_get_delegation_tx_hash`
+  - `storeVoteTxHash(roundId:bundleIndex:proposalId:txHash:)` → `zcashlc_voting_store_vote_tx_hash`
+  - `getVoteTxHash(roundId:bundleIndex:proposalId:)` → `zcashlc_voting_get_vote_tx_hash`
+  - `storeCommitmentBundle(roundId:bundleIndex:proposalId:bundleJson:voteCommitmentTreePosition:)` → `zcashlc_voting_store_commitment_bundle`
+  - `getCommitmentBundle(roundId:bundleIndex:proposalId:)` → `zcashlc_voting_get_commitment_bundle`
+  - `storeKeystoneSignature(roundId:bundleIndex:sig:sighash:randomizedKey:)` → `zcashlc_voting_store_keystone_signature`
+  - `getKeystoneSignatures(roundId:)` → `zcashlc_voting_get_keystone_signatures`
+  - `clearRecoveryState(roundId:)` → `zcashlc_voting_clear_recovery_state`
+
+  Share delegation tracking
+  - `recordShareDelegation(roundId:bundleIndex:proposalId:shareIndex:sentToURLs:nullifier:submitAt:)` → `zcashlc_voting_record_share_delegation`
+  - `getShareDelegations(roundId:)` → `zcashlc_voting_get_share_delegations`
+  - `getUnconfirmedDelegations(roundId:)` → `zcashlc_voting_get_unconfirmed_delegations`
+  - `markShareConfirmed(roundId:bundleIndex:proposalId:shareIndex:)` → `zcashlc_voting_mark_share_confirmed`
+  - `addSentServers(roundId:bundleIndex:proposalId:shareIndex:newURLs:)` → `zcashlc_voting_add_sent_servers`
+
+  Delegation workflow
+  - `generateHotkey(seed:)` → `zcashlc_voting_generate_hotkey` (frees `FfiVotingHotkey` via `zcashlc_voting_free_hotkey`)
+  - `setupBundles(roundId:notes:)` → `zcashlc_voting_setup_bundles` (frees `FfiBundleSetupResult` via `zcashlc_voting_free_bundle_setup_result`)
+  - `getBundleCount(roundId:)` → `zcashlc_voting_get_bundle_count`
+  - `buildPczt(_:)` → `zcashlc_voting_build_pczt` (takes `VotingBuildPcztParams`)
+  - `storeTreeState(roundId:treeState:)` → `zcashlc_voting_store_tree_state`
+  - `getDelegationSubmission(roundId:bundleIndex:senderSeed:networkId:accountIndex:)` → `zcashlc_voting_get_delegation_submission`
+  - `getDelegationSubmission(roundId:bundleIndex:keystoneSig:sighash:)` → `zcashlc_voting_get_delegation_submission_with_keystone_sig`
+  - `storeVanPosition(roundId:bundleIndex:position:)` → `zcashlc_voting_store_van_position`
+  - `buildAndProveDelegation(roundId:bundleIndex:notes:hotkeyRawAddress:pirEndpoints:expectedSnapshotHeight:networkId:pirResolver:progress:)` (`async`, resolves the PIR snapshot endpoint, then runs proving on a detached `Task`) → `zcashlc_voting_build_and_prove_delegation` (with progress callback bridge)
 - `Broadcaster` protocol — separates transaction creation from submission, enabling custom broadcast strategies (e.g. submitting to multiple lightwalletd servers in parallel).
   - `Broadcaster.createProposedTransactions(proposal:spendingKey:)` — creates transactions locally without broadcasting, returning `[ZcashTransaction.Overview]` with raw bytes.
   - `Broadcaster.createTransactionFromPCZT(pcztWithProofs:pcztWithSigs:)` — extracts and stores a transaction from PCZT data without submitting.
@@ -24,14 +91,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `libzcashlc` voting tree-sync FFI: `zcashlc_voting_sync_vote_tree`, `zcashlc_voting_generate_van_witness`, and `zcashlc_voting_reset_tree_client`. Operate on the existing `VotingDatabaseHandle`, which also carries a `zcash_voting::tree_sync::VoteTreeSync` constructed in `zcashlc_voting_db_open`.
 - `libzcashlc` voting wallet-notes FFI: `zcashlc_voting_get_wallet_notes`. Loads unspent Orchard notes for a wallet account at a snapshot height and returns them as a JSON-encoded `Vec<NoteInfo>`, suitable as the `notes` input to `zcashlc_voting_precompute_delegation_pir`. `account_uuid` must be a non-null pointer to exactly 16 bytes; otherwise the call fails (returns null).
 - `libzcashlc` voting key-utility FFI: `zcashlc_voting_extract_orchard_fvk_from_ufvk`. Decodes a UFVK string and returns the raw 96-byte Orchard FVK. Returns null on missing Orchard component, malformed UFVK, or invalid `network_id`.
+- `libzcashlc` voting utility FFI: `zcashlc_voting_warm_proving_caches`, `zcashlc_voting_decompose_weight`, `zcashlc_voting_generate_delegation_inputs`, `zcashlc_voting_generate_delegation_inputs_with_fvk`, `zcashlc_voting_extract_pczt_sighash`, `zcashlc_voting_extract_spend_auth_sig`, `zcashlc_voting_extract_nc_root`, and `zcashlc_voting_verify_witness`. These cover voting proof setup, PCZT/signature extraction, note-commitment root extraction, and witness verification.
+- `libzcashlc` voting witness FFI: `zcashlc_voting_generate_note_witnesses`. Generates Orchard Merkle inclusion witnesses for a bundle's notes anchored at the round's snapshot height. Adds `incrementalmerkletree 0.8` as a direct Rust dependency.
+- `libzcashlc` voting round, recovery, and delegation workflow FFI: adds C-compatible return structs and free helpers, persisted round-state APIs, crash-recovery metadata helpers, share-delegation tracking, hotkey and bundle setup, delegation PCZT/proof generation, delegation submission payloads, and VAN position persistence.
+- `libzcashlc` vote-casting FFI: encrypts vote shares, builds vote commitments and share payloads, marks submitted votes, and signs cast-vote transactions.
 
 ## Changed
 - Bumped Rust dependencies to current crates.io releases (`zcash_address` 0.10→0.11, `zcash_client_backend` 0.21→0.22, `zcash_client_sqlite` 0.19→0.20, `zcash_primitives`/`zcash_proofs` 0.26→0.27, `zcash_protocol` 0.7→0.8, `zcash_transparent` 0.6→0.7, `sapling-crypto` 0.6→0.7, `orchard` 0.12→0.13, `pczt` 0.5→0.6) and removed the `[patch.crates-io]` git-rev overrides. No public Swift API changes.
 - Pinned `orchard` to `=0.13.1` and enabled its `unstable-voting-circuits` feature, required transitively by `zcash_voting`. No public Swift API changes.
 - `SDKSyncrhonizer.importAccount` extended with `birthday: BlockHeight?`. Leaving the default `nil` value sets the chain tip, otherwise given `birthday` height is used.
 - Enabled the `client-tree-sync` feature on `zcash_voting`, required by the new voting tree-sync FFI listed above.
-- Added `zcash_keys 0.13` (`orchard` feature) as a Rust dependency, used by the new voting wallet-notes and key-utility FFI to decode UFVKs and derive Orchard FVKs. No public Swift API changes.
-- Bumped `zcash_voting` to `0.5.3` so `network_id` matches the SDK (`0` = testnet, `1` = mainnet) end-to-end for wallet-notes JSON consumed by delegation PIR. No public Swift API changes.
+- Added `zcash_keys 0.13` (`orchard` feature) as a Rust dependency, used by the new voting wallet-notes, key-utility, and utility FFI to decode UFVKs and derive Orchard FVKs. No public Swift API changes.
+- Bumped `zcash_voting` to `0.5.7` so `network_id` matches the SDK (`0` = testnet, `1` = mainnet) end-to-end for wallet-notes JSON consumed by delegation PIR, and submitted-vote marking fails when no persisted vote row matches. No public Swift API changes.
 
 ## Fixed
 - `Transport became inactive` connectivity issue.

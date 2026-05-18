@@ -185,7 +185,7 @@ public struct VotingShareDelegation: Codable, Equatable, Sendable {
     public let proposalId: UInt32
     public let shareIndex: UInt32
     public let sentToURLs: [String]
-    public let nullifier: [UInt8]
+    public let nullifier: String
     public let confirmed: Bool
     public let submitAt: UInt64
     public let createdAt: UInt64
@@ -431,12 +431,116 @@ public struct VotingVanWitness: Codable, Sendable {
     }
 }
 
-// MARK: - TX hash lookup
+// MARK: - Keystone signature record (JSON)
 
-/// Result of a stored-tx-hash lookup for a delegation or vote bundle.
-public enum VotingTxHashLookup: Equatable, Sendable {
-    /// No record exists for the given key (round/bundle or round/bundle/proposal).
-    case notFound
-    /// A record exists and contains the given tx hash.
-    case present(String)
+/// A persisted Keystone-produced PCZT signature for a delegation bundle.
+public struct VotingKeystoneSignatureRecord: Codable, Sendable, Equatable {
+    public let bundleIndex: UInt32
+    public let sig: [UInt8]
+    public let sighash: [UInt8]
+    /// Randomized verification key (`rk` on the wire).
+    public let randomizedKey: [UInt8]
+
+    enum CodingKeys: String, CodingKey {
+        case bundleIndex = "bundle_index"
+        case sig
+        case sighash
+        case randomizedKey = "rk"
+    }
+
+    public init(
+        bundleIndex: UInt32,
+        sig: [UInt8],
+        sighash: [UInt8],
+        randomizedKey: [UInt8]
+    ) {
+        self.bundleIndex = bundleIndex
+        self.sig = sig
+        self.sighash = sighash
+        self.randomizedKey = randomizedKey
+    }
+}
+
+// MARK: - Build PCZT parameters
+
+/// Parameters required to build a voting PCZT for a delegation bundle.
+public struct VotingBuildPcztParams: Sendable {
+    public let roundId: String
+    public let bundleIndex: UInt32
+    public let notes: [VotingNoteInfo]
+    public let fvk: [UInt8]
+    public let hotkeyRawAddress: [UInt8]
+    public let consensusBranchId: UInt32
+    public let coinType: UInt32
+    public let seedFingerprint: [UInt8]
+    public let accountIndex: UInt32
+    public let roundName: String
+    public let addressIndex: UInt32
+
+    public init(
+        roundId: String,
+        bundleIndex: UInt32,
+        notes: [VotingNoteInfo],
+        fvk: [UInt8],
+        hotkeyRawAddress: [UInt8],
+        consensusBranchId: UInt32,
+        coinType: UInt32,
+        seedFingerprint: [UInt8],
+        accountIndex: UInt32,
+        roundName: String,
+        addressIndex: UInt32
+    ) {
+        self.roundId = roundId
+        self.bundleIndex = bundleIndex
+        self.notes = notes
+        self.fvk = fvk
+        self.hotkeyRawAddress = hotkeyRawAddress
+        self.consensusBranchId = consensusBranchId
+        self.coinType = coinType
+        self.seedFingerprint = seedFingerprint
+        self.accountIndex = accountIndex
+        self.roundName = roundName
+        self.addressIndex = addressIndex
+    }
+}
+
+// MARK: - PIR proof input
+
+/// Inputs to `VotingRustBackend.validatePirProof(_:)`.
+public struct VotingPirProof: Sendable, Equatable {
+    public let root: [UInt8]
+    public let nfBounds: [UInt8]
+    public let leafPosition: UInt32
+    public let path: [UInt8]
+    public let nullifier: [UInt8]
+    public let expectedRoot: [UInt8]
+
+    public init(
+        root: [UInt8],
+        nfBounds: [UInt8],
+        leafPosition: UInt32,
+        path: [UInt8],
+        nullifier: [UInt8],
+        expectedRoot: [UInt8]
+    ) {
+        self.root = root
+        self.nfBounds = nfBounds
+        self.leafPosition = leafPosition
+        self.path = path
+        self.nullifier = nullifier
+        self.expectedRoot = expectedRoot
+    }
+}
+
+// MARK: - Stored commitment bundle
+
+/// A previously-stored vote commitment bundle and its position in the
+/// vote-commitment tree.
+///
+/// Returned by `VotingRustBackend.getCommitmentBundle(...)`.
+public struct VotingStoredCommitmentBundle: Sendable, Equatable {
+    /// JSON-encoded `VotingVoteCommitmentBundle` as it was stored.
+    public let bundleJson: String
+    /// Position of the vote commitment within the vote commitment tree.
+    public let voteCommitmentTreePosition: UInt64
 }

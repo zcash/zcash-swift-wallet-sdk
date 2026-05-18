@@ -6,18 +6,14 @@ use zcash_client_backend::data_api::{Account, WalletRead};
 
 use crate::unwrap_exc_or_null;
 
+use super::constants::ACCOUNT_UUID_BYTE_LEN;
 use super::db::VotingDatabaseHandle;
-use super::helpers::{
-    bytes_from_ptr, json_to_boxed_slice, open_wallet_db, received_note_to_note_info, str_from_ptr,
-};
+use super::helpers::{bytes_from_ptr, json_to_boxed_slice, open_wallet_db, str_from_ptr};
 use super::json::JsonNoteInfo;
 
 // =============================================================================
 // VotingDatabase methods — Wallet notes
 // =============================================================================
-
-/// Byte length of the binary account UUID passed as `account_uuid` / `account_uuid_len`.
-const ACCOUNT_UUID_BYTE_LEN: usize = 16;
 
 /// Get wallet notes eligible for voting at the given snapshot height.
 ///
@@ -100,7 +96,13 @@ pub unsafe extern "C" fn zcashlc_voting_get_wallet_notes(
         let network = wallet_db.params();
         let mut json_notes = Vec::with_capacity(received_notes.len());
         for rn in &received_notes {
-            let note_info = received_note_to_note_info(rn, ufvk, network)?;
+            let note_info = zcash_voting::NoteInfo::from_orchard_note(
+                rn.note(),
+                u64::from(rn.note_commitment_tree_position()),
+                rn.spending_key_scope(),
+                ufvk,
+                network,
+            )?;
             json_notes.push(JsonNoteInfo::from(note_info));
         }
         json_to_boxed_slice(&json_notes)
