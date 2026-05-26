@@ -47,7 +47,6 @@ fi
 VERSION="$1"
 REPO="zcash/zcash-swift-wallet-sdk"
 PRODUCTS_DIR="BuildSupport/products"
-ZIP_FILE="libzcashlc.xcframework.zip"
 
 echo "=== Preparing release ${VERSION} ==="
 echo ""
@@ -62,7 +61,11 @@ if [[ -t 0 ]] && [[ -n $(git status --porcelain) ]]; then
     fi
 fi
 
-git checkout -b "release/ffi-${VERSION}"
+# -B (force) so re-running after a partial failure re-uses the branch
+# instead of aborting on "branch already exists". The clean-working-dir
+# check above means no in-flight work is lost; any orphaned commits on
+# the prior branch remain reachable via reflog.
+git checkout -B "release/ffi-${VERSION}"
 
 # Build full xcframework
 echo "=== Building xcframework (this takes a while) ==="
@@ -71,47 +74,15 @@ make clean
 make xcframework
 cd ..
 
-# Create release archive
-echo ""
-echo "=== Creating release archive ==="
-cd "$PRODUCTS_DIR"
-rm -f "$ZIP_FILE"
-zip -r "$ZIP_FILE" libzcashlc.xcframework
-CHECKSUM=$(shasum -a 256 "$ZIP_FILE" | awk '{print $1}')
-cd ../..
-
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ZIP_FILE}"
-
-# Write release info for consumption by other scripts (release.sh, CI)
-cat > "$PRODUCTS_DIR/release.env" << EOF
-CHECKSUM=${CHECKSUM}
-DOWNLOAD_URL=${DOWNLOAD_URL}
-VERSION=${VERSION}
-EOF
-
-# Upload to GitHub as draft release
-echo ""
-echo "=== Uploading to GitHub (draft release) ==="
-
-if gh release view "$VERSION" --repo "$REPO" &>/dev/null; then
-    if [[ "$FORCE_OVERWRITE" != "true" ]]; then
-        echo "Error: Release $VERSION already exists."
-        echo "Use --force-overwrite-existing-release to update an existing release."
-        exit 1
-    fi
-    echo "Release $VERSION already exists. Updating assets (--force-overwrite-existing-release)..."
-    gh release upload "$VERSION" \
-        "$PRODUCTS_DIR/$ZIP_FILE" \
-        --repo "$REPO" \
-        --clobber
-else
-    gh release create "$VERSION" \
-        "$PRODUCTS_DIR/$ZIP_FILE" \
-        --repo "$REPO" \
-        --title "$VERSION" \
-        --notes "Zcash Light Client SDK ${VERSION}" \
-        --draft
+# Package the built xcframework and upload it as a draft release.
+UPLOAD_ARGS=()
+if [[ "$FORCE_OVERWRITE" == "true" ]]; then
+    UPLOAD_ARGS+=(--force-overwrite-existing-release)
 fi
+./Scripts/upload-ffi-draft.sh "${UPLOAD_ARGS[@]}" "$VERSION"
+
+# Read release info written by upload-ffi-draft.sh.
+source "$PRODUCTS_DIR/release.env"
 
 RELEASE_URL="https://github.com/${REPO}/releases/tag/${VERSION}"
 
