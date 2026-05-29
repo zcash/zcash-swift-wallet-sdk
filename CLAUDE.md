@@ -42,9 +42,24 @@ See `docs/LOCAL_DEVELOPMENT.md` for the full reference.
 
 ## Release
 
-- `./Scripts/release.sh <remote> <version>` — fully automated release (bumps the XCFramework URL+checksum in `Package.swift`, signs a tag, drafts GitHub Release).
-- `./Scripts/prepare-release.sh <version>` — semi-automated alternative.
-- The `Build FFI XCFramework` GitHub Action (`workflow_dispatch`) produces release artifacts.
+Alpha/beta pre-releases use a two-phase CI + maintainer flow:
+
+1. **CI**: trigger the `Build FFI XCFramework` workflow (`workflow_dispatch`) with a `version` like `2.6.0-alpha.2`. The job builds the 5-architecture XCFramework, verifies `swift build` + `OfflineTests` pass against it via the `LocalPackages/` override, uploads the artifact as a draft pre-release, and opens a `release/ffi-<version>` PR updating `Package.swift` and `CHANGELOG.md`.
+2. **Maintainer**: review and approve the PR, then — **before merging** — check out the release commit (its SHA is printed in the PR body) and run `./Scripts/finalize-release.sh <remote> <version> <release-sha>` to create a GPG-signed tag on that commit and publish the draft pre-release. Merge the PR last; the repo auto-deletes the branch on merge, but the tag preserves the release commit.
+
+   ```
+   git fetch <remote> <release-sha>
+   git checkout <release-sha>
+   ./Scripts/finalize-release.sh <remote> <version> <release-sha>
+   # Then merge the PR.
+   ```
+
+These pre-releases produce artifacts for internal test builds of the wallet; the release PR is not required to reference a tracking issue.
+
+For fully-local releases (no CI):
+
+- `./Scripts/release.sh <remote> <version>` — runs the equivalent flow on your machine (builds, uploads draft, updates `Package.swift`+`CHANGELOG.md`, commits, pushes the release branch, then delegates the signed tag + publish to `finalize-release.sh`).
+- `./Scripts/prepare-release.sh <version>` — just builds the XCFramework and uploads the draft (no `Package.swift` update, no tag); the rest is manual.
 
 ## Architecture
 

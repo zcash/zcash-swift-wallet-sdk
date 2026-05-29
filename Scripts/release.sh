@@ -4,18 +4,18 @@
 #
 # This script performs the COMPLETE release process:
 #   1. Pre-flight checks (clean dir, branch, GPG)
-#   2. Builds xcframework and uploads draft release (via prepare-release.sh)
-#   3. Updates Package.swift with URL and checksum
-#   4. Commits the Package.swift change
-#   5. Pauses for manual verification of the draft release
-#   6. Creates a signed tag
-#   7. Pushes to the specified remote
-#   8. Publishes the GitHub release
+#   2. Builds the XCFramework and uploads a draft release
+#      (via prepare-release.sh → upload-ffi-draft.sh).
+#   3. Updates Package.swift and CHANGELOG (via update-package-swift.sh
+#      and stamp-changelog.sh) and commits the result.
+#   4. Pushes the release branch to the specified remote.
+#   5. Tags HEAD with a signed tag and publishes the draft pre-release
+#      (via finalize-release.sh, which prompts before tagging).
 #
 # Arguments:
 #   <remote>   The git remote pointing to zcash/zcash-swift-wallet-sdk
 #              (e.g., 'origin' or 'upstream')
-#   <version>  The version to release (e.g., '2.5.0')
+#   <version>  The version to release (e.g., '2.6.0-alpha.2')
 #
 # Prerequisites:
 #   - gh CLI installed and authenticated
@@ -37,7 +37,7 @@ cd "$(dirname "$0")/.."
 
 if [[ -z "$1" ]] || [[ -z "$2" ]]; then
     echo "Usage: $0 <remote> <version>"
-    echo "Example: $0 upstream 2.5.0"
+    echo "Example: $0 upstream 2.6.0-alpha.2"
     echo ""
     echo "Available remotes:"
     git remote -v
@@ -80,9 +80,15 @@ if [[ "$CURRENT_BRANCH" != "main" ]]; then
     fi
 fi
 
-# Check if tag already exists
+# Check if tag already exists (locally or on the remote). Catching a
+# remote-only tag here saves the maintainer from a 45-minute build that
+# would only fail at finalize-release.sh's pre-flight.
 if git rev-parse "$VERSION" >/dev/null 2>&1; then
-    echo "Error: Tag $VERSION already exists."
+    echo "Error: Tag $VERSION already exists locally."
+    exit 1
+fi
+if [[ -n $(git ls-remote --tags "$UPSTREAM_REMOTE" "refs/tags/$VERSION" 2>/dev/null) ]]; then
+    echo "Error: Tag $VERSION already exists on $UPSTREAM_REMOTE."
     exit 1
 fi
 
@@ -94,82 +100,46 @@ if ! git config --get user.signingkey >/dev/null 2>&1; then
 fi
 
 # === Step 1: Build and upload draft release ===
-echo "=== Step 1/6: Build and upload draft release ==="
-./Scripts/prepare-release.sh "$VERSION"
+echo "=== Step 1/5: Build and upload draft release ==="
+# --force-overwrite-existing-release lets a retry of a partially-failed
+# release re-upload the artifact. upload-ffi-draft.sh's isDraft guard
+# refuses to clobber a release that has already been published.
+./Scripts/prepare-release.sh --force-overwrite-existing-release "$VERSION"
 
 # Read release info written by prepare-release.sh
 source "$PRODUCTS_DIR/release.env"
 
 echo ""
-echo "=== Step 2/6: Updating Package.swift ==="
+echo "=== Step 2/5: Updating Package.swift and CHANGELOG ==="
 
-# Update the binaryTarget URL and checksum in Package.swift
-sed -i.bak -E \
-    -e "s|(url: \"https://github.com/${REPO}/releases/download/)[^\"]+(/libzcashlc.xcframework.zip\")|\1${VERSION}\2|" \
-    -e "s|(checksum: \")[^\"]+(\")|\1${CHECKSUM}\2|" \
-    Package.swift
-rm -f Package.swift.bak
-
-# Verify the update worked
-if ! grep -q "download/${VERSION}/libzcashlc.xcframework.zip" Package.swift; then
-    echo "Error: Failed to update Package.swift URL"
+if ! ./Scripts/update-package-swift.sh "$VERSION" "$CHECKSUM"; then
     git checkout Package.swift
     exit 1
 fi
 
-if ! grep -q "checksum: \"${CHECKSUM}\"" Package.swift; then
-    echo "Error: Failed to update Package.swift checksum"
-    git checkout Package.swift
+if ! ./Scripts/stamp-changelog.sh "$VERSION"; then
+    # Defensive: stamp-changelog.sh checks its preconditions before
+    # mutating CHANGELOG.md, but restore both files anyway so a retry
+    # starts from a clean working tree.
+    git checkout Package.swift CHANGELOG.md
     exit 1
 fi
-
-echo "Package.swift updated with:"
-echo "  URL: ${DOWNLOAD_URL}"
-echo "  Checksum: ${CHECKSUM}"
 
 echo ""
-echo "=== Step 3/6: Committing Package.swift ==="
-git add Package.swift
+echo "=== Step 3/5: Committing Package.swift and CHANGELOG ==="
+git add Package.swift CHANGELOG.md
 git commit -m "Prepare release ${VERSION}"
 
-# === Confirmation step ===
 echo ""
-echo "=========================================="
-echo "  Draft release uploaded and Package.swift committed."
-echo "  Please verify the draft release before continuing:"
-echo ""
-echo "  https://github.com/${REPO}/releases/tag/${VERSION}"
-echo "=========================================="
-echo ""
-read -p "Proceed with tagging, pushing, and publishing? [y/N] " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo ""
-    echo "Release paused. To resume manually:"
-    echo "  git tag -s ${VERSION} -m \"Release ${VERSION}\""
-    echo "  git push ${UPSTREAM_REMOTE} ${CURRENT_BRANCH} ${VERSION}"
-    echo "  gh release edit ${VERSION} --repo ${REPO} --draft=false"
-    exit 0
-fi
+echo "=== Step 4/5: Pushing release branch to ${UPSTREAM_REMOTE} ==="
+RELEASE_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+RELEASE_SHA=$(git rev-parse HEAD)
+git push "$UPSTREAM_REMOTE" "$RELEASE_BRANCH"
 
 echo ""
-echo "=== Step 4/6: Creating signed tag ==="
-git tag -s "$VERSION" -m "Release ${VERSION}"
-
-echo ""
-echo "=== Step 5/6: Pushing to $UPSTREAM_REMOTE ==="
-git push "$UPSTREAM_REMOTE" "$CURRENT_BRANCH" "$VERSION"
-
-echo ""
-echo "=== Step 6/6: Publishing release ==="
-gh release edit "$VERSION" --repo "$REPO" --draft=false
-
-echo ""
-echo "=========================================="
-echo "  Release ${VERSION} complete!"
-echo "=========================================="
-echo ""
-echo "  GitHub Release: https://github.com/${REPO}/releases/tag/${VERSION}"
-echo "  Package.swift updated and pushed"
-echo "  Signed tag ${VERSION} created and pushed"
-echo ""
+echo "=== Step 5/5: Tagging and publishing ==="
+# finalize-release.sh validates state, prompts for confirmation, creates the
+# signed tag, pushes it, and publishes the draft release. If you abort at its
+# prompt, re-run:
+#   ./Scripts/finalize-release.sh <remote> <version> <release-sha>
+./Scripts/finalize-release.sh "$UPSTREAM_REMOTE" "$VERSION" "$RELEASE_SHA"

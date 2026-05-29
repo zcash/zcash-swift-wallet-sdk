@@ -89,3 +89,6 @@ BuildSupport/products/
 # Claude code
 .claude/settings.local.json
 .remember/
+
+# Git worktrees for isolated feature work
+.worktrees/

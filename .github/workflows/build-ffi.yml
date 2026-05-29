@@ -1,22 +1,77 @@
 name: Build FFI XCFramework
 
 on:
-  # Manual trigger for preparing releases.
-  # The branch selected in the GitHub UI determines which commit is checked out and built.
+  # Manual trigger for preparing alpha/beta pre-releases.
+  # The branch selected in the GitHub UI determines which commit is built and
+  # is used as the base branch for the release PR.
+  #
+  # These pre-releases produce artifacts for internal-only test builds of the
+  # wallet, so the release PR does not need to reference a tracking issue.
   workflow_dispatch:
     inputs:
       version:
-        description: 'SDK version (e.g., 2.5.0)'
+        description: 'Pre-release version (x.y.z-alpha.n or x.y.z-beta.n, e.g. 2.6.0-alpha.2)'
         required: true
 
 permissions: {}
 
+# Two concurrent dispatches for the same version would race on draft
+# creation and the release-branch push. group-by-version cancels the
+# older run if a newer dispatch comes in for the same version.
+concurrency:
+  group: build-ffi-${{ inputs.version }}
+  cancel-in-progress: true
+
 jobs:
-  build-xcframework:
+  build-test-release:
     runs-on: macos-15
     permissions:
-      contents: write # Required for creating draft releases
+      contents: write       # create the draft release and push the release branch
+      pull-requests: write  # open the release PR
+    env:
+      VERSION: ${{ github.event.inputs.version }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      BASE_BRANCH: ${{ github.ref_name }}
     steps:
+      - name: Validate inputs
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          APP_ID: ${{ vars.RELEASE_BOT_APP_ID }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-(alpha|beta)\.[0-9]+$ ]]; then
+            echo "::error::version '$VERSION' must match x.y.z-alpha.n or x.y.z-beta.n"
+            exit 1
+          fi
+          # The release PR needs a branch as its base. Refuse to run if the
+          # workflow was dispatched against a tag (possible via the API even
+          # though the UI dropdown only shows branches) — the 60-min build
+          # would fail at gh pr create later.
+          if [[ "$REF_TYPE" != "branch" ]]; then
+            echo "::error::workflow must be dispatched from a branch (got ${REF_TYPE} '${REF_NAME}')"
+            exit 1
+          fi
+          # The release-bot GitHub App is required: app-installation tokens
+          # trigger downstream PR-check workflows (swift.yml, zizmor) on the
+          # release PR, which GITHUB_TOKEN cannot. Refuse to run without it
+          # rather than producing a PR that can't pass required checks.
+          if [[ -z "$APP_ID" ]]; then
+            echo "::error::repo variable RELEASE_BOT_APP_ID is not set; configure the release-bot GitHub App"
+            exit 1
+          fi
+
+      # Mint an installation token for the release-bot GitHub App. App
+      # tokens (unlike GITHUB_TOKEN) trigger downstream workflows, so the
+      # release PR's required status checks (swift.yml, zizmor) fire
+      # normally. Required: enforced above by the Validate inputs step.
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
@@ -33,21 +88,120 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
 
-      - name: Build and upload draft release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ github.event.inputs.version }}
-        run: ./Scripts/prepare-release.sh "$VERSION"
+      # Build the full 5-architecture XCFramework — the release artifact.
+      # Past runs of the old workflow took ~42-44 min for the same build;
+      # 60 gives a safety margin without being absurd.
+      - name: Build XCFramework (all architectures)
+        timeout-minutes: 60
+        working-directory: ./BuildSupport
+        run: |
+          make clean
+          make xcframework
 
-      - name: Output Package.swift Update
+      # Point Package.swift at the freshly built FFI via the LocalPackages
+      # override (same mechanism as swift.yml). LocalPackages/ is gitignored.
+      - name: Configure local FFI for verification
+        run: |
+          mkdir -p LocalPackages
+          cp -R BuildSupport/products/libzcashlc.xcframework LocalPackages/
+          cp BuildSupport/LocalPackages-Package.swift LocalPackages/Package.swift
+
+      - name: Build Swift package against new FFI
+        timeout-minutes: 15
+        run: swift build -v
+
+      - name: Run OfflineTests against new FFI
+        timeout-minutes: 10
+        run: swift test --filter OfflineTests
+
+      # Verification passed — remove the override so it is never committed.
+      - name: Remove local FFI override
+        run: rm -rf LocalPackages
+
+      # Only reached if build + tests succeeded.
+      # CI passes --force-overwrite-existing-release so a partial-failure
+      # retry can complete: upload-ffi-draft.sh's existing-draft path will
+      # update the assets in place. The script refuses to clobber a release
+      # that has been promoted out of draft state, so this stays safe.
+      - name: Upload draft pre-release
+        run: ./Scripts/upload-ffi-draft.sh --force-overwrite-existing-release "$VERSION"
+
+      - name: Update Package.swift and CHANGELOG
         run: |
           source BuildSupport/products/release.env
-          echo ""
-          echo "========================================"
-          echo "Update Package.swift with:"
-          echo "========================================"
-          echo ""
-          echo "url: \"${DOWNLOAD_URL}\","
-          echo "checksum: \"${CHECKSUM}\""
-          echo ""
-          echo "Then commit, tag ${VERSION}, and publish the draft release."
+          ./Scripts/update-package-swift.sh "$VERSION" "$CHECKSUM"
+          ./Scripts/stamp-changelog.sh "$VERSION"
+
+      - name: Open release PR
+        env:
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          BRANCH="release/ffi-${VERSION}"
+          # Installation tokens aren't user-bound, so /user is unreliable.
+          # Derive the bot identity from the app slug; the /users/<slug>[bot]
+          # endpoint is public and resolves the bot's numeric id.
+          BOT_USER="${APP_SLUG}[bot]"
+          BOT_ID="$(gh api "/users/${BOT_USER}" --jq '.id')"
+          git config user.name "$BOT_USER"
+          git config user.email "${BOT_ID}+${BOT_USER}@users.noreply.github.com"
+          # -B (force) so a retry of this workflow re-uses the branch
+          # instead of aborting on "branch already exists" against the
+          # runner's prior local state.
+          git checkout -B "$BRANCH"
+          git add Package.swift CHANGELOG.md
+          git commit -m "Prepare release ${VERSION}"
+          # Capture the release commit SHA so the PR body and finalize
+          # invocation pin to this exact commit, not the (mutable) branch.
+          RELEASE_SHA=$(git rev-parse HEAD)
+          # --force-with-lease lets a retry replace its own prior release
+          # branch on the remote without overwriting unrelated work that
+          # may have happened to land there in between runs.
+          git push --force-with-lease="${BRANCH}": \
+            "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:${BRANCH}"
+          mkdir -p tmp
+          cat > tmp/pr-body.md <<BODY
+          Updates \`Package.swift\` to the \`${VERSION}\` FFI draft pre-release and stamps the CHANGELOG.
+
+          Built and verified by the \`Build FFI XCFramework\` workflow run: \`swift build\` and the \`OfflineTests\` suite pass against the \`${VERSION}\` XCFramework.
+
+          After this PR is approved, a maintainer signs the tag and publishes the draft pre-release **before merging** the PR (the repo auto-deletes branches on merge, so finalize must run while the branch still exists on the remote). The tag must point to the commit CI produced — \`${RELEASE_SHA}\` — passed explicitly to finalize so the script can verify it.
+
+          \`\`\`
+          git fetch <remote> ${RELEASE_SHA}
+          git checkout ${RELEASE_SHA}
+          ./Scripts/finalize-release.sh <remote> ${VERSION} ${RELEASE_SHA}
+          \`\`\`
+
+          Then merge this PR.
+          BODY
+          gh pr create \
+            --repo "$REPO" \
+            --base "$BASE_BRANCH" \
+            --head "$BRANCH" \
+            --title "Prepare release ${VERSION}" \
+            --body-file tmp/pr-body.md
+          # Surface the release SHA to later steps (Summary).
+          echo "RELEASE_SHA=${RELEASE_SHA}" >> "$GITHUB_ENV"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Release ${VERSION}"
+            echo ""
+            echo "- Draft pre-release: https://github.com/${REPO}/releases/tag/${VERSION}"
+            if [[ -n "${RELEASE_SHA:-}" ]]; then
+              echo "- Release commit: \`${RELEASE_SHA}\` on branch \`release/ffi-${VERSION}\`"
+            fi
+            echo ""
+            echo "### Maintainer next steps"
+            echo "1. Review and approve the release PR (but **do not merge yet** — the release branch must still exist on the remote for step 2)."
+            echo "2. Finalize the release **before merging**:"
+            echo "   \`\`\`"
+            echo "   git fetch <remote> ${RELEASE_SHA:-<release-sha-see-PR-body>}"
+            echo "   git checkout ${RELEASE_SHA:-<release-sha-see-PR-body>}"
+            echo "   ./Scripts/finalize-release.sh <remote> ${VERSION} ${RELEASE_SHA:-<release-sha-see-PR-body>}"
+            echo "   \`\`\`"
+            echo "3. Merge the release PR. The branch auto-deletes; the signed tag preserves the release commit."
+          } >> "$GITHUB_STEP_SUMMARY"
