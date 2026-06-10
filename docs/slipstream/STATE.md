@@ -5,7 +5,7 @@
 
 ## NEXT ACTION
 
-➡️ **T1.0** — Write the detailed Phase 1 (Transport) plan into docs/slipstream/plans/<date>-phase-1-transport.md, following docs/slipstream/CONVENTIONS.md and the P1 task index in ROADMAP.md. Read current code reality first (slipstream/ crates, rust/src/tor.rs for tonic precedent).
+➡️ **T1.0** — Write the detailed Phase 1 (Transport) plan into docs/slipstream/plans/<date>-phase-1-transport.md, following docs/slipstream/CONVENTIONS.md and the P1 task index in ROADMAP.md. Read current code reality first (slipstream/ crates, rust/src/tor.rs for tonic precedent). Honor the P0-review carry-overs listed in the 2026-06-10 final-review session-log entry.
 
 ## Current phase: P0 — Foundation
 
@@ -59,3 +59,4 @@
 - 2026-06-10 — T0.3 done: core domain types (config/error/events), 6 tests green.
 - 2026-06-10 — T0.4 done: CLI scaffold (clap + tracing), 2 tests green, binary smoke-tested.
 - 2026-06-10 — T0.5 done: CLAUDE.md pointer added, gate G0 green. PHASE 0 COMPLETE.
+- 2026-06-10 — P0 final review passed (verdict: ready for P1). Follow-ups applied: containment carve-out for docs/ design docs; checkbox + OfflineTests-cadence conventions. Carried to P1: add validate() guard tests (empty host, tiny budget) in first T1.x code commit; add [workspace.dependencies] table when T1.1 lands first new dep; T1.0 plan must specify G1 benchmark records single-stream baseline AND K=4 in the same run/server.

@@ -9,7 +9,7 @@
 3. **Every commit contains:** the work + its tests green + the STATE.md update. A commit is the unit of resumability.
 4. **Interrupted mid-task?** The rule is: repo must always be in a state where `git stash && always-green commands` pass. Uncommitted exploration goes to stash or is deleted; STATE.md says what was learned.
 5. **Plan drift:** if reality contradicts the phase plan, do NOT improvise silently. Append a Decision Log entry (what changed, why), update the phase plan file, then continue.
-6. **Detailed phase plans** are written by `T{N}.0` tasks in `docs/slipstream/plans/YYYY-MM-DD-phase-N-<name>.md` following the superpowers writing-plans format (bite-sized TDD steps, complete code, exact commands).
+6. **Detailed phase plans** are written by `T{N}.0` tasks in `docs/slipstream/plans/YYYY-MM-DD-phase-N-<name>.md` following the superpowers writing-plans format (bite-sized TDD steps, complete code, exact commands). Phase-plan step checkboxes are execution aids, not completion records — STATE.md task status is the single source of truth; never tick checkboxes after the fact.
 
 ## Always-green commands (must pass before AND after every commit)
 
@@ -17,6 +17,8 @@
 cargo test -p slipstream-core -p slipstream-cli      # engine tests (fast)
 swift test --filter OfflineTests                      # old SDK untouched (CI parity)
 ```
+
+The cargo line runs before/after every commit. `swift test --filter OfflineTests` is required at every phase gate and whenever a commit touches anything outside `slipstream/` + `docs/` (Swift sources, Scripts/, root Cargo.toml, or modifications to existing Cargo.lock entries); pure slipstream-internal Rust commits (incl. additive Cargo.lock entries) may skip it.
 
 Heavier checks, run when the touched area demands it:
 ```bash
@@ -33,7 +35,7 @@ Tests/lightwalletd/lightwalletd --no-tls-very-insecure --data-dir /tmp --darksid
 
 - Branch: `slipstream` (this repo). Never commit to `main`.
 - Commit format: `[#<tracking-issue>] slipstream: <imperative title>` (issue number lives in STATE.md).
-- **Containment:** all work lives under `slipstream/` + `docs/slipstream/`. Permitted exceptions only: root `Cargo.toml` workspace lines, `CLAUDE.md` pointer, P4 FFI exports in `rust/src/lib.rs`, P4 Swift files in `Sources/ZcashLightClientKit/Slipstream/`.
+- **Containment:** all work lives under `slipstream/` + `docs/slipstream/`. Permitted exceptions only: root `Cargo.toml` workspace lines, `CLAUDE.md` pointer, P4 FFI exports in `rust/src/lib.rs`, P4 Swift files in `Sources/ZcashLightClientKit/Slipstream/`. Background design documents (read-once reference, e.g. `docs/SLIPSTREAM_DESIGN.md`, `docs/SYNC_PERFORMANCE_PROPOSAL.md`) live at `docs/` top level — allowed.
 - Old SDK files: additive changes only. Never modify `Block/`, `Synchronizer/SDKSynchronizer.swift`, or the action machine.
 - **Zodl iOS repo** (P4+): `/Users/lukaskorba/Dev/Xcode/GitHub/LukasKorba/secant-ios-wallet` (remote `zodl-ios`). Read/write + git granted. Work on a `slipstream` branch cut from Zodl's **main** (the checkout may sit on unrelated feature branches — never base on those). Same one-task/commit/STATE.md discipline applies.
 
