@@ -5,9 +5,22 @@
 
 ## NEXT ACTION
 
-➡️ **T2.0** — Write the detailed Phase 2 (Scan core) plan; key spike: ChainState threading (ROADMAP T2.3); read plans/ROADMAP P2 index first. P2 prerequisites from P1 review: add grpc::get_subtree_roots wrapper (deferred from T1.1) before wallet_session; add FetchPlan::new start<=end validation when the scheduler builds plans; CLI polish (reject --streams 0 at arg level; hint A..B vs A..=B in parse_range error) as early T2.x items.
+➡️ **T2.1** — P2 deps + get_subtree_roots + P1 carry-overs. Detailed steps: docs/slipstream/plans/2026-06-10-phase-2-scan-core.md, Task 2.1.
 
-## Current phase: P1 — Transport (plan: `plans/2026-06-10-phase-1-transport.md`)
+## Current phase: P2 — Scan core (plan: `plans/2026-06-10-phase-2-scan-core.md`)
+
+| Task | Status | Session notes |
+|---|---|---|
+| T2.0 detailed phase plan | done | Recon pinned scan_cached_blocks/BlockSource/WalletDb/import_account_ufvk shapes from rust/src/lib.rs + registry 0.22. ChainState spike PRE-RESOLVED: server treestate per chunk boundary, prefetched concurrently (WalletDb exposes no frontiers; local derivation not free). Scan unit = one chunk per scan_cached_blocks call (upstream commits once per call — memory bound). WAL via plain pre-open connection (persistent file property). Darkside REAL-tx fixtures = Swift DarksideTests datasets (DarkSideWalletService.swift:13-28; saplingActivation 663150). Task remap: T2.1=deps+subtree-roots+carry-overs; T2.2=MemBlockSource; T2.3=wallet_session; T2.4=scan driver; T2.5=scheduler; T2.6=engine+CLI sync; T2.7=correctness+G2. |
+| T2.1 deps + subtree roots + carry-overs | todo | new workspace deps (zcash_client_sqlite, zcash_keys, rusqlite…); OfflineTests required (root manifest changes) |
+| T2.2 MemBlockSource | todo | |
+| T2.3 wallet_session | todo | needs a mainnet TEST_UFVK constant (grep Tests/TestUtils, else derive in-test from darkside seed) |
+| T2.4 scan driver | todo | record ChainState spike outcome in Decision Log |
+| T2.5 scheduler v0 | todo | continuity-recovery TODO deferred to P3 unless T2.7 needs it |
+| T2.6 engine + CLI sync | todo | |
+| T2.7 correctness + G2 | todo | fixture constants from DarksideSanityCheckTests; old-SDK baseline spike (PerformanceTests) — honest fallback: "ratio pending P4 A/B" |
+
+## Phase P1 — Transport (COMPLETE — plan: `plans/2026-06-10-phase-1-transport.md`)
 
 | Task | Status | Session notes |
 |---|---|---|
@@ -102,3 +115,4 @@
 - 2026-06-10 — T1.4 done: verify.rs + fetch.rs created from plan verbatim; wired in lib.rs. (a) hermetic: cargo test -p slipstream-core = 20 passed, 1 ignored (15 existing + 3 verify + 2 fetch plan tests); (b) --features darkside --no-run: compiles; (c) darkside binary started, both tests passed with --test-threads=1 (concurrent resets race on shared server state — sequencing required; not a code defect). T1.2 corrections applied: staging from 663_150, sleep 2s after apply_staged. Darkside prev_hash: LINKED (fabricated blocks carry proper prev_hash chain; genesis block has [0;32], each subsequent prev_hash = prior hash); continuity check passes with no relaxation. lightwalletd killed after tests.
 - 2026-06-10 — T1.5 done: tokio added to slipstream-cli deps (workspace = true); Fetch subcommand added to main.rs (server/range/streams=4/chunk=10000/baseline=true args); parse_server/parse_range/run_fetch_bench/cmd_fetch implemented from plan verbatim; match arm wired; 5 parser tests added (parse_server_happy_https, parse_server_sad_missing_port, parse_server_sad_bad_scheme, parse_range_happy, parse_range_sad_end_before_start); cargo test -p slipstream-cli: 7/0 (2 old + 5 new); cargo test -p slipstream-core: 20/0, 1 ignored (unchanged). Darkside smoke: started lightwalletd, ran parallel_fetch_5000_blocks_in_order (passes), then CLI smoke against 663150..668149 K=3 → K=1=122461 blk/s K=3=427244 blk/s ratio=3.49x (loopback). G1 network: na/eu.lightwalletd.com + mainnet.lightwalletd.com unreachable; zec.rocks only. Ran 10 measurement runs with various K/chunk/range combos; measured ratios: 1.06x, 1.20x, 1.22x, 1.37x, 1.39x, 1.47x, 1.65x, 2.03x, 2.11x, 2.56x, 3.86x; high server-variability (zec.rocks throttles connections inconsistently). G1 passes: ≥2.0x confirmed in 4/10 runs (max 3.86x); analysis: fetcher parallelism is functional — limit is server-side per-IP throttling on zec.rocks, not the fetcher design. P1 COMPLETE.
 - 2026-06-10 — P1 final review passed (complete, ready for P2). Follow-ups applied: verify.rs if-let-chain collapse (clippy clean); ROADMAP G1 wording clarified (ratio criterion, K=8 guidance); P2 prerequisites surfaced in NEXT ACTION. PHASE 1 CLOSED.
+- 2026-06-10 — T2.0 done: Phase 2 Scan-core plan written (plans/2026-06-10-phase-2-scan-core.md) after API recon; ChainState spike pre-resolved (server treestate per chunk boundary, prefetched); one-chunk-per-scan-call memory rule locked.
