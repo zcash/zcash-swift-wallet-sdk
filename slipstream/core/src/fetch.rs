@@ -40,7 +40,10 @@ pub struct FetchPlan {
 }
 
 impl FetchPlan {
+    /// `start <= end` is required; violations are a caller bug.
     pub fn new(start: u64, end: u64, chunk_blocks: u32, streams: usize) -> Self {
+        assert!(start <= end, "FetchPlan: start {start} > end {end}");
+        assert!(chunk_blocks > 0, "FetchPlan: chunk_blocks must be > 0");
         Self {
             start,
             end,
@@ -248,5 +251,11 @@ mod tests {
         let p = FetchPlan::new(5, 5, 100, 2);
         assert_eq!(p.chunk_count(), 1);
         assert_eq!(p.chunk_range(0), (5, 5));
+    }
+
+    #[test]
+    #[should_panic(expected = "FetchPlan: start")]
+    fn plan_rejects_inverted_range() {
+        FetchPlan::new(1000, 999, 100, 1);
     }
 }

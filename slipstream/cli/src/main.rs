@@ -23,7 +23,7 @@ enum Cmd {
         #[arg(long)]
         range: String,
         /// Parallel streams for the measured run.
-        #[arg(long, default_value_t = 4)]
+        #[arg(long, default_value_t = 4, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         streams: usize,
         /// Blocks per chunk.
         #[arg(long, default_value_t = 10_000)]
@@ -54,6 +54,9 @@ fn parse_server(s: &str) -> Result<slipstream_core::Endpoint, String> {
 }
 
 fn parse_range(s: &str) -> Result<(u64, u64), String> {
+    if s.contains("..=") {
+        return Err(format!("range must be start..end (not ..=): {s}"));
+    }
     let (a, b) = s.split_once("..").ok_or_else(|| format!("range must be start..end: {s}"))?;
     let start: u64 = a.trim().parse().map_err(|e| format!("bad start: {e}"))?;
     let end: u64 = b.trim().parse().map_err(|e| format!("bad end: {e}"))?;
@@ -180,5 +183,11 @@ mod tests {
     fn parse_range_sad_end_before_start() {
         let err = parse_range("2600000..2500000").unwrap_err();
         assert!(err.contains(">="), "error should mention >=: {err}");
+    }
+
+    #[test]
+    fn parse_range_rejects_inclusive_syntax() {
+        let err = parse_range("2500000..=2600000").unwrap_err();
+        assert!(err.contains("..="), "error should mention ..=: {err}");
     }
 }

@@ -130,3 +130,12 @@ zcash_client_backend = { version = "0.23", features = [
     "transparent-inputs",
     "unstable",
 ] }
+zcash_client_sqlite = { version = "0.21", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_keys = { version = "0.14", features = ["orchard"] }
+rusqlite = "0.37"
+secrecy = "0.8"
+rand = "0.8"
+sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
+orchard = { version = "0.14", features = ["unstable-voting-circuits"] }
+zcash_primitives = "0.28"
+tempfile = "3"          # dev-only usage; listed here for version unity

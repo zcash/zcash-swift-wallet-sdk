@@ -4381,13 +4381,22 @@ name = "slipstream-core"
 version = "0.0.1"
 dependencies = [
  "futures-util",
+ "orchard",
  "prost",
+ "rand 0.8.6",
+ "rusqlite",
+ "sapling-crypto",
+ "secrecy",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tonic",
  "tonic-prost",
  "tracing",
  "zcash_client_backend",
+ "zcash_client_sqlite",
+ "zcash_keys",
+ "zcash_primitives",
  "zcash_protocol",
 ]
 

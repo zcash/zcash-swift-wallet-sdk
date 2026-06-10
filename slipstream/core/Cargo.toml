@@ -15,8 +15,19 @@ thiserror = { workspace = true }
 tracing = { workspace = true } # logging policy per CONVENTIONS.md
 zcash_protocol = { workspace = true }
 zcash_client_backend = { workspace = true }
+zcash_client_sqlite = { workspace = true }
+zcash_keys = { workspace = true }
+zcash_primitives = { workspace = true }
+rusqlite = { workspace = true }
+secrecy = { workspace = true }
+rand = { workspace = true }
+sapling = { workspace = true }
+orchard = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 tonic-prost = { workspace = true }
 futures-util = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

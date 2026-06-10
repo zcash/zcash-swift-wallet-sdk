@@ -2,11 +2,16 @@
 //! `rust/src/tor.rs` uses (`CompactTxStreamerClient<Channel>`) so a Tor-backed
 //! channel can be swapped in later (P8) without touching callers.
 
+use futures_util::TryStreamExt;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint as TonicEndpoint};
-use zcash_client_backend::proto::service::{
-    BlockId, ChainSpec, Empty, LightdInfo, TreeState,
-    compact_tx_streamer_client::CompactTxStreamerClient,
+use zcash_client_backend::{
+    data_api::chain::CommitmentTreeRoot,
+    proto::service::{
+        BlockId, ChainSpec, Empty, GetSubtreeRootsArg, LightdInfo, ShieldedProtocol, TreeState,
+        compact_tx_streamer_client::CompactTxStreamerClient,
+    },
 };
+use zcash_primitives::merkle_tree::HashSer;
 
 use crate::{config::Endpoint, error::SlipstreamError};
 
@@ -57,6 +62,54 @@ pub async fn get_tree_state(client: &mut LwdClient, height: u64) -> Result<TreeS
         .await
         .map_err(|e| transport_err("get_tree_state", e))?
         .into_inner())
+}
+
+/// Collected subtree roots for both pools (Sapling first, Orchard second).
+pub struct SubtreeRoots {
+    pub sapling: Vec<CommitmentTreeRoot<sapling::Node>>,
+    pub orchard: Vec<CommitmentTreeRoot<orchard::tree::MerkleHashOrchard>>,
+}
+
+pub async fn get_subtree_roots(client: &mut LwdClient) -> Result<SubtreeRoots, SlipstreamError> {
+    let mut req = GetSubtreeRootsArg::default();
+    req.set_shielded_protocol(ShieldedProtocol::Sapling);
+    let sapling_roots: Vec<CommitmentTreeRoot<sapling::Node>> = client
+        .get_subtree_roots(req)
+        .await
+        .map_err(|e| transport_err("get_subtree_roots(sapling)", e))?
+        .into_inner()
+        .map_err(|e| SlipstreamError::Transport(format!("subtree root stream: {e}")))
+        .and_then(|r| async move {
+            let node = sapling::Node::read(&r.root_hash[..])
+                .map_err(|e| SlipstreamError::Transport(format!("sapling root: {e}")))?;
+            Ok(CommitmentTreeRoot::from_parts(
+                zcash_protocol::consensus::BlockHeight::from_u32(r.completing_block_height as u32),
+                node,
+            ))
+        })
+        .try_collect()
+        .await?;
+
+    let mut req = GetSubtreeRootsArg::default();
+    req.set_shielded_protocol(ShieldedProtocol::Orchard);
+    let orchard_roots: Vec<CommitmentTreeRoot<orchard::tree::MerkleHashOrchard>> = client
+        .get_subtree_roots(req)
+        .await
+        .map_err(|e| transport_err("get_subtree_roots(orchard)", e))?
+        .into_inner()
+        .map_err(|e| SlipstreamError::Transport(format!("subtree root stream: {e}")))
+        .and_then(|r| async move {
+            let node = orchard::tree::MerkleHashOrchard::read(&r.root_hash[..])
+                .map_err(|e| SlipstreamError::Transport(format!("orchard root: {e}")))?;
+            Ok(CommitmentTreeRoot::from_parts(
+                zcash_protocol::consensus::BlockHeight::from_u32(r.completing_block_height as u32),
+                node,
+            ))
+        })
+        .try_collect()
+        .await?;
+
+    Ok(SubtreeRoots { sapling: sapling_roots, orchard: orchard_roots })
 }
 
 #[cfg(test)]
