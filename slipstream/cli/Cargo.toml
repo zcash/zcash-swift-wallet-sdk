@@ -12,3 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 slipstream-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
