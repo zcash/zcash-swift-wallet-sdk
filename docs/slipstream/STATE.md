@@ -5,7 +5,7 @@
 
 ## NEXT ACTION
 
-➡️ **T0.5** — CLAUDE.md pointer + gate G0. Detailed steps: docs/slipstream/plans/2026-06-10-phase-0-foundation.md, Task 0.5.
+➡️ **T1.0** — Write the detailed Phase 1 (Transport) plan into docs/slipstream/plans/<date>-phase-1-transport.md, following docs/slipstream/CONVENTIONS.md and the P1 task index in ROADMAP.md. Read current code reality first (slipstream/ crates, rust/src/tor.rs for tonic precedent).
 
 ## Current phase: P0 — Foundation
 
@@ -15,13 +15,13 @@
 | T0.2 cargo workspace + FFI-scripts verify | done | `rebuild-local-ffi.sh` line 97 runs bare `cargo build --target ... --release` from repo root — with workspace this builds all members for the target, but slipstream crates are std-only so no issue; no script pinning needed. cargo test, cargo check, init-local-ffi --macos-only (~3 min incremental), OfflineTests (419/0 fail) all green. |
 | T0.3 core domain types | done | |
 | T0.4 CLI scaffold | done | |
-| T0.5 CLAUDE.md pointer + G0 gate | todo | |
+| T0.5 CLAUDE.md pointer + G0 gate | done | |
 
 ## Gates & milestones
 
 | Gate | Status | Evidence |
 |---|---|---|
-| G0 foundation green | ☐ | |
+| G0 foundation green | ☑ | 2026-06-10: cargo test 6+2 green; cargo check ok; OfflineTests 419 passed (binary mode); FFI script verified in T0.2 |
 | G1 transport ≥2× single-stream | ☐ | |
 | G2 scan core, ≥5× old SDK (CLI) | ☐ | |
 | G3 engine-complete, differential parity | ☐ | |
@@ -58,3 +58,4 @@
 - 2026-06-10 — T0.2 done: workspace conversion verified (cargo tests, cargo check, init-local-ffi --macos-only, OfflineTests all green).
 - 2026-06-10 — T0.3 done: core domain types (config/error/events), 6 tests green.
 - 2026-06-10 — T0.4 done: CLI scaffold (clap + tracing), 2 tests green, binary smoke-tested.
+- 2026-06-10 — T0.5 done: CLAUDE.md pointer added, gate G0 green. PHASE 0 COMPLETE.

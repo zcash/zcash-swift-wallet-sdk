@@ -104,3 +104,10 @@ Generated files and `Tests/` are excluded from the main `.swiftlint.yml` (tests 
 - **Breaking API changes**: document them in `MIGRATING.md`, and add a `CHANGELOG.md` entry for every user-visible change.
 - **Main branch policy**: `main` is development-stable (all merges build + tests pass) but clients must depend on published tags, never on `main`.
 - **Sync concurrency**: `CompactBlockProcessor` is a Swift actor. Callers without structured concurrency should hop to `@MainActor` contexts rather than blocking.
+
+## Slipstream (next-gen sync engine prototype)
+
+Active multi-session project building a new Rust sync engine under `slipstream/` (branch `slipstream`).
+For any Slipstream / sync-engine work: read `docs/slipstream/STATE.md` FIRST (current status + next task),
+then `docs/slipstream/CONVENTIONS.md` (session protocol + always-green commands).
+The old SDK sync path is frozen for this work — additive changes only.
