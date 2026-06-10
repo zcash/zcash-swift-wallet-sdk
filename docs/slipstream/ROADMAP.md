@@ -23,7 +23,7 @@
 | D6 | Engine is **keyless**: accepts UFVKs only; spend authority never enters it. | Security posture from the design doc. |
 | D7 | Engine owns a multi-thread tokio runtime per instance (one instance per wallet/alias), created at `start()`, dropped at `stop()`. | Matches existing TorRuntime precedent in libzcashlc. |
 | D8 | iOS FFI is **poll-based**: Swift drains an event ring + reads an atomic snapshot on its own cadence. No cross-FFI progress callbacks. | Simplest, restart-safe, matches zcashlc patterns. |
-| D9 | Branch: **`slipstream`** off `main` in this repo; mirrored **`slipstream`** branch in the Zodl iOS repo at P4 (`/Users/lukaskorba/Dev/Xcode/GitHub/LukasKorba/secant-ios-wallet`, remote `zodl-ios`, read/write + git granted — cut from Zodl's main, not from in-flight feature branches). One tracking GitHub issue for the prototype; all commits `[#<issue>] slipstream: <title>`. `main` is never broken; `swift test --filter OfflineTests` and `cargo test -p slipstream-core` stay green at every commit. | User decision 2026-06-10 + repo policy + always-green rule. |
+| D9 | Branch: **`slipstream`** off `main` in this repo; mirrored **`slipstream`** branch in the Zodl iOS repo at P4 (`/Users/lukaskorba/Dev/Xcode/GitHub/LukasKorba/secant-ios-wallet`, remote `zodl-ios`, read/write + git granted — cut from Zodl's main, not from in-flight feature branches). All commits `[#1755] slipstream: <title>` (local-only marker — see STATE.md Tracking issue). `main` is never broken; `swift test --filter OfflineTests` and `cargo test -p slipstream-core` stay green at every commit. **LOCAL-ONLY amendment (2026-06-10): no pushes/issues/PRs to any remote until the user lifts it.** | User decision 2026-06-10 + repo policy + always-green rule. |
 
 ---
 

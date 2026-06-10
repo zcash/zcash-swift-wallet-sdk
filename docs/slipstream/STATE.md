@@ -32,12 +32,13 @@
 
 ## Tracking issue
 
-- GitHub issue: **#1755 — https://github.com/zcash/zcash-swift-wallet-sdk/issues/1755** (all commits use `[#1755] slipstream: <title>`)
+- **LOCAL-ONLY MODE (user decision 2026-06-10): no GitHub issue, no pushes — the prototype exists only on this machine.** Upstream issue #1755 was created in error, then scrubbed ("(withdrawn)") and closed; full deletion needs repo admin. Commits keep the `[#1755] slipstream: <title>` tag as a local-only marker (GitHub never reuses issue numbers); a real public issue will be created if/when the user decides to publish.
 
 ## Decision log (append-only)
 
 - 2026-06-10 — D1–D9 locked in ROADMAP.md (in-repo workspace; upstream-brain M1; unchanged data.db; additive Swift seam; CLI-first; keyless engine; engine-owned tokio runtime; poll-based FFI; branch/commit policy). Source: design sessions, `docs/SLIPSTREAM_DESIGN.md`, `docs/SYNC_PERFORMANCE_PROPOSAL.md`.
 - 2026-06-10 — D9 amended per user: branch is **`slipstream`** (not `slipstream-proto`) in this repo; mirrored `slipstream` branch in Zodl iOS at P4. D1 amended: explicit containment rule (all work under `slipstream/` + `docs/slipstream/`; enumerated exceptions only).
+- 2026-06-10 — D9 amended (user): prototype is **LOCAL-ONLY** — never push the `slipstream` branch (SDK or Zodl repo) to ANY remote, never create remote issues/PRs, until the user explicitly lifts this. Upstream issue #1755 scrubbed + closed (admin-level deletion still possible later).
 - 2026-06-10 — Zodl iOS repo confirmed: `/Users/lukaskorba/Dev/Xcode/GitHub/LukasKorba/secant-ios-wallet` (remote `git@github.com:LukasKorba/zodl-ios.git`), read/write + git permission granted by user. Observed on feature branch `MOB-1125-implement-multi-currency-conversion-support`, clean tree — P4's `slipstream` branch must be cut from Zodl's main.
 
 ## Performance truth table
@@ -60,3 +61,4 @@
 - 2026-06-10 — T0.4 done: CLI scaffold (clap + tracing), 2 tests green, binary smoke-tested.
 - 2026-06-10 — T0.5 done: CLAUDE.md pointer added, gate G0 green. PHASE 0 COMPLETE.
 - 2026-06-10 — P0 final review passed (verdict: ready for P1). Follow-ups applied: containment carve-out for docs/ design docs; checkbox + OfflineTests-cadence conventions. Carried to P1: add validate() guard tests (empty host, tiny budget) in first T1.x code commit; add [workspace.dependencies] table when T1.1 lands first new dep; T1.0 plan must specify G1 benchmark records single-stream baseline AND K=4 in the same run/server.
+- 2026-06-10 — Went LOCAL-ONLY per user: upstream issue #1755 scrubbed and closed; no-push policy codified in CONVENTIONS/ROADMAP/STATE.

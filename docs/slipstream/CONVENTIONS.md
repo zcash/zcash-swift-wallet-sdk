@@ -33,6 +33,7 @@ Tests/lightwalletd/lightwalletd --no-tls-very-insecure --data-dir /tmp --darksid
 
 ## Git
 
+- **LOCAL-ONLY (do not lift without explicit user instruction):** never `git push` any Slipstream work to ANY remote (this repo's fork or upstream, or the Zodl repo), never create remote issues/PRs. The prototype exists only on this machine.
 - Branch: `slipstream` (this repo). Never commit to `main`.
 - Commit format: `[#<tracking-issue>] slipstream: <imperative title>` (issue number lives in STATE.md).
 - **Containment:** all work lives under `slipstream/` + `docs/slipstream/`. Permitted exceptions only: root `Cargo.toml` workspace lines, `CLAUDE.md` pointer, P4 FFI exports in `rust/src/lib.rs`, P4 Swift files in `Sources/ZcashLightClientKit/Slipstream/`. Background design documents (read-once reference, e.g. `docs/SLIPSTREAM_DESIGN.md`, `docs/SYNC_PERFORMANCE_PROPOSAL.md`) live at `docs/` top level — allowed.
