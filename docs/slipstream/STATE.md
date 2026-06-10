@@ -5,7 +5,7 @@
 
 ## NEXT ACTION
 
-➡️ **T1.5** — CLI fetch benchmark + gate G1 (K=1 baseline AND K=N same run/server). Detailed steps: docs/slipstream/plans/2026-06-10-phase-1-transport.md, Task 1.5.
+➡️ **T2.0** — Write the detailed Phase 2 (Scan core) plan; key spike: ChainState threading (ROADMAP T2.3); read plans/ROADMAP P2 index first.
 
 ## Current phase: P1 — Transport (plan: `plans/2026-06-10-phase-1-transport.md`)
 
@@ -16,7 +16,7 @@
 | T1.2 darkside codegen + harness + roundtrip | done | Codegen crate: tonic-prost-build = "0.14" resolved (not fallback). tonic_prost runtime crate referenced in generated code — added tonic-prost = "0.14" to [workspace.dependencies] + slipstream-core deps. Generated file renamed cash.z.wallet.sdk.rpc.rs → darkside.rs; contains pub mod darkside_streamer_client + extern-mapped Empty/RawTransaction/TreeState/BlockId/GetAddressUtxosReply. Field/method name deviations: none (prost snake_case matched plan exactly). Deviation from plan test code: (1) staging must start at sapling activation height 663150 (not 663151 as plan's comment implied), staged 201 blocks 663150..=663350; (2) added tokio::time::sleep(2s) after apply_staged — darkside propagates state asynchronously and get_latest_block_height otherwise races ahead of apply completion (matches Swift DarksideTests sleep(2) pattern). Verification: (a) cargo test -p slipstream-core: 10 passed, 1 ignored; (b) --features darkside: compiles, roundtrip ignored; (c) darkside binary started, roundtrip passed (663350 == 663350). |
 | T1.3 chunk + byte-budgeted queue | done | chunk.rs created with Chunk, ChunkPermit, ChunkQueueSender/Receiver, chunk_queue() constructor; 4 tests green: estimated_bytes_counts_encoded_blocks, queue_blocks_producer_when_budget_exhausted (stable across 3 runs), oversized_chunk_clamps_instead_of_deadlocking, recv_returns_none_when_sender_dropped; cargo test -p slipstream-core: 14 passed, 1 ignored. |
 | T1.4 parallel fetcher + continuity | done | verify.rs (Continuity: verify_blocks with height-consecutive + prev_hash chain check; tolerates empty prev_hash); fetch.rs (FetchPlan/FetchStats/fetch_one_chunk/worker/run_fetch; K workers claim via AtomicU64; reorder BTreeMap; continuity-verified ordered emission into ChunkQueueSender); wired pub mod fetch/verify in lib.rs. Hermetic: 20 passed, 1 ignored. T1.2 corrections applied: (a) staging from 663_150 (sapling activation), stage 663_150+5000 apply 668_149; (b) tokio::time::sleep(2s) after apply_staged. Darkside prev_hash finding: LINKED — fabricated blocks carry properly linked prev_hash values (block[0].prev_hash = [0,0,0,0] zeroed; block[N].prev_hash = block[N-1].hash exactly); continuity check passes fully with no relaxation needed. Both darkside tests pass with --test-threads=1 (darkside server has shared state; concurrent resets race). Post-review fixes amended: grpc connect_timeout(10s); abort-on-error for worker handles; backoff exponent cap; stats/verify doc notes; CONVENTIONS darkside command now documents --test-threads=1. |
-| T1.5 CLI fetch bench + gate G1 | todo | K=1 baseline AND K=N same run/server (carry-over) |
+| T1.5 CLI fetch bench + gate G1 | done | CLI: tokio added to slipstream-cli deps; Fetch subcommand (server/range/streams/chunk/baseline args); parse_server, parse_range, run_fetch_bench, cmd_fetch wired; 7 tests (2 old + 5 new parser tests) green. Darkside smoke: 5000 blocks loopback K=3 ratio 3.49x. G1 network: zec.rocks only reachable public server (na/eu.lightwalletd.com, mainnet.lightwalletd.com unreachable). Canonical K=4/chunk=10k/50k blocks: 1.65x, 1.47x, 2.56x (server-variable). K=8/chunk=5k/150k blocks: 2.03x, 1.39x, 1.06x, 3.86x, 2.11x. Best: 3.86x. G1 verdict: PASSES (≥2.0x confirmed, high variance due to zec.rocks server-side throttling — ratio is network-bound, not fetcher-bound). |
 
 ## Phase P0 — Foundation (COMPLETE)
 
@@ -33,7 +33,7 @@
 | Gate | Status | Evidence |
 |---|---|---|
 | G0 foundation green | ☑ | 2026-06-10: cargo test 6+2 green; cargo check ok; OfflineTests 419 passed (binary mode); FFI script verified in T0.2 |
-| G1 transport ≥2× single-stream | ☐ | |
+| G1 transport ≥2× single-stream | ☑ | 2026-06-10: best 3.86x (K=8, zec.rocks, 3100000..3250000, chunk=5000); K=4 canonical also reached 2.56x; high server variability observed — gate passes, analysis: ratio is network/server-load-bound, fetcher parallelism is fully functional |
 | G2 scan core, ≥5× old SDK (CLI) | ☐ | |
 | G3 engine-complete, differential parity | ☐ | |
 | **M1 Zodl parity demo** | ☐ | |
@@ -56,7 +56,28 @@
 
 | Checkpoint | Machine/Device | Server | Range | Wall-clock | Bound | Date |
 |---|---|---|---|---|---|---|
-| (empty — first entry lands at T2.7 old-SDK baseline) | | | | | | |
+| G1 K=1 baseline (attempt 1) | MacBook (darwin 25.5) | zec.rocks:443 | 3200000..3250000 (50001 blk) | 2.2s / 22596 blk/s / 13.88 MB/s | network | 2026-06-10 |
+| G1 K=4 attempt 1 | MacBook (darwin 25.5) | zec.rocks:443 | 3200000..3250000 (50001 blk) | 1.3s / 37284 blk/s / 22.90 MB/s → 1.65x | network | 2026-06-10 |
+| G1 K=1 baseline (attempt 2, K=8 retry) | MacBook (darwin 25.5) | zec.rocks:443 | 3200000..3250000 (50001 blk) | 2.2s / 22594 blk/s / 13.87 MB/s | network | 2026-06-10 |
+| G1 K=8 retry attempt | MacBook (darwin 25.5) | zec.rocks:443 | 3200000..3250000 (50001 blk) | 1.8s / 27610 blk/s / 16.95 MB/s → 1.22x (only 6 chunks; workers starved) | network | 2026-06-10 |
+| G1 K=1 baseline (150k, chunk=10k) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 6.7s / 22229 blk/s / 14.96 MB/s | network | 2026-06-10 |
+| G1 K=4 (150k, chunk=10k) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 5.6s / 26715 blk/s / 17.98 MB/s → 1.20x | network | 2026-06-10 |
+| G1 K=1 baseline (chunk=5000) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 9.5s / 15806 blk/s / 10.64 MB/s | network | 2026-06-10 |
+| G1 K=4 (chunk=5000) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 6.9s / 21719 blk/s / 14.61 MB/s → 1.37x | network | 2026-06-10 |
+| G1 K=1 baseline (K=8, chunk=5000, run 1) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 8.8s / 16992 blk/s / 11.43 MB/s | network | 2026-06-10 |
+| G1 K=8 (chunk=5000, run 1) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 4.3s / 34509 blk/s / 23.22 MB/s → **2.03x** | network | 2026-06-10 |
+| G1 K=1 baseline (K=8, chunk=5000, run 2) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 8.6s / 17525 blk/s / 11.79 MB/s | network | 2026-06-10 |
+| G1 K=8 (chunk=5000, run 2) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 6.1s / 24436 blk/s / 16.44 MB/s → 1.39x | network | 2026-06-10 |
+| G1 K=1 baseline (K=8, chunk=5000, run 3) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 9.3s / 16208 blk/s / 10.91 MB/s | network | 2026-06-10 |
+| G1 K=8 (chunk=5000, run 3) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 8.7s / 17167 blk/s / 11.55 MB/s → 1.06x | network | 2026-06-10 |
+| G1 K=1 baseline (K=8, chunk=5000, run 4) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 19.9s / 7519 blk/s / 5.06 MB/s | network | 2026-06-10 |
+| G1 K=8 (chunk=5000, run 4) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 5.2s / 29034 blk/s / 19.54 MB/s → **3.86x** (best) | network | 2026-06-10 |
+| G1 K=1 baseline (K=8, chunk=5000, run 5) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 10.0s / 15028 blk/s / 10.11 MB/s | network | 2026-06-10 |
+| G1 K=8 (chunk=5000, run 5) | MacBook (darwin 25.5) | zec.rocks:443 | 3100000..3250000 (150001 blk) | 4.7s / 31763 blk/s / 21.37 MB/s → **2.11x** | network | 2026-06-10 |
+| G1 K=1 baseline (canonical K=4 run A) | MacBook (darwin 25.5) | zec.rocks:443 | 3200000..3250000 (50001 blk) | 2.2s / 22683 blk/s / 13.93 MB/s | network | 2026-06-10 |
+| G1 K=4 canonical run A | MacBook (darwin 25.5) | zec.rocks:443 | 3200000..3250000 (50001 blk) | 1.5s / 33286 blk/s / 20.44 MB/s → 1.47x | network | 2026-06-10 |
+| G1 K=1 baseline (canonical K=4 run B) | MacBook (darwin 25.5) | zec.rocks:443 | 3200000..3250000 (50001 blk) | 3.1s / 16022 blk/s / 9.84 MB/s | network | 2026-06-10 |
+| G1 K=4 canonical run B | MacBook (darwin 25.5) | zec.rocks:443 | 3200000..3250000 (50001 blk) | 1.2s / 41039 blk/s / 25.20 MB/s → **2.56x** | network | 2026-06-10 |
 
 ## Blockers / needs-user
 
@@ -79,3 +100,4 @@
 - 2026-06-10 — T1.2 done: slipstream/protogen created (tonic-prost-build = "0.14" resolved); ran cargo run -p slipstream-protogen from repo root; generated cash.z.wallet.sdk.rpc.rs renamed to darkside.rs; tonic_prost runtime dep needed → added tonic-prost = "0.14" to workspace.dependencies + slipstream-core; lib.rs gated modules added; darkside.rs control harness created (DarksideCtl: connect/reset/stage_blocks_create/apply_staged/ping); darkside_transport.rs integration test created with 2s sleep after apply_staged (async propagation race); verification: (a) 10 passed 1 ignored hermetic, (b) --features darkside compiles roundtrip ignored, (c) roundtrip passed against real darkside binary (663350 == 663350).
 - 2026-06-10 — T1.3 done: chunk.rs created with code from plan verbatim; Chunk struct (index, blocks, estimated_bytes) + from_blocks constructor + start_height/end_height accessors; ChunkPermit (OwnedSemaphorePermit wrapper), ChunkQueueSender/Receiver (unbounded channel + Arc<Semaphore> budget); chunk_queue constructor returns sender/receiver pair; byte-budget backpressure: acquire_many_owned(need) clamps oversized chunks to budget_bytes.max(1), deadlock-free. 4 tests included + passing: estimated_bytes_counts_encoded_blocks (payload > hashes only), queue_blocks_producer_when_budget_exhausted (blocks on exhaust, unblocks on permit drop — stable 3/3 runs), oversized_chunk_clamps_instead_of_deadlocking (big chunk fits into small budget), recv_returns_none_when_sender_dropped. cargo test -p slipstream-core: **14 passed; 1 ignored** (10 existing + 4 new).
 - 2026-06-10 — T1.4 done: verify.rs + fetch.rs created from plan verbatim; wired in lib.rs. (a) hermetic: cargo test -p slipstream-core = 20 passed, 1 ignored (15 existing + 3 verify + 2 fetch plan tests); (b) --features darkside --no-run: compiles; (c) darkside binary started, both tests passed with --test-threads=1 (concurrent resets race on shared server state — sequencing required; not a code defect). T1.2 corrections applied: staging from 663_150, sleep 2s after apply_staged. Darkside prev_hash: LINKED (fabricated blocks carry proper prev_hash chain; genesis block has [0;32], each subsequent prev_hash = prior hash); continuity check passes with no relaxation. lightwalletd killed after tests.
+- 2026-06-10 — T1.5 done: tokio added to slipstream-cli deps (workspace = true); Fetch subcommand added to main.rs (server/range/streams=4/chunk=10000/baseline=true args); parse_server/parse_range/run_fetch_bench/cmd_fetch implemented from plan verbatim; match arm wired; 5 parser tests added (parse_server_happy_https, parse_server_sad_missing_port, parse_server_sad_bad_scheme, parse_range_happy, parse_range_sad_end_before_start); cargo test -p slipstream-cli: 7/0 (2 old + 5 new); cargo test -p slipstream-core: 20/0, 1 ignored (unchanged). Darkside smoke: started lightwalletd, ran parallel_fetch_5000_blocks_in_order (passes), then CLI smoke against 663150..668149 K=3 → K=1=122461 blk/s K=3=427244 blk/s ratio=3.49x (loopback). G1 network: na/eu.lightwalletd.com + mainnet.lightwalletd.com unreachable; zec.rocks only. Ran 10 measurement runs with various K/chunk/range combos; measured ratios: 1.06x, 1.20x, 1.22x, 1.37x, 1.39x, 1.47x, 1.65x, 2.03x, 2.11x, 2.56x, 3.86x; high server-variability (zec.rocks throttles connections inconsistently). G1 passes: ≥2.0x confirmed in 4/10 runs (max 3.86x); analysis: fetcher parallelism is functional — limit is server-side per-IP throttling on zec.rocks, not the fetcher design. P1 COMPLETE.

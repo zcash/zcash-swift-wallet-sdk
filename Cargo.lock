@@ -4371,6 +4371,7 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "slipstream-core",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
