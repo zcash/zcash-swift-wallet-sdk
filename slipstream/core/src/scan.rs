@@ -95,28 +95,34 @@ pub async fn scan_chunks(
         let network = session.network;
         let len = chunk.blocks.len();
 
-        let summary = {
+        let from_height = u32::try_from(chunk_start)
+            .map_err(|_| SlipstreamError::Wallet(format!("height {chunk_start} exceeds u32")))?;
+
+        // Binding note 3: wrap the synchronous scan_cached_blocks call in block_in_place
+        // so it does not starve the tokio multi-thread runtime (SQLite + rayon decryption
+        // are synchronous/CPU-bound; block_in_place is correct here because spawn_blocking
+        // would require 'static, which &mut session does not satisfy; multi-thread runtime
+        // is guaranteed by the CLI's #[tokio::main] with default flavor = multi_thread).
+        // NOTE: block_in_place panics on a current_thread runtime — engine requires the multi-thread runtime (the CLI's Runtime::new()).
+        let scan_result = tokio::task::block_in_place(|| {
             let source = MemBlockSource::new(&chunk);
-            // Binding note 3: wrap the synchronous scan_cached_blocks call in block_in_place
-            // so it does not starve the tokio multi-thread runtime (SQLite + rayon decryption
-            // are synchronous/CPU-bound; block_in_place is correct here because spawn_blocking
-            // would require 'static, which &mut session does not satisfy; multi-thread runtime
-            // is guaranteed by the CLI's #[tokio::main] with default flavor = multi_thread).
-            // NOTE: block_in_place panics on a current_thread runtime — engine requires the multi-thread runtime (the CLI's Runtime::new()).
-            let from_height = u32::try_from(chunk_start)
-                .map_err(|_| SlipstreamError::Wallet(format!("height {chunk_start} exceeds u32")))?;
-            // On scan error the prefetch JoinHandle is dropped (task detaches); the in-flight RPC completes into the void — acceptable.
-            tokio::task::block_in_place(|| {
-                scan_cached_blocks(
-                    &network,
-                    &source,
-                    session.db_mut(),
-                    BlockHeight::from(from_height),
-                    &from_state,
-                    len,
-                )
-            })
-            .map_err(map_scan_error)?
+            scan_cached_blocks(
+                &network,
+                &source,
+                session.db_mut(),
+                BlockHeight::from(from_height),
+                &from_state,
+                len,
+            )
+        });
+
+        let summary = match scan_result {
+            Ok(s) => s,
+            Err(e) => {
+                // On scan error, explicitly abort the in-flight prefetch task.
+                prefetch.abort();
+                return Err(map_scan_error(e));
+            }
         };
 
         let scanned = u64::from(u32::from(summary.scanned_range().end))

@@ -68,6 +68,42 @@ impl Progress {
     pub fn add_reorg(&self) {
         self.reorgs_recovered.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// Read `chain_tip` (Relaxed load).
+    #[inline]
+    pub fn chain_tip(&self) -> u64 {
+        self.chain_tip.load(Ordering::Relaxed)
+    }
+
+    /// Read `fetched_blocks` (Relaxed load).
+    #[inline]
+    pub fn fetched(&self) -> u64 {
+        self.fetched_blocks.load(Ordering::Relaxed)
+    }
+
+    /// Read `scanned_blocks` (Relaxed load).
+    #[inline]
+    pub fn scanned(&self) -> u64 {
+        self.scanned_blocks.load(Ordering::Relaxed)
+    }
+
+    /// Read `enhanced_txs` (Relaxed load).
+    #[inline]
+    pub fn enhanced(&self) -> u64 {
+        self.enhanced_txs.load(Ordering::Relaxed)
+    }
+
+    /// Read `current_range_end` (Relaxed load).
+    #[inline]
+    pub fn range_end(&self) -> u64 {
+        self.current_range_end.load(Ordering::Relaxed)
+    }
+
+    /// Read `reorgs_recovered` (Relaxed load).
+    #[inline]
+    pub fn reorgs(&self) -> u64 {
+        self.reorgs_recovered.load(Ordering::Relaxed)
+    }
 }
 
 /// Convenience alias used throughout the engine.
@@ -131,34 +167,34 @@ mod tests {
         let p = Progress::default();
 
         // Initial state: all zeros.
-        assert_eq!(p.chain_tip.load(Ordering::Relaxed), 0);
-        assert_eq!(p.fetched_blocks.load(Ordering::Relaxed), 0);
-        assert_eq!(p.scanned_blocks.load(Ordering::Relaxed), 0);
-        assert_eq!(p.enhanced_txs.load(Ordering::Relaxed), 0);
-        assert_eq!(p.current_range_end.load(Ordering::Relaxed), 0);
-        assert_eq!(p.reorgs_recovered.load(Ordering::Relaxed), 0);
+        assert_eq!(p.chain_tip(), 0);
+        assert_eq!(p.fetched(), 0);
+        assert_eq!(p.scanned(), 0);
+        assert_eq!(p.enhanced(), 0);
+        assert_eq!(p.range_end(), 0);
+        assert_eq!(p.reorgs(), 0);
 
         // Set helpers.
         p.set_chain_tip(3_373_435);
-        assert_eq!(p.chain_tip.load(Ordering::Relaxed), 3_373_435);
+        assert_eq!(p.chain_tip(), 3_373_435);
 
         p.set_range_end(3_323_500);
-        assert_eq!(p.current_range_end.load(Ordering::Relaxed), 3_323_500);
+        assert_eq!(p.range_end(), 3_323_500);
 
         // Additive helpers.
         p.add_fetched(1_000);
         p.add_fetched(500);
-        assert_eq!(p.fetched_blocks.load(Ordering::Relaxed), 1_500);
+        assert_eq!(p.fetched(), 1_500);
 
         p.add_scanned(800);
-        assert_eq!(p.scanned_blocks.load(Ordering::Relaxed), 800);
+        assert_eq!(p.scanned(), 800);
 
         p.add_enhanced(3);
-        assert_eq!(p.enhanced_txs.load(Ordering::Relaxed), 3);
+        assert_eq!(p.enhanced(), 3);
 
         p.add_reorg();
         p.add_reorg();
-        assert_eq!(p.reorgs_recovered.load(Ordering::Relaxed), 2);
+        assert_eq!(p.reorgs(), 2);
     }
 
     #[test]

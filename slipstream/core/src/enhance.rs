@@ -94,11 +94,11 @@ pub async fn run_enhancement(
         //
         // Build a set of futures, each cloning a lightweight `LwdClient` handle
         // (backed by a shared `Channel` — no new TCP connections per clone).
-        // `FuturesUnordered` polls all futures concurrently; up to FETCH_CONCURRENCY
-        // are in-flight at once (we push all futures immediately; the gRPC channel's
-        // internal concurrency is the practical limit for the typical 0-10 requests
-        // per pass). DB applies are serial below — `session` is never held across an
-        // await point.
+        // All fetch futures are pushed into FuturesUnordered at once; the gRPC
+        // channel's HTTP/2 stream multiplexing provides the practical concurrency
+        // bound. FETCH_CONCURRENCY = 8 is reserved for a future
+        // stream::iter(futs).buffered(N) upgrade. DB applies are serial below —
+        // `session` is never held across an await point.
         //
         // Each future yields `(TxId, bool, Result<Option<RawTransaction>, SlipstreamError>)`.
         // The two arms of the match produce different anonymous `async` block types, so
@@ -137,19 +137,10 @@ pub async fn run_enhancement(
             }
         }
 
-        // Drive at most FETCH_CONCURRENCY futures in-flight at once by collecting
-        // results as they arrive and applying to DB immediately (serial apply).
-        // Because FuturesUnordered::next() polls all ready futures before returning,
-        // this naturally maintains up to FETCH_CONCURRENCY concurrent requests as
-        // long as we keep calling next() promptly.
-        //
-        // Note: FuturesUnordered itself does not enforce an in-flight cap; to cap
-        // to exactly FETCH_CONCURRENCY, we drain in windows. Simple approach: push
-        // all futures (LwdClient clone is cheap) and drain serially — the server-side
-        // connection pool is the practical concurrency limit. Documented choice: we
-        // push all futures at once and rely on the gRPC channel's internal concurrency;
-        // this is equivalent to buffered(N) for N >= requests.len() which is fine for
-        // the typical 0-10 enhancement requests per scan pass.
+        // Collect results as they arrive and apply to DB immediately (serial apply).
+        // All futures are already pushed; we drain them in order. The gRPC channel's
+        // HTTP/2 multiplexing handles the actual concurrency (not FuturesUnordered).
+        // This design is correct for typical 0-10 enhancement requests per scan pass.
         while let Some((txid, want_enhance, fetched)) = pending.next().await {
             apply_txid_fetch(session, txid, want_enhance, fetched, &network, &mut stats, progress.as_deref())?;
         }

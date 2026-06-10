@@ -201,11 +201,10 @@ fn cmd_sync(
             interval.tick().await; // skip the immediate first tick
             loop {
                 interval.tick().await;
-                use std::sync::atomic::Ordering;
-                let fetched = ticker_progress.fetched_blocks.load(Ordering::Relaxed);
-                let scanned = ticker_progress.scanned_blocks.load(Ordering::Relaxed);
-                let enhanced = ticker_progress.enhanced_txs.load(Ordering::Relaxed);
-                let tip = ticker_progress.chain_tip.load(Ordering::Relaxed);
+                let fetched = ticker_progress.fetched();
+                let scanned = ticker_progress.scanned();
+                let enhanced = ticker_progress.enhanced();
+                let tip = ticker_progress.chain_tip();
                 println!(
                     "progress: fetched {} | scanned {} | enhanced {} (tip {})",
                     fetched, scanned, enhanced, tip
