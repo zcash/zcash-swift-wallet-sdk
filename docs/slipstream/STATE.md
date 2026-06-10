@@ -5,7 +5,18 @@
 
 ## NEXT ACTION
 
-➡️ **T4.0** — Write the detailed Phase 4 (iOS docking) plan. Read ROADMAP P4 index + Blockers (SeedRequired landmine, A/B protocol, P8 darkside note) + D4/D7/D8 decisions. Recon: rust/src/lib.rs FFI patterns + Sources/ZcashLightClientKit/Synchronizer.swift seam + Tor/TorClient.swift runtime precedent. Steps: docs/slipstream/plans/ (create 2026-06-11-phase-4-ios-docking.md).
+➡️ **T4.1** — FFI handle + Rust-side functions. Create `slipstream/core/src/ffi_handle.rs` (SlipstreamHandle, FfiSlipstreamSnapshot, FfiSlipstreamEvent, SyncState) + add `zcashlc_slipstream_open/start/stop/snapshot/drain_events/free` to `rust/src/lib.rs`. Pre-check: verify whether `rust/Cargo.toml` is in the root workspace (`[workspace]` members); if not, add `slipstream-core = { path = "../slipstream/core" }` to `rust/Cargo.toml` directly. Check `events.rs` Progress field types (AtomicU64 pub fields vs accessor methods) before writing snapshot(). Gate: `cargo test -p slipstream-core` (42+1), `cargo build` in `rust/`, clippy clean, OfflineTests 419/0. Commit: `[#1755] slipstream: FFI handle (zcashlc_slipstream_open/start/stop/snapshot/drain_events/free)`.
+
+## Phase P4 — iOS Docking (plan: `plans/2026-06-11-phase-4-ios-docking.md`)
+
+| Task | Status | Session notes |
+|---|---|---|
+| T4.0 detailed phase plan | done | Plan written at plans/2026-06-11-phase-4-ios-docking.md. Architecture locked: SlipstreamHandle FFI (TorRuntime precedent), slipstream-core dep in rust/Cargo.toml (workspace membership TBD at T4.1), FfiSlipstreamSnapshot/FfiSlipstreamEvent repr(C) structs, tokio multi-thread runtime per handle (4 workers), poll-based D8, SlipstreamEngine Swift actor (mirrors TorClient.swift), SlipstreamSynchronizer delegates data members to existing DIContainer (same data.db). All BINDING NOTES recorded. Tasks: T4.1 FFI, T4.2 XCFramework, T4.3 Swift seam, T4.4 SDK tests, T4.5 Zodl M1. |
+| T4.1 FFI handle + Rust functions | todo | |
+| T4.2 XCFramework (all arches) | todo | |
+| T4.3 Swift wrapper + SlipstreamSynchronizer | todo | |
+| T4.4 SDK darkside subset | todo | |
+| T4.5 Zodl integration → M1 | todo | |
 
 ## Phase P3 — Completeness (COMPLETE — plan: `plans/2026-06-10-phase-3-completeness.md`)
 
@@ -155,3 +166,4 @@
 - 2026-06-11 — T3.5 done: Progress atomics + per-stage timing wired; bound() helper; CLI ticker; 42/1 core, 14 cli; clippy clean both feature sets; darkside --no-run compiles.
 - 2026-06-10 — USER STANDING AUTHORIZATION: proceed through ALL of Phase 3 AND Phase 4 (through M1) without per-task or per-phase confirmation. Do not stop at the P3/P4 boundary. Recorded verbatim intent: "once T3 is done, continue with T4 without me confirming again, this is the confirmation, don't stop until T3 + T4 are done." P4 device-only steps (physical-device A/B timing) remain flagged for the user; everything headless/simulator-possible proceeds autonomously.
 - 2026-06-11 — T3.6 done: sync_enhancement_stores_raw_fields added to darkside_sync.rs. Oracle: BalanceTests.swift:888 (txs_stored==2), :889 (balance==200000). Key findings: (1) GetTransaction works on darkside after ApplyStaged — confirmed empirically (darkside.proto:86-88: staged txs returned after mined); (2) 30 TransactionsInvolvingAddress requests generated for UFVK's taddr receivers — all skipped (open-ended range guard); (3) raw IS NOT NULL for both fixtures after enhancement; (4) fee column oracle decision = not asserted (receive-only txs, no Swift oracle for fee); (5) memo = not asserted (no Swift oracle for memo on receive-only fixtures). Mainnet G3 50k: tip=3373526, 30.4s / 50012 blk / 33.3 MB / fetch 1.1s / scan 30.0s / enhance 0.0s / bound=scan. Gate: core 42/1, cli 14; 6 darkside serial; clippy clean both feature sets; OfflineTests 419/0. P3 COMPLETE.
+- 2026-06-11 — T4.0 done: Phase 4 iOS Docking plan written (plans/2026-06-11-phase-4-ios-docking.md). Architecture: SlipstreamHandle FFI (Box::into_raw/Box::from_raw pattern, TorRuntime precedent at lib.rs:3157), FfiSlipstreamSnapshot/FfiSlipstreamEvent repr(C), tokio 4-worker runtime per handle (D7), poll-based SwiftSide (D8), SlipstreamEngine actor mirrors TorClient.swift, SlipstreamSynchronizer implements Synchronizer (D4 additive). All BINDING NOTES pinned (workspace membership TBD, Progress field access, LightWalletEndpoint field names, ZcashError new cases). P4 task index: T4.1-T4.5. NEXT → T4.1.
