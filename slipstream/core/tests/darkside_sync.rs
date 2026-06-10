@@ -9,11 +9,10 @@
 //!   - Expects 2 cleared transactions and total balance = 200000 zatoshi
 //!
 //! NOTE on lightwalletd compatibility: the binary at Tests/lightwalletd is v0.4.9 (2022-02-20).
-//! It does NOT support GetTreeState (returns "unsupported RPC"). To work around this,
-//! the test pre-imports the wallet account using a synthetic birthday treestate at height
-//! 663149 (pre-activation, empty trees — valid since no notes exist before sapling activation),
-//! then calls sync_once with ufvk=None. This is correct: ensure_account is idempotent and
-//! the engine skips the GetTreeState birthday fetch when ufvk=None.
+//! It does NOT support GetTreeState/GetSubtreeRoots. To work around this, the test
+//! drives the pipeline directly (fetch + scan_chunks_from_treestate + session ops) because
+//! lightwalletd v0.4.9 lacks GetTreeState/GetSubtreeRoots; engine::sync_once is exercised
+//! end-to-end by the G2 mainnet CLI runs instead.
 //!
 //! Start the darkside lightwalletd first (from repo root):
 //!   Tests/lightwalletd/lightwalletd --no-tls-very-insecure --data-dir /tmp \
