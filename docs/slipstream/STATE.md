@@ -5,9 +5,20 @@
 
 ## NEXT ACTION
 
-➡️ **T1.0** — Write the detailed Phase 1 (Transport) plan into docs/slipstream/plans/<date>-phase-1-transport.md, following docs/slipstream/CONVENTIONS.md and the P1 task index in ROADMAP.md. Read current code reality first (slipstream/ crates, rust/src/tor.rs for tonic precedent). Honor the P0-review carry-overs listed in the 2026-06-10 final-review session-log entry.
+➡️ **T1.1** — Workspace deps + `grpc` module. Detailed steps: docs/slipstream/plans/2026-06-10-phase-1-transport.md, Task 1.1.
 
-## Current phase: P0 — Foundation
+## Current phase: P1 — Transport (plan: `plans/2026-06-10-phase-1-transport.md`)
+
+| Task | Status | Session notes |
+|---|---|---|
+| T1.0 detailed phase plan | done | Task remap vs ROADMAP index: T1.2=darkside codegen+harness, T1.3=chunk+queue, T1.4=fetcher+reorder+continuity (merged), T1.5=CLI bench+G1. get_subtree_roots wrapper deferred to P2. Facts verified: upstream proto is client-only; protoc present; darkside.proto vendored at Tests/TestUtils/proto/. |
+| T1.1 workspace deps + grpc module | todo | includes P0 carry-overs: [workspace.dependencies] + validate() guard tests |
+| T1.2 darkside codegen + harness + roundtrip | todo | checked-in generated client via slipstream/protogen |
+| T1.3 chunk + byte-budgeted queue | todo | |
+| T1.4 parallel fetcher + continuity | todo | hermetic darkside 5000-block test |
+| T1.5 CLI fetch bench + gate G1 | todo | K=1 baseline AND K=N same run/server (carry-over) |
+
+## Phase P0 — Foundation (COMPLETE)
 
 | Task | Status | Session notes |
 |---|---|---|
@@ -62,3 +73,4 @@
 - 2026-06-10 — T0.5 done: CLAUDE.md pointer added, gate G0 green. PHASE 0 COMPLETE.
 - 2026-06-10 — P0 final review passed (verdict: ready for P1). Follow-ups applied: containment carve-out for docs/ design docs; checkbox + OfflineTests-cadence conventions. Carried to P1: add validate() guard tests (empty host, tiny budget) in first T1.x code commit; add [workspace.dependencies] table when T1.1 lands first new dep; T1.0 plan must specify G1 benchmark records single-stream baseline AND K=4 in the same run/server.
 - 2026-06-10 — Went LOCAL-ONLY per user: upstream issue #1755 scrubbed and closed; no-push policy codified in CONVENTIONS/ROADMAP/STATE.
+- 2026-06-10 — T1.0 done: Phase 1 Transport plan written (plans/2026-06-10-phase-1-transport.md) after code-reality recon (client-only upstream proto stubs → hermetic tests use the REAL darkside binary via a checked-in generated control client; protoc available; tor.rs confirms CompactTxStreamerClient<Channel> type). P1 task remap recorded in the P1 table.
