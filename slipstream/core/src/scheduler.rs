@@ -5,6 +5,8 @@
 //! Verify ranges first by upstream contract.
 
 use tracing::{info, warn};
+use zcash_client_backend::data_api::WalletWrite;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
     chunk::chunk_queue,
@@ -16,11 +18,18 @@ use crate::{
     wallet_session::WalletSession,
 };
 
+/// Maximum number of consecutive reorg recoveries before giving up.
+/// After this many back-to-back ScanContinuity errors without a successful
+/// range completion, run_to_completion returns the error to break ping-pong.
+const MAX_CONSECUTIVE_REORGS: u64 = 5;
+
 #[derive(Debug, Default, Clone)]
 pub struct SyncReport {
     pub ranges_processed: u64,
     pub fetch: FetchStatsTotals,
     pub scan: ScanStatsTotals,
+    /// Number of reorg recoveries performed (truncate + re-suggest) during this sync.
+    pub reorgs_recovered: u64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -43,6 +52,10 @@ pub async fn run_to_completion(
     session: &mut WalletSession,
 ) -> Result<SyncReport, SlipstreamError> {
     let mut report = SyncReport::default();
+    // Counter for back-to-back ScanContinuity recoveries without a successful range.
+    // Reset to 0 on any successful range completion. Capped at MAX_CONSECUTIVE_REORGS
+    // to prevent infinite ping-pong (e.g. adversarial server or database corruption).
+    let mut consecutive_reorgs: u64 = 0;
     loop {
         let ranges = session.suggest_scan_ranges()?;
         let Some(range) = ranges.first() else {
@@ -82,7 +95,6 @@ pub async fn run_to_completion(
         // does not contend with the fetch workers' connections.
         let mut scan_client = grpc::connect(&config.endpoint).await?;
 
-        // TODO: [#1755] reorg/continuity recovery — port upstream sync.rs scan_blocks error arm
         let scan_result: Result<ScanStats, SlipstreamError> =
             scan_chunks(session, &mut scan_client, start, rx).await;
 
@@ -92,9 +104,64 @@ pub async fn run_to_completion(
         // We ALWAYS await the JoinHandle so the task is not left running in the background,
         // but if scan already failed we prefer returning the scan error; the fetch's secondary
         // error is downgraded to a tracing::warn.
+        //
+        // ScanContinuity is the special case: the fetch task for the aborted range is
+        // awaited (to avoid leaking the task), its secondary error is warned but NOT
+        // propagated, then we truncate + re-suggest and continue the loop.
         let fetch_result: Result<FetchStats, SlipstreamError> = fetch_task
             .await
             .map_err(|e| SlipstreamError::Transport(format!("fetch task panicked: {e}")))?;
+
+        // Reorg recovery arm — mirrors upstream sync.rs:404-418
+        // (zcash_client_backend-0.22.0/src/sync.rs:404-418):
+        //
+        //   Err(ChainError::Scan(err)) if err.is_continuity_error() => {
+        //       let rewind_height = err.at_height().saturating_sub(10);
+        //       db_data.truncate_to_height(rewind_height)?;
+        //       // re-suggest via Ok(true)
+        //   }
+        //
+        // Rewind computation: subtract 10 blocks from the error height, matching upstream
+        // exactly. `saturating_sub` prevents underflow at low heights.
+        if let Err(SlipstreamError::ScanContinuity { at }) = scan_result {
+            // Await the fetch task for the aborted range (must not leave it running).
+            // Its secondary error (Stopped / send-error from dropped rx) is demoted to warn.
+            if let Err(ref fetch_err) = fetch_result {
+                warn!(%fetch_err, "fetch task also errored during reorg recovery (secondary, demoted)");
+            }
+
+            consecutive_reorgs += 1;
+            if consecutive_reorgs > MAX_CONSECUTIVE_REORGS {
+                warn!(
+                    consecutive_reorgs,
+                    at,
+                    "too many consecutive reorg recoveries — giving up"
+                );
+                return Err(SlipstreamError::ScanContinuity { at });
+            }
+
+            // Mirror upstream rewind: err_height.saturating_sub(10)
+            // (sync.rs:409: `let rewind_height = err.at_height().saturating_sub(10)`)
+            let rewind_height = at.saturating_sub(10);
+            warn!(
+                at,
+                rewind_height,
+                consecutive = consecutive_reorgs,
+                "continuity break detected — truncating wallet DB and re-suggesting"
+            );
+
+            // truncate_to_height returns Result<BlockHeight, WalletDb::Error>
+            // (data_api.rs:3233: `fn truncate_to_height(&mut self, max_height: BlockHeight) -> Result<BlockHeight, Self::Error>`)
+            session
+                .db_mut()
+                .truncate_to_height(BlockHeight::from(rewind_height))
+                .map_err(|e| SlipstreamError::Wallet(format!("truncate_to_height: {e}")))?;
+
+            report.reorgs_recovered += 1;
+            // `continue` causes the outer loop to call suggest_scan_ranges again;
+            // the repair range (from rewind_height up to current tip) is now suggested.
+            continue;
+        }
 
         let (scan_stats, fetch_stats) = match (scan_result, fetch_result) {
             (Ok(s), Ok(f)) => (s, f),
@@ -113,6 +180,8 @@ pub async fn run_to_completion(
             }
         };
 
+        // Successful range completion: reset the consecutive-reorg counter.
+        consecutive_reorgs = 0;
         report.ranges_processed += 1;
         report.fetch.blocks += fetch_stats.blocks;
         report.fetch.bytes += fetch_stats.bytes;
@@ -135,6 +204,7 @@ mod tests {
         assert_eq!(r.scan.blocks, 0);
         assert_eq!(r.scan.sapling_received, 0);
         assert_eq!(r.scan.orchard_received, 0);
+        assert_eq!(r.reorgs_recovered, 0);
     }
 
     #[test]
@@ -150,6 +220,24 @@ mod tests {
         assert_eq!(t.blocks, 0);
         assert_eq!(t.sapling_received, 0);
         assert_eq!(t.orchard_received, 0);
+    }
+
+    #[test]
+    fn reorgs_recovered_accumulates() {
+        let mut report = SyncReport::default();
+        assert_eq!(report.reorgs_recovered, 0);
+        report.reorgs_recovered += 1;
+        assert_eq!(report.reorgs_recovered, 1);
+        report.reorgs_recovered += 1;
+        assert_eq!(report.reorgs_recovered, 2);
+    }
+
+    #[test]
+    fn max_consecutive_reorgs_constant() {
+        // The cap must be at least 1 (otherwise the first reorg is never recovered)
+        // and bounded (otherwise infinite ping-pong is possible).
+        assert!(MAX_CONSECUTIVE_REORGS >= 1, "cap must allow at least one recovery");
+        assert!(MAX_CONSECUTIVE_REORGS <= 10, "cap must be bounded to prevent infinite loops");
     }
 
     #[test]

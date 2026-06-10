@@ -5,7 +5,7 @@
 //! prefetch makes its latency invisible).
 
 use tracing::{debug, info};
-use zcash_client_backend::data_api::chain::scan_cached_blocks;
+use zcash_client_backend::data_api::chain::{error::Error as ChainError, scan_cached_blocks};
 use zcash_protocol::consensus::BlockHeight;
 
 #[cfg(any(test, feature = "darkside"))]
@@ -18,6 +18,30 @@ use crate::{
     grpc::{self, LwdClient},
     wallet_session::WalletSession,
 };
+
+/// Convert a `scan_cached_blocks` error into a [`SlipstreamError`].
+///
+/// If the error is a continuity break (reorg), returns the structured
+/// [`SlipstreamError::ScanContinuity`] variant so the scheduler can
+/// recover via truncate + re-suggest. All other errors are stringified
+/// into [`SlipstreamError::Wallet`].
+///
+/// Mirrors the discriminant from upstream sync.rs:404:
+///   `Err(ChainError::Scan(err)) if err.is_continuity_error()`
+///   (zcash_client_backend-0.22.0/src/sync.rs:404-413)
+fn map_scan_error<WE: std::fmt::Display, BE: std::fmt::Display>(
+    e: ChainError<WE, BE>,
+) -> SlipstreamError {
+    if let ChainError::Scan(ref scan_err) = e
+        && scan_err.is_continuity_error()
+    {
+        // at_height() returns BlockHeight; u32::from(BlockHeight) is From<BlockHeight> for u32
+        // confirmed at zcash_protocol-0.9.0/src/consensus.rs.
+        let at = u32::from(scan_err.at_height());
+        return SlipstreamError::ScanContinuity { at };
+    }
+    SlipstreamError::Wallet(format!("scan_cached_blocks: {e}"))
+}
 
 #[derive(Debug, Default, Clone)]
 pub struct ScanStats {
@@ -86,7 +110,7 @@ pub async fn scan_chunks(
                     len,
                 )
             })
-            .map_err(|e| SlipstreamError::Wallet(format!("scan_cached_blocks: {e}")))?
+            .map_err(map_scan_error)?
         };
 
         let scanned = u64::from(u32::from(summary.scanned_range().end))
@@ -175,7 +199,7 @@ pub async fn scan_chunks_from_treestate(
                     len,
                 )
             })
-            .map_err(|e| SlipstreamError::Wallet(format!("scan_cached_blocks: {e}")))?
+            .map_err(map_scan_error)?
         };
 
         let scanned = u64::from(u32::from(summary.scanned_range().end))
