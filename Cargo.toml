@@ -76,6 +76,10 @@ sharded-slab = "0.1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
+# Slipstream engine (P4 FFI surface — additive dep; see CONVENTIONS containment exceptions)
+slipstream-core = { path = "slipstream/core" }
+tokio = { workspace = true }
+
 # Tor
 fs-mistrust = "0.12"
 tor-rtcompat = "0.35"

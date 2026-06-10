@@ -2553,6 +2553,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sharded-slab",
+ "slipstream-core",
+ "tokio",
  "tonic",
  "tor-rtcompat",
  "tracing",

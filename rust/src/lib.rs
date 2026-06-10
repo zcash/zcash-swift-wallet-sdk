@@ -4206,3 +4206,355 @@ pub(crate) fn parse_optional_height(value: i64) -> anyhow::Result<Option<BlockHe
         _ => Some(BlockHeight::try_from(value)?),
     })
 }
+
+// ── Slipstream FFI surface ────────────────────────────────────────────────────
+//
+// These functions are ADDITIVE — they do not modify any existing item above.
+// Pattern mirrors `zcashlc_create_tor_runtime` / `zcashlc_free_tor_runtime`
+// (lib.rs:3157-3195): Box::into_raw / Box::from_raw, catch_panic, unwrap_exc_or_null.
+// D7 deviation: the tokio runtime is created at `open` and lives for the full
+// handle lifetime (dropped at `free`), not created per-start. This mirrors the
+// TorRuntime precedent where the runtime is owned by the handle.
+//
+// cbindgen note (C4/C12): cbindgen only parses the root crate. `FfiSlipstreamSnapshot`
+// and `FfiSlipstreamEvent` are therefore defined directly here so they appear in the
+// generated `zcashlc.h`. `SlipstreamHandle` uses the mirrored types from ffi_handle.rs;
+// at the FFI boundary the fields are copied (both are repr(C) with identical field
+// layouts, so the copy is a no-op transform).
+
+use slipstream_core::ffi_handle::{SlipstreamHandle, SyncState};
+// Internal event type (from slipstream-core) used by the handle's event ring.
+use slipstream_core::ffi_handle::FfiSlipstreamEvent as SlipstreamCoreEvent;
+
+/// C-compatible snapshot of Slipstream engine progress. Returned by
+/// [`zcashlc_slipstream_snapshot`] (by value — no heap allocation).
+///
+/// Sync state codes: 0 = idle, 1 = syncing, 2 = error, 3 = done.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FfiSlipstreamSnapshot {
+    /// Current chain tip height as reported by the server (0 = not yet fetched).
+    pub chain_tip: u64,
+    /// Number of compact blocks fetched in the current/last sync pass.
+    pub fetched_blocks: u64,
+    /// Number of compact blocks scanned in the current/last sync pass.
+    pub scanned_blocks: u64,
+    /// Number of transactions enhanced in the current/last sync pass.
+    pub enhanced_txs: u64,
+    /// End height of the block range currently being processed.
+    pub current_range_end: u64,
+    /// Sync state: 0 = idle, 1 = syncing, 2 = error, 3 = done.
+    pub state: u8,
+}
+
+/// C-compatible Slipstream engine event record. Returned by
+/// [`zcashlc_slipstream_drain_events`] in a caller-allocated buffer.
+///
+/// Event tags: 1 = SyncStarted, 2 = SyncProgress, 3 = SyncDone,
+/// 4 = SyncError, 5 = FoundTransactions.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FfiSlipstreamEvent {
+    /// Event tag (see type documentation for values).
+    pub tag: u8,
+    /// For SyncDone: transactions stored. For SyncError: error code. Others: 0.
+    pub value: u64,
+}
+
+/// Opens a Slipstream engine handle.
+///
+/// - `db_data`/`db_data_len`: path to the wallet data.db (UTF-8 bytes, no NUL terminator).
+/// - `server_host`/`server_host_len`: lightwalletd hostname (UTF-8 bytes).
+/// - `server_port`: lightwalletd port.
+/// - `use_tls`: `true` for TLS (mainnet), `false` for plaintext.
+/// - `network_id`: `1` for mainnet, `0` for testnet.
+///
+/// Returns an opaque handle pointer, or null on failure.
+/// Free with [`zcashlc_slipstream_free`] when done.
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, with
+///   alignment of `1`. Its contents must be a valid system path in the OS's preferred
+///   representation.
+/// - `server_host` must be non-null and valid for reads for `server_host_len` bytes,
+///   with alignment of `1`. Its contents must be valid UTF-8.
+/// - Neither pointer's memory must be mutated for the duration of the call.
+/// - `db_data_len` and `server_host_len` must each be no larger than `isize::MAX`.
+/// - Call [`zcashlc_slipstream_free`] to free the memory associated with the returned
+///   pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_slipstream_open(
+    db_data: *const u8,
+    db_data_len: usize,
+    server_host: *const u8,
+    server_host_len: usize,
+    server_port: u16,
+    use_tls: bool,
+    network_id: u32,
+) -> *mut SlipstreamHandle {
+    let res = catch_panic(|| {
+        let db_path = Path::new(OsStr::from_bytes(unsafe {
+            slice::from_raw_parts(db_data, db_data_len)
+        }));
+        let host =
+            std::str::from_utf8(unsafe { slice::from_raw_parts(server_host, server_host_len) })
+                .map_err(|e| anyhow!("server_host UTF-8: {e}"))?;
+        let network = if network_id == 1 { MainNetwork } else { TestNetwork };
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .map_err(|e| anyhow!("tokio runtime: {e}"))?;
+
+        let handle = SlipstreamHandle {
+            runtime,
+            progress: std::sync::Arc::new(slipstream_core::events::Progress::default()),
+            state: std::sync::Arc::new(std::sync::Mutex::new(SyncState::Idle)),
+            events: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            task: None,
+            endpoint: slipstream_core::config::Endpoint {
+                host: host.to_string(),
+                port: server_port,
+                tls: use_tls,
+            },
+            wallet_db_path: db_path.to_path_buf(),
+            network,
+        };
+
+        Ok(Box::into_raw(Box::new(handle)))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Starts a Slipstream sync pass.
+///
+/// - `handle`: non-null pointer returned by [`zcashlc_slipstream_open`].
+/// - `ufvk`/`ufvk_len`: UFVK string (UTF-8 bytes), or null/0 for a keyless update
+///   (birthday is ignored when ufvk is null — account must already be imported).
+/// - `birthday_height`: wallet birthday height (ignored when ufvk is null).
+///
+/// Can be called after [`zcashlc_slipstream_stop`] to restart. Cancels any in-flight
+/// sync before spawning the new one.
+/// Returns `true` on success, `false` on error
+/// (check [`zcashlc_get_last_error_message`] for the error text).
+///
+/// # Safety
+///
+/// - `handle` must be a non-null pointer returned by [`zcashlc_slipstream_open`] that
+///   has not previously been freed.
+/// - `handle` must not be passed to two FFI calls at the same time.
+/// - If `ufvk` is non-null, it must be valid for reads for `ufvk_len` bytes (UTF-8,
+///   alignment `1`), and its memory must not be mutated for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_slipstream_start(
+    handle: *mut SlipstreamHandle,
+    ufvk: *const u8,
+    ufvk_len: usize,
+    birthday_height: u64,
+) -> bool {
+    // SAFETY: callers must respect mutability rules on the Swift side so that observing
+    // a panic from another thread does not leave the handle in an inconsistent state.
+    let handle = AssertUnwindSafe(handle);
+    let res = catch_panic(|| {
+        let handle = unsafe { handle.as_mut() }.ok_or_else(|| anyhow!("null handle"))?;
+
+        // Cancel any in-flight task before spawning a new one.
+        if let Some(task) = handle.task.take() {
+            task.abort();
+        }
+        *handle.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Syncing;
+
+        let ufvk_str: Option<String> = if ufvk.is_null() || ufvk_len == 0 {
+            None
+        } else {
+            Some(
+                std::str::from_utf8(unsafe { slice::from_raw_parts(ufvk, ufvk_len) })
+                    .map_err(|e| anyhow!("ufvk UTF-8: {e}"))?
+                    .to_string(),
+            )
+        };
+
+        let cfg = slipstream_core::config::EngineConfig::new(
+            handle.network,
+            handle.wallet_db_path.clone(),
+            handle.endpoint.clone(),
+        );
+
+        // The ufvk String is moved into the task; `as_str()` on it is safe within the
+        // task's lifetime (the String outlives the async block inside the task).
+        let ufvk_arg: Option<(String, u64)> = ufvk_str.map(|s| (s, birthday_height));
+        let progress = std::sync::Arc::clone(&handle.progress);
+        let state = std::sync::Arc::clone(&handle.state);
+        let events = std::sync::Arc::clone(&handle.events);
+
+        let task = handle.runtime.spawn(async move {
+            // Notify SyncStarted (tag=1).
+            // Use SlipstreamCoreEvent (the type stored in the handle's event ring).
+            {
+                let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
+                if ring.len() >= slipstream_core::ffi_handle::EVENT_RING_CAP {
+                    ring.remove(0);
+                }
+                ring.push(SlipstreamCoreEvent { tag: 1, value: 0 });
+            }
+
+            // ufvk_arg owns the String; take &str reference inside the task.
+            let ufvk_ref = ufvk_arg.as_ref().map(|(s, h)| (s.as_str(), *h));
+            let result =
+                slipstream_core::engine::sync_once(&cfg, ufvk_ref, Some(progress)).await;
+
+            match result {
+                Ok(outcome) => {
+                    *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Done;
+                    let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
+                    if ring.len() >= slipstream_core::ffi_handle::EVENT_RING_CAP {
+                        ring.remove(0);
+                    }
+                    // SyncDone (tag=3): value = number of transactions stored.
+                    ring.push(SlipstreamCoreEvent {
+                        tag: 3,
+                        value: outcome.enhance.txs_stored,
+                    });
+                }
+                Err(err) => {
+                    tracing::error!(%err, "slipstream sync failed");
+                    *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(1);
+                    let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
+                    if ring.len() >= slipstream_core::ffi_handle::EVENT_RING_CAP {
+                        ring.remove(0);
+                    }
+                    // SyncError (tag=4): value = error code 1 (generic).
+                    ring.push(SlipstreamCoreEvent { tag: 4, value: 1 });
+                }
+            }
+        });
+
+        handle.task = Some(task);
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
+}
+
+/// Stops any in-flight Slipstream sync (non-blocking — task abort is async).
+///
+/// Returns `true` immediately. The handle remains live; poll
+/// [`zcashlc_slipstream_snapshot`] to confirm state transitions to idle.
+///
+/// # Safety
+///
+/// - `handle` must be a non-null pointer returned by [`zcashlc_slipstream_open`] that
+///   has not previously been freed.
+/// - `handle` must not be passed to two FFI calls at the same time.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_slipstream_stop(handle: *mut SlipstreamHandle) -> bool {
+    let handle = AssertUnwindSafe(handle);
+    let res = catch_panic(|| {
+        let handle = unsafe { handle.as_mut() }.ok_or_else(|| anyhow!("null handle"))?;
+        if let Some(task) = handle.task.take() {
+            task.abort();
+        }
+        *handle.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Idle;
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
+}
+
+/// Reads a snapshot of current Slipstream progress atomics (non-blocking, poll-based — D8).
+///
+/// Returns a zero-filled struct on null handle.
+///
+/// # Safety
+///
+/// - `handle` must be a non-null pointer returned by [`zcashlc_slipstream_open`] that
+///   has not previously been freed, or null (in which case a zeroed struct is returned).
+/// - `handle` must not be passed to two FFI calls at the same time.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_slipstream_snapshot(
+    handle: *const SlipstreamHandle,
+) -> FfiSlipstreamSnapshot {
+    let handle = AssertUnwindSafe(handle);
+    let res = catch_panic(|| {
+        let handle = unsafe { handle.as_ref() }.ok_or_else(|| anyhow!("null handle"))?;
+        // Convert from the ffi_handle module's snapshot to the cbindgen-visible type
+        // defined in this file. Both are repr(C) with identical field layout; copy fields.
+        let s = handle.snapshot();
+        Ok(FfiSlipstreamSnapshot {
+            chain_tip: s.chain_tip,
+            fetched_blocks: s.fetched_blocks,
+            scanned_blocks: s.scanned_blocks,
+            enhanced_txs: s.enhanced_txs,
+            current_range_end: s.current_range_end,
+            state: s.state,
+        })
+    });
+    unwrap_exc_or(res, FfiSlipstreamSnapshot::default())
+}
+
+/// Drains all queued Slipstream events into a caller-allocated buffer.
+///
+/// - `handle`: non-null pointer returned by [`zcashlc_slipstream_open`].
+/// - `buf`: caller-allocated array of [`FfiSlipstreamEvent`]; must be valid for writes
+///   for `buf_len` elements.
+/// - `buf_len`: length of `buf` (maximum events to drain in this call).
+///
+/// Returns the number of events written (≤ `buf_len`). Events are drained atomically
+/// — after this call returns, the drained events are removed from the internal ring.
+///
+/// # Safety
+///
+/// - `handle` must be a non-null pointer returned by [`zcashlc_slipstream_open`] that
+///   has not previously been freed.
+/// - `handle` must not be passed to two FFI calls at the same time.
+/// - `buf` must be non-null and valid for writes for `buf_len` elements of
+///   [`FfiSlipstreamEvent`], with alignment of `1`.
+/// - `buf_len` must be no larger than `isize::MAX`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_slipstream_drain_events(
+    handle: *mut SlipstreamHandle,
+    buf: *mut FfiSlipstreamEvent,
+    buf_len: usize,
+) -> usize {
+    let handle = AssertUnwindSafe(handle);
+    let buf = AssertUnwindSafe(buf);
+    let res = catch_panic(|| {
+        let handle = unsafe { handle.as_mut() }.ok_or_else(|| anyhow!("null handle"))?;
+        let mut ring = handle.events.lock().unwrap_or_else(|p| p.into_inner());
+        let to_copy = ring.len().min(buf_len);
+        // Convert from SlipstreamCoreEvent (ffi_handle module) to the cbindgen-visible
+        // FfiSlipstreamEvent (defined in this file). Both are repr(C); copy fields.
+        let drained: Vec<FfiSlipstreamEvent> = ring
+            .drain(..to_copy)
+            .map(|e| FfiSlipstreamEvent { tag: e.tag, value: e.value })
+            .collect();
+        // SAFETY: buf is valid for writes for buf_len elements (caller contract above).
+        unsafe { std::ptr::copy_nonoverlapping(drained.as_ptr(), *buf, to_copy) };
+        Ok(to_copy)
+    });
+    unwrap_exc_or(res, 0)
+}
+
+/// Frees a Slipstream handle.
+///
+/// Cancels any in-flight sync and drops the tokio runtime. After this call, `handle`
+/// must not be used.
+///
+/// # Safety
+///
+/// - If `handle` is non-null, it must be a pointer returned by [`zcashlc_slipstream_open`]
+///   that has not previously been freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_slipstream_free(handle: *mut SlipstreamHandle) {
+    if !handle.is_null() {
+        // SAFETY: handle is non-null and was returned by zcashlc_slipstream_open (caller
+        // contract). We take ownership here and drop it at end of scope.
+        let mut h: Box<SlipstreamHandle> = unsafe { Box::from_raw(handle) };
+        // Abort the in-flight task before dropping the runtime; dropping a Runtime with
+        // live tasks causes a panic on some platforms.
+        if let Some(task) = h.task.take() {
+            task.abort();
+        }
+        drop(h);
+    }
+}

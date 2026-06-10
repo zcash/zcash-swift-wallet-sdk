@@ -9,6 +9,7 @@ pub mod enhance;
 pub mod engine;
 pub mod error;
 pub mod events;
+pub mod ffi_handle;
 pub mod fetch;
 pub mod grpc;
 pub mod scan;
