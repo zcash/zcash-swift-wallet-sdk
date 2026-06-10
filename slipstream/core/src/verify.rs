@@ -17,24 +17,25 @@ impl Continuity {
     /// Verifies heights are consecutive and prev_hash links hold; advances self.
     pub fn verify_blocks(&mut self, blocks: &[CompactBlock]) -> Result<(), SlipstreamError> {
         for b in blocks {
-            if let Some(h) = self.last_height {
-                if b.height != h + 1 {
-                    return Err(SlipstreamError::Discontinuity {
-                        at: b.height as u32,
-                        detail: format!("expected height {}, got {}", h + 1, b.height),
-                    });
-                }
+            if let Some(h) = self.last_height
+                && b.height != h + 1
+            {
+                return Err(SlipstreamError::Discontinuity {
+                    at: b.height as u32,
+                    detail: format!("expected height {}, got {}", h + 1, b.height),
+                });
             }
             // NOTE: lightwalletd populates prev_hash in GetBlockRange responses;
             // empty prev_hash is tolerated for synthetic/first blocks only. A server
             // stripping prev_hash would degrade this check to heights-only.
-            if let Some(prev) = &self.last_hash {
-                if !b.prev_hash.is_empty() && &b.prev_hash != prev {
-                    return Err(SlipstreamError::Discontinuity {
-                        at: b.height as u32,
-                        detail: "prev-hash mismatch".into(),
-                    });
-                }
+            if let Some(prev) = &self.last_hash
+                && !b.prev_hash.is_empty()
+                && &b.prev_hash != prev
+            {
+                return Err(SlipstreamError::Discontinuity {
+                    at: b.height as u32,
+                    detail: "prev-hash mismatch".into(),
+                });
             }
             self.last_hash = Some(b.hash.clone());
             self.last_height = Some(b.height);
