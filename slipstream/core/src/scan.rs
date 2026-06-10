@@ -8,6 +8,9 @@ use tracing::{debug, info};
 use zcash_client_backend::data_api::chain::scan_cached_blocks;
 use zcash_protocol::consensus::BlockHeight;
 
+#[cfg(any(test, feature = "darkside"))]
+use zcash_client_backend::proto::service::TreeState;
+
 use crate::{
     block_source::MemBlockSource,
     chunk::ChunkQueueReceiver,
@@ -105,6 +108,88 @@ pub async fn scan_chunks(
             .map_err(|e| SlipstreamError::Transport(format!("prefetch task: {e}")))??;
     }
     info!(blocks = stats.blocks, chunks = stats.chunks, sapling = stats.sapling_received, orchard = stats.orchard_received, "scan done");
+    Ok(stats)
+}
+
+/// Like [`scan_chunks`] but uses a provided initial `TreeState` instead of fetching
+/// one from the server. For subsequent chunk boundaries (prefetches), an empty tree state
+/// at the chunk-end height is synthesized — this is correct for fabricated/empty blocks
+/// (no shielded outputs → tree doesn't change between chunks).
+///
+/// **USE ONLY IN TESTS** against darkside servers that do not support GetTreeState
+/// (e.g. lightwalletd v0.4.9). Production code uses [`scan_chunks`].
+///
+/// The correctness assertion this enables:
+///   `scan_cached_blocks` will still decrypt and record shielded notes for blocks that
+///   contain them — the provided initial state is used as the frontier before the range;
+///   the scanner updates the frontier as it processes each block.
+#[cfg(any(test, feature = "darkside"))]
+pub async fn scan_chunks_from_treestate(
+    session: &mut WalletSession,
+    range_start: u64,
+    initial_state: TreeState,
+    mut rx: ChunkQueueReceiver,
+) -> Result<ScanStats, SlipstreamError> {
+    if range_start == 0 {
+        return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
+    }
+    let mut stats = ScanStats::default();
+    let mut next_state = initial_state;
+
+    while let Some((chunk, permit)) = rx.recv().await {
+        let (chunk_start, chunk_end) = match (chunk.start_height(), chunk.end_height()) {
+            (Some(s), Some(e)) => (s, e),
+            _ => return Err(SlipstreamError::Wallet("empty chunk".into())),
+        };
+
+        // Synthesize a tree state at `chunk_end` for the next iteration.
+        // For darkside fabricated blocks, the tree doesn't change (no real shielded outputs
+        // in empty blocks). The scan updates the frontier in-DB; we just need a valid height
+        // to satisfy the from_state assertion.
+        let synthesized_next = TreeState {
+            network: next_state.network.clone(),
+            height: chunk_end,
+            hash: "0".repeat(64), // darkside block hash is irrelevant for tree state
+            time: 0,
+            sapling_tree: next_state.sapling_tree.clone(),
+            orchard_tree: next_state.orchard_tree.clone(),
+        };
+
+        let from_state = next_state
+            .to_chain_state()
+            .map_err(|e| SlipstreamError::Wallet(format!("chain state: {e}")))?;
+        let network = session.network;
+        let len = chunk.blocks.len();
+
+        let summary = {
+            let source = MemBlockSource::new(&chunk);
+            let from_height = u32::try_from(chunk_start)
+                .map_err(|_| SlipstreamError::Wallet(format!("height {chunk_start} exceeds u32")))?;
+            tokio::task::block_in_place(|| {
+                scan_cached_blocks(
+                    &network,
+                    &source,
+                    session.db_mut(),
+                    BlockHeight::from(from_height),
+                    &from_state,
+                    len,
+                )
+            })
+            .map_err(|e| SlipstreamError::Wallet(format!("scan_cached_blocks: {e}")))?
+        };
+
+        let scanned = u64::from(u32::from(summary.scanned_range().end))
+            - u64::from(u32::from(summary.scanned_range().start));
+        stats.blocks += scanned;
+        stats.chunks += 1;
+        stats.sapling_received += summary.received_sapling_note_count() as u64;
+        stats.orchard_received += summary.received_orchard_note_count() as u64;
+        debug!(chunk_start, chunk_end, len, "chunk scanned (from_treestate)");
+
+        drop(permit);
+        next_state = synthesized_next;
+    }
+    info!(blocks = stats.blocks, chunks = stats.chunks, sapling = stats.sapling_received, "scan_from_treestate done");
     Ok(stats)
 }
 

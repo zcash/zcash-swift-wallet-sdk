@@ -3,7 +3,7 @@
 //! migrations run once, chain-state ops (subtree roots, chain tip, scan ranges)
 //! and keyless account import (UFVK only, decision D6).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 use tracing::info;
@@ -24,6 +24,9 @@ type Db = WalletDb<Connection, Network, zcash_client_sqlite::util::SystemClock, 
 pub struct WalletSession {
     pub network: Network,
     db: Db,
+    // Used by seed_block_metadata (cfg(any(test, feature = "darkside")) only).
+    #[cfg_attr(not(any(test, feature = "darkside")), allow(dead_code))]
+    db_path: PathBuf,
 }
 
 fn wallet_err(context: &str, e: impl std::fmt::Display) -> SlipstreamError {
@@ -52,7 +55,7 @@ impl WalletSession {
             .map_err(|e| wallet_err("open wallet db", e))?;
         zcash_client_sqlite::wallet::init::init_wallet_db(&mut db, None)
             .map_err(|e| wallet_err("init/migrations", e))?;
-        Ok(Self { network, db })
+        Ok(Self { network, db, db_path: db_path.to_path_buf() })
     }
 
     /// Keyless import: UFVK string + birthday treestate (server-provided at
@@ -115,23 +118,73 @@ impl WalletSession {
     pub fn db_mut(&mut self) -> &mut Db {
         &mut self.db
     }
+
+    /// Pre-seed the `blocks` table with a record at `height` carrying `block_hash` and
+    /// `sapling_commitment_tree_size`.
+    ///
+    /// **FOR DARKSIDE TESTS ONLY.** The real `put_block` in zcash_client_sqlite is
+    /// `pub(crate)` and goes through the full `put_blocks` pipeline (which requires
+    /// already-scanned `ScannedBlock` values). For our darkside workaround we need a
+    /// pre-existing block record so that `scan_cached_blocks` finds a non-None
+    /// `prior_block_metadata` for the very first block, enabling it to determine the
+    /// Sapling note commitment tree size without relying on `chain_metadata` in the
+    /// compact blocks (lightwalletd v0.4.9 does not set this field).
+    ///
+    /// The `block_hash` must equal the `prev_hash` of the first block that will be
+    /// scanned, or the chain-continuity check inside `scan_block_with_runners` will
+    /// raise `PrevHashMismatch`. Callers should fetch the first block and read its
+    /// `prev_hash` to populate this parameter.
+    ///
+    /// Opens a separate `rusqlite::Connection` to the DB path (WAL mode allows this
+    /// concurrently with the WalletDb connection) and upserts the block record.
+    #[cfg(any(test, feature = "darkside"))]
+    pub fn seed_block_metadata(
+        &self,
+        height: u64,
+        sapling_commitment_tree_size: u32,
+        block_hash: &[u8],
+    ) -> Result<(), SlipstreamError> {
+        let conn = Connection::open(&self.db_path)
+            .map_err(|e| wallet_err("seed_block_metadata open", e))?;
+        let h = u32::try_from(height)
+            .map_err(|_| SlipstreamError::Wallet(format!("height {height} exceeds u32")))?;
+        // orchard_commitment_tree_size and counts are 0 (Sapling-only test chain).
+        conn.execute(
+            "INSERT INTO blocks (
+                height, hash, time,
+                sapling_commitment_tree_size, sapling_output_count, sapling_tree,
+                orchard_commitment_tree_size, orchard_action_count
+             ) VALUES (?1, ?2, 0, ?3, 0, x'00', 0, 0)
+             ON CONFLICT (height) DO UPDATE
+             SET hash = excluded.hash,
+                 sapling_commitment_tree_size = excluded.sapling_commitment_tree_size",
+            rusqlite::params![h, block_hash, sapling_commitment_tree_size],
+        )
+        .map_err(|e| wallet_err("seed_block_metadata insert", e))?;
+        Ok(())
+    }
 }
+
+/// TEST_UFVK: mainnet UFVK for the canonical darkside seed used in this repo's test suite.
+/// Derived from seed phrase: "still champion voice habit trend flight..." (Tests/TestUtils/Tests+Utils.swift:19)
+/// seed bytes base64: "9VDVOZZZOWWHpZtq1Ebridp3Qeux5C+HwiRR0g7Oi7HgnMs8Gfln83+/Q1NnvClcaSwM4ADFL1uZHxypEWlWXg=="
+/// Verified in Tests/OfflineTests/DerivationToolTests/DerivationToolMainnetTests.swift:32-39
+/// as `expectedViewingKey` derived from the same `seedData`.
+///
+/// Re-exported here (not just in #[cfg(test)]) for the darkside integration test in
+/// tests/darkside_sync.rs which is an integration test binary (not a unit test module)
+/// and therefore cannot access items gated behind `#[cfg(test)]`.
+#[cfg(any(test, feature = "darkside"))]
+pub const TEST_UFVK: &str = concat!(
+    "uview17fme6ux853km45g9ep07djpfzeydxxgm22xpmr7arzxyutlusalgpqlx7suga4ahzywfuwz4jclm00u7g8u65qvvdt45kttnfunvschssg3h3g06txs9ja32vx3xa8dej3unnat",
+    "gzjvd0vumk37t8es3ludldrtse3q6226ws7eq4q0ywz78nudwpepgdn7jmxz8yvp7k6gxkeynkam0f8aqf9qpeaej55zhkw39x7epayhndul0j4xjttdxxlnwcd09nr8svyx8j0zng0w6",
+    "scx3m5unpkaqxcm3hslhlfg4caz7r8d4xy9wm7klkg79w7j0uyzec5s3yje20eg946r6rmkf532nfydu26s8q9ua7mwxw2j2ag7hfcuu652gw6uta03vlm05zju3a9rwc4h367kqzfqrc",
+    "z35pdwdk2a7yqnk850un3ujxcvve45ueajgvtr6dj4ufszgqwdy0aedgmkalx2p7qed2suarwkr35dl0c8dnqp3"
+);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // TEST_UFVK: mainnet UFVK for the canonical darkside seed used in this repo's test suite.
-    // Derived from seed phrase: "still champion voice habit trend flight..." (Tests/TestUtils/Tests+Utils.swift:19)
-    // seed bytes base64: "9VDVOZZZOWWHpZtq1Ebridp3Qeux5C+HwiRR0g7Oi7HgnMs8Gfln83+/Q1NnvClcaSwM4ADFL1uZHxypEWlWXg=="
-    // Verified in Tests/OfflineTests/DerivationToolTests/DerivationToolMainnetTests.swift:32-39
-    // as `expectedViewingKey` derived from the same `seedData`.
-    const TEST_UFVK: &str = concat!(
-        "uview17fme6ux853km45g9ep07djpfzeydxxgm22xpmr7arzxyutlusalgpqlx7suga4ahzywfuwz4jclm00u7g8u65qvvdt45kttnfunvschssg3h3g06txs9ja32vx3xa8dej3unnat",
-        "gzjvd0vumk37t8es3ludldrtse3q6226ws7eq4q0ywz78nudwpepgdn7jmxz8yvp7k6gxkeynkam0f8aqf9qpeaej55zhkw39x7epayhndul0j4xjttdxxlnwcd09nr8svyx8j0zng0w6",
-        "scx3m5unpkaqxcm3hslhlfg4caz7r8d4xy9wm7klkg79w7j0uyzec5s3yje20eg946r6rmkf532nfydu26s8q9ua7mwxw2j2ag7hfcuu652gw6uta03vlm05zju3a9rwc4h367kqzfqrc",
-        "z35pdwdk2a7yqnk850un3ujxcvve45ueajgvtr6dj4ufszgqwdy0aedgmkalx2p7qed2suarwkr35dl0c8dnqp3"
-    );
 
     #[test]
     fn open_sets_wal_and_initializes_schema() {

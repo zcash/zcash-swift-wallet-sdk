@@ -8,7 +8,8 @@ use zcash_client_backend::proto::service::Empty;
 use crate::{
     config::Endpoint,
     darkside_generated::{
-        DarksideEmptyBlocks, DarksideHeight, DarksideMetaState,
+        DarksideBlocksUrl, DarksideEmptyBlocks, DarksideHeight, DarksideMetaState,
+        DarksideTransactionsUrl,
         darkside_streamer_client::DarksideStreamerClient,
     },
     error::SlipstreamError,
@@ -38,13 +39,24 @@ impl DarksideCtl {
     }
 
     pub async fn reset(&mut self) -> Result<(), SlipstreamError> {
+        self.reset_with_tree_sizes(0, 0).await
+    }
+
+    /// Reset with specific commitment tree sizes (used by buildChain-style tests).
+    /// `start_sapling_commitment_tree_size = 128607` mirrors `FakeChainBuilder.buildChain`
+    /// (Tests/TestUtils/FakeChainBuilder.swift:29).
+    pub async fn reset_with_tree_sizes(
+        &mut self,
+        start_sapling_commitment_tree_size: u32,
+        start_orchard_commitment_tree_size: u32,
+    ) -> Result<(), SlipstreamError> {
         self.client
             .reset(DarksideMetaState {
                 sapling_activation: SAPLING_ACTIVATION,
                 branch_id: BRANCH_ID.into(),
                 chain_name: CHAIN_NAME.into(),
-                start_sapling_commitment_tree_size: 0,
-                start_orchard_commitment_tree_size: 0,
+                start_sapling_commitment_tree_size,
+                start_orchard_commitment_tree_size,
             })
             .await
             .map_err(|e| err("reset", e))?;
@@ -70,6 +82,30 @@ impl DarksideCtl {
             .apply_staged(DarksideHeight { height })
             .await
             .map_err(|e| err("apply_staged", e))?;
+        Ok(())
+    }
+
+    /// Stage REAL pre-baked blocks from a darksidewalletd-test-data URL.
+    /// Proto RPC: `StageBlocks(DarksideBlocksURL)`.
+    pub async fn stage_blocks_url(&mut self, url: &str) -> Result<(), SlipstreamError> {
+        self.client
+            .stage_blocks(DarksideBlocksUrl { url: url.into() })
+            .await
+            .map_err(|e| err("stage_blocks_url", e))?;
+        Ok(())
+    }
+
+    /// Stage transactions from a URL into the given height.
+    /// Proto RPC: `StageTransactions(DarksideTransactionsURL)`.
+    pub async fn stage_transactions_url(
+        &mut self,
+        url: &str,
+        height: i32,
+    ) -> Result<(), SlipstreamError> {
+        self.client
+            .stage_transactions(DarksideTransactionsUrl { url: url.into(), height })
+            .await
+            .map_err(|e| err("stage_transactions_url", e))?;
         Ok(())
     }
 
