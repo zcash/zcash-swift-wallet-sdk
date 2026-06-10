@@ -10,6 +10,7 @@ pub mod events;
 pub mod fetch;
 pub mod grpc;
 pub mod verify;
+pub mod wallet_session;
 
 #[cfg(feature = "darkside")]
 #[allow(clippy::all, missing_docs)]
