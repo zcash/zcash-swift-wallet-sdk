@@ -11,6 +11,7 @@ use crate::{
     error::SlipstreamError,
     grpc,
     scheduler::{SyncReport, run_to_completion},
+    transparent::{TransparentStats, refresh_utxos},
     wallet_session::WalletSession,
 };
 
@@ -18,6 +19,7 @@ use crate::{
 pub struct SyncOutcome {
     pub report: SyncReport,
     pub enhance: EnhanceStats,
+    pub transparent: TransparentStats,
     pub elapsed: std::time::Duration,
     pub chain_tip: u64,
 }
@@ -63,6 +65,12 @@ pub async fn sync_once(
     session.update_chain_tip(tip)?;
     info!(tip, "chain tip updated");
 
+    // Transparent UTXO refresh — runs BEFORE the shielded scan loop, mirroring upstream
+    // sync.rs:108-121 ("We do this before we perform any shielded scanning, to ensure
+    // that we discover any UTXOs between the old fully-scanned height and the current
+    // chain tip.").
+    let transparent = refresh_utxos(&mut session, &mut client).await?;
+
     let report = run_to_completion(config, &mut session).await?;
 
     // Enhancement: fetch full tx data for all pending TransactionDataRequests.
@@ -70,7 +78,7 @@ pub async fn sync_once(
     // we try to enhance them (scan enqueues Enhancement/GetStatus requests).
     let enhance = run_enhancement(&mut session, &mut client, config.network).await?;
 
-    Ok(SyncOutcome { report, enhance, elapsed: started.elapsed(), chain_tip: tip })
+    Ok(SyncOutcome { report, enhance, transparent, elapsed: started.elapsed(), chain_tip: tip })
 }
 
 #[cfg(test)]

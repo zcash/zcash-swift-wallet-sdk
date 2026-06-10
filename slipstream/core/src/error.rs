@@ -17,6 +17,9 @@ pub enum SlipstreamError {
     #[error("wallet db: {0}")]
     Wallet(String),
 
+    #[error("misbehaving server (invalid or out-of-range data in response)")]
+    MisbehavingServer,
+
     #[error("engine is stopped")]
     Stopped,
 }

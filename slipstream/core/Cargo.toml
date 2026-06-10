@@ -28,6 +28,8 @@ tonic = { workspace = true }
 prost = { workspace = true }
 tonic-prost = { workspace = true }
 futures-util = { workspace = true }
+transparent = { workspace = true }
+zcash_script = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

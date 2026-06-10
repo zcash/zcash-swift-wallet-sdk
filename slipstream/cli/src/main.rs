@@ -215,6 +215,11 @@ fn cmd_sync(
                     outcome.enhance.statuses_set,
                     outcome.enhance.skipped,
                 );
+                println!(
+                    "utxos: {} across {} accounts",
+                    outcome.transparent.utxos,
+                    outcome.transparent.accounts,
+                );
             }
             Err(e) => {
                 eprintln!("sync failed: {e}");
