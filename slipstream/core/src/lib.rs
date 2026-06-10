@@ -9,6 +9,7 @@ pub mod error;
 pub mod events;
 pub mod fetch;
 pub mod grpc;
+pub mod scan;
 pub mod verify;
 pub mod wallet_session;
 
