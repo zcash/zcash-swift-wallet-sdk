@@ -2,6 +2,7 @@
 //! See docs/SLIPSTREAM_DESIGN.md for the architecture and
 //! docs/slipstream/ROADMAP.md for the build plan.
 
+pub mod chunk;
 pub mod config;
 pub mod error;
 pub mod events;
