@@ -18,4 +18,5 @@ zcash_client_backend = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
+tonic-prost = { workspace = true }
 futures-util = { workspace = true }

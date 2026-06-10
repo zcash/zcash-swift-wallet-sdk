@@ -7,6 +7,13 @@ pub mod error;
 pub mod events;
 pub mod grpc;
 
+#[cfg(feature = "darkside")]
+#[allow(clippy::all, missing_docs)]
+#[path = "grpc_generated/darkside.rs"]
+pub mod darkside_generated;
+#[cfg(feature = "darkside")]
+pub mod darkside;
+
 pub use config::{EngineConfig, Endpoint};
 pub use error::SlipstreamError;
 pub use events::{Bound, Event, Snapshot, SyncMode};

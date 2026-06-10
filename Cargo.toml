@@ -108,7 +108,7 @@ crate-type = ["staticlib"]
 lto = true
 
 [workspace]
-members = ["slipstream/core", "slipstream/cli"]
+members = ["slipstream/core", "slipstream/cli", "slipstream/protogen"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -117,6 +117,7 @@ resolver = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tonic = "0.14"
 prost = "0.14"
+tonic-prost = "0.14"
 futures-util = "0.3"
 thiserror = "2"
 tracing = "0.1"

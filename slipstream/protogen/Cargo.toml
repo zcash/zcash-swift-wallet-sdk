@@ -1,0 +1,13 @@
+[package]
+name = "slipstream-protogen"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+publish = false
+
+# One-off codegen runner: regenerates slipstream/core/src/grpc_generated/.
+# Requires protoc on PATH. Run from REPO ROOT: cargo run -p slipstream-protogen
+[dependencies]
+anyhow = "1"
+tonic-prost-build = "0.14"
