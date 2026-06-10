@@ -7,8 +7,9 @@ use tonic::transport::{Channel, ClientTlsConfig, Endpoint as TonicEndpoint};
 use zcash_client_backend::{
     data_api::chain::CommitmentTreeRoot,
     proto::service::{
-        BlockId, ChainSpec, Empty, GetSubtreeRootsArg, LightdInfo, ShieldedProtocol, TreeState,
-        compact_tx_streamer_client::CompactTxStreamerClient,
+        BlockId, ChainSpec, Empty, GetAddressUtxosArg, GetAddressUtxosReply, GetSubtreeRootsArg,
+        LightdInfo, RawTransaction, ShieldedProtocol, TransparentAddressBlockFilter, TreeState,
+        TxFilter, compact_tx_streamer_client::CompactTxStreamerClient,
     },
 };
 use zcash_primitives::merkle_tree::HashSer;
@@ -110,6 +111,54 @@ pub async fn get_subtree_roots(client: &mut LwdClient) -> Result<SubtreeRoots, S
         .await?;
 
     Ok(SubtreeRoots { sapling: sapling_roots, orchard: orchard_roots })
+}
+
+/// Fetch a full transaction by txid. Returns the raw bytes + mined height
+/// (0 = mempool, per lightwalletd conventions; see rust/src/lib.rs:2053-2068).
+pub async fn get_transaction(
+    client: &mut LwdClient,
+    txid: [u8; 32],
+) -> Result<RawTransaction, SlipstreamError> {
+    Ok(client
+        .get_transaction(TxFilter { hash: txid.to_vec(), ..Default::default() })
+        .await
+        .map_err(|e| transport_err("get_transaction", e))?
+        .into_inner())
+}
+
+/// Stream raw transactions involving a transparent address in a height range.
+pub async fn get_taddress_txids(
+    client: &mut LwdClient,
+    filter: TransparentAddressBlockFilter,
+) -> Result<Vec<RawTransaction>, SlipstreamError> {
+    client
+        .get_taddress_txids(filter)
+        .await
+        .map_err(|e| transport_err("get_taddress_txids", e))?
+        .into_inner()
+        .map_err(|e| SlipstreamError::Transport(format!("taddress txid stream: {e}")))
+        .try_collect()
+        .await
+}
+
+/// Collect UTXOs for the given transparent addresses from `start_height`.
+pub async fn get_address_utxos(
+    client: &mut LwdClient,
+    addresses: Vec<String>,
+    start_height: u64,
+) -> Result<Vec<GetAddressUtxosReply>, SlipstreamError> {
+    client
+        .get_address_utxos_stream(GetAddressUtxosArg {
+            addresses,
+            start_height,
+            max_entries: 0,
+        })
+        .await
+        .map_err(|e| transport_err("get_address_utxos", e))?
+        .into_inner()
+        .map_err(|e| SlipstreamError::Transport(format!("utxo stream: {e}")))
+        .try_collect()
+        .await
 }
 
 #[cfg(test)]

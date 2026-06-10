@@ -5,14 +5,14 @@
 
 ## NEXT ACTION
 
-➡️ **T3.1** — grpc additions (fetch-tx, taddr-txids, address-utxos). Detailed steps: docs/slipstream/plans/2026-06-10-phase-3-completeness.md, Task 3.1.
+➡️ **T3.2** — enhancer (transaction_data_requests loop with concurrent fetch + serial DB apply). Detailed steps: docs/slipstream/plans/2026-06-10-phase-3-completeness.md, Task 3.2.
 
 ## Current phase: P3 — Completeness (plan: `plans/2026-06-10-phase-3-completeness.md`)
 
 | Task | Status | Session notes |
 |---|---|---|
 | T3.0 detailed phase plan | done | Recon pinned: decrypt_and_store_transaction + mined-height semantics (lib.rs:2045-2068), set_transaction_status variants (lib.rs:3015-3037), upstream refresh_utxos port source (sync.rs:475-534), reorg arm source (sync.rs:404-418), darkside reorg fixtures (DarkSideWalletService.swift:13-15). Task remap vs ROADMAP P3: T3.1=grpc additions; T3.2=enhancer; T3.3=transparent; T3.4=reorg recovery (pulled in from T2.5 deferral — needed before P4 darkside reorg subset); T3.5=progress+stage timing (Decision-Log requirement); T3.6=G3 parity+gate (mainnet-seed parity = needs-user). |
-| T3.1 grpc additions | todo | TxFilter/GetAddressUtxosArg field names = binding check |
+| T3.1 grpc additions | done | get_transaction, get_taddress_txids, get_address_utxos wrappers added to grpc.rs; binding verified: TxFilter::hash (Vec<u8>) + GetAddressUtxosArg fields (addresses, start_height, max_entries: 0) exact match from tor.rs usage + proto service.rs lines 43-45, 265-271; imports: TxFilter, RawTransaction, GetAddressUtxosArg, GetAddressUtxosReply, TransparentAddressBlockFilter added; code mirrors plan verbatim (no deviations); hermetic tests: 32/0 (no new tests — typed pass-throughs); cargo clippy clean; darkside build compiles. |
 | T3.2 enhancer | todo | FuturesUnordered vs buffered — binding note 1 |
 | T3.3 transparent/UTXO | todo | port sync.rs:475-534 verbatim-adapted |
 | T3.4 reorg recovery | todo | ScanContinuity error + truncate arm + darkside reorg test (oracle: ReOrgTests.swift) |
@@ -146,3 +146,4 @@
 - 2026-06-10 — T2.7 spec review passed (gating airtight; oracle constants verified vs Swift sources; G2 marking justified). Fixes: stale test header corrected; baseline-spike + stage-split records added; P8 darkside-binary follow-up recorded.
 - 2026-06-10 — P2 final review passed; closing fixes landed. PHASE 2 CLOSED.
 - 2026-06-10 — T3.0 done: Phase 3 Completeness plan written (plans/2026-06-10-phase-3-completeness.md); reorg recovery pulled into P3 (needed before P4 darkside subset); G3 mainnet parity flagged needs-user.
+- 2026-06-10 — T3.1 done: get_transaction, get_taddress_txids, get_address_utxos wrappers added to grpc.rs; binding checked against tor.rs usage + proto service.rs (TxFilter::hash field, GetAddressUtxosArg: addresses/start_height/max_entries exact); imports added (TxFilter, RawTransaction, GetAddressUtxosArg, GetAddressUtxosReply, TransparentAddressBlockFilter); code verbatim from plan (no deviations); test suite: 32/0 hermetic (no new tests, typed pass-throughs); clippy clean; darkside compiles; STATE.md T3.1→done, NEXT→T3.2.
