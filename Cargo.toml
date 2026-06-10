@@ -110,3 +110,22 @@ lto = true
 [workspace]
 members = ["slipstream/core", "slipstream/cli"]
 resolver = "3"
+
+[workspace.dependencies]
+# Slipstream shared versions (P0-review carry-over). Root package keeps its own
+# [dependencies] block; slipstream crates inherit from here.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tonic = "0.14"
+prost = "0.14"
+futures-util = "0.3"
+thiserror = "2"
+tracing = "0.1"
+zcash_protocol = "0.9"
+zcash_client_backend = { version = "0.23", features = [
+    "lightwalletd-tonic-tls-webpki-roots",
+    "orchard",
+    "pczt",
+    "tor",
+    "transparent-inputs",
+    "unstable",
+] }

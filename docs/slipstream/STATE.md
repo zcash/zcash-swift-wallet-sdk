@@ -5,14 +5,14 @@
 
 ## NEXT ACTION
 
-➡️ **T1.1** — Workspace deps + `grpc` module. Detailed steps: docs/slipstream/plans/2026-06-10-phase-1-transport.md, Task 1.1.
+➡️ **T1.2** — Darkside codegen + control harness + hermetic roundtrip test. Detailed steps: docs/slipstream/plans/2026-06-10-phase-1-transport.md, Task 1.2.
 
 ## Current phase: P1 — Transport (plan: `plans/2026-06-10-phase-1-transport.md`)
 
 | Task | Status | Session notes |
 |---|---|---|
 | T1.0 detailed phase plan | done | Task remap vs ROADMAP index: T1.2=darkside codegen+harness, T1.3=chunk+queue, T1.4=fetcher+reorder+continuity (merged), T1.5=CLI bench+G1. get_subtree_roots wrapper deferred to P2. Facts verified: upstream proto is client-only; protoc present; darkside.proto vendored at Tests/TestUtils/proto/. |
-| T1.1 workspace deps + grpc module | todo | includes P0 carry-overs: [workspace.dependencies] + validate() guard tests |
+| T1.1 workspace deps + grpc module | done | [workspace.dependencies] added; slipstream-core Cargo.toml rewritten to workspace-inherited deps + darkside feature; uri() + 3 guard tests added to config.rs; grpc.rs created (connect/get_lightd_info/get_latest_block_height/get_tree_state); tonic 0.14.6 ClientTlsConfig::new().with_webpki_roots() compiled without change; 10 hermetic tests green, 1 ignored (live smoke); live smoke also passed (zec.rocks mainnet); OfflineTests 419/0 fail (via xcodebuild; swift test --filter OfflineTests pre-existing SPM/Swift 6.3.2 issue: LocalPackages evaluated as fileSystem dep despite dir not existing — not caused by this task) |
 | T1.2 darkside codegen + harness + roundtrip | todo | checked-in generated client via slipstream/protogen |
 | T1.3 chunk + byte-budgeted queue | todo | |
 | T1.4 parallel fetcher + continuity | todo | hermetic darkside 5000-block test |
@@ -74,3 +74,4 @@
 - 2026-06-10 — P0 final review passed (verdict: ready for P1). Follow-ups applied: containment carve-out for docs/ design docs; checkbox + OfflineTests-cadence conventions. Carried to P1: add validate() guard tests (empty host, tiny budget) in first T1.x code commit; add [workspace.dependencies] table when T1.1 lands first new dep; T1.0 plan must specify G1 benchmark records single-stream baseline AND K=4 in the same run/server.
 - 2026-06-10 — Went LOCAL-ONLY per user: upstream issue #1755 scrubbed and closed; no-push policy codified in CONVENTIONS/ROADMAP/STATE.
 - 2026-06-10 — T1.0 done: Phase 1 Transport plan written (plans/2026-06-10-phase-1-transport.md) after code-reality recon (client-only upstream proto stubs → hermetic tests use the REAL darkside binary via a checked-in generated control client; protoc available; tor.rs confirms CompactTxStreamerClient<Channel> type). P1 task remap recorded in the P1 table.
+- 2026-06-10 — T1.1 done: [workspace.dependencies] appended to root Cargo.toml; slipstream-core deps rewritten to workspace-inherited + darkside feature added; config.rs: Endpoint::uri() impl + 3 new tests (empty_host_rejected, tiny_memory_budget_rejected, uri_scheme_follows_tls_flag); grpc.rs created with connect/get_lightd_info/get_latest_block_height/get_tree_state + hermetic connection test + live smoke; tonic API: ClientTlsConfig::new().with_webpki_roots() compiled as-written (no deviation); cargo test -p slipstream-core: 10 passed, 1 ignored; live smoke: passed (zec.rocks mainnet, chain_name=main, height>2M); cargo check: green; OfflineTests: 419/0 via xcodebuild (swift test --filter OfflineTests blocked by pre-existing SPM/Swift 6.3.2 LocalPackages evaluation bug — unrelated to this task).

@@ -4357,8 +4357,13 @@ dependencies = [
 name = "slipstream-core"
 version = "0.0.1"
 dependencies = [
+ "futures-util",
+ "prost",
  "thiserror 2.0.18",
+ "tokio",
+ "tonic",
  "tracing",
+ "zcash_client_backend",
  "zcash_protocol",
 ]
 

@@ -16,6 +16,14 @@ pub struct Endpoint {
     pub tls: bool,
 }
 
+impl Endpoint {
+    /// `http(s)://host:port` — scheme chosen by the `tls` flag.
+    pub fn uri(&self) -> String {
+        let scheme = if self.tls { "https" } else { "http" };
+        format!("{}://{}:{}", scheme, self.host, self.port)
+    }
+}
+
 /// Engine configuration. Construct via [`EngineConfig::new`]; fields are public tunables.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -94,5 +102,27 @@ mod tests {
         let mut c = config();
         c.chunk_blocks = 99;
         assert!(matches!(c.validate(), Err(SlipstreamError::Config(_))));
+    }
+
+    #[test]
+    fn empty_host_rejected() {
+        let mut c = config();
+        c.endpoint.host = String::new();
+        assert!(matches!(c.validate(), Err(SlipstreamError::Config(_))));
+    }
+
+    #[test]
+    fn tiny_memory_budget_rejected() {
+        let mut c = config();
+        c.memory_budget_bytes = 1024;
+        assert!(matches!(c.validate(), Err(SlipstreamError::Config(_))));
+    }
+
+    #[test]
+    fn uri_scheme_follows_tls_flag() {
+        let mut e = endpoint();
+        assert_eq!(e.uri(), "https://zec.rocks:443");
+        e.tls = false;
+        assert_eq!(e.uri(), "http://zec.rocks:443");
     }
 }

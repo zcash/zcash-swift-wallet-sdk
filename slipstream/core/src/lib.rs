@@ -5,6 +5,7 @@
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod grpc;
 
 pub use config::{EngineConfig, Endpoint};
 pub use error::SlipstreamError;
