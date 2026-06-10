@@ -106,3 +106,7 @@ crate-type = ["staticlib"]
 
 [profile.release]
 lto = true
+
+[workspace]
+members = ["slipstream/core", "slipstream/cli"]
+resolver = "3"

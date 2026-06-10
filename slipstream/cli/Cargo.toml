@@ -1,0 +1,14 @@
+[package]
+name = "slipstream-cli"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "slipstream"
+path = "src/main.rs"
+
+[dependencies]
+slipstream-core = { path = "../core" }
