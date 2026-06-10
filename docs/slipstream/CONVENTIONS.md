@@ -23,7 +23,7 @@ The cargo line runs before/after every commit. `swift test --filter OfflineTests
 Heavier checks, run when the touched area demands it:
 ```bash
 ./Scripts/init-local-ffi.sh --macos-only             # after any Cargo/workspace/FFI change
-cargo test -p slipstream-core --features darkside -- --ignored   # darkside integration (needs local lightwalletd, see below)
+cargo test -p slipstream-core --features darkside -- --ignored --test-threads=1   # darkside integration; SERIAL ONLY (tests share the darkside server state); needs local lightwalletd, see below
 ```
 
 **SPM staleness landmine:** after ANY local-FFI mode switch (`init-local-ffi.sh`/`reset-local-ffi.sh`), `swift test` may fail with "package at .../LocalPackages cannot be accessed" — Package.swift is byte-identical in both modes, so SPM's shared manifest cache replays the stale evaluation. Fix (verified 2026-06-10):

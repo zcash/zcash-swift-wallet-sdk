@@ -6,7 +6,9 @@ pub mod chunk;
 pub mod config;
 pub mod error;
 pub mod events;
+pub mod fetch;
 pub mod grpc;
+pub mod verify;
 
 #[cfg(feature = "darkside")]
 #[allow(clippy::all, missing_docs)]

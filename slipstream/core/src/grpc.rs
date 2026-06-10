@@ -20,7 +20,8 @@ fn transport_err(context: &str, e: impl std::fmt::Display) -> SlipstreamError {
 /// as the upstream tor module).
 pub async fn connect(endpoint: &Endpoint) -> Result<LwdClient, SlipstreamError> {
     let mut ep = TonicEndpoint::from_shared(endpoint.uri())
-        .map_err(|e| transport_err("endpoint uri", e))?;
+        .map_err(|e| transport_err("endpoint uri", e))?
+        .connect_timeout(std::time::Duration::from_secs(10));
     if endpoint.tls {
         ep = ep
             .tls_config(ClientTlsConfig::new().with_webpki_roots())
