@@ -5,7 +5,7 @@
 
 ## NEXT ACTION
 
-➡️ **T0.3** — slipstream-core domain types. Detailed steps: docs/slipstream/plans/2026-06-10-phase-0-foundation.md, Task 0.3.
+➡️ **T0.4** — CLI scaffold. Detailed steps: docs/slipstream/plans/2026-06-10-phase-0-foundation.md, Task 0.4.
 
 ## Current phase: P0 — Foundation
 
@@ -13,7 +13,7 @@
 |---|---|---|
 | T0.1 branch + issue + machinery | done | |
 | T0.2 cargo workspace + FFI-scripts verify | done | `rebuild-local-ffi.sh` line 97 runs bare `cargo build --target ... --release` from repo root — with workspace this builds all members for the target, but slipstream crates are std-only so no issue; no script pinning needed. cargo test, cargo check, init-local-ffi --macos-only (~3 min incremental), OfflineTests (419/0 fail) all green. |
-| T0.3 core domain types | todo | |
+| T0.3 core domain types | done | |
 | T0.4 CLI scaffold | todo | |
 | T0.5 CLAUDE.md pointer + G0 gate | todo | |
 
@@ -56,3 +56,4 @@
 - 2026-06-10 — Setup session: branch renamed to `slipstream`, Zodl repo path confirmed + permissions granted, containment rule made explicit. Ready to execute T0.1.
 - 2026-06-10 — T0.1 done: branch `slipstream` created, tracking issue #1755, machinery committed.
 - 2026-06-10 — T0.2 done: workspace conversion verified (cargo tests, cargo check, init-local-ffi --macos-only, OfflineTests all green).
+- 2026-06-10 — T0.3 done: core domain types (config/error/events), 6 tests green.

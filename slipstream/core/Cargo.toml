@@ -7,3 +7,6 @@ license = "MIT"
 publish = false
 
 [dependencies]
+thiserror = "2"
+tracing = "0.1" # logging policy per CONVENTIONS.md; first call sites land in P1 engine modules
+zcash_protocol = "0.9"
