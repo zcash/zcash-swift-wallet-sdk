@@ -4,6 +4,8 @@
 //! Priority handling (Verify-first) comes for free: suggest_scan_ranges returns
 //! Verify ranges first by upstream contract.
 
+use std::{sync::Arc, time::Duration};
+
 use tracing::{info, warn};
 use zcash_client_backend::data_api::WalletWrite;
 use zcash_protocol::consensus::BlockHeight;
@@ -12,6 +14,7 @@ use crate::{
     chunk::chunk_queue,
     config::EngineConfig,
     error::SlipstreamError,
+    events::Progress,
     fetch::{FetchPlan, FetchStats, run_fetch},
     grpc,
     scan::{ScanStats, scan_chunks},
@@ -30,6 +33,12 @@ pub struct SyncReport {
     pub scan: ScanStatsTotals,
     /// Number of reorg recoveries performed (truncate + re-suggest) during this sync.
     pub reorgs_recovered: u64,
+    /// Total wall-clock time spent in the fetch pipeline (across all ranges).
+    /// Accumulated from `FetchStats::elapsed` per range. Default: zero.
+    pub fetch_elapsed: Duration,
+    /// Total wall-clock time spent in scan_chunks (across all ranges).
+    /// Measured around the scan call per range. Default: zero.
+    pub scan_elapsed: Duration,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -47,9 +56,14 @@ pub struct ScanStatsTotals {
 
 /// Process every suggested range until none remain. The caller has already
 /// run update_chain_tip + put_subtree_roots (engine.rs).
+///
+/// `progress` — if `Some`, bumps `fetched_blocks`, `scanned_blocks`, `reorgs_recovered`,
+/// and `current_range_end` atomics so poll-based consumers (CLI ticker, iOS D8) get
+/// live updates. Pass `None` to skip all atomic stores (the default for tests).
 pub async fn run_to_completion(
     config: &EngineConfig,
     session: &mut WalletSession,
+    progress: Option<Arc<Progress>>,
 ) -> Result<SyncReport, SlipstreamError> {
     let mut report = SyncReport::default();
     // Counter for back-to-back ScanContinuity recoveries without a successful range.
@@ -82,21 +96,32 @@ pub async fn run_to_completion(
         let end = end_exclusive - 1;
         info!(start, end, priority = ?range.priority(), "processing suggested range");
 
+        // Advertise the current range end to poll-based consumers.
+        if let Some(ref p) = progress {
+            p.set_range_end(end);
+        }
+
         let (tx, rx) = chunk_queue(config.memory_budget_bytes);
         let plan = FetchPlan::new(start, end, config.chunk_blocks, config.fetch_streams);
         let endpoint = config.endpoint.clone();
+        // Clone the progress Arc for the fetch task so it can bump fetched_blocks.
+        let fetch_progress = progress.clone();
 
         // Spawn the fetch task so it runs concurrently with scan_chunks below.
         // The tx is moved into the task; when the task finishes, tx is dropped, which
         // closes the channel and causes scan_chunks's rx.recv() loop to terminate.
-        let fetch_task = tokio::spawn(async move { run_fetch(&endpoint, plan, tx).await });
+        let fetch_task = tokio::spawn(async move {
+            run_fetch(&endpoint, plan, tx, fetch_progress).await
+        });
 
         // scan_chunks runs in the current task using a SEPARATE grpc client so it
         // does not contend with the fetch workers' connections.
         let mut scan_client = grpc::connect(&config.endpoint).await?;
 
+        let scan_started = std::time::Instant::now();
         let scan_result: Result<ScanStats, SlipstreamError> =
-            scan_chunks(session, &mut scan_client, start, rx).await;
+            scan_chunks(session, &mut scan_client, start, rx, progress.clone()).await;
+        let scan_wall = scan_started.elapsed();
 
         // Error-precedence rationale (deviation from plan's draft `??` which loses nuance):
         // If scan_chunks fails first, dropping rx causes the fetch task to see a
@@ -158,6 +183,9 @@ pub async fn run_to_completion(
                 .map_err(|e| SlipstreamError::Wallet(format!("truncate_to_height: {e}")))?;
 
             report.reorgs_recovered += 1;
+            if let Some(ref p) = progress {
+                p.add_reorg();
+            }
             // `continue` causes the outer loop to call suggest_scan_ranges again;
             // the repair range (from rewind_height up to current tip) is now suggested.
             continue;
@@ -185,9 +213,11 @@ pub async fn run_to_completion(
         report.ranges_processed += 1;
         report.fetch.blocks += fetch_stats.blocks;
         report.fetch.bytes += fetch_stats.bytes;
+        report.fetch_elapsed += fetch_stats.elapsed;
         report.scan.blocks += scan_stats.blocks;
         report.scan.sapling_received += scan_stats.sapling_received;
         report.scan.orchard_received += scan_stats.orchard_received;
+        report.scan_elapsed += scan_wall;
     }
 }
 
@@ -205,6 +235,8 @@ mod tests {
         assert_eq!(r.scan.sapling_received, 0);
         assert_eq!(r.scan.orchard_received, 0);
         assert_eq!(r.reorgs_recovered, 0);
+        assert_eq!(r.fetch_elapsed, Duration::ZERO);
+        assert_eq!(r.scan_elapsed, Duration::ZERO);
     }
 
     #[test]

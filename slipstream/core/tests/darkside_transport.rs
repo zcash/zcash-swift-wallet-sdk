@@ -60,7 +60,7 @@ async fn parallel_fetch_5000_blocks_in_order() {
         total
     });
 
-    let stats = run_fetch(&ep, plan, tx).await.expect("fetch");
+    let stats = run_fetch(&ep, plan, tx, None).await.expect("fetch");
     assert_eq!(stats.blocks, 5_000);
     assert_eq!(consumer.await.expect("consumer"), 5_000);
 }

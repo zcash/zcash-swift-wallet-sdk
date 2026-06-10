@@ -15,6 +15,8 @@
 //! - `Enhancement(txid)` — fetch + `decrypt_and_store_transaction`; on not-found → TxidNotRecognized
 //! - `TransactionsInvolvingAddress` — see `apply_address_request`; several skip-guards per Swift oracle
 
+use std::sync::Arc;
+
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use tracing::{debug, info, warn};
 use zcash_client_backend::data_api::{
@@ -29,6 +31,7 @@ use zcash_protocol::consensus::{BlockHeight, Network};
 
 use crate::{
     error::SlipstreamError,
+    events::Progress,
     grpc::{self, LwdClient},
     wallet_session::WalletSession,
 };
@@ -64,10 +67,14 @@ const FETCH_CONCURRENCY: usize = 8;
 /// Address-window requests are processed serially after the txid-fetch batch in
 /// each round (they are streaming, not single-shot, and cannot easily be pipelined
 /// without holding `session` across awaits — serial is correct here).
+///
+/// `progress` — if `Some`, bumps `enhanced_txs` each time a transaction is stored
+/// via `decrypt_and_store_transaction` (Relaxed; poll-based).
 pub async fn run_enhancement(
     session: &mut WalletSession,
     client: &mut LwdClient,
     network: Network,
+    progress: Option<Arc<Progress>>,
 ) -> Result<EnhanceStats, SlipstreamError> {
     let mut stats = EnhanceStats::default();
 
@@ -144,12 +151,13 @@ pub async fn run_enhancement(
         // this is equivalent to buffered(N) for N >= requests.len() which is fine for
         // the typical 0-10 enhancement requests per scan pass.
         while let Some((txid, want_enhance, fetched)) = pending.next().await {
-            apply_txid_fetch(session, txid, want_enhance, fetched, &network, &mut stats)?;
+            apply_txid_fetch(session, txid, want_enhance, fetched, &network, &mut stats, progress.as_deref())?;
         }
 
         // ── Phase 2: serial address-window requests ────────────────────────────
         for tia in address_reqs {
-            apply_address_request(session, client, &network, tia, &mut stats).await?;
+            apply_address_request(session, client, &network, tia, &mut stats, progress.as_deref())
+                .await?;
         }
     }
 
@@ -173,6 +181,7 @@ fn apply_txid_fetch(
     fetched: Result<Option<zcash_client_backend::proto::service::RawTransaction>, SlipstreamError>,
     network: &Network,
     stats: &mut EnhanceStats,
+    progress: Option<&Progress>,
 ) -> Result<(), SlipstreamError> {
     match fetched {
         Err(err) => {
@@ -210,6 +219,9 @@ fn apply_txid_fetch(
                 decrypt_and_store_transaction(network, session.db_mut(), &tx, mined_height)
                     .map_err(|e| SlipstreamError::Wallet(format!("decrypt_and_store: {e}")))?;
                 stats.txs_stored += 1;
+                if let Some(p) = progress {
+                    p.add_enhanced(1);
+                }
             } else {
                 // GetStatus: record the chain view without full tx decryption.
                 let status = match mined_height {
@@ -246,6 +258,7 @@ async fn apply_address_request(
     network: &Network,
     tia: TransactionsInvolvingAddress,
     stats: &mut EnhanceStats,
+    progress: Option<&Progress>,
 ) -> Result<(), SlipstreamError> {
     // Guard 1: open-ended range (lightwalletd does not support it).
     let block_range_end = match tia.block_range_end() {
@@ -322,6 +335,9 @@ async fn apply_address_request(
         decrypt_and_store_transaction(network, session.db_mut(), &tx, mined_height)
             .map_err(|e| SlipstreamError::Wallet(format!("decrypt_and_store (taddr): {e}")))?;
         stats.txs_stored += 1;
+        if let Some(p) = progress {
+            p.add_enhanced(1);
+        }
     }
 
     // Notify the wallet backend that the address check has completed.

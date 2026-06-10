@@ -97,7 +97,7 @@ async fn run_fetch_bench(
     let (tx, mut rx) = slipstream_core::chunk::chunk_queue(256 * 1024 * 1024);
     let drain = tokio::spawn(async move { while let Some((_c, _p)) = rx.recv().await {} });
     let plan = slipstream_core::fetch::FetchPlan::new(start, end, chunk, streams);
-    let stats = slipstream_core::fetch::run_fetch(endpoint, plan, tx).await?;
+    let stats = slipstream_core::fetch::run_fetch(endpoint, plan, tx, None).await?;
     let _ = drain.await;
     Ok(stats)
 }
@@ -189,7 +189,36 @@ fn cmd_sync(
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
-        match slipstream_core::engine::sync_once(&cfg, ufvk_arg).await {
+        // Build shared progress state for the CLI ticker (decision D8 poll-based).
+        let progress = std::sync::Arc::new(slipstream_core::Progress::default());
+        let ticker_progress = std::sync::Arc::clone(&progress);
+
+        // Spawn a 2-second ticker task that prints one line per tick.
+        // Plain println lines (no \r tricks — some terminals do not support them).
+        // The task is aborted (not joined) after sync_once returns.
+        let ticker = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            interval.tick().await; // skip the immediate first tick
+            loop {
+                interval.tick().await;
+                use std::sync::atomic::Ordering;
+                let fetched = ticker_progress.fetched_blocks.load(Ordering::Relaxed);
+                let scanned = ticker_progress.scanned_blocks.load(Ordering::Relaxed);
+                let enhanced = ticker_progress.enhanced_txs.load(Ordering::Relaxed);
+                let tip = ticker_progress.chain_tip.load(Ordering::Relaxed);
+                println!(
+                    "progress: fetched {} | scanned {} | enhanced {} (tip {})",
+                    fetched, scanned, enhanced, tip
+                );
+            }
+        });
+
+        let result = slipstream_core::engine::sync_once(&cfg, ufvk_arg, Some(progress)).await;
+
+        // Abort the ticker (JoinHandle::abort is fine per spec — no cleanup needed).
+        ticker.abort();
+
+        match result {
             Ok(outcome) => {
                 let mb = outcome.report.fetch.bytes as f64 / 1_048_576.0;
                 println!(
@@ -220,6 +249,18 @@ fn cmd_sync(
                     outcome.transparent.utxos,
                     outcome.transparent.accounts,
                 );
+                // Per-stage timing + bound (Decision-Log requirement for honest G5 reporting).
+                println!(
+                    "stages: fetch {:.1}s | scan {:.1}s | enhance {:.1}s (bound: {})",
+                    outcome.report.fetch_elapsed.as_secs_f64(),
+                    outcome.report.scan_elapsed.as_secs_f64(),
+                    outcome.enhance_elapsed.as_secs_f64(),
+                    outcome.bound(),
+                );
+                // Reorg summary (only if any recoveries occurred).
+                if outcome.report.reorgs_recovered > 0 {
+                    println!("reorgs: {} recovered", outcome.report.reorgs_recovered);
+                }
             }
             Err(e) => {
                 eprintln!("sync failed: {e}");

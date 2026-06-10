@@ -4,6 +4,8 @@
 //! chunk scans (spike T2.3 outcome: ChainState must come from the server;
 //! prefetch makes its latency invisible).
 
+use std::sync::Arc;
+
 use tracing::{debug, info};
 use zcash_client_backend::data_api::chain::{error::Error as ChainError, scan_cached_blocks};
 use zcash_protocol::consensus::BlockHeight;
@@ -15,6 +17,7 @@ use crate::{
     block_source::MemBlockSource,
     chunk::ChunkQueueReceiver,
     error::SlipstreamError,
+    events::Progress,
     grpc::{self, LwdClient},
     wallet_session::WalletSession,
 };
@@ -55,11 +58,14 @@ pub struct ScanStats {
 /// by the fetcher). `range_start` is the first height; the caller provides a
 /// client for treestate prefetches.
 /// Preconditions: range_start >= 1 (treestate is fetched at range_start - 1) and range_start equals the first chunk's start height.
+///
+/// `progress` — if `Some`, bumps `scanned_blocks` per chunk after a successful scan.
 pub async fn scan_chunks(
     session: &mut WalletSession,
     client: &mut LwdClient,
     range_start: u64,
     mut rx: ChunkQueueReceiver,
+    progress: Option<Arc<Progress>>,
 ) -> Result<ScanStats, SlipstreamError> {
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
@@ -122,6 +128,10 @@ pub async fn scan_chunks(
         // received_sapling_note_count() and received_orchard_note_count() exist exactly as named.
         stats.sapling_received += summary.received_sapling_note_count() as u64;
         stats.orchard_received += summary.received_orchard_note_count() as u64;
+        // Bump the shared progress counter (poll-based; Relaxed ordering).
+        if let Some(ref p) = progress {
+            p.add_scanned(scanned);
+        }
         debug!(chunk_start, chunk_end, len, "chunk scanned");
 
         drop(permit); // release byte budget only after the scan committed

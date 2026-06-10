@@ -333,7 +333,7 @@ async fn sync_finds_fixture_transactions() {
     let plan = FetchPlan::new(scan_range_start, scan_range_end, cfg.chunk_blocks, cfg.fetch_streams);
     let fetch_ep = ep.clone();
 
-    let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx).await });
+    let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
 
     let scan_stats = scan_chunks_from_treestate(&mut session, scan_range_start, initial_scan_state, rx)
         .await

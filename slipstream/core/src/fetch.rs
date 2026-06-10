@@ -12,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::events::Progress;
+
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -164,10 +166,14 @@ async fn worker(
 
 /// Fetch `plan.start..=plan.end` with `plan.streams` workers; emits ordered,
 /// continuity-verified chunks into `queue`. Returns stats on success.
+///
+/// `progress` — if `Some`, bumps `fetched_blocks` by the block count of each ordered
+/// chunk as it is emitted (Relaxed atomic; no cross-counter guarantees).
 pub async fn run_fetch(
     endpoint: &Endpoint,
     plan: FetchPlan,
     queue: ChunkQueueSender,
+    progress: Option<Arc<Progress>>,
 ) -> Result<FetchStats, SlipstreamError> {
     let started = Instant::now();
     let chunk_count = plan.chunk_count();
@@ -210,8 +216,13 @@ pub async fn run_fetch(
                 return Err(e);
             }
             let chunk = Chunk::from_blocks(next_emit, blocks);
-            stats.blocks += chunk.blocks.len() as u64;
+            let chunk_block_count = chunk.blocks.len() as u64;
+            stats.blocks += chunk_block_count;
             stats.bytes += chunk.estimated_bytes as u64;
+            // Bump the shared progress counter (poll-based; Relaxed — no ordering guarantee).
+            if let Some(ref p) = progress {
+                p.add_fetched(chunk_block_count);
+            }
             if let Err(e) = queue.send(chunk).await {
                 abort_all(&handles);
                 return Err(e);

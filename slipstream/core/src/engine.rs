@@ -1,7 +1,7 @@
 //! Engine v0: one full sync pass (preflight → chain state → scheduler → enhancement).
 //! P3 adds enhancement/transparent/events; P4 wraps this behind FFI.
 
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use tracing::info;
 
@@ -9,6 +9,7 @@ use crate::{
     config::EngineConfig,
     enhance::{EnhanceStats, run_enhancement},
     error::SlipstreamError,
+    events::Progress,
     grpc,
     scheduler::{SyncReport, run_to_completion},
     transparent::{TransparentStats, refresh_utxos},
@@ -20,13 +21,46 @@ pub struct SyncOutcome {
     pub report: SyncReport,
     pub enhance: EnhanceStats,
     pub transparent: TransparentStats,
+    /// Total wall-clock time for the `run_enhancement` call.
+    pub enhance_elapsed: std::time::Duration,
     pub elapsed: std::time::Duration,
     pub chain_tip: u64,
+}
+
+impl SyncOutcome {
+    /// Returns the name of the stage that consumed the most wall-clock time:
+    /// `"fetch"`, `"scan"`, `"enhance"`, or `"idle"` if all stages are < 1 s.
+    ///
+    /// Used for honest G5 "bound" reporting (Decision-Log requirement, 2026-06-10).
+    pub fn bound(&self) -> &'static str {
+        let fetch_s = self.report.fetch_elapsed.as_secs_f64();
+        let scan_s = self.report.scan_elapsed.as_secs_f64();
+        let enhance_s = self.enhance_elapsed.as_secs_f64();
+
+        // Threshold: stages < 1 s on a real sync are noise.
+        if fetch_s < 1.0 && scan_s < 1.0 && enhance_s < 1.0 {
+            return "idle";
+        }
+
+        if fetch_s >= scan_s && fetch_s >= enhance_s {
+            "fetch"
+        } else if scan_s >= enhance_s {
+            "scan"
+        } else {
+            "enhance"
+        }
+    }
 }
 
 /// One sync pass. If `ufvk` is Some and the wallet has no accounts, imports it
 /// with a birthday at `birthday_height` (treestate fetched from the server at
 /// `birthday_height - 1`).
+///
+/// `progress` — optional shared progress state for poll-based consumers (decision D8).
+/// Pass `Some(Arc::new(Progress::default()))` to receive live counter updates;
+/// `None` for no-op (default in all tests and the darkside suite).
+/// The `chain_tip` and `current_range_end` fields are set by the engine;
+/// `fetched_blocks` / `scanned_blocks` / `enhanced_txs` are bumped during the pipeline.
 ///
 /// # Deviation from plan draft
 /// The plan does not guard against `birthday_height == 0`. Since `birthday_height`
@@ -35,6 +69,7 @@ pub struct SyncOutcome {
 pub async fn sync_once(
     config: &EngineConfig,
     ufvk: Option<(&str, u64)>,
+    progress: Option<Arc<Progress>>,
 ) -> Result<SyncOutcome, SlipstreamError> {
     config.validate()?;
 
@@ -65,25 +100,77 @@ pub async fn sync_once(
     session.update_chain_tip(tip)?;
     info!(tip, "chain tip updated");
 
+    // Advertise the chain tip to poll-based consumers.
+    if let Some(ref p) = progress {
+        p.set_chain_tip(tip);
+    }
+
     // Transparent UTXO refresh — runs BEFORE the shielded scan loop, mirroring upstream
     // sync.rs:108-121 ("We do this before we perform any shielded scanning, to ensure
     // that we discover any UTXOs between the old fully-scanned height and the current
     // chain tip.").
     let transparent = refresh_utxos(&mut session, &mut client).await?;
 
-    let report = run_to_completion(config, &mut session).await?;
+    let report = run_to_completion(config, &mut session, progress.clone()).await?;
 
     // Enhancement: fetch full tx data for all pending TransactionDataRequests.
     // Runs AFTER the scan loop so all detected transactions are in the DB before
     // we try to enhance them (scan enqueues Enhancement/GetStatus requests).
-    let enhance = run_enhancement(&mut session, &mut client, config.network).await?;
+    let enhance_started = Instant::now();
+    let enhance =
+        run_enhancement(&mut session, &mut client, config.network, progress.clone()).await?;
+    let enhance_elapsed = enhance_started.elapsed();
 
-    Ok(SyncOutcome { report, enhance, transparent, elapsed: started.elapsed(), chain_tip: tip })
+    Ok(SyncOutcome {
+        report,
+        enhance,
+        transparent,
+        enhance_elapsed,
+        elapsed: started.elapsed(),
+        chain_tip: tip,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Helper to construct a minimal SyncOutcome with specified stage durations.
+    fn make_outcome(fetch_s: f64, scan_s: f64, enhance_s: f64) -> SyncOutcome {
+        use std::time::Duration;
+        let mut report = crate::scheduler::SyncReport::default();
+        report.fetch_elapsed = Duration::from_secs_f64(fetch_s);
+        report.scan_elapsed = Duration::from_secs_f64(scan_s);
+        SyncOutcome {
+            report,
+            enhance: crate::enhance::EnhanceStats::default(),
+            transparent: crate::transparent::TransparentStats::default(),
+            enhance_elapsed: Duration::from_secs_f64(enhance_s),
+            elapsed: Duration::from_secs_f64(fetch_s + scan_s + enhance_s),
+            chain_tip: 0,
+        }
+    }
+
+    #[test]
+    fn bound_picks_max_stage() {
+        assert_eq!(make_outcome(5.0, 2.0, 1.0).bound(), "fetch");
+        assert_eq!(make_outcome(2.0, 5.0, 1.0).bound(), "scan");
+        assert_eq!(make_outcome(2.0, 1.0, 5.0).bound(), "enhance");
+    }
+
+    #[test]
+    fn bound_returns_idle_when_all_tiny() {
+        // All < 1 s → idle.
+        assert_eq!(make_outcome(0.5, 0.3, 0.1).bound(), "idle");
+    }
+
+    #[test]
+    fn bound_ties_prefer_fetch_then_scan() {
+        // Equal fetch=scan=5s, enhance=0 → fetch wins (fetch >= scan in the branch).
+        assert_eq!(make_outcome(5.0, 5.0, 0.0).bound(), "fetch");
+        // Equal scan=enhance=5s, fetch=0 → scan wins.
+        assert_eq!(make_outcome(0.0, 5.0, 5.0).bound(), "scan");
+    }
 
     #[test]
     fn birthday_height_zero_is_rejected() {
@@ -100,7 +187,7 @@ mod tests {
         );
         // birthday=0 must fail before any network call.
         let result = rt.block_on(async {
-            sync_once(&cfg, Some(("dummy_ufvk", 0))).await
+            sync_once(&cfg, Some(("dummy_ufvk", 0)), None).await
         });
         assert!(
             matches!(result, Err(SlipstreamError::Config(_))),
