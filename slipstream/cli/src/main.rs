@@ -32,6 +32,27 @@ enum Cmd {
         #[arg(long, default_value_t = true)]
         baseline: bool,
     },
+    /// Full sync pass into a wallet database (creates it if absent).
+    Sync {
+        /// lightwalletd URL, e.g. https://zec.rocks:443 or http://127.0.0.1:9067
+        #[arg(long)]
+        server: String,
+        /// Wallet directory (data.db lives inside).
+        #[arg(long)]
+        wallet_dir: std::path::PathBuf,
+        /// UFVK to import on first run (required for a fresh wallet).
+        #[arg(long)]
+        ufvk: Option<String>,
+        /// Birthday height for --ufvk import.
+        #[arg(long)]
+        birthday: Option<u64>,
+        /// Parallel fetch streams.
+        #[arg(long, default_value_t = 4, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        streams: usize,
+        /// Blocks per chunk.
+        #[arg(long, default_value_t = 10_000)]
+        chunk: u32,
+    },
 }
 
 fn parse_server(s: &str) -> Result<slipstream_core::Endpoint, String> {
@@ -118,6 +139,81 @@ fn cmd_fetch(server: String, range: String, streams: usize, chunk: u32, baseline
     });
 }
 
+/// Validate sync argument combinations. Extracted as a pure function to stay testable
+/// without any I/O or network — specifically validates that a UFVK is not supplied
+/// without a birthday height.
+///
+/// Returns `Ok(Some((ufvk_str, birthday)))` if both are present, `Ok(None)` if neither,
+/// and `Err(String)` if the combination is invalid.
+fn validate_sync_args(
+    ufvk: Option<&str>,
+    birthday: Option<u64>,
+) -> Result<Option<(&str, u64)>, String> {
+    match (ufvk, birthday) {
+        (Some(u), Some(b)) => Ok(Some((u, b))),
+        (None, None) => Ok(None),
+        (Some(_), None) => {
+            Err("--ufvk requires --birthday: provide the wallet birthday height".into())
+        }
+        (None, Some(_)) => {
+            // birthday without ufvk is silently ignored (may be used with an existing wallet)
+            Ok(None)
+        }
+    }
+}
+
+fn cmd_sync(
+    server: String,
+    wallet_dir: std::path::PathBuf,
+    ufvk: Option<String>,
+    birthday: Option<u64>,
+    streams: usize,
+    chunk: u32,
+) {
+    let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+
+    let ufvk_arg = validate_sync_args(ufvk.as_deref(), birthday)
+        .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(2) });
+
+    let mut cfg = slipstream_core::EngineConfig::new(
+        slipstream_core::Network::MainNetwork,
+        wallet_dir.join("data.db"),
+        endpoint,
+    );
+    cfg.fetch_streams = streams;
+    cfg.chunk_blocks = chunk;
+
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    rt.block_on(async {
+        match slipstream_core::engine::sync_once(&cfg, ufvk_arg).await {
+            Ok(outcome) => {
+                let mb = outcome.report.fetch.bytes as f64 / 1_048_576.0;
+                println!(
+                    "synced to tip {} in {:.1}s",
+                    outcome.chain_tip,
+                    outcome.elapsed.as_secs_f64()
+                );
+                println!(
+                    "ranges {} | fetched {} blocks ({:.1} MB) | scanned {} blocks",
+                    outcome.report.ranges_processed,
+                    outcome.report.fetch.blocks,
+                    mb,
+                    outcome.report.scan.blocks,
+                );
+                println!(
+                    "notes found: sapling {} orchard {}",
+                    outcome.report.scan.sapling_received,
+                    outcome.report.scan.orchard_received,
+                );
+            }
+            Err(e) => {
+                eprintln!("sync failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    });
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -133,6 +229,9 @@ fn main() {
         }
         Cmd::Fetch { server, range, streams, chunk, baseline } => {
             cmd_fetch(server, range, streams, chunk, baseline);
+        }
+        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk } => {
+            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk);
         }
     }
 }
@@ -189,5 +288,48 @@ mod tests {
     fn parse_range_rejects_inclusive_syntax() {
         let err = parse_range("2500000..=2600000").unwrap_err();
         assert!(err.contains("..="), "error should mention ..=: {err}");
+    }
+
+    #[test]
+    fn parses_sync_subcommand() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+        ])
+        .expect("parses");
+        assert!(matches!(cli.cmd, Cmd::Sync { .. }));
+    }
+
+    #[test]
+    fn sync_rejects_missing_server() {
+        // --server is required for Sync
+        let result =
+            Cli::try_parse_from(["slipstream", "sync", "--wallet-dir", "/tmp/test-wallet"]);
+        assert!(result.is_err(), "should fail without --server");
+    }
+
+    #[test]
+    fn sync_requires_birthday_with_ufvk() {
+        // validate_sync_args is a pure function we can call directly.
+        let result = validate_sync_args(Some("uview1someufvk"), None);
+        assert!(result.is_err(), "ufvk without birthday must error");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("birthday"), "error message should mention birthday: {msg}");
+    }
+
+    #[test]
+    fn sync_allows_no_ufvk_no_birthday() {
+        let result = validate_sync_args(None, None);
+        assert!(matches!(result, Ok(None)));
+    }
+
+    #[test]
+    fn sync_allows_ufvk_with_birthday() {
+        let result = validate_sync_args(Some("uview1someufvk"), Some(800_000));
+        assert!(matches!(result, Ok(Some(("uview1someufvk", 800_000)))));
     }
 }

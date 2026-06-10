@@ -5,6 +5,7 @@
 pub mod block_source;
 pub mod chunk;
 pub mod config;
+pub mod engine;
 pub mod error;
 pub mod events;
 pub mod fetch;
@@ -24,6 +25,7 @@ pub mod darkside;
 pub use config::{EngineConfig, Endpoint};
 pub use error::SlipstreamError;
 pub use events::{Bound, Event, Snapshot, SyncMode};
+pub use zcash_protocol::consensus::Network;
 
 /// Crate smoke marker used by the workspace smoke test.
 pub const CRATE_NAME: &str = "slipstream-core";
