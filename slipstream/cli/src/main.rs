@@ -172,6 +172,10 @@ fn cmd_sync(
 ) {
     let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
 
+    if ufvk.is_none() && birthday.is_some() {
+        eprintln!("note: --birthday without --ufvk is ignored (no import will occur)");
+    }
+
     let ufvk_arg = validate_sync_args(ufvk.as_deref(), birthday)
         .unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(2) });
 
@@ -331,5 +335,12 @@ mod tests {
     fn sync_allows_ufvk_with_birthday() {
         let result = validate_sync_args(Some("uview1someufvk"), Some(800_000));
         assert!(matches!(result, Ok(Some(("uview1someufvk", 800_000)))));
+    }
+
+    #[test]
+    fn sync_allows_birthday_without_ufvk_returns_none() {
+        // birthday with no ufvk: silently ignored (validate_sync_args returns Ok(None))
+        let result = validate_sync_args(None, Some(800_000));
+        assert!(matches!(result, Ok(None)), "expected Ok(None), got {result:?}");
     }
 }

@@ -96,8 +96,8 @@ const EXPECTED_BALANCE_ZATOSHI: i64 = 200_000;
 /// Encoding (zcash_primitives `write_commitment_tree`):
 ///   OptionalNode(left) | OptionalNode(right) | CompactSize(16) | OptionalNode(parents[0..15])
 /// For last_pos=128606 (0b11111011001011110): left=Some, right=None,
-///   parents per bits 1..16 of 128606: [1,1,1,1,0,1,0,0,1,1,0,1,1,1,1,1] → 11 Somes, 5 Nones.
-/// Total bytes: 33 + 1 + 1 + 11*33 + 5*1 = 403 bytes → 806 hex chars.
+///   parents per bits 1..16 of 128606: [1,1,1,1,0,1,0,0,1,1,0,1,1,1,1,1] → 12 Somes, 4 Nones.
+/// Total bytes: 33 + 1 + 1 + 12*33 + 4*1 = 435 bytes → 870 hex chars.
 ///
 /// Verified: CommitmentTree::size() with this structure = 128607.
 const SAPLING_TREE_128607: &str = concat!(
@@ -330,7 +330,7 @@ async fn sync_finds_fixture_transactions() {
     };
 
     let (tx, rx) = chunk_queue(cfg.memory_budget_bytes);
-    let plan = FetchPlan::new(scan_range_start, scan_range_end, cfg.chunk_blocks as u32, cfg.fetch_streams);
+    let plan = FetchPlan::new(scan_range_start, scan_range_end, cfg.chunk_blocks, cfg.fetch_streams);
     let fetch_ep = ep.clone();
 
     let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx).await });
@@ -355,10 +355,8 @@ async fn sync_finds_fixture_transactions() {
     // Exact: APPLY_HEIGHT(663188) - BIRTHDAY_HEIGHT(663150) + 1 = 39 blocks.
     let expected_min_blocks = APPLY_HEIGHT as u64 - BIRTHDAY_HEIGHT + 1;
     assert!(
-        scan_stats.blocks >= expected_min_blocks.saturating_sub(1),
-        "expected scan.blocks >= {} (APPLY_HEIGHT - BIRTHDAY + 1 = {expected_min_blocks}, -1 tolerance), \
-         got {}",
-        expected_min_blocks.saturating_sub(1),
+        scan_stats.blocks >= expected_min_blocks,
+        "expected scan.blocks >= {expected_min_blocks} (APPLY_HEIGHT - BIRTHDAY + 1), got {}",
         scan_stats.blocks
     );
     assert!(fetch_stats.blocks >= expected_min_blocks, "fetch blocks mismatch");

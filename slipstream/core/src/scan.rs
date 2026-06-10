@@ -53,7 +53,7 @@ pub async fn scan_chunks(
 
         // Binding note 4: spawn the prefetch so it runs concurrently while scan_cached_blocks
         // executes below. LwdClient (tonic client) is cheaply cloneable.
-        // The final prefetch (after the last chunk) resolves a treestate nobody consumes — harmless.
+        // The final prefetch's task runs to completion detached (JoinHandle dropped) — one extra gRPC call, acceptable.
         let prefetch = tokio::spawn({
             let mut c = client.clone();
             async move { grpc::get_tree_state(&mut c, chunk_end).await }
@@ -189,7 +189,7 @@ pub async fn scan_chunks_from_treestate(
         drop(permit);
         next_state = synthesized_next;
     }
-    info!(blocks = stats.blocks, chunks = stats.chunks, sapling = stats.sapling_received, "scan_from_treestate done");
+    info!(blocks = stats.blocks, chunks = stats.chunks, sapling = stats.sapling_received, orchard = stats.orchard_received, "scan_from_treestate done");
     Ok(stats)
 }
 

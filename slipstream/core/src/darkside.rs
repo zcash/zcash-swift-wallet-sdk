@@ -32,6 +32,7 @@ impl DarksideCtl {
     pub async fn connect(endpoint: &Endpoint) -> Result<Self, SlipstreamError> {
         let channel = tonic::transport::Endpoint::from_shared(endpoint.uri())
             .map_err(|e| err("uri", e))?
+            .connect_timeout(std::time::Duration::from_secs(10))
             .connect()
             .await
             .map_err(|e| err("connect", e))?;
