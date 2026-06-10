@@ -27,12 +27,16 @@ pub struct ScanStats {
 /// Scans every chunk arriving on `rx` (they are ordered and continuity-verified
 /// by the fetcher). `range_start` is the first height; the caller provides a
 /// client for treestate prefetches.
+/// Preconditions: range_start >= 1 (treestate is fetched at range_start - 1) and range_start equals the first chunk's start height.
 pub async fn scan_chunks(
     session: &mut WalletSession,
     client: &mut LwdClient,
     range_start: u64,
     mut rx: ChunkQueueReceiver,
 ) -> Result<ScanStats, SlipstreamError> {
+    if range_start == 0 {
+        return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
+    }
     let mut stats = ScanStats::default();
     // State for the FIRST chunk: boundary just below the range.
     let mut next_state = grpc::get_tree_state(client, range_start - 1).await?;
@@ -65,12 +69,16 @@ pub async fn scan_chunks(
             // are synchronous/CPU-bound; block_in_place is correct here because spawn_blocking
             // would require 'static, which &mut session does not satisfy; multi-thread runtime
             // is guaranteed by the CLI's #[tokio::main] with default flavor = multi_thread).
+            // NOTE: block_in_place panics on a current_thread runtime — engine requires the multi-thread runtime (the CLI's Runtime::new()).
+            let from_height = u32::try_from(chunk_start)
+                .map_err(|_| SlipstreamError::Wallet(format!("height {chunk_start} exceeds u32")))?;
+            // On scan error the prefetch JoinHandle is dropped (task detaches); the in-flight RPC completes into the void — acceptable.
             tokio::task::block_in_place(|| {
                 scan_cached_blocks(
                     &network,
                     &source,
                     session.db_mut(),
-                    BlockHeight::from(chunk_start as u32),
+                    BlockHeight::from(from_height),
                     &from_state,
                     len,
                 )
@@ -78,7 +86,9 @@ pub async fn scan_chunks(
             .map_err(|e| SlipstreamError::Wallet(format!("scan_cached_blocks: {e}")))?
         };
 
-        stats.blocks += len as u64;
+        let scanned = u64::from(u32::from(summary.scanned_range().end))
+            - u64::from(u32::from(summary.scanned_range().start));
+        stats.blocks += scanned;
         stats.chunks += 1;
         // Binding note 2: accessor names confirmed against registry
         // zcash_client_backend-0.22.0/src/data_api/chain.rs:481,499 —
@@ -94,7 +104,7 @@ pub async fn scan_chunks(
             .await
             .map_err(|e| SlipstreamError::Transport(format!("prefetch task: {e}")))??;
     }
-    info!(blocks = stats.blocks, chunks = stats.chunks, "scan done");
+    info!(blocks = stats.blocks, chunks = stats.chunks, sapling = stats.sapling_received, orchard = stats.orchard_received, "scan done");
     Ok(stats)
 }
 

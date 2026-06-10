@@ -10,17 +10,6 @@ use zcash_protocol::consensus::BlockHeight;
 
 use crate::chunk::Chunk;
 
-/// Never constructed; `MemBlockSource` itself cannot fail.
-#[derive(Debug)]
-pub struct Unreachable;
-
-impl std::fmt::Display for Unreachable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unreachable")
-    }
-}
-impl std::error::Error for Unreachable {}
-
 pub struct MemBlockSource<'a> {
     chunk: &'a Chunk,
 }
@@ -32,7 +21,7 @@ impl<'a> MemBlockSource<'a> {
 }
 
 impl BlockSource for MemBlockSource<'_> {
-    type Error = Unreachable;
+    type Error = std::convert::Infallible;
 
     fn with_blocks<F, WalletErrT>(
         &self,
@@ -72,7 +61,7 @@ mod tests {
 
     fn collect(src: &MemBlockSource<'_>, from: Option<u64>, limit: Option<usize>) -> Vec<u64> {
         let mut out = Vec::new();
-        src.with_blocks::<_, Unreachable>(
+        src.with_blocks::<_, std::convert::Infallible>(
             from.map(|h| BlockHeight::from(h as u32)),
             limit,
             |b| {

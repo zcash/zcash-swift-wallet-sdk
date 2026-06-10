@@ -72,7 +72,14 @@ impl WalletSession {
         let ufvk = UnifiedFullViewingKey::decode(&self.network, ufvk_str)
             .map_err(|e| wallet_err("ufvk decode", e))?;
         let birthday = AccountBirthday::from_treestate(birthday_treestate, None)
-            .map_err(|_| SlipstreamError::Wallet("invalid birthday treestate".into()))?;
+            .map_err(|e| {
+                use zcash_client_backend::data_api::BirthdayError;
+                let detail = match e {
+                    BirthdayError::HeightInvalid(ie) => format!("height invalid: {ie}"),
+                    BirthdayError::Decode(io) => format!("decode: {io}"),
+                };
+                SlipstreamError::Wallet(format!("invalid birthday treestate: {detail}"))
+            })?;
         self.db
             .import_account_ufvk("slipstream", &ufvk, &birthday, AccountPurpose::ViewOnly, None)
             .map_err(|e| wallet_err("import_account_ufvk", e))?;
@@ -91,8 +98,10 @@ impl WalletSession {
     }
 
     pub fn update_chain_tip(&mut self, height: u64) -> Result<(), SlipstreamError> {
+        let height = u32::try_from(height)
+            .map_err(|_| SlipstreamError::Wallet(format!("height {height} exceeds u32")))?;
         self.db
-            .update_chain_tip(BlockHeight::from(height as u32))
+            .update_chain_tip(BlockHeight::from(height))
             .map_err(|e| wallet_err("update_chain_tip", e))
     }
 
