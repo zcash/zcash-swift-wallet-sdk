@@ -26,6 +26,11 @@ Heavier checks, run when the touched area demands it:
 cargo test -p slipstream-core --features darkside -- --ignored   # darkside integration (needs local lightwalletd, see below)
 ```
 
+**SPM staleness landmine:** after ANY local-FFI mode switch (`init-local-ffi.sh`/`reset-local-ffi.sh`), `swift test` may fail with "package at .../LocalPackages cannot be accessed" — Package.swift is byte-identical in both modes, so SPM's shared manifest cache replays the stale evaluation. Fix (verified 2026-06-10):
+```bash
+rm -rf ~/Library/Caches/org.swift.swiftpm/manifests && rm -rf .build
+```
+
 Darkside lightwalletd (for integration tests):
 ```bash
 Tests/lightwalletd/lightwalletd --no-tls-very-insecure --data-dir /tmp --darkside-very-insecure --log-file /dev/stdout
