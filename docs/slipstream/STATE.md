@@ -5,9 +5,21 @@
 
 ## NEXT ACTION
 
-➡️ **T3.0** — Begin Phase 3. Detailed steps: docs/slipstream/plans/ (create phase-3 plan first).
+➡️ **T3.1** — grpc additions (fetch-tx, taddr-txids, address-utxos). Detailed steps: docs/slipstream/plans/2026-06-10-phase-3-completeness.md, Task 3.1.
 
-## Current phase: P2 — Scan core (plan: `plans/2026-06-10-phase-2-scan-core.md`)
+## Current phase: P3 — Completeness (plan: `plans/2026-06-10-phase-3-completeness.md`)
+
+| Task | Status | Session notes |
+|---|---|---|
+| T3.0 detailed phase plan | done | Recon pinned: decrypt_and_store_transaction + mined-height semantics (lib.rs:2045-2068), set_transaction_status variants (lib.rs:3015-3037), upstream refresh_utxos port source (sync.rs:475-534), reorg arm source (sync.rs:404-418), darkside reorg fixtures (DarkSideWalletService.swift:13-15). Task remap vs ROADMAP P3: T3.1=grpc additions; T3.2=enhancer; T3.3=transparent; T3.4=reorg recovery (pulled in from T2.5 deferral — needed before P4 darkside reorg subset); T3.5=progress+stage timing (Decision-Log requirement); T3.6=G3 parity+gate (mainnet-seed parity = needs-user). |
+| T3.1 grpc additions | todo | TxFilter/GetAddressUtxosArg field names = binding check |
+| T3.2 enhancer | todo | FuturesUnordered vs buffered — binding note 1 |
+| T3.3 transparent/UTXO | todo | port sync.rs:475-534 verbatim-adapted |
+| T3.4 reorg recovery | todo | ScanContinuity error + truncate arm + darkside reorg test (oracle: ReOrgTests.swift) |
+| T3.5 progress + stage timing | todo | SyncReport per-stage Duration; Progress atomics (D8 poll-only) |
+| T3.6 G3 parity + gate | todo | enhanced-field asserts vs Swift oracle; mainnet seed = needs-user |
+
+## Phase P2 — Scan core (COMPLETE — plan: `plans/2026-06-10-phase-2-scan-core.md`)
 
 | Task | Status | Session notes |
 |---|---|---|
@@ -133,3 +145,4 @@
 - 2026-06-10 — T2.7 done: darkside_sync.rs integration test sync_finds_fixture_transactions created. Mirrors FakeChainBuilder.buildChain pattern: stage real mainnet block at 663150, empty blocks 663151..663250, transactions at 663174 and 663188 (recv/8f064d23..., recv/15a677b6...). lightwalletd v0.4.9 compatibility workarounds: (1) scan_chunks_from_treestate bypasses GetTreeState; (2) birthday TreeState.sapling_tree set to SAPLING_TREE_128607 (hex-encoded CommitmentTree<sapling::Node,32> for 128607 leaves, all-zero placeholder hashes — tree_size=128607 from startSaplingTreeSize); (3) seed_block_metadata inserts blocks record at 663149 with hash=prev_hash of block 663150 (fetched from darkside server) and sapling_commitment_tree_size=128607; (4) subtree roots NOT injected (real mainnet roots conflict with fabricated block shard tree). WalletSession got db_path field + seed_block_metadata method; scan.rs TreeState import gated under cfg(any(test,darkside)). darkside_sync + darkside_transport: all 3 tests pass. OfflineTests: 419/0. G2 measured (tip=3373435, 2026-06-10): 50k=32.4 s / 50001 blk / 33.3 MB; 1M=317.2 s / 1000002 blk / 428.4 MB; scan-bound. P2 COMPLETE.
 - 2026-06-10 — T2.7 spec review passed (gating airtight; oracle constants verified vs Swift sources; G2 marking justified). Fixes: stale test header corrected; baseline-spike + stage-split records added; P8 darkside-binary follow-up recorded.
 - 2026-06-10 — P2 final review passed; closing fixes landed. PHASE 2 CLOSED.
+- 2026-06-10 — T3.0 done: Phase 3 Completeness plan written (plans/2026-06-10-phase-3-completeness.md); reorg recovery pulled into P3 (needed before P4 darkside subset); G3 mainnet parity flagged needs-user.
