@@ -1,4 +1,4 @@
-//! Engine v0: one full sync pass (preflight → chain state → scheduler).
+//! Engine v0: one full sync pass (preflight → chain state → scheduler → enhancement).
 //! P3 adds enhancement/transparent/events; P4 wraps this behind FFI.
 
 use std::time::Instant;
@@ -7,6 +7,7 @@ use tracing::info;
 
 use crate::{
     config::EngineConfig,
+    enhance::{EnhanceStats, run_enhancement},
     error::SlipstreamError,
     grpc,
     scheduler::{SyncReport, run_to_completion},
@@ -16,6 +17,7 @@ use crate::{
 #[derive(Debug)]
 pub struct SyncOutcome {
     pub report: SyncReport,
+    pub enhance: EnhanceStats,
     pub elapsed: std::time::Duration,
     pub chain_tip: u64,
 }
@@ -63,7 +65,12 @@ pub async fn sync_once(
 
     let report = run_to_completion(config, &mut session).await?;
 
-    Ok(SyncOutcome { report, elapsed: started.elapsed(), chain_tip: tip })
+    // Enhancement: fetch full tx data for all pending TransactionDataRequests.
+    // Runs AFTER the scan loop so all detected transactions are in the DB before
+    // we try to enhance them (scan enqueues Enhancement/GetStatus requests).
+    let enhance = run_enhancement(&mut session, &mut client, config.network).await?;
+
+    Ok(SyncOutcome { report, enhance, elapsed: started.elapsed(), chain_tip: tip })
 }
 
 #[cfg(test)]

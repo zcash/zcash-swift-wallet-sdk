@@ -209,6 +209,12 @@ fn cmd_sync(
                     outcome.report.scan.sapling_received,
                     outcome.report.scan.orchard_received,
                 );
+                println!(
+                    "enhanced: {} txs, {} statuses ({} skipped)",
+                    outcome.enhance.txs_stored,
+                    outcome.enhance.statuses_set,
+                    outcome.enhance.skipped,
+                );
             }
             Err(e) => {
                 eprintln!("sync failed: {e}");

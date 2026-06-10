@@ -113,17 +113,44 @@ pub async fn get_subtree_roots(client: &mut LwdClient) -> Result<SubtreeRoots, S
     Ok(SubtreeRoots { sapling: sapling_roots, orchard: orchard_roots })
 }
 
-/// Fetch a full transaction by txid. Returns the raw bytes + mined height
-/// (0 = mempool, per lightwalletd conventions; see rust/src/lib.rs:2053-2068).
+/// Fetch a full transaction by txid.
+///
+/// Returns `Ok(Some(raw))` on success, `Ok(None)` when the server reports the
+/// transaction is not found (tonic `NotFound` status code, or `Unknown`/`Internal`
+/// with a "not found" message — lightwalletd v0.4.9 uses `Unknown` for unknown txids),
+/// and `Err` for all other transport-level failures (connection refused, timeout, etc.).
+///
+/// # Deviation from T3.1 plan
+/// The original T3.1 wrapper returned `Result<RawTransaction, SlipstreamError>`.
+/// Changed to `Result<Option<RawTransaction>, SlipstreamError>` per T3.2 Binding Note 4:
+/// enhancement must tolerate per-txid "not found" from the server (→ `TxidNotRecognized`)
+/// while propagating connection-class errors to the caller.
 pub async fn get_transaction(
     client: &mut LwdClient,
     txid: [u8; 32],
-) -> Result<RawTransaction, SlipstreamError> {
-    Ok(client
+) -> Result<Option<RawTransaction>, SlipstreamError> {
+    match client
         .get_transaction(TxFilter { hash: txid.to_vec(), ..Default::default() })
         .await
-        .map_err(|e| transport_err("get_transaction", e))?
-        .into_inner())
+    {
+        Ok(resp) => Ok(Some(resp.into_inner())),
+        Err(status) => {
+            // lightwalletd returns NotFound or Unknown/Internal with "not found" message
+            // for unrecognized txids. Treat these as Ok(None) — caller maps to
+            // TxidNotRecognized. All other status codes propagate as transport errors.
+            let code = status.code();
+            let msg_lower = status.message().to_lowercase();
+            if code == tonic::Code::NotFound
+                || ((code == tonic::Code::Unknown || code == tonic::Code::Internal)
+                    && (msg_lower.contains("not found")
+                        || msg_lower.contains("no such transaction")))
+            {
+                Ok(None)
+            } else {
+                Err(transport_err("get_transaction", status))
+            }
+        }
+    }
 }
 
 /// Stream raw transactions involving a transparent address in a height range.
