@@ -163,11 +163,15 @@ async fn setup_wallet(
 /// Run a direct-pipeline scan from `scan_start` to `chain_tip` using
 /// `scan_chunks_from_treestate` (lightwalletd v0.4.9 compatibility).
 /// Uses SAPLING_TREE_128607 as the initial state — correct when scan_start = BIRTHDAY_HEIGHT.
+///
+/// `sparse` — when `true`, use the SparseFacade / in-memory shardtree path. The test
+/// bodies are otherwise untouched; the `sparse` parameter is the only behavioural knob.
 async fn direct_pipeline_scan(
     session: &mut WalletSession,
     cfg: &EngineConfig,
     scan_start: u64,
     chain_tip: u64,
+    sparse: bool,
 ) -> u64 {
     let (tx, rx) = chunk_queue(cfg.memory_budget_bytes);
     let plan = FetchPlan::new(scan_start, chain_tip, cfg.chunk_blocks, cfg.fetch_streams);
@@ -185,7 +189,7 @@ async fn direct_pipeline_scan(
         ..Default::default()
     };
 
-    let scan_stats = scan_chunks_from_treestate(session, scan_start, initial_scan_state, rx, false)
+    let scan_stats = scan_chunks_from_treestate(session, scan_start, initial_scan_state, rx, sparse)
         .await
         .expect("scan_chunks_from_treestate");
 
@@ -272,7 +276,7 @@ async fn reorg_recovery_produces_correct_tip() {
     session.update_chain_tip(chain_tip_1).expect("update_chain_tip (before-reorg)");
 
     // Initial sync: direct-pipeline scan (T2.7 style, bypasses GetTreeState).
-    let blocks_scanned_1 = direct_pipeline_scan(&mut session, &cfg, BIRTHDAY_HEIGHT, chain_tip_1).await;
+    let blocks_scanned_1 = direct_pipeline_scan(&mut session, &cfg, BIRTHDAY_HEIGHT, chain_tip_1, false).await;
     let expected_initial_blocks = FIRST_APPLY_HEIGHT as u64 - BIRTHDAY_HEIGHT + 1;
     assert!(
         blocks_scanned_1 >= expected_initial_blocks,
@@ -418,7 +422,7 @@ async fn reorg_recovery_produces_correct_tip() {
     // are identical in both chains, so the UPSERT writes the same values. Post-fork blocks
     // (663195..=663202) are from the new chain and inserted fresh.
     let blocks_scanned_recovery =
-        direct_pipeline_scan(&mut session, &cfg, BIRTHDAY_HEIGHT, chain_tip_2).await;
+        direct_pipeline_scan(&mut session, &cfg, BIRTHDAY_HEIGHT, chain_tip_2, false).await;
 
     // Verify the recovery scan covered the full range.
     let expected_recovery_blocks = TARGET_APPLY_HEIGHT as u64 - BIRTHDAY_HEIGHT + 1;
@@ -454,6 +458,200 @@ async fn reorg_recovery_produces_correct_tip() {
     println!(
         "Reorg recovery complete: ScanContinuity at {continuity_at}, rewound to {rewind_height}, \
          final tip {}, reorgs_recovered={reorgs_recovered}",
+        max_block_height.unwrap_or(0)
+    );
+}
+
+/// T6.5 sparse-mode reorg variant: identical flow to `reorg_recovery_produces_correct_tip`
+/// but with `sparse=true` throughout.  Asserts the SAME outcomes:
+///   - ScanContinuity { at: 663201 }
+///   - truncate to 663191 (continuity_at.saturating_sub(10))
+///   - final max(blocks.height) == 663202
+///
+/// This proves that the SparseFacade / in-memory shardtree path participates correctly
+/// in reorg detection and recovery: `scan_block` emits per-block Retention::Checkpoint
+/// markers; the in-memory ShardTree prunes them to the last-100 window; the flush
+/// materialises the surviving checkpoints into the same tables that `truncate_to_height`
+/// inspects via `select_truncation_height`.  After truncate, a re-scan from birthday
+/// with sparse=true flushes fresh in-memory state into the DB and converges to the
+/// correct tip — identical to the upstream path.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires local darkside lightwalletd + internet (fixture URLs)"]
+async fn reorg_recovery_produces_correct_tip_sparse() {
+    let ep = darkside_endpoint();
+    let wallet_dir = tempfile::tempdir().expect("tempdir");
+    let db_path = wallet_dir.path().join("data.db");
+
+    let mut cfg = EngineConfig::new(Network::MainNetwork, db_path.clone(), ep.clone());
+    cfg.chunk_blocks = 100;
+    cfg.fetch_streams = 2;
+
+    // ==========================================================================
+    // Phase 1: Stage before-reorg chain and perform the initial sync (sparse=true)
+    // ==========================================================================
+
+    let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
+
+    ctl.reset_with_tree_sizes(START_SAPLING_TREE_SIZE, 0)
+        .await
+        .expect("reset with tree sizes");
+
+    ctl.stage_blocks_url(BEFORE_REORG_URL)
+        .await
+        .expect("stage before-reorg blocks");
+
+    ctl.apply_staged(FIRST_APPLY_HEIGHT).await.expect("apply before-reorg");
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let mut session = WalletSession::open(Network::MainNetwork, &db_path).expect("open wallet");
+    let mut client = grpc::connect(&ep).await.expect("grpc connect");
+
+    setup_wallet(&mut session, &mut client).await;
+
+    let chain_tip_1 = grpc::get_latest_block_height(&mut client)
+        .await
+        .expect("get chain tip (before-reorg)");
+    assert_eq!(
+        chain_tip_1,
+        FIRST_APPLY_HEIGHT as u64,
+        "chain_tip_1 must equal FIRST_APPLY_HEIGHT ({FIRST_APPLY_HEIGHT})"
+    );
+
+    session.update_chain_tip(chain_tip_1).expect("update_chain_tip (before-reorg)");
+
+    // Initial sync — sparse=true.
+    let blocks_scanned_1 = direct_pipeline_scan(&mut session, &cfg, BIRTHDAY_HEIGHT, chain_tip_1, true).await;
+    let expected_initial_blocks = FIRST_APPLY_HEIGHT as u64 - BIRTHDAY_HEIGHT + 1;
+    assert!(
+        blocks_scanned_1 >= expected_initial_blocks,
+        "initial scan expected >= {expected_initial_blocks} blocks, got {blocks_scanned_1}"
+    );
+
+    // ==========================================================================
+    // Phase 2: Trigger reorg by staging after-small-reorg chain
+    // ==========================================================================
+
+    ctl.stage_blocks_url(AFTER_SMALL_REORG_URL)
+        .await
+        .expect("stage after-small-reorg blocks");
+
+    ctl.apply_staged(TARGET_APPLY_HEIGHT).await.expect("apply after-small-reorg");
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let chain_tip_2 = grpc::get_latest_block_height(&mut client)
+        .await
+        .expect("get chain tip (after-small-reorg)");
+    assert_eq!(
+        chain_tip_2,
+        TARGET_APPLY_HEIGHT as u64,
+        "chain_tip_2 must equal TARGET_APPLY_HEIGHT ({TARGET_APPLY_HEIGHT})"
+    );
+
+    session.update_chain_tip(chain_tip_2).expect("update_chain_tip (after-small-reorg)");
+
+    // ==========================================================================
+    // Phase 3: Detect the reorg (sparse=false on the probe scan — the continuity
+    // check fires in scan_block_with_runners BEFORE put_blocks, so the sparse flag
+    // has no effect on detection; we keep sparse=false to stay surgical and not
+    // mask any sparse-specific error path).
+    // ==========================================================================
+
+    let (fetch_tx, fetch_rx) = chunk_queue(cfg.memory_budget_bytes);
+    let plan_reorg = FetchPlan::new(
+        FIRST_APPLY_HEIGHT as u64 + 1, // 663201
+        TARGET_APPLY_HEIGHT as u64,    // 663202
+        cfg.chunk_blocks,
+        cfg.fetch_streams,
+    );
+    let fetch_ep = cfg.endpoint.clone();
+    let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan_reorg, fetch_tx, None).await });
+
+    let from_state_663200 = TreeState {
+        network: "main".into(),
+        height: FIRST_APPLY_HEIGHT as u64,
+        hash: "0".repeat(64),
+        time: 1,
+        sapling_tree: SAPLING_TREE_128607.into(),
+        ..Default::default()
+    };
+    // sparse=false: continuity detection happens in the scan kernel before put_blocks;
+    // the sparse flag only affects the persistence path which is never reached on error.
+    let reorg_scan_result = scan_chunks_from_treestate(
+        &mut session,
+        FIRST_APPLY_HEIGHT as u64 + 1,
+        from_state_663200,
+        fetch_rx,
+        false,
+    )
+    .await;
+
+    let _ = fetch_task.await;
+
+    // Assert ScanContinuity { at: 663201 } — same as the non-sparse variant.
+    let continuity_at = match reorg_scan_result {
+        Err(SlipstreamError::ScanContinuity { at }) => {
+            println!("sparse: ScanContinuity detected at height {at} (expected 663201)");
+            at
+        }
+        Ok(_) => panic!("expected ScanContinuity error, but scan succeeded"),
+        Err(other) => panic!("expected ScanContinuity error, got: {other}"),
+    };
+
+    assert_eq!(
+        continuity_at, 663_201u32,
+        "sparse: ScanContinuity.at must be 663201"
+    );
+
+    // ==========================================================================
+    // Phase 4: Recover — truncate to 663191 + re-scan with sparse=true
+    // ==========================================================================
+
+    let rewind_height = continuity_at.saturating_sub(10);
+    assert_eq!(rewind_height, 663_191u32, "sparse: rewind_height must be 663191");
+    println!("sparse: rewinding to height {rewind_height}");
+
+    session
+        .db_mut()
+        .truncate_to_height(BlockHeight::from(rewind_height))
+        .expect("truncate_to_height");
+
+    // Recovery re-scan with sparse=true.
+    let blocks_scanned_recovery =
+        direct_pipeline_scan(&mut session, &cfg, BIRTHDAY_HEIGHT, chain_tip_2, true).await;
+
+    let expected_recovery_blocks = TARGET_APPLY_HEIGHT as u64 - BIRTHDAY_HEIGHT + 1;
+    assert!(
+        blocks_scanned_recovery >= expected_recovery_blocks,
+        "sparse: recovery scan expected >= {expected_recovery_blocks} blocks, got {blocks_scanned_recovery}"
+    );
+
+    // ==========================================================================
+    // Final assertions — identical to non-sparse variant
+    // ==========================================================================
+
+    let conn = Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .expect("open wallet db read-only");
+
+    // Final tip must be 663202.
+    let max_block_height: Option<i64> = conn
+        .query_row("SELECT MAX(height) FROM blocks", [], |r| r.get(0))
+        .expect("query max block height");
+
+    assert_eq!(
+        max_block_height.unwrap_or(0),
+        TARGET_APPLY_HEIGHT as i64,
+        "sparse: post-reorg max block height must be {TARGET_APPLY_HEIGHT}. \
+         Source: ReOrgTests.swift:220-224"
+    );
+
+    println!(
+        "sparse: Reorg recovery complete: ScanContinuity at {continuity_at}, \
+         rewound to {rewind_height}, final tip {}",
         max_block_height.unwrap_or(0)
     );
 }

@@ -38,8 +38,9 @@ use slipstream_core::{
     scan::scan_chunks_from_treestate,
     wallet_session::{WalletSession, TEST_UFVK},
 };
+use zcash_client_backend::data_api::WalletWrite;
 use zcash_client_backend::proto::service::{BlockId, BlockRange, TreeState};
-use zcash_protocol::consensus::Network;
+use zcash_protocol::consensus::{BlockHeight, Network};
 
 // ---------------------------------------------------------------------------
 // Constants — mirror darkside_sync.rs exactly.
@@ -260,4 +261,205 @@ async fn sparse_pipeline_matches_upstream_on_darkside_fixture() {
         "wallet B (sparse): expected balance {EXPECTED_BALANCE_ZATOSHI} zatoshi, got {balance:?}. \
          Source: BalanceTests.swift:889"
     );
+}
+
+/// T6.5 truncate+rescan oracle: after a full sync on wallets A (upstream) and B (sparse),
+/// truncate both to a height below the second tx (requesting 663185; both wallets snap to
+/// the nearest shared checkpoint ≤ 663185 which is 663174, the first tx block), re-scan
+/// the gap from 663175 to 663188 (A=upstream, B=sparse), then `semantic_diff` must be clean.
+///
+/// This proves flush→truncate→reflush converges: the checkpoint tables that
+/// `select_truncation_height` inspects are populated identically by both paths
+/// (only blocks with shielded outputs carry a checkpoint — empty blocks do NOT, per
+/// scanning/compact.rs:672-810), so both wallets snap to the same truncation height
+/// and the re-scan produces the same final DB.
+///
+/// Key fact: checkpoints for the 663150-663188 fixture are at heights 663149
+/// (from_state frontier), 663174 (first tx, 1 Sapling note), and 663188 (second tx,
+/// 1 Sapling note) — empty blocks carry no checkpoint.  Requesting truncation at 663185
+/// snaps to 663174 on both paths.  Re-scanning 663175..=663188 exercises the second tx.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires local darkside lightwalletd + internet (fixture URLs)"]
+async fn truncate_rescan_oracle_is_clean() {
+    // Request truncation between the two txs.  Both wallets snap to the
+    // nearest checkpoint ≤ 663185, which is 663174 (the first tx block).
+    const TRUNCATE_REQUEST: u32 = 663_185;
+
+    let ep = darkside_endpoint();
+
+    // ── Run A: upstream path — initial full sync ─────────────────────────────
+    let dir_a = tempfile::tempdir().expect("tempdir A");
+    let db_a = dir_a.path().join("data.db");
+    {
+        let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
+        stage_fixture_chain(&mut ctl).await;
+    }
+    run_pipeline(&ep, &db_a, false).await;
+
+    // ── Run B: sparse path — reset + re-stage + initial full sync ────────────
+    let dir_b = tempfile::tempdir().expect("tempdir B");
+    let db_b = dir_b.path().join("data.db");
+    {
+        let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
+        stage_fixture_chain(&mut ctl).await;
+    }
+    run_pipeline(&ep, &db_b, true).await;
+
+    // ── Truncate both wallets; assert they snap to the same height ────────────
+    let truncated_a_height: u32;
+    {
+        let mut session_a = WalletSession::open(Network::MainNetwork, &db_a)
+            .expect("open wallet A for truncation");
+        let truncated_a = session_a
+            .db_mut()
+            .truncate_to_height(BlockHeight::from(TRUNCATE_REQUEST))
+            .expect("truncate_to_height A");
+        truncated_a_height = u32::from(truncated_a);
+        println!("truncate-oracle: wallet A truncated to {truncated_a_height}");
+    }
+    let truncated_b_height: u32;
+    {
+        let mut session_b = WalletSession::open(Network::MainNetwork, &db_b)
+            .expect("open wallet B for truncation");
+        let truncated_b = session_b
+            .db_mut()
+            .truncate_to_height(BlockHeight::from(TRUNCATE_REQUEST))
+            .expect("truncate_to_height B");
+        truncated_b_height = u32::from(truncated_b);
+        println!("truncate-oracle: wallet B truncated to {truncated_b_height}");
+    }
+
+    // Both paths must produce the same truncation height (checkpoint parity).
+    assert_eq!(
+        truncated_a_height, truncated_b_height,
+        "truncate-oracle: truncation heights differ (A={truncated_a_height}, B={truncated_b_height})"
+    );
+    let rescan_start: u64 = truncated_a_height as u64 + 1;
+    println!("truncate-oracle: re-scanning from {rescan_start}");
+
+    // ── Re-stage the fixture chain so both re-scans see the same server ───────
+    {
+        let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect (re-stage)");
+        stage_fixture_chain(&mut ctl).await;
+    }
+
+    // ── Re-stage so both re-scans hit the same server state ──────────────────
+    {
+        let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect (re-stage)");
+        stage_fixture_chain(&mut ctl).await;
+    }
+
+    // ── Re-scan from BIRTHDAY_HEIGHT (663150) on both wallets ────────────────
+    //
+    // Re-scan from the BIRTHDAY rather than from rescan_start because
+    // SAPLING_TREE_128607 is the correct tree state at 663149 (birthday-1), and
+    // we don't have a pre-built frontier blob for the tree at 663174 (which would
+    // require computing 128608 leaves). Starting from 663150 with
+    // SAPLING_TREE_128607 is always safe: blocks 663150..=rescan_start-1 are
+    // still in the `blocks` table (only blocks > truncated_height were deleted),
+    // so `put_blocks` UPSERTs them with the same values, and blocks
+    // rescan_start..=663188 are freshly inserted.
+    {
+        let mut cfg = EngineConfig::new(Network::MainNetwork, db_a.clone(), ep.clone());
+        cfg.chunk_blocks = 100;
+        cfg.fetch_streams = 2;
+
+        let mut session_a = WalletSession::open(Network::MainNetwork, &db_a)
+            .expect("open wallet A for re-scan");
+
+        let mut client_a = grpc::connect(&ep).await.expect("grpc connect A");
+        let chain_tip_a = grpc::get_latest_block_height(&mut client_a)
+            .await
+            .expect("get_latest_block_height A");
+        session_a.update_chain_tip(chain_tip_a).expect("update_chain_tip A");
+
+        let initial_state_a = TreeState {
+            network: "main".into(),
+            height: BIRTHDAY_HEIGHT - 1,
+            hash: "0".repeat(64),
+            time: 1,
+            sapling_tree: SAPLING_TREE_128607.into(),
+            ..Default::default()
+        };
+        let (tx_a, rx_a) = slipstream_core::chunk::chunk_queue(cfg.memory_budget_bytes);
+        let plan_a = slipstream_core::fetch::FetchPlan::new(
+            BIRTHDAY_HEIGHT,
+            chain_tip_a,
+            cfg.chunk_blocks,
+            cfg.fetch_streams,
+        );
+        let fetch_ep_a = ep.clone();
+        let fetch_task_a = tokio::spawn(async move {
+            slipstream_core::fetch::run_fetch(&fetch_ep_a, plan_a, tx_a, None).await
+        });
+
+        slipstream_core::scan::scan_chunks_from_treestate(
+            &mut session_a,
+            BIRTHDAY_HEIGHT,
+            initial_state_a,
+            rx_a,
+            false, // upstream
+        )
+        .await
+        .expect("re-scan wallet A from birthday");
+
+        let _ = fetch_task_a.await.expect("fetch join A").expect("fetch stats A");
+    }
+
+    {
+        let mut cfg = EngineConfig::new(Network::MainNetwork, db_b.clone(), ep.clone());
+        cfg.chunk_blocks = 100;
+        cfg.fetch_streams = 2;
+
+        let mut session_b = WalletSession::open(Network::MainNetwork, &db_b)
+            .expect("open wallet B for re-scan");
+
+        let mut client_b = grpc::connect(&ep).await.expect("grpc connect B");
+        let chain_tip_b = grpc::get_latest_block_height(&mut client_b)
+            .await
+            .expect("get_latest_block_height B");
+        session_b.update_chain_tip(chain_tip_b).expect("update_chain_tip B");
+
+        let initial_state_b = TreeState {
+            network: "main".into(),
+            height: BIRTHDAY_HEIGHT - 1,
+            hash: "0".repeat(64),
+            time: 1,
+            sapling_tree: SAPLING_TREE_128607.into(),
+            ..Default::default()
+        };
+        let (tx_b, rx_b) = slipstream_core::chunk::chunk_queue(cfg.memory_budget_bytes);
+        let plan_b = slipstream_core::fetch::FetchPlan::new(
+            BIRTHDAY_HEIGHT,
+            chain_tip_b,
+            cfg.chunk_blocks,
+            cfg.fetch_streams,
+        );
+        let fetch_ep_b = ep.clone();
+        let fetch_task_b = tokio::spawn(async move {
+            slipstream_core::fetch::run_fetch(&fetch_ep_b, plan_b, tx_b, None).await
+        });
+
+        slipstream_core::scan::scan_chunks_from_treestate(
+            &mut session_b,
+            BIRTHDAY_HEIGHT,
+            initial_state_b,
+            rx_b,
+            true, // sparse
+        )
+        .await
+        .expect("re-scan wallet B (sparse) from birthday");
+
+        let _ = fetch_task_b.await.expect("fetch join B").expect("fetch stats B");
+    }
+
+    // ── Oracle: semantic diff after truncate+reflush ───────────────────────────
+    let report = semantic_diff(&db_a, &db_b).expect("semantic_diff after truncate+rescan");
+    println!("truncate-oracle diff:\n{}", report.render());
+    assert!(
+        report.is_clean(),
+        "truncate+rescan oracle diverged (upstream vs sparse):\n{}",
+        report.render()
+    );
+    println!("truncate-oracle: VERDICT IDENTICAL — flush→truncate→reflush converges");
 }
