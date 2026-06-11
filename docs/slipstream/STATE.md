@@ -176,6 +176,8 @@
 | **T6.7 DEVICE — iPad A10 sparse (269,491-blk restore, d6b4472f build)** | iPad A10 (6th Gen) | eu.zec.rocks | 3105001..3374491 | **9:21 wall** (total 554.3s / scan 545.0s / fetch 19.9s / enhance 1.13s, sparse=true; chunks 9.3-36.2s/10k; rows_ms 826-7060 / tree_ms 2929-10935 / flush_ms ≤32 / downgraded 2011-8732 per chunk) | scan-bound | 2026-06-12 |
 | **T6.7 DEVICE — iPhone 16 Pro sparse (269,501-blk restore, d6b4472f build)** | iPhone 16 Pro | eu.zec.rocks | 3105001..3374501 | **1:35 wall** (total 90.3s / scan 85.5s / fetch 22.0s / enhance 1.53s, sparse=true; chunks 1.3-5.5s/10k; rows_ms 101-1470 / tree_ms 529-1599 / flush_ms ≤12 per chunk) | scan-bound (fetch becoming visible: early chunks outpace fetch workers) | 2026-06-12 |
 | **T6.7 VERDICT: iPad 16:50→9:21 (1.81×; old SDK 1:04:26 → 6.9×); iPhone 3:28→1:35 (2.19×). ZINGO BEATEN both devices (11:34 / 2:41). Zkool gap: iPad +28s (8:53), iPhone +22s (1:13). G6 goal lines NOT yet crossed: engine 554s vs <533s; 90s vs <73s.** | — | — | — | — | — | 2026-06-12 |
+| **T6.7b DEVICE — iPad A10 sparse, MANUAL server selection (no AutoServerSelection restart = L1 validated by hand)** | iPad A10 (6th Gen) | manual (user-set) | ~269.5k blocks | **8:30 wall (510s)** | scan-bound | 2026-06-12 |
+| **T6.7b VERDICT: iPad G6 GOAL LINE CROSSED (510s < 533s) — ZKOOL BEATEN on iPad (8:30 < 8:53). L1 worth ~50s on A10; remaining L1 work = make server-race-before-start automatic in Zodl. iPhone goal (<73s) still open → L1+L2.** | — | — | — | — | — | 2026-06-12 |
 
 ## M1 recovery record
 
