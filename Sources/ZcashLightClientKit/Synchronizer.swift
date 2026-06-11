@@ -329,6 +329,9 @@ public protocol Synchronizer: AnyObject {
     // sourcery: mockedName="getTransactionOutputsForTransaction"
     func getTransactionOutputs(for transaction: ZcashTransaction.Overview) async -> [ZcashTransaction.Output]
 
+    /// Returns all transactions, most recent first.
+    func allTransactions() async throws -> [ZcashTransaction.Overview]
+
     /// Returns a list of confirmed transactions that preceed the given transaction with a limit count.
     /// - Parameters:
     ///     - from: the confirmed transaction from which the query should start from or nil to retrieve from the most recent transaction

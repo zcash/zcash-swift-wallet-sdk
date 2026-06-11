@@ -394,6 +394,10 @@ public final class SlipstreamSynchronizer: Synchronizer {
         PagedTransactionRepositoryBuilder.build(initializer: initializer, kind: kind)
     }
 
+    public func allTransactions() async throws -> [ZcashTransaction.Overview] {
+        try await transactionRepository.find(offset: 0, limit: Int.max, kind: .all)
+    }
+
     public func allTransactions(from transaction: ZcashTransaction.Overview, limit: Int) async throws -> [ZcashTransaction.Overview] {
         try await transactionRepository.find(from: transaction, limit: limit, kind: .all)
     }
@@ -712,10 +716,6 @@ public final class SlipstreamSynchronizer: Synchronizer {
 // MARK: - Private helpers
 
 private extension SlipstreamSynchronizer {
-    func allTransactions() async throws -> [ZcashTransaction.Overview] {
-        try await transactionRepository.find(offset: 0, limit: Int.max, kind: .all)
-    }
-
     func allSentTransactions() async throws -> [ZcashTransaction.Overview] {
         try await transactionRepository.findSent(offset: 0, limit: Int.max)
     }

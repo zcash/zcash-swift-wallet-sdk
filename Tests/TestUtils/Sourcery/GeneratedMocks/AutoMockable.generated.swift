@@ -2027,6 +2027,28 @@ class SynchronizerMock: Synchronizer {
         }
     }
 
+    // MARK: - allTransactions (no params)
+
+    var allTransactionsThrowableError: Error?
+    var allTransactionsCallsCount = 0
+    var allTransactionsCalled: Bool {
+        return allTransactionsCallsCount > 0
+    }
+    var allTransactionsReturnValue: [ZcashTransaction.Overview]!
+    var allTransactionsClosure: (() async throws -> [ZcashTransaction.Overview])?
+
+    func allTransactions() async throws -> [ZcashTransaction.Overview] {
+        if let error = allTransactionsThrowableError {
+            throw error
+        }
+        allTransactionsCallsCount += 1
+        if let closure = allTransactionsClosure {
+            return try await closure()
+        } else {
+            return allTransactionsReturnValue
+        }
+    }
+
     // MARK: - allTransactions
 
     var allTransactionsFromLimitThrowableError: Error?
