@@ -24,7 +24,9 @@ public actor SlipstreamEngine {
     // ── Storage ────────────────────────────────────────────────────────────────
     private var handle: OpaquePointer?
     private let dbURL: URL
-    private let server: LightWalletEndpoint
+    // `server` is mutable so `switchTo(endpoint:)` can re-open the handle against
+    // a different endpoint without constructing a new engine actor.
+    private var server: LightWalletEndpoint
 
     // ── Init ───────────────────────────────────────────────────────────────────
 
@@ -125,6 +127,24 @@ public actor SlipstreamEngine {
         guard let handlePtr = handle else { return }
         zcashlc_slipstream_free(handlePtr)
         handle = nil
+    }
+
+    /// Closes the current handle (if any) and opens a new one bound to `newServer`.
+    ///
+    /// Used by `SlipstreamSynchronizer.switchTo(endpoint:)`.  The caller is
+    /// responsible for stopping any in-flight sync before calling this method.
+    ///
+    /// - Parameters:
+    ///   - newServer: the replacement `LightWalletEndpoint`.
+    ///   - network:   the Zcash network (unchanged across switches).
+    /// - Throws: `ZcashError.rustSlipstreamOpen` if the re-open fails.
+    public func reopen(server newServer: LightWalletEndpoint, network: ZcashNetwork) throws {
+        // Free the old handle (exact-once guard already inside close()).
+        close()
+        // Store the new endpoint so subsequent open/start calls use it.
+        server = newServer
+        // Open a fresh handle bound to the new endpoint.
+        try open(network: network)
     }
 
     // ── Poll surface (D8) ──────────────────────────────────────────────────────

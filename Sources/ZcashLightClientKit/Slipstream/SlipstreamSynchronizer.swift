@@ -59,8 +59,23 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // ── Broadcaster (Synchronizer protocol requirement) ────────────────────────
     public var broadcaster: Broadcaster { broadcasterStorage }
 
+    // ── Endpoint (mutable for switchTo) ───────────────────────────────────────
+    // Tracks the endpoint currently in use.  `engine.reopen(server:network:)` uses
+    // this value; `initializer.endpoint` is the initial value.
+    private var currentEndpoint: LightWalletEndpoint
+
+    // ── Running state (for switchTo restart decision) ──────────────────────────
+    private var isRunning: Bool = false
+
     // ── Polling task ───────────────────────────────────────────────────────────
     private var pollTask: Task<Void, Never>?
+
+    // ── foundTransactions emission tracking ────────────────────────────────────
+    // Monotonically-increasing counter mirroring the Rust engine's `enhanced_txs`
+    // field (which is per-handle, growing across multiple start/stop cycles until
+    // the handle is closed).  Persists across start() calls — reset only when the
+    // engine handle is closed (close() / wipe()).
+    private var lastEnhancedCount: UInt64 = 0
 
     // ── Init ───────────────────────────────────────────────────────────────────
 
@@ -71,6 +86,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
     ///     `ZcashRustBackend` for all data-model queries.
     public init(initializer: Initializer) {
         self.initializer = initializer
+        self.currentEndpoint = initializer.endpoint
         self.transactionRepository = initializer.transactionRepository
         self.transactionEncoder = WalletTransactionEncoder(initializer: initializer)
         let eventSubjectRef = eventSubject
@@ -133,6 +149,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
         //   idempotency. Current strategy: ufvk=nil (keyless) since prepare() already
         //   imported the account and stored its birthday treestate.
         try await engine.start(ufvk: nil, birthday: birthday)
+        isRunning = true
         startPolling()
         stateSubject.send(SynchronizerState(
             syncSessionID: UUID(),
@@ -149,6 +166,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// protocol method wraps it in `Task {}`.
     public func stop() {
         Task { await engine.stop() }
+        isRunning = false
         stopPolling()
         stateSubject.send(SynchronizerState(
             syncSessionID: latestState.syncSessionID,
@@ -208,9 +226,35 @@ public final class SlipstreamSynchronizer: Synchronizer {
             fullyScannedHeight: fullyScannedHeight
         ))
 
-        // Map SyncDone event (tag==3) with value>0 → foundTransactions event.
-        for event in events where event.tag == 3 && event.value > 0 {
-            let txs = (try? await transactionRepository.find(offset: 0, limit: Int.max, kind: .all)) ?? []
+        // ── Resilient foundTransactions emission ──────────────────────────────
+        // Primary path: emit whenever the engine's enhanced_txs counter advances
+        // beyond what we last saw.  This fires on every poll tick where new
+        // transactions were enhanced, regardless of whether the event ring also
+        // carries a SyncDone event (event-ring capacity is 64; the ring can lose
+        // events under a sustained burst).
+        //
+        // Fallback path: if the counter did NOT move but the event ring contains
+        // a SyncDone event (tag==3, value>0) AND there are stored transactions,
+        // emit once.  This catches the edge case where enhancedTxs stalls at a
+        // non-zero value (e.g. the engine re-uses a counter from a prior pass and
+        // the primary path already fired) while we still know a pass completed.
+        //
+        // Single emission point: we never emit both paths in the same tick (the
+        // primary path takes precedence; the fallback is an else-branch).
+        let hasSyncDoneEvent = events.contains { $0.tag == 3 && $0.value > 0 }
+
+        if snap.enhancedTxs > lastEnhancedCount {
+            // Primary: new enhancements observed — fetch and emit.
+            let txs = (try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []
+            if !txs.isEmpty {
+                eventSubject.send(.foundTransactions(txs, nil))
+            }
+            lastEnhancedCount = snap.enhancedTxs
+        } else if hasSyncDoneEvent && snap.enhancedTxs > 0 {
+            // Fallback: sync completed with stored transactions but the counter
+            // did not advance this tick (already caught by an earlier tick or
+            // count unchanged across this pass).  Emit so the UI sees them.
+            let txs = (try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []
             if !txs.isEmpty {
                 eventSubject.send(.foundTransactions(txs, nil))
             }
@@ -578,6 +622,15 @@ public final class SlipstreamSynchronizer: Synchronizer {
             // 3. Free the engine handle (exact-once — close() guards against double-free).
             await engine.close()
 
+            // 3a. Reset the per-handle enhanced-tx counter: the engine handle is being
+            //     destroyed, so the Rust-side monotonic counter resets on next open().
+            lastEnhancedCount = 0
+
+            // 3b. Close Swift-side DB connections before deleting files — mirrors
+            //     SDKSynchronizer.wipe() prewipe closure (SDKSynchronizer.swift:759-760).
+            transactionEncoder.closeDBConnection()
+            transactionRepository.closeDBConnection()
+
             do {
                 let fm = FileManager.default
 
@@ -613,13 +666,36 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
     // ── Server switch ─────────────────────────────────────────────────────────
 
-    /// Endpoint switching is not supported in `SlipstreamSynchronizer`.
-    /// The engine handle is bound to a fixed endpoint at `open` time; switching requires
-    /// re-opening the handle, which is not yet implemented.
+    /// Switches the synchronizer to `endpoint` by re-opening the engine handle.
     ///
-    /// TODO: [#1755] Implement switchTo — re-open the engine handle with the new endpoint.
+    /// Sequence:
+    /// 1. Snapshot whether the sync was running (to decide whether to restart).
+    /// 2. Stop polling + await `engine.stop()` — cancel any in-flight sync task.
+    /// 3. `engine.reopen(server:network:)` — close old handle + open new one bound
+    ///    to the new endpoint (frees Rust-side tokio runtime, then allocates a fresh one).
+    /// 4. Store `endpoint` in `currentEndpoint`.
+    /// 5. If the engine was running before the switch, restart via `start(retry: false)`.
     public func switchTo(endpoint: LightWalletEndpoint) async throws {
-        throw ZcashError.rustSlipstreamUnsupported
+        let wasRunning = isRunning
+
+        // Stop poll loop and cancel in-flight sync.
+        stopPolling()
+        isRunning = false
+        await engine.stop()
+
+        // Re-open the engine handle against the new endpoint.
+        try await engine.reopen(server: endpoint, network: initializer.network)
+
+        // Record the new endpoint.
+        currentEndpoint = endpoint
+
+        // Also reset the enhanced-tx counter: the new handle starts from zero.
+        lastEnhancedCount = 0
+
+        // Restart if the engine was previously running.
+        if wasRunning {
+            try await start(retry: false)
+        }
     }
 
     // ── Seed check ────────────────────────────────────────────────────────────
