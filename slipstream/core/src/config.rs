@@ -38,6 +38,13 @@ pub struct EngineConfig {
     pub chunk_blocks: u32,
     /// Upper bound for in-flight downloaded block data.
     pub memory_budget_bytes: usize,
+    /// When `Some(ms)`, the scan splits fetch-chunks into time-targeted sub-batches
+    /// (~ms each) for finer commits and progress updates on slow devices — at the cost
+    /// of one full `put_blocks` commit + shardtree checkpoint per sub-batch (measured
+    /// ≈1.5–2s fixed on A10-class hardware).
+    ///
+    /// `None` = one `scan_cached_blocks` call per fetch chunk (default; fastest).
+    pub scan_batch_target_ms: Option<u64>,
 }
 
 impl EngineConfig {
@@ -53,6 +60,7 @@ impl EngineConfig {
             fetch_streams: Self::DEFAULT_FETCH_STREAMS,
             chunk_blocks: Self::DEFAULT_CHUNK_BLOCKS,
             memory_budget_bytes: Self::DEFAULT_MEMORY_BUDGET,
+            scan_batch_target_ms: None,
         }
     }
 
@@ -68,6 +76,13 @@ impl EngineConfig {
         }
         if self.memory_budget_bytes < 16 * 1024 * 1024 {
             return Err(SlipstreamError::Config("memory_budget_bytes must be >= 16 MiB".into()));
+        }
+        if let Some(ms) = self.scan_batch_target_ms
+            && ms < 500
+        {
+            return Err(SlipstreamError::Config(
+                "scan_batch_target_ms must be >= 500 ms".into(),
+            ));
         }
         Ok(())
     }
@@ -124,5 +139,25 @@ mod tests {
         assert_eq!(e.uri(), "https://zec.rocks:443");
         e.tls = false;
         assert_eq!(e.uri(), "http://zec.rocks:443");
+    }
+
+    #[test]
+    fn scan_batch_target_ms_below_500_rejected() {
+        let mut c = config();
+        c.scan_batch_target_ms = Some(499);
+        assert!(matches!(c.validate(), Err(SlipstreamError::Config(_))));
+    }
+
+    #[test]
+    fn scan_batch_target_ms_at_500_accepted() {
+        let mut c = config();
+        c.scan_batch_target_ms = Some(500);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn scan_batch_target_ms_none_accepted() {
+        let c = config();
+        assert!(c.validate().is_ok()); // None is the default, already tested via defaults_are_valid
     }
 }

@@ -27,6 +27,14 @@ public struct SlipstreamSnapshot {
     public let currentRangeEnd: UInt64
     /// Sync state: 0 = idle, 1 = syncing, 2 = error, 3 = done.
     public let state: UInt8
+    /// Total blocks in the current pass (denominator for counter-based progress).
+    /// Accumulates the block-length of every suggested range as the scheduler takes it.
+    /// Monotonically increases alongside `scannedBlocks` so `scannedBlocks / passTotalBlocks`
+    /// is a valid in-pass ratio with no `getWalletSummary` call required.
+    public let passTotalBlocks: UInt64
+    /// Spendable hint: 0 = not yet spendable; 1 = a ChainTip-priority range completed
+    /// scanning (≈ SBS funds-spendable semantics). Latches to 1; never resets within a pass.
+    public let spendableHint: UInt8
 
     init(_ cSnapshot: FfiSlipstreamSnapshot) {
         chainTip = cSnapshot.chain_tip
@@ -35,6 +43,8 @@ public struct SlipstreamSnapshot {
         enhancedTxs = cSnapshot.enhanced_txs
         currentRangeEnd = cSnapshot.current_range_end
         state = cSnapshot.state
+        passTotalBlocks = cSnapshot.pass_total_blocks
+        spendableHint = cSnapshot.spendable_hint
     }
 
     /// Memberwise initializer for tests (avoids a direct dependency on `FfiSlipstreamSnapshot` / libzcashlc in test targets).
@@ -44,7 +54,9 @@ public struct SlipstreamSnapshot {
         scannedBlocks: UInt64,
         enhancedTxs: UInt64,
         currentRangeEnd: UInt64,
-        state: UInt8
+        state: UInt8,
+        passTotalBlocks: UInt64 = 0,
+        spendableHint: UInt8 = 0
     ) {
         self.chainTip = chainTip
         self.fetchedBlocks = fetchedBlocks
@@ -52,6 +64,8 @@ public struct SlipstreamSnapshot {
         self.enhancedTxs = enhancedTxs
         self.currentRangeEnd = currentRangeEnd
         self.state = state
+        self.passTotalBlocks = passTotalBlocks
+        self.spendableHint = spendableHint
     }
 }
 

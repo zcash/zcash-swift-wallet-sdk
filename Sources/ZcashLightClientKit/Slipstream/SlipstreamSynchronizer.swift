@@ -84,27 +84,29 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // poll tick — which must emit a state update EVERY tick — we maintain a cached
     // copy of the last completed summary and fetch updates in a background Task.
     //
+    // T5.5 iPad A10 log evidence (the "summary-parasite" root cause):
+    //   Every 8s a summary computation (10–30s of shard walks) ran CONCURRENTLY with
+    //   scanning on a 4-core A10 — CPU theft + SQLite contention → ~20–35% per-output
+    //   slowdown across ALL chunks. THE FIX: during active sync (state==1), make ZERO
+    //   getWalletSummary calls. Progress + spendability derive entirely from engine
+    //   counters (scannedBlocks / passTotalBlocks, spendableHint). Summary fetches are
+    //   reserved for idle/done/error states where the DB is quiet.
+    //
     // Invariants:
     //   - Only ONE summary fetch is in flight at a time (`summaryTask != nil`).
     //   - A new fetch starts only when the previous one is done AND ≥ the state-dependent
     //     interval have elapsed since it completed (`lastSummaryFinishDate`).
     //   - The fetch is wrapped in a 3-second hard timeout; on expiry the cached value
     //     is left unchanged and the next tick will retry.
+    //   - When state == 1 (Syncing): NO summary fetch is ever started (see above).
     //   - When state == 3 (Done), any in-flight task is cancelled and the tick emits
-    //     `.synced` immediately without waiting.
-    //   - THROTTLE: While state == Syncing (1), summary fetches are throttled to 8-second
-    //     intervals (T5.3). The 2-second state ticks bridge from cachedSummary + cheap
-    //     snapshot counters; this wider cadence prevents summary computation from stealing
-    //     CPU from rayon trial-decryption on weak devices.
+    //     `.synced` immediately without waiting. A single post-sync summary fetch fires
+    //     AFTER emitting .synced (never delays the .synced emission).
     private var cachedSummary: WalletSummary?
     private var summaryTask: Task<Void, Never>?
     private var lastSummaryFinishDate: Date?
     // Minimum interval (seconds) between summary fetches when NOT syncing (Disconnected, Done, Error).
     private static let summaryRefetchIntervalSeconds: TimeInterval = 2.0
-    // Minimum interval (seconds) between summary fetches while Syncing (T5.3).
-    // Summary computation steals CPU from rayon trial-decryption on-device; widen the
-    // cadence while scan-bound. The 2s state ticks bridge from cachedSummary.
-    private static let SUMMARY_SYNC_INTERVAL: TimeInterval = 8.0
     // Hard timeout (nanoseconds) for a single getWalletSummary call: 3 seconds.
     private static let summaryTimeoutNanoseconds: UInt64 = 3_000_000_000
 
@@ -233,22 +235,26 @@ public final class SlipstreamSynchronizer: Synchronizer {
         guard let snap = await engine.snapshot() else { return }
         let events = await engine.drainEvents()
 
-        // ── F1: Emit state immediately from cheap snapshot + cached summary ──────
+        // ── T5.5 state-dispatch: Syncing vs Done vs other ─────────────────────
         //
-        // getWalletSummary() can take 10–30 s mid-scan (complex shard-tree + balance
-        // SQL queries, all serialised on @DBActor).  Awaiting it here would block this
-        // tick — and every subsequent tick — causing the UI to show long pauses with
-        // no progress updates.
+        // STATE 1 (Syncing): ZERO getWalletSummary calls. Progress and spendability
+        // derive entirely from engine counters:
+        //   progress  = counterProgress(scanned: snap.scannedBlocks, total: snap.passTotalBlocks)
+        //   spendable = snap.spendableHint != 0
+        // This eliminates the "summary-parasite" regression (iPad A10 log, T5.5):
+        // every 8s a 10–30s shard walk ran concurrently with scanning, stealing 20–35%
+        // of CPU from rayon trial-decryption on a 4-core device. By making ZERO summary
+        // calls during scan, the device's full CPU budget is available for scanning.
         //
-        // Fix: use the CACHED summary from the last completed background fetch.
-        // A background Task is kicked off to refresh the cache (one at a time, ≥2 s
-        // apart, with a 3-second hard timeout) WITHOUT blocking this tick.
+        // STATE 3 (Done): emit .synced IMMEDIATELY (never delayed), then start ONE
+        // background summary fetch to refresh balances/fullyScannedHeight for the
+        // post-sync idle state.
         //
-        // Special-case: state == 3 (Done) → emit .synced IMMEDIATELY and cancel any
-        // in-flight summary task; we do not need updated balances to report completion.
+        // STATES 0/2 (Disconnected/Error): summary fetches run at the 2s cadence so
+        // the balance display stays fresh while the wallet is idle or recovering.
 
-        // Cancel in-flight summary fetch and emit .synced right away on Done.
         if snap.state == 3 {
+            // Done: cancel any in-flight summary task + emit .synced immediately.
             summaryTask?.cancel()
             summaryTask = nil
             stateSubject.send(SynchronizerState(
@@ -258,51 +264,37 @@ public final class SlipstreamSynchronizer: Synchronizer {
                 latestBlockHeight: BlockHeight(snap.chainTip),
                 fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight
             ))
+            // Kick a post-sync summary fetch for balance freshness in idle state.
+            // The .synced emission already fired above — this never delays it.
+            kickSummaryFetchIfNeeded(state: snap.state)
             // Fall through to foundTransactions emission below (still needed on Done).
+        } else if snap.state == 1 {
+            // Syncing: counter-based progress only — NO getWalletSummary.
+            // (A10 log evidence: summary was ~20–35% CPU parasite; eliminated in T5.5.)
+            let progress = SlipstreamSynchronizer.counterProgress(
+                scanned: snap.scannedBlocks,
+                total: snap.passTotalBlocks
+            )
+            let spendable = snap.spendableHint != 0
+
+            stateSubject.send(SynchronizerState(
+                syncSessionID: latestState.syncSessionID,
+                accountsBalances: cachedSummary?.accountBalances ?? latestState.accountsBalances,
+                internalSyncStatus: .syncing(progress, spendable),
+                latestBlockHeight: BlockHeight(snap.chainTip),
+                fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight
+            ))
         } else {
-            // Kick off a background summary refresh when the previous one has finished
-            // and enough time has elapsed (prevents overlapping calls and queue build-up).
-            // Pass the current snapshot state for state-dependent throttling (T5.3).
+            // Disconnected (0) or Error (2): summary fetches remain active for balance
+            // freshness at the 2s cadence.
             kickSummaryFetchIfNeeded(state: snap.state)
 
-            // Build progress from the cached summary (may be nil on the very first ticks).
             let summary = cachedSummary
-
-            // Compose scan+recovery progress exactly as the old SDK's ScanAction does
-            // (ScanAction.swift:81-99): numerators and denominators are summed; denominator==0
-            // → 1.0; progress clamped to 1.0 (old SDK threw; we log-warn once and clamp).
-            // areFundsSpendable = scanProgress.isComplete (ScanAction.swift:99).
-            let (composedProgress, spendable) = SlipstreamSynchronizer.composeProgress(
-                scanProgress: summary?.scanProgress.map { ($0.numerator, $0.denominator, $0.isComplete) },
-                recoveryProgress: summary?.recoveryProgress.map { ($0.numerator, $0.denominator) }
-            )
-
-            // fullyScannedHeight comes from the wallet summary (avoids a redundant
-            // fullyScannedHeight() Rust call — WalletSummary already carries this field).
             let fullyScannedHeight = summary?.fullyScannedHeight ?? latestState.fullyScannedHeight
-
-            // Balances are already in the summary fetched above — reuse, no extra Rust call.
             let balances = summary?.accountBalances ?? latestState.accountsBalances
-
-            // Fallback progress when the summary is nil (fresh db, first ticks before any
-            // scan range is committed): keep a simple counter ratio but avoid the genesis-
-            // relative distortion — use max(currentRangeEnd, 1) as the local baseline so
-            // the fraction is honest within the current range rather than near-zero across
-            // the entire chain.  This path is transient and only fires until the first
-            // getWalletSummary() returns a non-nil scanProgress.
-            let fallbackProgress: Float = {
-                guard summary?.scanProgress == nil else { return composedProgress }
-                let rangeEnd = max(snap.currentRangeEnd, UInt64(1))
-                return snap.scannedBlocks > 0
-                    ? min(Float(snap.scannedBlocks) / Float(rangeEnd), 1.0)
-                    : Float(0)
-            }()
-            let effectiveProgress = summary?.scanProgress != nil ? composedProgress : fallbackProgress
 
             let newStatus: InternalSyncStatus = {
                 switch snap.state {
-                case 0: return .disconnected
-                case 1: return .syncing(effectiveProgress, spendable)
                 case 2: return .error(ZcashError.rustSlipstreamSyncFailed(snap.chainTip))
                 default: return .disconnected
                 }
@@ -353,11 +345,17 @@ public final class SlipstreamSynchronizer: Synchronizer {
     }
 
     /// Returns the minimum interval (seconds) between summary fetches based on the
-    /// current sync state. While Syncing (state 1), uses the wider 8-second interval
-    /// to avoid stealing CPU from rayon trial-decryption. All other states use 2 seconds.
+    /// current sync state. State 1 (Syncing) never receives a summary fetch (T5.5 —
+    /// summary calls are completely eliminated during active scan to avoid CPU parasitism
+    /// on weak devices; A10 evidence: ~20–35% per-output slowdown). All other states use
+    /// 2 seconds.
     /// Internal for testability (pure function, no side effects).
     static func summaryFetchInterval(forState state: UInt8) -> TimeInterval {
-        state == 1 ? SUMMARY_SYNC_INTERVAL : summaryRefetchIntervalSeconds
+        // Note: state==1 (Syncing) is never passed here — kickSummaryFetchIfNeeded
+        // returns early for state==1 before calling this function. The 8-second
+        // SUMMARY_SYNC_INTERVAL branch from T5.3 is superseded by the T5.5 full
+        // elimination: zero fetches while syncing is strictly better than 8s cadence.
+        return summaryRefetchIntervalSeconds
     }
 
     /// Starts a background summary fetch if no fetch is in-flight and the state-dependent
@@ -367,17 +365,22 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// timeout) the result is stored in `cachedSummary` and `lastSummaryFinishDate`
     /// is updated so the next tick can trigger another fetch after the interval.
     ///
-    /// State-dependent throttling (T5.3): while syncing (state 1), the interval is 8 seconds
-    /// instead of 2 seconds; the 2-second polling ticks bridge from the cached summary to
-    /// prevent summary CPU theft during active scan.
+    /// T5.5: Returns immediately (no-op) when state == 1 (Syncing). Progress and
+    /// spendability are derived from engine counters during sync; getWalletSummary
+    /// is never called while the scan is active (eliminates the "summary-parasite"
+    /// CPU theft observed on iPad A10 — 10–30s shard walks competing with rayon
+    /// trial-decryption on 4 cores caused ~20–35% per-output slowdown).
     ///
     /// Invariant: only ONE summary fetch task is live at a time (`summaryTask != nil`
     /// while running).  This prevents DBActor queue build-up when the DB is slow.
     private func kickSummaryFetchIfNeeded(state: UInt8) {
+        // T5.5: NO summary fetch while actively syncing — see function docs above.
+        guard state != 1 else { return }
+
         // If a fetch is already running, do not start another.
         guard summaryTask == nil else { return }
 
-        // Enforce the state-dependent minimum interval between fetches.
+        // Enforce the minimum interval between fetches.
         let interval = Self.summaryFetchInterval(forState: state)
         if let last = lastSummaryFinishDate {
             let elapsed = Date().timeIntervalSince(last)
@@ -1020,6 +1023,25 @@ public final class SlipstreamSynchronizer: Synchronizer {
 // MARK: - Internal test-visible helpers
 
 extension SlipstreamSynchronizer {
+    /// Counter-based sync progress — derived purely from engine atomics, no DB call.
+    ///
+    /// Formula: `Float(scanned) / Float(max(total, 1))`, clamped to [0.0, 1.0].
+    ///   - `total == 0` (no ranges taken yet) → 0.0 (prevents division by zero).
+    ///   - Result > 1.0 (defensive) → clamped to 1.0.
+    ///
+    /// This is the primary progress source while `state == 1` (Syncing). It eliminates
+    /// the `getWalletSummary` call that caused ~20–35% per-output CPU overhead on iPad A10
+    /// (T5.5 — A10 log evidence: summary-parasite root cause confirmed).
+    ///
+    /// - Parameters:
+    ///   - scanned: `snap.scannedBlocks` from the FFI snapshot.
+    ///   - total:   `snap.passTotalBlocks` from the FFI snapshot.
+    /// - Returns: progress fraction ∈ [0.0, 1.0].
+    static func counterProgress(scanned: UInt64, total: UInt64) -> Float {
+        let denominator = max(total, 1)
+        return min(Float(scanned) / Float(denominator), 1.0)
+    }
+
     /// Pure progress composition — mirrors the old SDK's ScanAction formula verbatim.
     ///
     /// Formula source: `ScanAction.swift` lines ~81-99.

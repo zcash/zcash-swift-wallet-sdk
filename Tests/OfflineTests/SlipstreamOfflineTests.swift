@@ -19,6 +19,9 @@
 //       - withTaskTimeout: exceeds deadline → returns nil (swallowed timeout error).
 //       - switchTo same-endpoint is a no-op (F2): engine not re-opened, state unchanged.
 //       - switchTo different endpoint fires reopen (F2/F3 smoke).
+//    8. T5.5 summary-interval tests (8s-Syncing branch REMOVED; all states return 2s).
+//    9. T5.5 counterProgress pure-helper unit tests (total==0 edge, mid-pass, clamp).
+//   10. T5.5 SlipstreamSnapshot new fields (passTotalBlocks, spendableHint defaults + explicit).
 //
 
 import Combine
@@ -602,20 +605,31 @@ class SlipstreamOfflineTests: ZcashTestCase {
                       "switchTo a different endpoint must attempt a reopen (not silently no-op)")
     }
 
-    // MARK: - 8. T5.3 Summary interval tests (state-dependent throttling)
+    // MARK: - 8. T5.5 Summary interval + no-summary-while-syncing tests
 
-    /// summaryFetchInterval(forState:) returns 8 seconds when state == Syncing (1).
-    func testSummaryIntervalWhileSyncingIs8s() {
-        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 1) // Syncing
-        XCTAssertEqual(interval, 8.0, accuracy: 1e-6,
-                       "Summary interval while Syncing must be 8 seconds (T5.3)")
-    }
+    // T5.5 supersedes T5.3: the 8-second Syncing interval is eliminated because
+    // getWalletSummary is NEVER called while state==1 (Syncing). All reachable states
+    // (0/2/3) use the 2-second interval. The Syncing guard lives in
+    // kickSummaryFetchIfNeeded (returns early for state==1) — summaryFetchInterval
+    // is now only called for non-Syncing states.
 
     /// summaryFetchInterval(forState:) returns 2 seconds when state == Disconnected (0).
+    /// T5.5: the 8s-Syncing branch is gone; all states return 2s from this helper.
     func testSummaryIntervalWhileDisconnectedIs2s() {
         let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 0) // Disconnected
         XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
                        "Summary interval while Disconnected must be 2 seconds")
+    }
+
+    /// summaryFetchInterval(forState:) returns 2 seconds when state == Syncing (1).
+    /// T5.5: Syncing is now guarded by kickSummaryFetchIfNeeded (early return), so
+    /// this function is never called for state==1 in production — but if it were,
+    /// it returns 2s (not 8s), confirming the 8s branch is fully removed.
+    func testSummaryIntervalWhileSyncingIs2sNotEight() {
+        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 1) // Syncing
+        XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
+                       "T5.5: summaryFetchInterval must return 2s for Syncing (8s branch removed; " +
+                       "kickSummaryFetchIfNeeded guards state==1 before this is called)")
     }
 
     /// summaryFetchInterval(forState:) returns 2 seconds when state == Error (2).
@@ -637,5 +651,90 @@ class SlipstreamOfflineTests: ZcashTestCase {
         let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: UInt8(99)) // Unknown
         XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
                        "Summary interval for unknown states must default to 2 seconds")
+    }
+
+    // MARK: - 9. T5.5 counterProgress pure-helper tests
+
+    /// counterProgress(total:0) → 0.0 (avoids division-by-zero when no ranges taken yet).
+    func testCounterProgressTotalZeroReturnsZero() {
+        let result = SlipstreamSynchronizer.counterProgress(scanned: 0, total: 0)
+        XCTAssertEqual(result, 0.0, accuracy: Float.ulpOfOne,
+                       "counterProgress(scanned:0, total:0) must return 0.0 (clamped denominator)")
+    }
+
+    /// counterProgress(scanned:0, total:10000) → 0.0.
+    func testCounterProgressZeroScanned() {
+        let result = SlipstreamSynchronizer.counterProgress(scanned: 0, total: 10_000)
+        XCTAssertEqual(result, 0.0, accuracy: Float.ulpOfOne)
+    }
+
+    /// counterProgress mid-pass: 5000 / 10000 = 0.5.
+    func testCounterProgressMidPass() {
+        let result = SlipstreamSynchronizer.counterProgress(scanned: 5_000, total: 10_000)
+        XCTAssertEqual(result, 0.5, accuracy: 1e-5,
+                       "5000 / 10000 must be 0.5")
+    }
+
+    /// counterProgress complete: scanned == total → 1.0.
+    func testCounterProgressComplete() {
+        let result = SlipstreamSynchronizer.counterProgress(scanned: 10_000, total: 10_000)
+        XCTAssertEqual(result, 1.0, accuracy: Float.ulpOfOne,
+                       "scanned == total must yield 1.0")
+    }
+
+    /// counterProgress overflow: scanned > total → clamped to 1.0.
+    func testCounterProgressClampedAboveOne() {
+        let result = SlipstreamSynchronizer.counterProgress(scanned: 12_000, total: 10_000)
+        XCTAssertEqual(result, 1.0, accuracy: Float.ulpOfOne,
+                       "scanned > total must be clamped to 1.0")
+    }
+
+    /// counterProgress: large values do not overflow Float.
+    func testCounterProgressLargeValues() {
+        let result = SlipstreamSynchronizer.counterProgress(scanned: 286_855, total: 1_000_000)
+        let expected = Float(286_855) / Float(1_000_000)
+        XCTAssertEqual(result, expected, accuracy: 1e-5,
+                       "286855 / 1000000 must equal the expected Float ratio")
+    }
+
+    // MARK: - 10. T5.5 SlipstreamSnapshot new fields
+
+    /// SlipstreamSnapshot memberwise init propagates passTotalBlocks and spendableHint.
+    func testSnapshotNewFieldsDefaultToZero() {
+        let snap = SlipstreamSnapshot(
+            chainTip: 0,
+            fetchedBlocks: 0,
+            scannedBlocks: 0,
+            enhancedTxs: 0,
+            currentRangeEnd: 0,
+            state: 0
+        )
+        XCTAssertEqual(snap.passTotalBlocks, 0,
+                       "passTotalBlocks must default to 0 when omitted")
+        XCTAssertEqual(snap.spendableHint, 0,
+                       "spendableHint must default to 0 when omitted")
+    }
+
+    /// SlipstreamSnapshot with explicit passTotalBlocks and spendableHint.
+    func testSnapshotNewFieldsExplicit() {
+        let snap = SlipstreamSnapshot(
+            chainTip: 663_200,
+            fetchedBlocks: 10_000,
+            scannedBlocks: 7_500,
+            enhancedTxs: 2,
+            currentRangeEnd: 663_200,
+            state: 1,
+            passTotalBlocks: 15_000,
+            spendableHint: 1
+        )
+        XCTAssertEqual(snap.passTotalBlocks, 15_000)
+        XCTAssertEqual(snap.spendableHint, 1)
+        // Verify counterProgress formula using these values.
+        let progress = SlipstreamSynchronizer.counterProgress(
+            scanned: snap.scannedBlocks,
+            total: snap.passTotalBlocks
+        )
+        XCTAssertEqual(progress, 0.5, accuracy: 1e-5,
+                       "7500 / 15000 must equal 0.5")
     }
 }

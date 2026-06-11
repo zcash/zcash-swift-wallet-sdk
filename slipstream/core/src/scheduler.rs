@@ -7,7 +7,7 @@
 use std::{sync::Arc, time::Duration};
 
 use tracing::{info, warn};
-use zcash_client_backend::data_api::WalletWrite;
+use zcash_client_backend::data_api::{WalletWrite, scanning::ScanPriority};
 use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
@@ -96,9 +96,12 @@ pub async fn run_to_completion(
         let end = end_exclusive - 1;
         info!(start, end, priority = ?range.priority(), "processing suggested range");
 
-        // Advertise the current range end to poll-based consumers.
+        // Advertise the current range end to poll-based consumers and accumulate the
+        // block-length of this range into pass_total_blocks so counter-based progress
+        // (scanned_blocks / pass_total_blocks) is valid without getWalletSummary.
         if let Some(ref p) = progress {
             p.set_range_end(end);
+            p.add_pass_total(end - start + 1);
         }
 
         let (tx, rx) = chunk_queue(config.memory_budget_bytes);
@@ -120,7 +123,7 @@ pub async fn run_to_completion(
 
         let scan_started = std::time::Instant::now();
         let scan_result: Result<ScanStats, SlipstreamError> =
-            scan_chunks(session, &mut scan_client, start, rx, progress.clone()).await;
+            scan_chunks(session, &mut scan_client, start, rx, progress.clone(), config.scan_batch_target_ms).await;
         let scan_wall = scan_started.elapsed();
 
         // Error-precedence rationale (deviation from plan's draft `??` which loses nuance):
@@ -218,6 +221,15 @@ pub async fn run_to_completion(
         report.scan.sapling_received += scan_stats.sapling_received;
         report.scan.orchard_received += scan_stats.orchard_received;
         report.scan_elapsed += scan_wall;
+
+        // Spendable latch: if this range was ChainTip priority, funds are now likely
+        // spendable (SBS semantics — the tip-priority range covers the most-recent
+        // blocks where the wallet's own notes appear as spendable).
+        if range.priority() == ScanPriority::ChainTip {
+            if let Some(ref p) = progress {
+                p.set_spendable();
+            }
+        }
     }
 }
 

@@ -34,6 +34,13 @@ pub struct FfiSlipstreamSnapshot {
     pub current_range_end: u64,
     /// Sync state: 0=idle, 1=syncing, 2=error, 3=done.
     pub state: u8,
+    // ── T5.5 counter-based progress fields (appended at END for padding stability) ──
+    /// Total blocks in the current pass (sum of all suggested-range block-lengths taken
+    /// so far). Denominator for counter-based progress: scanned_blocks / pass_total_blocks.
+    pub pass_total_blocks: u64,
+    /// Spendable hint: 0 = not yet spendable; 1 = a ChainTip-priority range has completed
+    /// scanning (≈ SBS funds-spendable semantics). Latches to 1; never resets within a pass.
+    pub spendable_hint: u8,
 }
 
 /// C-compatible event record.
@@ -105,6 +112,8 @@ impl SlipstreamHandle {
             enhanced_txs: p.enhanced(),
             current_range_end: p.range_end(),
             state: state_u8,
+            pass_total_blocks: p.pass_total(),
+            spendable_hint: p.spendable() as u8,
         }
     }
 }
@@ -122,6 +131,44 @@ mod tests {
         assert_eq!(s.enhanced_txs, 0);
         assert_eq!(s.current_range_end, 0);
         assert_eq!(s.state, 0);
+        assert_eq!(s.pass_total_blocks, 0, "pass_total_blocks default must be 0");
+        assert_eq!(s.spendable_hint, 0, "spendable_hint default must be 0");
+    }
+
+    #[test]
+    fn ffi_snapshot_counter_fields_roundtrip() {
+        // Build a fake Progress, set the new counters, and verify they surface in snapshot().
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let progress = std::sync::Arc::new(crate::events::Progress::default());
+        let handle = SlipstreamHandle {
+            runtime,
+            progress: progress.clone(),
+            state: std::sync::Arc::new(Mutex::new(SyncState::Syncing)),
+            events: std::sync::Arc::new(Mutex::new(Vec::new())),
+            task: None,
+            endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
+            wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
+            network: zcash_protocol::consensus::Network::TestNetwork,
+        };
+
+        // Simulate scheduler taking two ranges.
+        progress.add_pass_total(10_000); // first range
+        progress.add_pass_total(5_000);  // second range
+        progress.add_scanned(7_500);
+        progress.set_spendable();
+
+        let snap = handle.snapshot();
+        assert_eq!(snap.pass_total_blocks, 15_000,
+                   "pass_total_blocks must equal sum of add_pass_total calls");
+        assert_eq!(snap.spendable_hint, 1,
+                   "spendable_hint must be 1 after set_spendable()");
+        assert_eq!(snap.scanned_blocks, 7_500,
+                   "scanned_blocks must equal add_scanned total");
+        assert_eq!(snap.state, 1, "state must be 1 (Syncing)");
     }
 
     #[test]

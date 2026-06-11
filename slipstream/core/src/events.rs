@@ -30,6 +30,15 @@ pub struct Progress {
     pub current_range_end: AtomicU64,
     /// Number of reorg recoveries (truncate + re-suggest) performed.
     pub reorgs_recovered: AtomicU64,
+    /// Total blocks in the current pass (sum of block-lengths of all suggested ranges
+    /// taken so far in this pass). Monotonically accumulates alongside `scanned_blocks`
+    /// so `scanned_blocks / pass_total_blocks` is a valid in-pass ratio. The scheduler
+    /// adds `end - start + 1` for each range when it begins processing.
+    pub pass_total_blocks: AtomicU64,
+    /// Spendable hint latch: 0 = funds not yet spendable; 1 = a ChainTip-priority range
+    /// completed scanning (≈ SBS "funds-spendable" semantics). Latches to 1 and never
+    /// resets to 0 within a pass. Read with `spendable()`.
+    pub spendable_hint: AtomicU64,
 }
 
 impl Progress {
@@ -69,6 +78,21 @@ impl Progress {
         self.reorgs_recovered.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Bump `pass_total_blocks` by `n`. Called by the scheduler when it takes a range:
+    /// accumulates `end - start + 1` so `scanned_blocks / pass_total_blocks` is a valid
+    /// in-pass ratio for counter-based progress (no `getWalletSummary` needed).
+    #[inline]
+    pub fn add_pass_total(&self, n: u64) {
+        self.pass_total_blocks.fetch_add(n, Ordering::Relaxed);
+    }
+
+    /// Latch `spendable_hint` to 1. Called by the scheduler after a `ChainTip`-priority
+    /// range completes scanning (≈ SBS funds-spendable semantics). Never resets within a pass.
+    #[inline]
+    pub fn set_spendable(&self) {
+        self.spendable_hint.store(1, Ordering::Relaxed);
+    }
+
     /// Read `chain_tip` (Relaxed load).
     #[inline]
     pub fn chain_tip(&self) -> u64 {
@@ -103,6 +127,18 @@ impl Progress {
     #[inline]
     pub fn reorgs(&self) -> u64 {
         self.reorgs_recovered.load(Ordering::Relaxed)
+    }
+
+    /// Read `pass_total_blocks` (Relaxed load).
+    #[inline]
+    pub fn pass_total(&self) -> u64 {
+        self.pass_total_blocks.load(Ordering::Relaxed)
+    }
+
+    /// Read `spendable_hint` (Relaxed load). Returns 1 when spendable, 0 otherwise.
+    #[inline]
+    pub fn spendable(&self) -> u64 {
+        self.spendable_hint.load(Ordering::Relaxed)
     }
 }
 
@@ -173,6 +209,8 @@ mod tests {
         assert_eq!(p.enhanced(), 0);
         assert_eq!(p.range_end(), 0);
         assert_eq!(p.reorgs(), 0);
+        assert_eq!(p.pass_total(), 0);
+        assert_eq!(p.spendable(), 0);
 
         // Set helpers.
         p.set_chain_tip(3_373_435);
@@ -195,6 +233,45 @@ mod tests {
         p.add_reorg();
         p.add_reorg();
         assert_eq!(p.reorgs(), 2);
+    }
+
+    #[test]
+    fn progress_pass_total_and_spendable_hint() {
+        let p = Progress::default();
+
+        // Initial state: both zero.
+        assert_eq!(p.pass_total(), 0);
+        assert_eq!(p.spendable(), 0);
+
+        // add_pass_total accumulates block-lengths of suggested ranges.
+        p.add_pass_total(10_000); // first range
+        assert_eq!(p.pass_total(), 10_000);
+        p.add_pass_total(5_000); // second range
+        assert_eq!(p.pass_total(), 15_000);
+
+        // spendable latches to 1 and stays there.
+        assert_eq!(p.spendable(), 0, "not yet spendable before set_spendable()");
+        p.set_spendable();
+        assert_eq!(p.spendable(), 1, "spendable must be 1 after set_spendable()");
+        p.set_spendable(); // idempotent
+        assert_eq!(p.spendable(), 1, "set_spendable is idempotent");
+    }
+
+    #[test]
+    fn counter_progress_ratio() {
+        // scanned / max(pass_total, 1) is used in Swift tickPoll.
+        // Mirror the formula here to verify the Rust side provides the right inputs.
+        let p = Progress::default();
+        p.add_pass_total(10_000);
+        p.add_scanned(5_000);
+
+        let ratio = p.scanned() as f64 / p.pass_total().max(1) as f64;
+        assert!((ratio - 0.5).abs() < 1e-9, "5000/10000 must be 0.5");
+
+        // pass_total == 0 edge: denominator is max(0, 1) = 1 → ratio = 0.
+        let p2 = Progress::default();
+        let ratio2 = p2.scanned() as f64 / p2.pass_total().max(1) as f64;
+        assert_eq!(ratio2, 0.0, "0 scanned / 1 (clamped) must be 0.0");
     }
 
     #[test]

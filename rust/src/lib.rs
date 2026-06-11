@@ -4262,6 +4262,13 @@ pub struct FfiSlipstreamSnapshot {
     pub current_range_end: u64,
     /// Sync state: 0 = idle, 1 = syncing, 2 = error, 3 = done.
     pub state: u8,
+    // ── T5.5 counter-based progress fields (appended at END for padding stability) ──
+    /// Total blocks in the current pass (sum of all suggested-range block-lengths taken
+    /// so far). Denominator for counter-based progress: scanned_blocks / pass_total_blocks.
+    pub pass_total_blocks: u64,
+    /// Spendable hint: 0 = not yet spendable; 1 = a ChainTip-priority range has completed
+    /// scanning (≈ SBS funds-spendable semantics). Latches to 1; never resets within a pass.
+    pub spendable_hint: u8,
 }
 
 /// C-compatible Slipstream engine event record. Returned by
@@ -4506,6 +4513,8 @@ pub unsafe extern "C" fn zcashlc_slipstream_snapshot(
             enhanced_txs: s.enhanced_txs,
             current_range_end: s.current_range_end,
             state: s.state,
+            pass_total_blocks: s.pass_total_blocks,
+            spendable_hint: s.spendable_hint,
         })
     });
     unwrap_exc_or(res, FfiSlipstreamSnapshot::default())

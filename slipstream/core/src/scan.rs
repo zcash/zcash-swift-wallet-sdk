@@ -4,11 +4,10 @@
 //! chunk scans (spike T2.3 outcome: ChainState must come from the server;
 //! prefetch makes its latency invisible).
 //!
-//! T5.2 — Adaptive sub-batching: within each chunk, `scan_cached_blocks` may be
-//! called multiple times with a controller-sized window.  The controller grows the
-//! batch towards the full chunk size on fast hardware (fast-path: one call per
-//! chunk, identical to pre-T5.2 behaviour) and shrinks it towards MIN_BATCH on
-//! slow hardware so each commit surfaces progress every ~TARGET_BATCH_MS ms.
+//! T5.2 — Adaptive sub-batching (opt-in as of T5.5): pass
+//! `batch_target_ms = Some(ms)` to split each chunk into time-targeted
+//! sub-batches (~ms each).  Default `None` = one scan call per chunk
+//! (pre-T5.2 behaviour; fastest on all hardware).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -31,9 +30,6 @@ use crate::{
 
 // ── Adaptive controller constants ──────────────────────────────────────────────
 
-/// Target wall-clock milliseconds per scan_cached_blocks call.  The controller
-/// adjusts the batch length to keep actual scan time near this value.
-const TARGET_BATCH_MS: u64 = 3_000;
 
 /// Minimum number of blocks in a single scan_cached_blocks call.  Prevents the
 /// controller from issuing tiny batches under extreme slowness.
@@ -141,6 +137,7 @@ pub async fn scan_chunks(
     range_start: u64,
     mut rx: ChunkQueueReceiver,
     progress: Option<Arc<Progress>>,
+    batch_target_ms: Option<u64>,
 ) -> Result<ScanStats, SlipstreamError> {
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
@@ -149,9 +146,10 @@ pub async fn scan_chunks(
     // State for the FIRST chunk: boundary just below the range.
     let mut next_state = grpc::get_tree_state(client, range_start - 1).await?;
 
-    // Adaptive controller state: batch_len is initialised lazily from the first
-    // chunk's full length and carried across chunks.  Initialising to 0 here is a
-    // sentinel; it is replaced before the first scan_cached_blocks call.
+    // batch_len: for the adaptive path (batch_target_ms = Some), this is carried
+    // across chunks and updated by the controller.  For the None path it is set to
+    // chunk_len before every chunk and never updated — the loop executes exactly once
+    // per chunk (degenerate single-iteration).
     let mut batch_len: u32 = 0;
 
     while let Some((chunk, permit)) = rx.recv().await {
@@ -163,10 +161,13 @@ pub async fn scan_chunks(
 
         let chunk_len = chunk.blocks.len(); // total blocks in this chunk
 
-        // Initialise batch_len from the first chunk's full length (or carry the
-        // controller's last value from the previous chunk).  The "batch_len == 0"
-        // sentinel is set above and only true for the very first chunk.
-        if batch_len == 0 {
+        // Initialise or reset batch_len.
+        // None path: always reset to chunk_len (ensures the loop executes exactly once
+        // per chunk — after one iteration sub_start == chunk_end + 1, remaining == 0,
+        // loop exits without the controller running).
+        // Some path: sentinel (== 0) → init from first chunk's full length; thereafter
+        // carry the controller's last value across chunks.
+        if batch_target_ms.is_none() || batch_len == 0 {
             batch_len = chunk_len.min(u32::MAX as usize) as u32;
         }
 
@@ -265,15 +266,18 @@ pub async fn scan_chunks(
                 .await
                 .map_err(|e| SlipstreamError::Transport(format!("prefetch task: {e}")))??;
 
-            // Controller: compute next batch length from this batch's timing.
-            // `max` is capped to chunk_len so batch_len never exceeds one chunk.
-            batch_len = next_batch_len(
-                current_batch_len as u32,
-                elapsed_ms,
-                TARGET_BATCH_MS,
-                MIN_BATCH,
-                chunk_len.min(u32::MAX as usize) as u32,
-            );
+            // Controller: only consulted when sub-batching is enabled (batch_target_ms = Some).
+            // None path: batch_len stays at chunk_len; the loop exits after this iteration
+            // (remaining will be 0 after sub_start advances to chunk_end + 1).
+            if let Some(target_ms) = batch_target_ms {
+                batch_len = next_batch_len(
+                    current_batch_len as u32,
+                    elapsed_ms,
+                    target_ms,
+                    MIN_BATCH,
+                    chunk_len.min(u32::MAX as usize) as u32,
+                );
+            }
 
             // Advance for the next sub-batch.
             next_state = fetched;
@@ -460,5 +464,45 @@ mod tests {
     fn controller_stable_when_on_target() {
         let result = next_batch_len(5_000, 3_000, 3_000, 1_000, 10_000);
         assert_eq!(result, 5_000);
+    }
+
+    // T5.5 — None-path decision logic: with batch_target_ms=None, batch_len is
+    // always reset to chunk_len before each iteration, so the loop exits after
+    // exactly one sub-batch (remaining == 0 after advancing sub_start by chunk_len).
+    //
+    // This test exercises the two-line decision in scan_chunks:
+    //   if batch_target_ms.is_none() || batch_len == 0 { batch_len = chunk_len }
+    // by checking its arithmetic directly — no network, no WalletSession needed.
+    #[test]
+    fn none_target_means_single_batch_per_chunk() {
+        let chunk_len: u32 = 10_000;
+        let batch_target_ms: Option<u64> = None;
+
+        // Simulate the reset guard: with None, batch_len is always set to chunk_len.
+        let mut batch_len: u32 = 0; // sentinel (as in scan_chunks before first chunk)
+        if batch_target_ms.is_none() || batch_len == 0 {
+            batch_len = chunk_len;
+        }
+        assert_eq!(batch_len, chunk_len, "None: batch_len must equal chunk_len");
+
+        // Simulate loop advancement: sub_start advances by batch_len.
+        // After one iteration, remaining must be 0 → loop exits.
+        let chunk_start: u64 = 1_000_000;
+        let chunk_end: u64 = chunk_start + chunk_len as u64 - 1;
+        let sub_start = chunk_start;
+        let current_batch_len = (batch_len as usize).min((chunk_end + 1).saturating_sub(sub_start) as usize);
+        let sub_end = sub_start + current_batch_len as u64 - 1;
+        let next_sub_start = sub_end + 1;
+        let remaining_after = (chunk_end + 1).saturating_sub(next_sub_start) as usize;
+        assert_eq!(remaining_after, 0, "None: loop must exit after one iteration");
+
+        // Also verify: with Some target, batch_len is NOT reset to chunk_len on
+        // subsequent chunks (carried value persists if > 0).
+        let batch_target_ms_some: Option<u64> = Some(3_000);
+        let mut batch_len_carried: u32 = 5_000; // controller left 5000 from previous chunk
+        if batch_target_ms_some.is_none() || batch_len_carried == 0 {
+            batch_len_carried = chunk_len;
+        }
+        assert_eq!(batch_len_carried, 5_000, "Some: carried batch_len must not be overwritten");
     }
 }
