@@ -73,3 +73,5 @@ Tests/lightwalletd/lightwalletd --no-tls-very-insecure --data-dir /tmp --darksid
 
 - Every performance claim gets a row in STATE.md's truth table (machine, server, range, wall-clock, bound). No vibes.
 - Benchmarks are CLI subcommands (reproducible by any session), not one-off scripts.
+
+**STATE.md edit safety:** scripted/programmatic edits to STATE.md MUST assert their anchors exist before writing and verify the post-edit line count (append-only growth expected; any large deletion = abort and re-read). Recovery precedent: 2026-06-11 truncation, restored from git.

@@ -5,7 +5,17 @@
 
 ## NEXT ACTION
 
-➡️ **M1 remaining**: flag-default revert (`useSlipstreamSynchronizer.enabledByDefault = false`) after sign-off, any further field testing. **Then P5 (T5.0)** — see ROADMAP. T4.9 regression fixes complete (non-blocking progress poll + switchTo no-op on same endpoint).
+➡️ **T5.1** — Instrumentation (per-chunk timing + outputs + stage-split log). Detailed steps: docs/slipstream/plans/2026-06-11-phase-5-perf.md. M1 housekeeping still open: flag-default revert after user sign-off.
+
+## Current phase: P5 — Performance pass (plan: `plans/2026-06-11-phase-5-perf.md`)
+
+| Task | Status | Session notes |
+|---|---|---|
+| T5.0 compact phase plan | done | Scoped by the iPhone log decomposition (scan ≈195s of 208s; decrypt ~3-5% of scan; persistence ~95% → P6 leads with sparse tree). P5 = instruments + adaptive sub-batching + summary throttle ONLY. |
+| T5.1 instrumentation | todo | per-chunk elapsed_ms + outputs; engine stage-split info! |
+| T5.2 adaptive scan sub-batching | todo | time-targeted commits; intra-chunk treestate prefetch generalization; fast-path unchanged |
+| T5.3 summary throttle | todo | 8s cadence while Syncing |
+| T5.4 field re-run + records | todo | needs-user (full rebuild first — prior build predates T4.6) |
 
 ## Phase P4 — iOS Docking (plan: `plans/2026-06-11-phase-4-ios-docking.md`)
 
@@ -204,3 +214,5 @@ M1 first real-wallet recovery (user run, env user-side): 36321 blocks / 24 MB fe
 - 2026-06-11 — DEVICE MATRIX COMPLETED (user): iPhone 16 Pro — Zingo 2:41 (161s, 1.29× faster than us), Zkool 1:13 (73s, 2.85× faster than us) vs our 3:28 (208s). CONTROLLER'S PRIOR HYPOTHESIS FALSIFIED: we do NOT win on modern hardware; Zkool's lead GROWS with fast silicon (1.81×→2.85×). Implication: the scan core (upstream scan_cached_blocks + per-chunk serial commit + SQLite shardtree) is our ceiling on ALL hardware, not just old devices — fetch is a solved problem (~10s of the 208s by G1-era rates), so ~190s is scan-side. Zkool@73s ≈ near the design-doc floor → kernel-class scanning is achievable on-device. P6 GOAL LINE (recorded): beat 73s on iPhone 16 Pro and 533s on iPad 6th Gen for this 286,855-block wallet. SEQUENCE CONFIRMED: T5.0 instrumentation FIRST (decompose the 208s: decrypt vs put_blocks commit vs treestate vs enhance — engine logs already carry per-range elapsed; FFI snapshot to surface stage split on-device), then P6 kernel v2 + sparse tree + parallel chunk decrypt with ordered serial commit.
 - 2026-06-11 — ROADMAP AMENDMENT (user decision): P7 Android DECOUPLED from the prototype. Rationale: zcash-android-sdk already exists with its own Rust-FFI backend (backend-lib) mirroring the iOS SDK's architecture — shipping a uniffi blackbox module would not be adopted. Strategy: iOS = reference implementation, delivered to the highest bar; Android later ports by reference (slipstream-core is platform-neutral by construction and can slot into their backend the way it slotted into libzcashlc). M2 deferred; no prototype gate depends on Android.
 - 2026-06-11 — iPhone 16 Pro LOG DECOMPOSITION (user log, 269,070 blocks, ~208s wall): fetch 8s TOTAL (5s+3s, overlapped→hidden); setup ~2-4s; enhancement ~1-2s; **scan ≈195s = 28 chunks ≈ 7s per 10k chunk**. Density: 168MB/269k ≈ 625B/blk ≈ ~3.5 outputs/blk → ~35k outputs/chunk. Trial-decryption floor on A18 ≈ 0.15-0.3s/chunk → **decryption is ~3-5% of scan; ~95% is the upstream scanner's persistence path** (shardtree-through-SQLite insertion of ~900k commitments, 10k blocks-table rows/chunk, nullifier upserts, decode, key prep, commit). Zkool cross-check: 73s total ≈ 55-60s scan ≈ 4,700 blk/s vs our 1,380 — consistent with frontier+owned-notes-only tree math (design doc §3.3). **P6 FORK SETTLED: sparse tree/persistence replacement LEADS; decrypt kernel is secondary (~5-10s of 195).** T5.0 first deliverable: per-chunk elapsed in the scan tracing line + engine-end stage-split log (current chunk lines carry no timing — the 7s/chunk is derived). NOTE: user's device build predates T4.6 (skip-warns repeat across rounds; skipped=30 not 10) — full rebuild needed to field-test T4.6-T4.9 fixes.
+- 2026-06-11 — T5.0 done: compact Phase 5 plan written (plans/2026-06-11-phase-5-perf.md); P6 reordering recorded (sparse tree leads, kernel secondary).
+- 2026-06-11 — INCIDENT + RECOVERY: a controller scripted edit with an unverified anchor truncated STATE.md to 21 lines (committed in 6381a0e8); fully recovered from git (b02d4451) and surgically re-edited. LESSON → CONVENTIONS: scripted edits to STATE.md must assert anchors AND verify post-edit line-count delta ≈ intended (zero-deletion spirit applies to the machinery itself).
