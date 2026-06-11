@@ -185,7 +185,7 @@ async fn direct_pipeline_scan(
         ..Default::default()
     };
 
-    let scan_stats = scan_chunks_from_treestate(session, scan_start, initial_scan_state, rx)
+    let scan_stats = scan_chunks_from_treestate(session, scan_start, initial_scan_state, rx, false)
         .await
         .expect("scan_chunks_from_treestate");
 
@@ -352,6 +352,7 @@ async fn reorg_recovery_produces_correct_tip() {
         FIRST_APPLY_HEIGHT as u64 + 1,
         from_state_663200,
         fetch_rx,
+        false,
     )
     .await;
 

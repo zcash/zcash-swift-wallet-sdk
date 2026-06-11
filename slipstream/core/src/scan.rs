@@ -391,13 +391,20 @@ pub async fn scan_chunks(
 /// scanned.  Splitting into sub-batches would require a real server treestate at
 /// each intra-chunk boundary, which is unavailable in darkside/test contexts.
 /// Sub-batching is therefore applied only in the production [`scan_chunks`] path.
+///
+/// `sparse` — when `true`, use the `SparseFacade` / in-memory shardtree path
+/// (exactly as `scan_chunks` does); one `SparseTreeState` is created for the
+/// whole call, matching the one-per-range contract. Added at T6.4 so the
+/// darkside oracle test can exercise the same sparse code-path as production.
 #[cfg(any(test, feature = "darkside"))]
 pub async fn scan_chunks_from_treestate(
     session: &mut WalletSession,
     range_start: u64,
     initial_state: TreeState,
     mut rx: ChunkQueueReceiver,
+    sparse: bool,
 ) -> Result<ScanStats, SlipstreamError> {
+    let mut sparse_state = crate::persist::SparseTreeState::default();
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
     }
@@ -429,24 +436,39 @@ pub async fn scan_chunks_from_treestate(
         let network = session.network;
         let len = chunk.blocks.len();
 
-        let scan_start = Instant::now();
+        let scan_start_t = Instant::now();
         let summary = {
             let source = MemBlockSource::new(&chunk);
             let from_height = u32::try_from(chunk_start)
                 .map_err(|_| SlipstreamError::Wallet(format!("height {chunk_start} exceeds u32")))?;
             tokio::task::block_in_place(|| {
-                scan_cached_blocks(
-                    &network,
-                    &source,
-                    session.db_mut(),
-                    BlockHeight::from(from_height),
-                    &from_state,
-                    len,
-                )
+                if sparse {
+                    let mut facade = crate::persist::SparseFacade {
+                        inner: session.db_mut(),
+                        sparse: &mut sparse_state,
+                    };
+                    scan_cached_blocks(
+                        &network,
+                        &source,
+                        &mut facade,
+                        BlockHeight::from(from_height),
+                        &from_state,
+                        len,
+                    )
+                } else {
+                    scan_cached_blocks(
+                        &network,
+                        &source,
+                        session.db_mut(),
+                        BlockHeight::from(from_height),
+                        &from_state,
+                        len,
+                    )
+                }
             })
             .map_err(map_scan_error)?
         };
-        let elapsed_ms = scan_start.elapsed().as_millis() as u64;
+        let elapsed_ms = scan_start_t.elapsed().as_millis() as u64;
 
         let scanned = u64::from(u32::from(summary.scanned_range().end))
             - u64::from(u32::from(summary.scanned_range().start));

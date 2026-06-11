@@ -355,7 +355,7 @@ async fn sync_finds_fixture_transactions() {
 
     let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
 
-    let scan_stats = scan_chunks_from_treestate(&mut session, scan_range_start, initial_scan_state, rx)
+    let scan_stats = scan_chunks_from_treestate(&mut session, scan_range_start, initial_scan_state, rx, false)
         .await
         .expect("scan_chunks_from_treestate");
 
@@ -558,7 +558,7 @@ async fn sync_enhancement_stores_raw_fields() {
 
     let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
 
-    let _scan_stats = scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx)
+    let _scan_stats = scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, false)
         .await
         .expect("scan_chunks_from_treestate");
 
