@@ -70,6 +70,10 @@ elif [[ "$USE_CACHED" == "true" ]]; then
     fi
     echo "Checksum verified."
 
+    # Remove any existing framework first: extracting/copying onto an existing
+    # directory leaves stale files (or, for cp -R, nests the new framework inside
+    # the old one), so installs must always start from a clean target.
+    rm -rf "$XCFRAMEWORK_DIR"
     unzip -o LocalPackages/libzcashlc.xcframework.zip -d LocalPackages/
     rm LocalPackages/libzcashlc.xcframework.zip
     echo ""
@@ -81,6 +85,10 @@ else
     make xcframework
     cd ..
     mkdir -p LocalPackages
+    # cp -R into an EXISTING directory copies the source INSIDE it (nested
+    # libzcashlc.xcframework/libzcashlc.xcframework with stale slices at the top
+    # level — device builds silently run old code). Always replace, never merge.
+    rm -rf "$XCFRAMEWORK_DIR"
     cp -R BuildSupport/products/libzcashlc.xcframework "$XCFRAMEWORK_DIR"
 fi
 
