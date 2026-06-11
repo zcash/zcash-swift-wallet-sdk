@@ -50,6 +50,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
     // ── Public read-only state ─────────────────────────────────────────────────
     public var latestState: SynchronizerState { stateSubject.value }
+    // TODO: [#1755] never updated (engine has no connection-state callback yet; P5).
     public var connectionState: ConnectionState = .idle
     public var stateStream: AnyPublisher<SynchronizerState, Never> { stateSubject.eraseToAnyPublisher() }
     public var eventStream: AnyPublisher<SynchronizerEvent, Never> { eventSubject.eraseToAnyPublisher() }
@@ -180,6 +181,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
         // Map snapshot state integer to InternalSyncStatus.
         let progress = snap.chainTip > 0
+            // TODO: [#1755] genesis-relative ratio — shows near-zero for recent-birthday wallets;
+            // P5 adds birthday_height to the FFI snapshot for honest relative progress.
             ? Float(snap.scannedBlocks) / Float(snap.chainTip)
             : Float(0)
 
