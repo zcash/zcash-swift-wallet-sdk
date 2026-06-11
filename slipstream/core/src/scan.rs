@@ -156,6 +156,7 @@ pub async fn scan_chunks(
     config: &EngineConfig,
     skipped_keys: &mut HashSet<String>,
 ) -> Result<ScanStats, SlipstreamError> {
+    let mut sparse_state = crate::persist::SparseTreeState::default();
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
     }
@@ -245,14 +246,29 @@ pub async fn scan_chunks(
             let batch_start_time = Instant::now();
             let scan_result = tokio::task::block_in_place(|| {
                 let source = MemBlockSource::new(&chunk);
-                scan_cached_blocks(
-                    &network,
-                    &source,
-                    session.db_mut(),
-                    BlockHeight::from(from_height),
-                    &from_state,
-                    current_batch_len,
-                )
+                if config.sparse_persistence {
+                    let mut facade = crate::persist::SparseFacade {
+                        inner: session.db_mut(),
+                        sparse: &mut sparse_state,
+                    };
+                    scan_cached_blocks(
+                        &network,
+                        &source,
+                        &mut facade,
+                        BlockHeight::from(from_height),
+                        &from_state,
+                        current_batch_len,
+                    )
+                } else {
+                    scan_cached_blocks(
+                        &network,
+                        &source,
+                        session.db_mut(),
+                        BlockHeight::from(from_height),
+                        &from_state,
+                        current_batch_len,
+                    )
+                }
             });
             let elapsed_ms = batch_start_time.elapsed().as_millis() as u64;
 

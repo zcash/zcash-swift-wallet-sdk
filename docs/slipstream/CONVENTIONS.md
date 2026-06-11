@@ -69,7 +69,7 @@ Tests/lightwalletd/lightwalletd --no-tls-very-insecure --data-dir /tmp --darksid
 
 - Crates: `slipstream-core`, `slipstream-cli` (dirs `slipstream/core`, `slipstream/cli`).
 - FFI: `zcashlc_slipstream_*`. Swift: `SlipstreamSynchronizer`, `SlipstreamEngine` (FFI wrapper).
-- Modules in core: `grpc`, `chunk`, `fetch`, `verify`, `block_source`, `wallet_session`, `scan`, `scheduler`, `enhance`, `transparent`, `events`, `engine`.
+- Modules in core: `grpc`, `chunk`, `fetch`, `verify`, `block_source`, `wallet_session`, `scan`, `scheduler`, `enhance`, `transparent`, `events`, `engine`, `oracle`, `persist`.
 
 ## Measurement discipline
 

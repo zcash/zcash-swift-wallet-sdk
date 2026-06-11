@@ -4387,9 +4387,11 @@ dependencies = [
  "orchard",
  "prost",
  "rand 0.8.6",
+ "rayon",
  "rusqlite",
  "sapling-crypto",
  "secrecy",
+ "shardtree",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4403,6 +4405,7 @@ dependencies = [
  "zcash_protocol",
  "zcash_script",
  "zcash_transparent",
+ "zip32",
 ]
 
 [[package]]

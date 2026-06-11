@@ -146,3 +146,6 @@ transparent = { package = "zcash_transparent", version = "0.8", default-features
 zcash_script = "0.4"
 tempfile = "3"          # dev-only usage; listed here for version unity
 incrementalmerkletree = { version = "0.8", default-features = false }
+shardtree = "0.6"
+rayon = "1.7"
+zip32 = "0.2"

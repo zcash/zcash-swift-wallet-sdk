@@ -19,7 +19,7 @@ use zcash_protocol::consensus::{BlockHeight, Network};
 use crate::{error::SlipstreamError, grpc::SubtreeRoots};
 
 // Mirror rust/src/lib.rs:132 — same generics, same clock/rng.
-type Db = WalletDb<Connection, Network, zcash_client_sqlite::util::SystemClock, rand::rngs::OsRng>;
+pub(crate) type Db = WalletDb<Connection, Network, zcash_client_sqlite::util::SystemClock, rand::rngs::OsRng>;
 
 pub struct WalletSession {
     pub network: Network,

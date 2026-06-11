@@ -50,6 +50,11 @@ pub struct EngineConfig {
     /// only at range boundaries (T6.1). Must be >= 1; the per-range and final
     /// post-loop enhancement runs are unaffected backstops.
     pub enhance_every_chunks: u32,
+    /// Persist scan results via the sparse in-memory commitment-tree path
+    /// (P6, flag-gated): upstream scan kernel unchanged; put_blocks tree work
+    /// runs against an in-memory ShardTree flushed once per chunk. Default
+    /// false until the golden oracle (T6.2/T6.4) is clean.
+    pub sparse_persistence: bool,
 }
 
 impl EngineConfig {
@@ -69,6 +74,7 @@ impl EngineConfig {
             memory_budget_bytes: Self::DEFAULT_MEMORY_BUDGET,
             scan_batch_target_ms: None,
             enhance_every_chunks: Self::DEFAULT_ENHANCE_EVERY_CHUNKS,
+            sparse_persistence: false,
         }
     }
 
@@ -118,6 +124,7 @@ mod tests {
         let c = config();
         assert!(c.validate().is_ok());
         assert_eq!(c.enhance_every_chunks, 3);
+        assert!(!c.sparse_persistence);
     }
 
     #[test]

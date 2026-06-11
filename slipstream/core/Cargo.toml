@@ -24,6 +24,9 @@ rand = { workspace = true }
 sapling = { workspace = true }
 orchard = { workspace = true }
 incrementalmerkletree = { workspace = true }
+shardtree = { workspace = true }
+rayon = { workspace = true }
+zip32 = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }

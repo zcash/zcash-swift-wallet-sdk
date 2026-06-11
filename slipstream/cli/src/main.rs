@@ -52,6 +52,9 @@ enum Cmd {
         /// Blocks per chunk.
         #[arg(long, default_value_t = 10_000)]
         chunk: u32,
+        /// Use sparse in-memory commitment-tree persistence (P6, default off).
+        #[arg(long, default_value_t = false)]
+        sparse: bool,
     },
     /// Golden-oracle run: sync the same UFVK/birthday twice into two wallet dirs
     /// (A = upstream persistence, B = upstream until T6.3 lands --sparse-b),
@@ -193,6 +196,7 @@ fn cmd_sync(
     birthday: Option<u64>,
     streams: usize,
     chunk: u32,
+    sparse: bool,
 ) {
     let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
 
@@ -210,6 +214,7 @@ fn cmd_sync(
     );
     cfg.fetch_streams = streams;
     cfg.chunk_blocks = chunk;
+    cfg.sparse_persistence = sparse;
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
@@ -319,7 +324,7 @@ fn cmd_oracle(
         );
         cfg.fetch_streams = streams;
         cfg.chunk_blocks = chunk;
-        let _ = sparse; // T6.3 sets cfg.sparse_persistence = sparse;
+        cfg.sparse_persistence = sparse;
         cfg
     };
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -366,8 +371,8 @@ fn main() {
         Cmd::Fetch { server, range, streams, chunk, baseline } => {
             cmd_fetch(server, range, streams, chunk, baseline);
         }
-        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk } => {
-            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk);
+        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse } => {
+            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse);
         }
         Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, streams, chunk } => {
             cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, streams, chunk);
@@ -441,6 +446,32 @@ mod tests {
         ])
         .expect("parses");
         assert!(matches!(cli.cmd, Cmd::Sync { .. }));
+    }
+
+    #[test]
+    fn sync_parses_sparse_flag() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+            "--sparse",
+        ])
+        .expect("parses");
+        assert!(matches!(cli.cmd, Cmd::Sync { sparse: true, .. }));
+        // default should be false
+        let cli2 = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+        ])
+        .expect("parses default");
+        assert!(matches!(cli2.cmd, Cmd::Sync { sparse: false, .. }));
     }
 
     #[test]

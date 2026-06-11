@@ -13,6 +13,7 @@ pub mod ffi_handle;
 pub mod fetch;
 pub mod grpc;
 pub mod oracle;
+pub mod persist;
 pub mod scan;
 pub mod scheduler;
 pub mod transparent;
