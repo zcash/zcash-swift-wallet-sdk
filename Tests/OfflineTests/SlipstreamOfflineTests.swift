@@ -13,6 +13,7 @@
 //       - zcashlc_slipstream_open with invalid path → throws rustSlipstreamOpen.
 //       - start before open → throws rustSlipstreamNotOpen.
 //    5. shouldEmitFound pure-helper unit tests.
+//    6. composeProgress pure-helper unit tests (wallet-summary-driven progress, T4.8).
 //
 
 import Combine
@@ -418,5 +419,78 @@ class SlipstreamOfflineTests: ZcashTestCase {
     func testShouldEmitFoundFallbackSyncDoneButNoStoredTxs() {
         XCTAssertFalse(shouldEmitFound(lastCount: 0, newCount: 0, hasSyncDone: true, storedPositive: false))
         XCTAssertFalse(shouldEmitFound(lastCount: 3, newCount: 3, hasSyncDone: true, storedPositive: false))
+    }
+
+    // MARK: - 6. composeProgress pure-helper unit tests (T4.8)
+    //
+    // Oracle: ScanAction.swift lines ~81-99.
+    //   composedNumerator   = scan.numerator   + (recovery?.numerator   ?? 0)
+    //   composedDenominator = scan.denominator + (recovery?.denominator ?? 0)
+    //   denominator == 0    → 1.0
+    //   raw > 1.0           → clamp to 1.0
+    //   spendable           = scan.isComplete
+
+    /// nil scanProgress (fresh db, summary unavailable) → (0.0, false).
+    func testComposeProgressNilScanProgress() {
+        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
+            scanProgress: nil,
+            recoveryProgress: nil
+        )
+        XCTAssertEqual(progress, 0.0, accuracy: Float.ulpOfOne)
+        XCTAssertFalse(spendable)
+    }
+
+    /// denominator == 0 → progress == 1.0, spendable follows isComplete.
+    func testComposeProgressDenominatorZero() {
+        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
+            scanProgress: (numerator: 0, denominator: 0, isComplete: false),
+            recoveryProgress: nil
+        )
+        XCTAssertEqual(progress, 1.0, accuracy: Float.ulpOfOne,
+                       "denominator == 0 must yield progress 1.0")
+        XCTAssertFalse(spendable)
+    }
+
+    /// Typical mid-sync ratio with no recovery range.
+    func testComposeProgressScanOnlyMidway() {
+        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
+            scanProgress: (numerator: 50_000, denominator: 100_000, isComplete: false),
+            recoveryProgress: nil
+        )
+        XCTAssertEqual(progress, 0.5, accuracy: 1e-5)
+        XCTAssertFalse(spendable)
+    }
+
+    /// Scan+recovery ranges compose correctly: (40+10) / (100+20) = 50/120 ≈ 0.4167.
+    func testComposeProgressScanPlusRecovery() {
+        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
+            scanProgress: (numerator: 40, denominator: 100, isComplete: false),
+            recoveryProgress: (numerator: 10, denominator: 20)
+        )
+        let expected: Float = 50.0 / 120.0
+        XCTAssertEqual(progress, expected, accuracy: 1e-5,
+                       "composed scan+recovery ratio must be (40+10)/(100+20)")
+        XCTAssertFalse(spendable)
+    }
+
+    /// If the composed ratio somehow exceeds 1.0, it is clamped to 1.0.
+    func testComposeProgressClampAboveOne() {
+        // Force numerator > denominator (numerator=120, denominator=100 → raw=1.2).
+        let (progress, _) = SlipstreamSynchronizer.composeProgress(
+            scanProgress: (numerator: 120, denominator: 100, isComplete: false),
+            recoveryProgress: nil
+        )
+        XCTAssertEqual(progress, 1.0, accuracy: Float.ulpOfOne,
+                       "progress > 1.0 must be clamped to 1.0")
+    }
+
+    /// Fully scanned: numerator == denominator, isComplete == true → (1.0, true).
+    func testComposeProgressSpendablePassthrough() {
+        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
+            scanProgress: (numerator: 100, denominator: 100, isComplete: true),
+            recoveryProgress: nil
+        )
+        XCTAssertEqual(progress, 1.0, accuracy: 1e-5)
+        XCTAssertTrue(spendable, "spendable must be true when scan.isComplete is true")
     }
 }

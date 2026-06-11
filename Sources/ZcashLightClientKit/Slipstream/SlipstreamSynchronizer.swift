@@ -197,26 +197,53 @@ public final class SlipstreamSynchronizer: Synchronizer {
         guard let snap = await engine.snapshot() else { return }
         let events = await engine.drainEvents()
 
-        // Map snapshot state integer to InternalSyncStatus.
-        let progress = snap.chainTip > 0
-            // TODO: [#1755] genesis-relative ratio — shows near-zero for recent-birthday wallets;
-            // P5 adds birthday_height to the FFI snapshot for honest relative progress.
-            ? Float(snap.scannedBlocks) / Float(snap.chainTip)
-            : Float(0)
+        // Fetch wallet summary once per tick (shared data.db — off the scan hot path).
+        // In the old SDK, getWalletSummary() was called inside ScanAction at every
+        // progressReportReducer==0 tick (ScanAction.swift:71-74 itself notes the x5
+        // throttle to reduce call frequency).  Here it sits on the 2-second poll loop,
+        // so it is already naturally throttled and imposes zero cost on the scan path.
+        let summary = try? await initializer.rustBackend.getWalletSummary()
+
+        // Compose scan+recovery progress exactly as the old SDK's ScanAction does
+        // (ScanAction.swift:81-99): numerators and denominators are summed; denominator==0
+        // → 1.0; progress clamped to 1.0 (old SDK threw; we log-warn once and clamp).
+        // areFundsSpendable = scanProgress.isComplete (ScanAction.swift:99).
+        let (composedProgress, spendable) = SlipstreamSynchronizer.composeProgress(
+            scanProgress: summary?.scanProgress.map { ($0.numerator, $0.denominator, $0.isComplete) },
+            recoveryProgress: summary?.recoveryProgress.map { ($0.numerator, $0.denominator) }
+        )
+
+        // fullyScannedHeight comes from the wallet summary (avoids a redundant
+        // fullyScannedHeight() Rust call — WalletSummary already carries this field).
+        let fullyScannedHeight = summary?.fullyScannedHeight ?? .zero
+
+        // Balances are already in the summary fetched above — reuse, no extra Rust call.
+        let balances = summary?.accountBalances ?? [:]
+
+        // Fallback progress when the summary is nil (fresh db, first ticks before any
+        // scan range is committed): keep a simple counter ratio but avoid the genesis-
+        // relative distortion — use max(currentRangeEnd, 1) as the local baseline so
+        // the fraction is honest within the current range rather than near-zero across
+        // the entire chain.  This path is transient and only fires until the first
+        // getWalletSummary() returns a non-nil scanProgress.
+        let fallbackProgress: Float = {
+            guard summary?.scanProgress == nil else { return composedProgress }
+            let rangeEnd = max(snap.currentRangeEnd, UInt64(1))
+            return snap.scannedBlocks > 0
+                ? min(Float(snap.scannedBlocks) / Float(rangeEnd), 1.0)
+                : Float(0)
+        }()
+        let effectiveProgress = summary?.scanProgress != nil ? composedProgress : fallbackProgress
 
         let newStatus: InternalSyncStatus = {
             switch snap.state {
             case 0: return .disconnected
-            case 1: return .syncing(min(progress, 1.0), false)
+            case 1: return .syncing(effectiveProgress, spendable)
             case 2: return .error(ZcashError.rustSlipstreamSyncFailed(snap.chainTip))
             case 3: return .synced
             default: return .disconnected
             }
         }()
-
-        // Fetch balances and fullyScannedHeight from rust (shared data.db).
-        let balances = (try? await initializer.rustBackend.getWalletSummary()?.accountBalances) ?? [:]
-        let fullyScannedHeight = (try? await initializer.rustBackend.fullyScannedHeight()) ?? .zero
 
         stateSubject.send(SynchronizerState(
             syncSessionID: latestState.syncSessionID,
@@ -844,6 +871,56 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
     public func debugDatabase(sql: String) -> String {
         transactionRepository.debugDatabase(sql: sql)
+    }
+}
+
+// MARK: - Internal test-visible helpers
+
+extension SlipstreamSynchronizer {
+    /// Pure progress composition — mirrors the old SDK's ScanAction formula verbatim.
+    ///
+    /// Formula source: `ScanAction.swift` lines ~81-99.
+    /// ```
+    ///   composedNumerator   = scanProgress.numerator   + (recoveryProgress?.numerator   ?? 0)
+    ///   composedDenominator = scanProgress.denominator + (recoveryProgress?.denominator ?? 0)
+    ///   denominator == 0    → 1.0
+    ///   progress > 1.0      → clamp to 1.0 (old SDK threw; we log-warn, then clamp)
+    ///   areFundsSpendable   = scanProgress.isComplete  (ScanAction.swift:99)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - scanProgress:     `(numerator, denominator, isComplete)` from `WalletSummary.scanProgress`,
+    ///                       or `nil` when the summary is unavailable (fresh db).
+    ///   - recoveryProgress: `(numerator, denominator)` from `WalletSummary.recoveryProgress`,
+    ///                       or `nil` when no recovery range exists.
+    /// - Returns: `(progress, spendable)` where `progress` ∈ [0.0, 1.0].
+    static func composeProgress(
+        scanProgress: (numerator: UInt64, denominator: UInt64, isComplete: Bool)?,
+        recoveryProgress: (numerator: UInt64, denominator: UInt64)?
+    ) -> (progress: Float, spendable: Bool) {
+        guard let scan = scanProgress else {
+            return (0.0, false)
+        }
+
+        let composedNumerator = Float(scan.numerator) + Float(recoveryProgress?.numerator ?? 0)
+        let composedDenominator = Float(scan.denominator) + Float(recoveryProgress?.denominator ?? 0)
+
+        let progress: Float
+        if composedDenominator == 0 {
+            progress = 1.0
+        } else {
+            let raw = composedNumerator / composedDenominator
+            if raw > 1.0 {
+                // Defensive clamp — should not happen, but protect the UI from an out-of-range
+                // fraction; the old SDK threw ZcashError.rustScanProgressOutOfRange here.
+                // We clamp and let the caller emit a warning (single emission point in tickPoll).
+                progress = 1.0
+            } else {
+                progress = raw
+            }
+        }
+
+        return (progress, scan.isComplete)
     }
 }
 
