@@ -162,6 +162,7 @@ pub async fn sync_once(
 
     // Log the stage split: total time + per-stage breakdown + bound.
     // F3: enhance_s is now the SUM of all per-range runs + the final post-loop run.
+    // T6.6: sparse field added so log clearly shows which persistence path ran.
     info!(
         total_s = outcome.elapsed.as_secs_f64(),
         fetch_s = outcome.report.fetch_elapsed.as_secs_f64(),
@@ -169,6 +170,7 @@ pub async fn sync_once(
         enhance_s = outcome.enhance_elapsed.as_secs_f64(),
         blocks = outcome.report.scan.blocks,
         bound = outcome.bound(),
+        sparse = config.sparse_persistence,
         "sync stage split"
     );
 

@@ -51,9 +51,12 @@ pub struct EngineConfig {
     /// post-loop enhancement runs are unaffected backstops.
     pub enhance_every_chunks: u32,
     /// Persist scan results via the sparse in-memory commitment-tree path
-    /// (P6, flag-gated): upstream scan kernel unchanged; put_blocks tree work
-    /// runs against an in-memory ShardTree flushed once per chunk. Default
-    /// false until the golden oracle (T6.2/T6.4) is clean.
+    /// (P6): upstream scan kernel unchanged; put_blocks tree work runs against
+    /// an in-memory ShardTree flushed once per chunk. Default **true** as of
+    /// T6.6 — oracle-clean per T6.4/T6.5 (hermetic + darkside + mainnet
+    /// oracles IDENTICAL; reorg + truncate compatibility verified). Kill switch
+    /// retained: set `sparse_persistence = false` to revert to the upstream
+    /// path if a regression is found.
     pub sparse_persistence: bool,
 }
 
@@ -74,7 +77,7 @@ impl EngineConfig {
             memory_budget_bytes: Self::DEFAULT_MEMORY_BUDGET,
             scan_batch_target_ms: None,
             enhance_every_chunks: Self::DEFAULT_ENHANCE_EVERY_CHUNKS,
-            sparse_persistence: false,
+            sparse_persistence: true,
         }
     }
 
@@ -124,7 +127,8 @@ mod tests {
         let c = config();
         assert!(c.validate().is_ok());
         assert_eq!(c.enhance_every_chunks, 3);
-        assert!(!c.sparse_persistence);
+        // T6.6: sparse persistence defaults ON (oracle-clean, kill switch retained).
+        assert!(c.sparse_persistence);
     }
 
     #[test]

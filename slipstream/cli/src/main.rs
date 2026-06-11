@@ -52,8 +52,9 @@ enum Cmd {
         /// Blocks per chunk.
         #[arg(long, default_value_t = 10_000)]
         chunk: u32,
-        /// Use sparse in-memory commitment-tree persistence (P6, default off).
-        #[arg(long, default_value_t = false)]
+        /// Use sparse in-memory commitment-tree persistence (P6, default on).
+        /// Pass `--sparse false` to disable (kill switch — reverts to upstream path).
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         sparse: bool,
     },
     /// Golden-oracle run: sync the same UFVK/birthday twice into two wallet dirs
@@ -450,19 +451,8 @@ mod tests {
 
     #[test]
     fn sync_parses_sparse_flag() {
+        // T6.6: default is now true; bare --sparse with ArgAction::Set still sets true.
         let cli = Cli::try_parse_from([
-            "slipstream",
-            "sync",
-            "--server",
-            "http://127.0.0.1:9067",
-            "--wallet-dir",
-            "/tmp/test-wallet",
-            "--sparse",
-        ])
-        .expect("parses");
-        assert!(matches!(cli.cmd, Cmd::Sync { sparse: true, .. }));
-        // default should be false
-        let cli2 = Cli::try_parse_from([
             "slipstream",
             "sync",
             "--server",
@@ -471,7 +461,27 @@ mod tests {
             "/tmp/test-wallet",
         ])
         .expect("parses default");
-        assert!(matches!(cli2.cmd, Cmd::Sync { sparse: false, .. }));
+        assert!(matches!(cli.cmd, Cmd::Sync { sparse: true, .. }), "default must be true");
+    }
+
+    #[test]
+    fn sync_sparse_false_is_overridable() {
+        // T6.6: kill switch — `--sparse false` must produce sparse=false.
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+            "--sparse",
+            "false",
+        ])
+        .expect("parses --sparse false");
+        assert!(
+            matches!(cli.cmd, Cmd::Sync { sparse: false, .. }),
+            "--sparse false must override the default"
+        );
     }
 
     #[test]
