@@ -540,23 +540,24 @@ public final class SlipstreamSynchronizer: Synchronizer {
         return subject.eraseToAnyPublisher()
     }
 
-    /// Wipe is not yet supported in `SlipstreamSynchronizer` (T4.3).
-    /// It requires coordinating file deletion and re-initialisation with the engine handle,
-    /// which is deferred to a follow-up task.
+    /// Wipe is not supported in `SlipstreamSynchronizer`.
+    /// It requires coordinating engine handle teardown + database file deletion + state reset,
+    /// which is not yet implemented.
     ///
     /// TODO: [#1755] Implement wipe — coordinate engine.stop() + file deletion + state reset.
     public func wipe() -> AnyPublisher<Void, Error> {
-        Fail(error: ZcashError.synchronizerNotPrepared).eraseToAnyPublisher()
+        Fail(error: ZcashError.rustSlipstreamUnsupported).eraseToAnyPublisher()
     }
 
     // ── Server switch ─────────────────────────────────────────────────────────
 
-    /// Endpoint switching is not yet supported in `SlipstreamSynchronizer` (T4.3).
-    /// The engine handle is bound to a fixed endpoint at `open` time.
+    /// Endpoint switching is not supported in `SlipstreamSynchronizer`.
+    /// The engine handle is bound to a fixed endpoint at `open` time; switching requires
+    /// re-opening the handle, which is not yet implemented.
     ///
     /// TODO: [#1755] Implement switchTo — re-open the engine handle with the new endpoint.
     public func switchTo(endpoint: LightWalletEndpoint) async throws {
-        throw ZcashError.synchronizerServerSwitch
+        throw ZcashError.rustSlipstreamUnsupported
     }
 
     // ── Seed check ────────────────────────────────────────────────────────────

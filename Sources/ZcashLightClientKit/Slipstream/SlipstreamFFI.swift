@@ -36,6 +36,23 @@ public struct SlipstreamSnapshot {
         currentRangeEnd = cSnapshot.current_range_end
         state = cSnapshot.state
     }
+
+    /// Memberwise initializer for tests (avoids a direct dependency on `FfiSlipstreamSnapshot` / libzcashlc in test targets).
+    init(
+        chainTip: UInt64,
+        fetchedBlocks: UInt64,
+        scannedBlocks: UInt64,
+        enhancedTxs: UInt64,
+        currentRangeEnd: UInt64,
+        state: UInt8
+    ) {
+        self.chainTip = chainTip
+        self.fetchedBlocks = fetchedBlocks
+        self.scannedBlocks = scannedBlocks
+        self.enhancedTxs = enhancedTxs
+        self.currentRangeEnd = currentRangeEnd
+        self.state = state
+    }
 }
 
 /// Swift-friendly wrapper around `FfiSlipstreamEvent`.

@@ -267,6 +267,8 @@ public enum ZcashErrorCode: String {
     case rustSlipstreamStart = "ZRUST0095"
     /// Slipstream sync pass failed during a polling tick.
     case rustSlipstreamSyncFailed = "ZRUST0096"
+    /// Operation is not supported by `SlipstreamSynchronizer` (wipe / switchTo).
+    case rustSlipstreamUnsupported = "ZRUST0097"
     /// SQLite query failed when fetching all accounts from the database.
     case accountDAOGetAll = "ZADAO0001"
     /// Fetched accounts from SQLite but can't decode them.

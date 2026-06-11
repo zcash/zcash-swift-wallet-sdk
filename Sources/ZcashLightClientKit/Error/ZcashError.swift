@@ -500,6 +500,10 @@ public enum ZcashError: Equatable, Error {
     /// - `chainTip` is the chain tip height at the time of the error (0 if unavailable).
     /// ZRUST0096
     case rustSlipstreamSyncFailed(_ chainTip: UInt64)
+    /// Operation is not supported by `SlipstreamSynchronizer` (wipe / switchTo).
+    /// These operations require engine-level coordination not yet implemented.
+    /// ZRUST0097
+    case rustSlipstreamUnsupported
     /// SQLite query failed when fetching all accounts from the database.
     /// - `sqliteError` is error produced by SQLite library.
     /// ZADAO0001
@@ -916,6 +920,7 @@ public enum ZcashError: Equatable, Error {
         case .rustSlipstreamNotOpen: return "Slipstream engine handle is nil (open was not called or failed)."
         case .rustSlipstreamStart: return "Failed to start a Slipstream sync pass via zcashlc_slipstream_start."
         case .rustSlipstreamSyncFailed: return "Slipstream sync pass failed during a polling tick."
+        case .rustSlipstreamUnsupported: return "Operation is not supported by SlipstreamSynchronizer (wipe / switchTo)."
         case .accountDAOGetAll: return "SQLite query failed when fetching all accounts from the database."
         case .accountDAOGetAllCantDecode: return "Fetched accounts from SQLite but can't decode them."
         case .accountDAOFindBy: return "SQLite query failed when seaching for accounts in the database."
@@ -1141,6 +1146,7 @@ public enum ZcashError: Equatable, Error {
         case .rustSlipstreamNotOpen: return .rustSlipstreamNotOpen
         case .rustSlipstreamStart: return .rustSlipstreamStart
         case .rustSlipstreamSyncFailed: return .rustSlipstreamSyncFailed
+        case .rustSlipstreamUnsupported: return .rustSlipstreamUnsupported
         case .accountDAOGetAll: return .accountDAOGetAll
         case .accountDAOGetAllCantDecode: return .accountDAOGetAllCantDecode
         case .accountDAOFindBy: return .accountDAOFindBy

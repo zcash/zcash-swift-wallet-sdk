@@ -525,6 +525,10 @@ enum ZcashErrorDefinition {
     /// - `chainTip` is the chain tip height at the time of the error (0 if unavailable).
     // sourcery: code="ZRUST0096"
     case rustSlipstreamSyncFailed(_ chainTip: UInt64)
+    /// Operation is not supported by `SlipstreamSynchronizer` (wipe / switchTo).
+    /// These operations require engine-level coordination not yet implemented.
+    // sourcery: code="ZRUST0097"
+    case rustSlipstreamUnsupported
 
     // MARK: - Account DAO
     
