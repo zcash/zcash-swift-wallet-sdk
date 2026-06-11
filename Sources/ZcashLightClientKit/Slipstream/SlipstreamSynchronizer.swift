@@ -13,12 +13,12 @@
 //    - Event stream  → `PassthroughSubject<SynchronizerEvent, Never>` emits `foundTransactions`
 //                      from the polling tick when the engine reports SyncDone with txs
 //
-//  Delegation notes (T4.3):
+//  Delegation notes (T4.3 / T4.6):
 //    Sync-side:      prepare / start / stop / stateStream / eventStream / rescanFrom /
 //                    rewind / wipe / switchTo / latestHeight (9 members on engine + light service)
 //    Delegated:      ~40 data-model members delegated to transactionRepository / rustBackend /
 //                    transactionEncoder / broadcaster / checkpointSource / torClient
-//    Honest-unsupported (throw or log): wipe, switchTo
+//    Honest-unsupported (throw or log): switchTo only (T4.6 ships real wipe)
 //
 
 import Combine
@@ -547,13 +547,68 @@ public final class SlipstreamSynchronizer: Synchronizer {
         return subject.eraseToAnyPublisher()
     }
 
-    /// Wipe is not supported in `SlipstreamSynchronizer`.
-    /// It requires coordinating engine handle teardown + database file deletion + state reset,
-    /// which is not yet implemented.
+    /// Wipes all wallet data managed by this synchronizer.
     ///
-    /// TODO: [#1755] Implement wipe — coordinate engine.stop() + file deletion + state reset.
+    /// Mirrors `SDKSynchronizer.wipe()` + `CompactBlockProcessor.doWipe()`:
+    /// 1. Stop the poll loop.
+    /// 2. `engine.stop()` — cancel any in-flight sync task.
+    /// 3. `engine.close()` — free the Rust handle so no Rust-side state survives file deletion.
+    /// 4. Delete `data.db` + its WAL (`-wal`) and shared-memory (`-shm`) siblings.
+    /// 5. Delete the `fsBlockDbRoot` directory (parity with old SDK's `storage.clear()` +
+    ///    FS-cache directory removal; Slipstream does not use it but the app may have created it).
+    /// 6. Reset the state subject to `.zero` (status `.unprepared`).
+    /// 7. Complete the returned publisher — or fail it if any file-removal throws.
+    ///
+    /// The publisher uses a `PassthroughSubject` driven from a `Task(priority: .high)`,
+    /// mirroring the `SDKSynchronizer.wipe()` idiom.
     public func wipe() -> AnyPublisher<Void, Error> {
-        Fail(error: ZcashError.rustSlipstreamUnsupported).eraseToAnyPublisher()
+        let subject = PassthroughSubject<Void, Error>()
+        Task(priority: .high) { [weak self] in
+            guard let self else {
+                subject.send(completion: .finished)
+                return
+            }
+
+            // 1. Stop polling.
+            stopPolling()
+
+            // 2. Stop the in-flight sync (non-blocking cancel in Rust).
+            await engine.stop()
+
+            // 3. Free the engine handle (exact-once — close() guards against double-free).
+            await engine.close()
+
+            do {
+                let fm = FileManager.default
+
+                // 4. Remove data.db and its SQLite WAL/SHM siblings.
+                // E.g. /path/data.db  → /path/data.db-wal, /path/data.db-shm.
+                let dataDb = initializer.dataDbURL
+                for suffix in ["", "-wal", "-shm"] {
+                    let targetURL = suffix.isEmpty
+                        ? dataDb
+                        : URL(fileURLWithPath: dataDb.path + suffix)
+                    if fm.fileExists(atPath: targetURL.path) {
+                        try fm.removeItem(at: targetURL)
+                    }
+                }
+
+                // 5. Remove the fsBlockDbRoot directory tree (parity with old SDK wipe).
+                let fsRoot = initializer.fsBlockDbRoot
+                if fm.fileExists(atPath: fsRoot.path) {
+                    try fm.removeItem(at: fsRoot)
+                }
+
+                // 6. Reset state to unprepared/zero.
+                stateSubject.send(.zero)
+
+                // 7. Signal completion.
+                subject.send(completion: .finished)
+            } catch {
+                subject.send(completion: .failure(error))
+            }
+        }
+        return subject.eraseToAnyPublisher()
     }
 
     // ── Server switch ─────────────────────────────────────────────────────────

@@ -114,6 +114,19 @@ public actor SlipstreamEngine {
         _ = zcashlc_slipstream_stop(handlePtr)
     }
 
+    /// Frees the engine handle exactly once and nils the pointer.
+    ///
+    /// Called by `wipe()` so the Rust-side tokio runtime and all associated state are
+    /// released before the on-disk database files are deleted.  `deinit` checks for a
+    /// nil handle to avoid a double-free.
+    ///
+    /// - Note: idempotent — safe to call even if the engine was never opened.
+    public func close() {
+        guard let handlePtr = handle else { return }
+        zcashlc_slipstream_free(handlePtr)
+        handle = nil
+    }
+
     // ── Poll surface (D8) ──────────────────────────────────────────────────────
 
     /// Returns a snapshot of current progress counters (non-blocking).

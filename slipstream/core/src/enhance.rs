@@ -15,6 +15,7 @@
 //! - `Enhancement(txid)` — fetch + `decrypt_and_store_transaction`; on not-found → TxidNotRecognized
 //! - `TransactionsInvolvingAddress` — see `apply_address_request`; several skip-guards per Swift oracle
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
@@ -45,7 +46,11 @@ pub struct EnhanceStats {
     pub txs_stored: u64,
     /// Status records set via `set_transaction_status`.
     pub statuses_set: u64,
-    /// Requests skipped due to unsupported filters (open-ended range, requestAt, unspent-only).
+    /// Count of **unique** `TransactionsInvolvingAddress` requests skipped due to unsupported
+    /// filters (open-ended range, `requestAt`, unspent-only).  Within a single
+    /// `run_enhancement` call, duplicate skip keys (address + range) are counted only once;
+    /// subsequent rounds that re-issue the same already-skipped request are silently dropped
+    /// and do not increment this counter.
     pub skipped: u64,
 }
 
@@ -77,6 +82,12 @@ pub async fn run_enhancement(
     progress: Option<Arc<Progress>>,
 ) -> Result<EnhanceStats, SlipstreamError> {
     let mut stats = EnhanceStats::default();
+
+    // Per-run dedupe set for `TransactionsInvolvingAddress` skip keys.
+    // Key = "address:range_start-range_end" (or "address:open" for open-ended ranges).
+    // Unique skips are counted once in `stats.skipped`; subsequent identical skips
+    // in later rounds are silently dropped (one `debug!` per duplicate, not `warn!`).
+    let mut skipped_address_keys: HashSet<String> = HashSet::new();
 
     for round in 0..3_u32 {
         let requests = session
@@ -147,7 +158,7 @@ pub async fn run_enhancement(
 
         // ── Phase 2: serial address-window requests ────────────────────────────
         for tia in address_reqs {
-            apply_address_request(session, client, &network, tia, &mut stats, progress.as_deref())
+            apply_address_request(session, client, &network, tia, &mut stats, &mut skipped_address_keys, progress.as_deref())
                 .await?;
         }
     }
@@ -243,40 +254,82 @@ fn apply_txid_fetch(
 ///    `tx_status_filter` (Mined-only / Mempool-only skip per Swift lines 160-163).
 /// 5. On success: call `notify_address_checked` with `block_range_end - 1` so the wallet
 ///    advances its check watermark.
+///
+/// `skipped_keys` — the per-run dedupe set shared across all rounds.  When a skip guard
+/// fires, the skip key (`address:range_start-range_end` or `address:open`) is inserted.
+/// If the key is already present (same request re-issued in a later round), the duplicate
+/// is silently counted without re-emitting a `warn!` or incrementing `stats.skipped`.
 async fn apply_address_request(
     session: &mut WalletSession,
     client: &mut LwdClient,
     network: &Network,
     tia: TransactionsInvolvingAddress,
     stats: &mut EnhanceStats,
+    skipped_keys: &mut HashSet<String>,
     progress: Option<&Progress>,
 ) -> Result<(), SlipstreamError> {
     // Guard 1: open-ended range (lightwalletd does not support it).
     let block_range_end = match tia.block_range_end() {
         Some(h) => h,
         None => {
-            warn!(
-                address = %tia.address().encode(network),
-                "TransactionsInvolvingAddress missing blockRangeEnd — skipping (open-ended range unsupported)"
-            );
-            stats.skipped += 1;
+            let key = format!("{}:open", tia.address().encode(network));
+            if skipped_keys.insert(key) {
+                // First time this address+open-range combo is skipped: warn once.
+                warn!(
+                    address = %tia.address().encode(network),
+                    "TransactionsInvolvingAddress missing blockRangeEnd — skipping (open-ended range unsupported)"
+                );
+                stats.skipped += 1;
+            } else {
+                // Duplicate skip in a later round: silent debug only.
+                debug!(
+                    address = %tia.address().encode(network),
+                    "TransactionsInvolvingAddress open-range skip (duplicate, already counted)"
+                );
+            }
             return Ok(());
         }
     };
 
     // Guard 2: requestAt set (privacy-decorrelated scheduling not implemented).
     if tia.request_at().is_some() {
-        warn!(
-            address = %tia.address().encode(network),
-            "TransactionsInvolvingAddress has requestAt set — skipping (unsupported)"
+        let key = format!(
+            "{}:{}-{}:request_at",
+            tia.address().encode(network),
+            u64::from(tia.block_range_start()),
+            u64::from(block_range_end)
         );
-        stats.skipped += 1;
+        if skipped_keys.insert(key) {
+            warn!(
+                address = %tia.address().encode(network),
+                "TransactionsInvolvingAddress has requestAt set — skipping (unsupported)"
+            );
+            stats.skipped += 1;
+        } else {
+            debug!(
+                address = %tia.address().encode(network),
+                "TransactionsInvolvingAddress requestAt skip (duplicate, already counted)"
+            );
+        }
         return Ok(());
     }
 
     // Guard 3: unspent-only output filter (not implemented).
     if tia.output_status_filter() == &OutputStatusFilter::Unspent {
-        stats.skipped += 1;
+        let key = format!(
+            "{}:{}-{}:unspent",
+            tia.address().encode(network),
+            u64::from(tia.block_range_start()),
+            u64::from(block_range_end)
+        );
+        if skipped_keys.insert(key) {
+            stats.skipped += 1;
+        } else {
+            debug!(
+                address = %tia.address().encode(network),
+                "TransactionsInvolvingAddress unspent-filter skip (duplicate, already counted)"
+            );
+        }
         return Ok(());
     }
 
@@ -356,5 +409,44 @@ mod tests {
         assert_eq!(s.txs_stored, 0);
         assert_eq!(s.statuses_set, 0);
         assert_eq!(s.skipped, 0);
+    }
+
+    /// The dedupe-key logic used inside `apply_address_request` must count the SAME
+    /// (address, range) skip key only once across multiple rounds.  This test validates
+    /// the `HashSet::insert` contract: the first insert returns `true` (new key →
+    /// increment skipped), subsequent inserts return `false` (duplicate → silent).
+    #[test]
+    fn skip_dedupe_counts_unique_keys_only() {
+        let mut skipped_keys: HashSet<String> = HashSet::new();
+        let mut skipped_count: u64 = 0;
+
+        // Simulate the same open-range address being re-skipped across 3 rounds.
+        let addr = "t1abc123";
+        let key = format!("{addr}:open");
+
+        for _ in 0..3 {
+            if skipped_keys.insert(key.clone()) {
+                skipped_count += 1;
+            }
+        }
+        // Must be counted exactly once regardless of how many rounds re-emit it.
+        assert_eq!(skipped_count, 1, "duplicate open-range skip must count as 1 unique skip");
+        assert_eq!(skipped_keys.len(), 1);
+
+        // A different address produces a distinct key → additional unique skip.
+        let key2 = "t1xyz456:open".to_string();
+        if skipped_keys.insert(key2) {
+            skipped_count += 1;
+        }
+        assert_eq!(skipped_count, 2, "distinct address must count as a separate skip");
+
+        // Range-keyed skip (requestAt guard): same address+range across 2 rounds.
+        let key3 = format!("{addr}:663150-663200:request_at");
+        for _ in 0..2 {
+            if skipped_keys.insert(key3.clone()) {
+                skipped_count += 1;
+            }
+        }
+        assert_eq!(skipped_count, 3, "requestAt skip must be counted once per unique address+range");
     }
 }

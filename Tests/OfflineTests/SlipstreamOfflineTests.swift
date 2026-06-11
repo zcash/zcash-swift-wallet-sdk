@@ -7,7 +7,8 @@
 //  Tests:
 //    1. Progress mapping: chainTip == 0 → syncStatus .syncing(0.0) without crash.
 //    2. Dealloc-without-stop: create + release SlipstreamSynchronizer without stop() → no crash.
-//    3. wipe() and switchTo() fail with rustSlipstreamUnsupported, not fake-success.
+//    3. wipe() removes database files + resets state; switchTo() fails with
+//       rustSlipstreamUnsupported (still unsupported).
 //    4. Engine FFI smoke (Offline-safe):
 //       - zcashlc_slipstream_open with invalid path → throws rustSlipstreamOpen.
 //       - start before open → throws rustSlipstreamNotOpen.
@@ -182,12 +183,15 @@ class SlipstreamOfflineTests: ZcashTestCase {
         // Reaching here without a crash/exception == pass.
     }
 
-    // MARK: - 3. wipe() and switchTo() fail with rustSlipstreamUnsupported
+    // MARK: - 3. wipe() removes database files + resets state; switchTo() still unsupported
 
-    func testWipeFailsWithSlipstreamUnsupported() async throws {
+    /// wipe() on a synchronizer that was never started (engine not opened) must still
+    /// complete successfully: no files to delete → publisher completes (no error) and
+    /// state is reset to `.zero`.
+    func testWipeSucceedsWhenEngineNeverStarted() async throws {
         let sync = SlipstreamSynchronizer(initializer: try makeInitializer())
 
-        let wipeExpectation = XCTestExpectation(description: "wipe completes with error")
+        let wipeExpectation = XCTestExpectation(description: "wipe completes on never-started engine")
         var receivedError: Error?
 
         sync.wipe()
@@ -198,19 +202,91 @@ class SlipstreamOfflineTests: ZcashTestCase {
                     }
                     wipeExpectation.fulfill()
                 },
-                receiveValue: { _ in
-                    XCTFail("wipe() must not succeed in SlipstreamSynchronizer")
-                }
+                receiveValue: { _ in }
             )
             .store(in: &cancellables)
 
-        await fulfillment(of: [wipeExpectation], timeout: 2)
-        guard let error = receivedError as? ZcashError else {
-            XCTFail("Expected ZcashError, got \(String(describing: receivedError))")
-            return
-        }
-        XCTAssertEqual(error.code, .rustSlipstreamUnsupported,
-                       "wipe() must throw rustSlipstreamUnsupported, got \(error.code)")
+        await fulfillment(of: [wipeExpectation], timeout: 5)
+        XCTAssertNil(receivedError,
+                     "wipe() must complete without error when engine was never opened, got \(String(describing: receivedError))")
+
+        // State must be reset to .zero (unprepared).
+        XCTAssertEqual(sync.latestState.syncSessionID, SynchronizerState.zero.syncSessionID,
+                       "state must be reset to .zero after wipe")
+    }
+
+    /// wipe() removes data.db + WAL/SHM siblings and the fsBlockDbRoot directory,
+    /// then completes the publisher and resets state.
+    func testWipeRemovesDatabaseFiles() async throws {
+        let databases = TemporaryDbBuilder.build()
+        let initializer = Initializer(
+            cacheDbURL: nil,
+            fsBlockDbRoot: databases.fsCacheDbRoot,
+            generalStorageURL: databases.generalStorageURL,
+            dataDbURL: databases.dataDB,
+            torDirURL: databases.torDir,
+            endpoint: LightWalletEndpointBuilder.default,
+            network: DarksideWalletDNetwork(),
+            spendParamsURL: try __spendParamsURL(),
+            outputParamsURL: try __outputParamsURL(),
+            saplingParamsSourceURL: SaplingParamsSourceURL.tests,
+            isTorEnabled: false,
+            isExchangeRateEnabled: false
+        )
+
+        // Create the files/dirs that wipe() should remove.
+        let fm = FileManager.default
+        let dataDb = initializer.dataDbURL
+        let walURL = URL(fileURLWithPath: dataDb.path + "-wal")
+        let shmURL = URL(fileURLWithPath: dataDb.path + "-shm")
+        let fsRoot = initializer.fsBlockDbRoot
+
+        // Write dummy data to data.db and siblings.
+        try "dummy".data(using: .utf8)!.write(to: dataDb)
+        try "dummy".data(using: .utf8)!.write(to: walURL)
+        try "dummy".data(using: .utf8)!.write(to: shmURL)
+
+        // Create the fsBlockDbRoot directory.
+        try fm.createDirectory(at: fsRoot, withIntermediateDirectories: true)
+
+        // Pre-condition: files exist.
+        XCTAssertTrue(fm.fileExists(atPath: dataDb.path), "data.db must exist before wipe")
+        XCTAssertTrue(fm.fileExists(atPath: walURL.path), "data.db-wal must exist before wipe")
+        XCTAssertTrue(fm.fileExists(atPath: shmURL.path), "data.db-shm must exist before wipe")
+        XCTAssertTrue(fm.fileExists(atPath: fsRoot.path), "fsBlockDbRoot must exist before wipe")
+
+        let sync = SlipstreamSynchronizer(initializer: initializer)
+
+        let wipeExpectation = XCTestExpectation(description: "wipe completes")
+        var receivedError: Error?
+
+        sync.wipe()
+            .sink(
+                receiveCompletion: { completion in
+                    if case let .failure(error) = completion {
+                        receivedError = error
+                    }
+                    wipeExpectation.fulfill()
+                },
+                receiveValue: { _ in }
+            )
+            .store(in: &cancellables)
+
+        await fulfillment(of: [wipeExpectation], timeout: 5)
+
+        // Must complete without error.
+        XCTAssertNil(receivedError,
+                     "wipe() must not error when files exist, got \(String(describing: receivedError))")
+
+        // All files/dirs must be gone.
+        XCTAssertFalse(fm.fileExists(atPath: dataDb.path), "data.db must be removed after wipe")
+        XCTAssertFalse(fm.fileExists(atPath: walURL.path), "data.db-wal must be removed after wipe")
+        XCTAssertFalse(fm.fileExists(atPath: shmURL.path), "data.db-shm must be removed after wipe")
+        XCTAssertFalse(fm.fileExists(atPath: fsRoot.path), "fsBlockDbRoot must be removed after wipe")
+
+        // State must be reset.
+        XCTAssertEqual(sync.latestState.syncSessionID, SynchronizerState.zero.syncSessionID,
+                       "state must be reset to .zero after wipe")
     }
 
     func testSwitchToFailsWithSlipstreamUnsupported() async throws {
