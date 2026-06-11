@@ -77,6 +77,29 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // engine handle is closed (close() / wipe()).
     private var lastEnhancedCount: UInt64 = 0
 
+    // ── Cached wallet-summary state (F1 — non-blocking progress) ──────────────
+    // `getWalletSummary` can take tens of seconds mid-scan (complex shard-tree +
+    // balance SQL queries) and is `@DBActor`-isolated, serialising all other DB
+    // calls on the same global executor.  To prevent this from blocking the 2-second
+    // poll tick — which must emit a state update EVERY tick — we maintain a cached
+    // copy of the last completed summary and fetch updates in a background Task.
+    //
+    // Invariants:
+    //   - Only ONE summary fetch is in flight at a time (`summaryTask != nil`).
+    //   - A new fetch starts only when the previous one is done AND ≥2 s have elapsed
+    //     since it completed (`lastSummaryFinishDate`).
+    //   - The fetch is wrapped in a 3-second hard timeout; on expiry the cached value
+    //     is left unchanged and the next tick will retry.
+    //   - When state == 3 (Done), any in-flight task is cancelled and the tick emits
+    //     `.synced` immediately without waiting.
+    private var cachedSummary: WalletSummary?
+    private var summaryTask: Task<Void, Never>?
+    private var lastSummaryFinishDate: Date?
+    // Minimum interval (seconds) between summary fetches (independent of 2s poll cadence).
+    private static let summaryRefetchIntervalSeconds: TimeInterval = 2.0
+    // Hard timeout (nanoseconds) for a single getWalletSummary call: 3 seconds.
+    private static let summaryTimeoutNanoseconds: UInt64 = 3_000_000_000
+
     // ── Init ───────────────────────────────────────────────────────────────────
 
     /// Creates a `SlipstreamSynchronizer` instance.
@@ -191,67 +214,99 @@ public final class SlipstreamSynchronizer: Synchronizer {
     private func stopPolling() {
         pollTask?.cancel()
         pollTask = nil
+        // Cancel any in-flight summary fetch (F1): no point updating the cache when
+        // the poll loop is stopped; the task would complete after stop and write to
+        // stale state.  The cached value itself is preserved for the next start().
+        summaryTask?.cancel()
+        summaryTask = nil
     }
 
     private func tickPoll() async {
         guard let snap = await engine.snapshot() else { return }
         let events = await engine.drainEvents()
 
-        // Fetch wallet summary once per tick (shared data.db — off the scan hot path).
-        // In the old SDK, getWalletSummary() was called inside ScanAction at every
-        // progressReportReducer==0 tick (ScanAction.swift:71-74 itself notes the x5
-        // throttle to reduce call frequency).  Here it sits on the 2-second poll loop,
-        // so it is already naturally throttled and imposes zero cost on the scan path.
-        let summary = try? await initializer.rustBackend.getWalletSummary()
+        // ── F1: Emit state immediately from cheap snapshot + cached summary ──────
+        //
+        // getWalletSummary() can take 10–30 s mid-scan (complex shard-tree + balance
+        // SQL queries, all serialised on @DBActor).  Awaiting it here would block this
+        // tick — and every subsequent tick — causing the UI to show long pauses with
+        // no progress updates.
+        //
+        // Fix: use the CACHED summary from the last completed background fetch.
+        // A background Task is kicked off to refresh the cache (one at a time, ≥2 s
+        // apart, with a 3-second hard timeout) WITHOUT blocking this tick.
+        //
+        // Special-case: state == 3 (Done) → emit .synced IMMEDIATELY and cancel any
+        // in-flight summary task; we do not need updated balances to report completion.
 
-        // Compose scan+recovery progress exactly as the old SDK's ScanAction does
-        // (ScanAction.swift:81-99): numerators and denominators are summed; denominator==0
-        // → 1.0; progress clamped to 1.0 (old SDK threw; we log-warn once and clamp).
-        // areFundsSpendable = scanProgress.isComplete (ScanAction.swift:99).
-        let (composedProgress, spendable) = SlipstreamSynchronizer.composeProgress(
-            scanProgress: summary?.scanProgress.map { ($0.numerator, $0.denominator, $0.isComplete) },
-            recoveryProgress: summary?.recoveryProgress.map { ($0.numerator, $0.denominator) }
-        )
+        // Cancel in-flight summary fetch and emit .synced right away on Done.
+        if snap.state == 3 {
+            summaryTask?.cancel()
+            summaryTask = nil
+            stateSubject.send(SynchronizerState(
+                syncSessionID: latestState.syncSessionID,
+                accountsBalances: cachedSummary?.accountBalances ?? latestState.accountsBalances,
+                internalSyncStatus: .synced,
+                latestBlockHeight: BlockHeight(snap.chainTip),
+                fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight
+            ))
+            // Fall through to foundTransactions emission below (still needed on Done).
+        } else {
+            // Kick off a background summary refresh when the previous one has finished
+            // and enough time has elapsed (prevents overlapping calls and queue build-up).
+            kickSummaryFetchIfNeeded()
 
-        // fullyScannedHeight comes from the wallet summary (avoids a redundant
-        // fullyScannedHeight() Rust call — WalletSummary already carries this field).
-        let fullyScannedHeight = summary?.fullyScannedHeight ?? .zero
+            // Build progress from the cached summary (may be nil on the very first ticks).
+            let summary = cachedSummary
 
-        // Balances are already in the summary fetched above — reuse, no extra Rust call.
-        let balances = summary?.accountBalances ?? [:]
+            // Compose scan+recovery progress exactly as the old SDK's ScanAction does
+            // (ScanAction.swift:81-99): numerators and denominators are summed; denominator==0
+            // → 1.0; progress clamped to 1.0 (old SDK threw; we log-warn once and clamp).
+            // areFundsSpendable = scanProgress.isComplete (ScanAction.swift:99).
+            let (composedProgress, spendable) = SlipstreamSynchronizer.composeProgress(
+                scanProgress: summary?.scanProgress.map { ($0.numerator, $0.denominator, $0.isComplete) },
+                recoveryProgress: summary?.recoveryProgress.map { ($0.numerator, $0.denominator) }
+            )
 
-        // Fallback progress when the summary is nil (fresh db, first ticks before any
-        // scan range is committed): keep a simple counter ratio but avoid the genesis-
-        // relative distortion — use max(currentRangeEnd, 1) as the local baseline so
-        // the fraction is honest within the current range rather than near-zero across
-        // the entire chain.  This path is transient and only fires until the first
-        // getWalletSummary() returns a non-nil scanProgress.
-        let fallbackProgress: Float = {
-            guard summary?.scanProgress == nil else { return composedProgress }
-            let rangeEnd = max(snap.currentRangeEnd, UInt64(1))
-            return snap.scannedBlocks > 0
-                ? min(Float(snap.scannedBlocks) / Float(rangeEnd), 1.0)
-                : Float(0)
-        }()
-        let effectiveProgress = summary?.scanProgress != nil ? composedProgress : fallbackProgress
+            // fullyScannedHeight comes from the wallet summary (avoids a redundant
+            // fullyScannedHeight() Rust call — WalletSummary already carries this field).
+            let fullyScannedHeight = summary?.fullyScannedHeight ?? latestState.fullyScannedHeight
 
-        let newStatus: InternalSyncStatus = {
-            switch snap.state {
-            case 0: return .disconnected
-            case 1: return .syncing(effectiveProgress, spendable)
-            case 2: return .error(ZcashError.rustSlipstreamSyncFailed(snap.chainTip))
-            case 3: return .synced
-            default: return .disconnected
-            }
-        }()
+            // Balances are already in the summary fetched above — reuse, no extra Rust call.
+            let balances = summary?.accountBalances ?? latestState.accountsBalances
 
-        stateSubject.send(SynchronizerState(
-            syncSessionID: latestState.syncSessionID,
-            accountsBalances: balances,
-            internalSyncStatus: newStatus,
-            latestBlockHeight: BlockHeight(snap.chainTip),
-            fullyScannedHeight: fullyScannedHeight
-        ))
+            // Fallback progress when the summary is nil (fresh db, first ticks before any
+            // scan range is committed): keep a simple counter ratio but avoid the genesis-
+            // relative distortion — use max(currentRangeEnd, 1) as the local baseline so
+            // the fraction is honest within the current range rather than near-zero across
+            // the entire chain.  This path is transient and only fires until the first
+            // getWalletSummary() returns a non-nil scanProgress.
+            let fallbackProgress: Float = {
+                guard summary?.scanProgress == nil else { return composedProgress }
+                let rangeEnd = max(snap.currentRangeEnd, UInt64(1))
+                return snap.scannedBlocks > 0
+                    ? min(Float(snap.scannedBlocks) / Float(rangeEnd), 1.0)
+                    : Float(0)
+            }()
+            let effectiveProgress = summary?.scanProgress != nil ? composedProgress : fallbackProgress
+
+            let newStatus: InternalSyncStatus = {
+                switch snap.state {
+                case 0: return .disconnected
+                case 1: return .syncing(effectiveProgress, spendable)
+                case 2: return .error(ZcashError.rustSlipstreamSyncFailed(snap.chainTip))
+                default: return .disconnected
+                }
+            }()
+
+            stateSubject.send(SynchronizerState(
+                syncSessionID: latestState.syncSessionID,
+                accountsBalances: balances,
+                internalSyncStatus: newStatus,
+                latestBlockHeight: BlockHeight(snap.chainTip),
+                fullyScannedHeight: fullyScannedHeight
+            ))
+        }
 
         // ── Resilient foundTransactions emission ──────────────────────────────
         // Primary path: emit whenever the engine's enhanced_txs counter advances
@@ -285,6 +340,39 @@ public final class SlipstreamSynchronizer: Synchronizer {
             if !txs.isEmpty {
                 eventSubject.send(.foundTransactions(txs, nil))
             }
+        }
+    }
+
+    /// Starts a background summary fetch if no fetch is in-flight and the minimum
+    /// refetch interval has elapsed since the last one completed.
+    ///
+    /// The fetch is wrapped in a hard 3-second timeout.  On completion (success or
+    /// timeout) the result is stored in `cachedSummary` and `lastSummaryFinishDate`
+    /// is updated so the next tick can trigger another fetch after the interval.
+    ///
+    /// Invariant: only ONE summary fetch task is live at a time (`summaryTask != nil`
+    /// while running).  This prevents DBActor queue build-up when the DB is slow.
+    private func kickSummaryFetchIfNeeded() {
+        // If a fetch is already running, do not start another.
+        guard summaryTask == nil else { return }
+
+        // Enforce the minimum interval between fetches.
+        if let last = lastSummaryFinishDate {
+            let elapsed = Date().timeIntervalSince(last)
+            guard elapsed >= Self.summaryRefetchIntervalSeconds else { return }
+        }
+
+        let rustBackend = initializer.rustBackend
+        summaryTask = Task { [weak self] in
+            // Race the summary call against the hard timeout.
+            let result = try? await withTaskTimeout(Self.summaryTimeoutNanoseconds) {
+                try await rustBackend.getWalletSummary()
+            }
+            // Only update state if the task was not cancelled (e.g. by Done or wipe).
+            guard !Task.isCancelled else { return }
+            self?.cachedSummary = result ?? self?.cachedSummary
+            self?.lastSummaryFinishDate = Date()
+            self?.summaryTask = nil
         }
     }
 
@@ -653,6 +741,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
             //     destroyed, so the Rust-side monotonic counter resets on next open().
             lastEnhancedCount = 0
 
+            // 3b-F1. Reset the cached wallet summary: the DB is being wiped, so the
+            //        cached values would be stale for any subsequent prepare()/start().
+            cachedSummary = nil
+            lastSummaryFinishDate = nil
+
             // 3b. Close Swift-side DB connections before deleting files — mirrors
             //     SDKSynchronizer.wipe() prewipe closure (SDKSynchronizer.swift:759-760).
             transactionEncoder.closeDBConnection()
@@ -696,16 +789,44 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// Switches the synchronizer to `endpoint` by re-opening the engine handle.
     ///
     /// Sequence:
-    /// 1. Snapshot whether the sync was running (to decide whether to restart).
-    /// 2. Stop polling + await `engine.stop()` — cancel any in-flight sync task.
-    /// 3. `engine.reopen(server:network:)` — close old handle + open new one bound
+    /// 1. F2: No-op immediately if `endpoint` equals `currentEndpoint` (same host + port + secure).
+    ///    Prevents AutoServerSelection from restarting a sync pass when the benchmark selects the
+    ///    same server already in use.
+    /// 2. Snapshot whether the sync was running (to decide whether to restart).
+    /// 3. F3: If a sync is active, log a warning — the pass will restart from the current scan
+    ///    queue position (no data loss, but a brief latency cost until the engine reconnects).
+    /// 4. Stop polling + await `engine.stop()` — cancel any in-flight sync task.
+    /// 5. `engine.reopen(server:network:)` — close old handle + open new one bound
     ///    to the new endpoint (frees Rust-side tokio runtime, then allocates a fresh one).
-    /// 4. Store `endpoint` in `currentEndpoint`.
-    /// 5. If the engine was running before the switch, restart via `start(retry: false)`.
+    /// 6. Store `endpoint` in `currentEndpoint`.
+    /// 7. If the engine was running before the switch, restart via `start(retry: false)`.
     public func switchTo(endpoint: LightWalletEndpoint) async throws {
+        // F2: No-op on identical endpoint — avoids an unnecessary restart.
+        // Compare host, port and TLS flag (all three must match to be the same server).
+        if endpoint.host == currentEndpoint.host
+            && endpoint.port == currentEndpoint.port
+            && endpoint.secure == currentEndpoint.secure {
+            initializer.logger.debug(
+                "switchTo: endpoint unchanged (\(endpoint.host):\(endpoint.port)) — no-op",
+                file: #file, function: #function, line: #line
+            )
+            return
+        }
+
         let wasRunning = isRunning
 
-        // Stop poll loop and cancel in-flight sync.
+        // F3: Warn when a switch fires while sync is active — the pass will restart.
+        // This is not an error: the scan queue is durable and resumes after reopen.
+        // The warning surfaces in device logs so we can correlate slow-progress reports
+        // with mid-sync server switches (H-B investigation).
+        if wasRunning {
+            initializer.logger.warn(
+                "switchTo during active sync — pass will restart (old: \(currentEndpoint.host):\(currentEndpoint.port), new: \(endpoint.host):\(endpoint.port))",
+                file: #file, function: #function, line: #line
+            )
+        }
+
+        // Stop poll loop and cancel in-flight sync (also cancels in-flight summary task).
         stopPolling()
         isRunning = false
         await engine.stop()
@@ -921,6 +1042,40 @@ extension SlipstreamSynchronizer {
         }
 
         return (progress, scan.isComplete)
+    }
+}
+
+// MARK: - withTaskTimeout helper (F1)
+
+/// Races `operation` against a nanosecond timer.  Returns the operation's value if it
+/// completes first; throws `_SummaryTimeoutError` when the timer wins.
+///
+/// Uses `Task.sleep(nanoseconds:)` for iOS 13+/macOS 12+ compatibility (the newer
+/// `Task.sleep(for: Duration)` requires iOS 16+/macOS 13+).
+///
+/// Both the operation task and the timer task are cancelled when the other wins
+/// (structured cancellation via `withThrowingTaskGroup`).  Structured concurrency
+/// means this returns only once both child tasks have acknowledged cancellation.
+///
+/// `internal` (not `private`) so `@testable` test targets can exercise the timeout
+/// behaviour directly without requiring a full `SlipstreamSynchronizer` instance.
+struct _SummaryTimeoutError: Error {}
+
+func withTaskTimeout<T: Sendable>(
+    _ nanoseconds: UInt64,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: nanoseconds)
+            throw _SummaryTimeoutError()
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else {
+            throw _SummaryTimeoutError()
+        }
+        return result
     }
 }
 
