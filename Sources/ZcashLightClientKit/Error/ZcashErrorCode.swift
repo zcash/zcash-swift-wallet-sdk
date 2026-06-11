@@ -259,6 +259,14 @@ public enum ZcashErrorCode: String {
     case rustTruncateToChainState = "ZRUST0091"
     /// Error from rust layer when calling ZcashEip681Backend.parseTransactionRequest
     case rustEip681Parse = "ZRUST0092"
+    /// Failed to open the Slipstream engine handle via zcashlc_slipstream_open.
+    case rustSlipstreamOpen = "ZRUST0093"
+    /// Slipstream engine handle is nil (open was not called or failed).
+    case rustSlipstreamNotOpen = "ZRUST0094"
+    /// Failed to start a Slipstream sync pass via zcashlc_slipstream_start.
+    case rustSlipstreamStart = "ZRUST0095"
+    /// Slipstream sync pass failed during a polling tick.
+    case rustSlipstreamSyncFailed = "ZRUST0096"
     /// SQLite query failed when fetching all accounts from the database.
     case accountDAOGetAll = "ZADAO0001"
     /// Fetched accounts from SQLite but can't decode them.
