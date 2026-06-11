@@ -4383,6 +4383,7 @@ name = "slipstream-core"
 version = "0.0.1"
 dependencies = [
  "futures-util",
+ "incrementalmerkletree",
  "orchard",
  "prost",
  "rand 0.8.6",

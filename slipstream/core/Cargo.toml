@@ -23,6 +23,7 @@ secrecy = { workspace = true }
 rand = { workspace = true }
 sapling = { workspace = true }
 orchard = { workspace = true }
+incrementalmerkletree = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }

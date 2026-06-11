@@ -53,6 +53,30 @@ enum Cmd {
         #[arg(long, default_value_t = 10_000)]
         chunk: u32,
     },
+    /// Golden-oracle run: sync the same UFVK/birthday twice into two wallet dirs
+    /// (A = upstream persistence, B = upstream until T6.3 lands --sparse-b),
+    /// then semantically diff the resulting data.db files. Exit 0 = identical.
+    Oracle {
+        #[arg(long)]
+        server: String,
+        /// Wallet dir A (created; must not contain data.db).
+        #[arg(long)]
+        wallet_a: std::path::PathBuf,
+        /// Wallet dir B (created; must not contain data.db).
+        #[arg(long)]
+        wallet_b: std::path::PathBuf,
+        #[arg(long)]
+        ufvk: String,
+        #[arg(long)]
+        birthday: u64,
+        /// Run B with sparse persistence (T6.3+).
+        #[arg(long, default_value_t = false)]
+        sparse_b: bool,
+        #[arg(long, default_value_t = 4, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        streams: usize,
+        #[arg(long, default_value_t = 10_000)]
+        chunk: u32,
+    },
 }
 
 fn parse_server(s: &str) -> Result<slipstream_core::Endpoint, String> {
@@ -269,6 +293,63 @@ fn cmd_sync(
     });
 }
 
+#[allow(clippy::too_many_arguments)]
+fn cmd_oracle(
+    server: String,
+    wallet_a: std::path::PathBuf,
+    wallet_b: std::path::PathBuf,
+    ufvk: String,
+    birthday: u64,
+    sparse_b: bool,
+    streams: usize,
+    chunk: u32,
+) {
+    let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+    for d in [&wallet_a, &wallet_b] {
+        if d.join("data.db").exists() {
+            eprintln!("error: {} already contains data.db — oracle needs fresh wallets", d.display());
+            std::process::exit(2);
+        }
+    }
+    let mk_cfg = |dir: &std::path::Path, sparse: bool| {
+        let mut cfg = slipstream_core::EngineConfig::new(
+            slipstream_core::Network::MainNetwork,
+            dir.join("data.db"),
+            endpoint.clone(),
+        );
+        cfg.fetch_streams = streams;
+        cfg.chunk_blocks = chunk;
+        let _ = sparse; // T6.3 sets cfg.sparse_persistence = sparse;
+        cfg
+    };
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let verdict = rt.block_on(async {
+        println!("oracle: run A (upstream persistence) …");
+        let a = slipstream_core::engine::sync_once(&mk_cfg(&wallet_a, false), Some((ufvk.as_str(), birthday)), None).await?;
+        println!("oracle: run A done — tip {} in {:.1?}", a.chain_tip, a.elapsed);
+        println!("oracle: run B (sparse_b={sparse_b}) …");
+        let b = slipstream_core::engine::sync_once(&mk_cfg(&wallet_b, sparse_b), Some((ufvk.as_str(), birthday)), None).await?;
+        println!("oracle: run B done — tip {} in {:.1?}", b.chain_tip, b.elapsed);
+        if a.chain_tip != b.chain_tip {
+            eprintln!("oracle: TIP SKEW (A={} B={}) — rerun when the chain is quiet", a.chain_tip, b.chain_tip);
+            std::process::exit(3);
+        }
+        slipstream_core::oracle::semantic_diff(&wallet_a.join("data.db"), &wallet_b.join("data.db"))
+    });
+    match verdict {
+        Ok(report) => {
+            print!("{}", report.render());
+            if report.is_clean() {
+                println!("oracle: VERDICT IDENTICAL");
+            } else {
+                println!("oracle: VERDICT DIVERGED");
+                std::process::exit(1);
+            }
+        }
+        Err(e) => { eprintln!("oracle failed: {e}"); std::process::exit(1); }
+    }
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -287,6 +368,9 @@ fn main() {
         }
         Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk } => {
             cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk);
+        }
+        Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, streams, chunk } => {
+            cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, streams, chunk);
         }
     }
 }
@@ -393,5 +477,25 @@ mod tests {
         // birthday with no ufvk: silently ignored (validate_sync_args returns Ok(None))
         let result = validate_sync_args(None, Some(800_000));
         assert!(matches!(result, Ok(None)), "expected Ok(None), got {result:?}");
+    }
+
+    #[test]
+    fn parses_oracle_subcommand() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "oracle",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-a",
+            "/tmp/oa",
+            "--wallet-b",
+            "/tmp/ob",
+            "--ufvk",
+            "uview1someufvk",
+            "--birthday",
+            "1500000",
+        ])
+        .expect("parses");
+        assert!(matches!(cli.cmd, Cmd::Oracle { .. }));
     }
 }

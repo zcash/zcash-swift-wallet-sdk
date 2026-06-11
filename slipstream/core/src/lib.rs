@@ -12,6 +12,7 @@ pub mod events;
 pub mod ffi_handle;
 pub mod fetch;
 pub mod grpc;
+pub mod oracle;
 pub mod scan;
 pub mod scheduler;
 pub mod transparent;
