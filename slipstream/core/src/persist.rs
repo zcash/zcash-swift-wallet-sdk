@@ -59,6 +59,30 @@ const MAX_CHECKPOINTS: usize = 100;
 /// Subtree build chunk size — mirror of ll/wallet.rs:467 CHUNK_SIZE.
 const BUILD_CHUNK_SIZE: usize = 1024;
 
+/// T6.3b checkpoint-downgrade window, mirroring upstream PRUNING_DEPTH = 100
+/// (zcash_client_backend ll/wallet.rs:52, plumbed into the trees as
+/// `max_checkpoints` — see MAX_CHECKPOINTS above).
+///
+/// Upstream's scan stream carries a `Retention::Checkpoint { id }` for EVERY
+/// scanned block, but `prune_excess_checkpoints` (shardtree lib.rs:550-660)
+/// trims the checkpoint set back to the newest 100 ids on every `insert_tree`
+/// call — so within one `put_blocks` call all but the newest ~100 checkpoints
+/// are created, walked, and destroyed (≈9,900 create/destroy cycles per
+/// 10k-block chunk). The downgrade computes the surviving window up front
+/// (per pool, per put_blocks call) and never creates the doomed ones.
+///
+/// For a pool that checkpoints every block of the batch this is the
+/// controller-prescribed `cutoff = last_scanned_block_height - 100`; the exact
+/// per-pool form (see [`doomed_checkpoint_cutoff`]) is required because
+/// upstream retains the newest 100 ids *of the pool's checkpoint id stream*,
+/// which reaches below `last - 100` when a pool checkpoints fewer than 100
+/// blocks in that window.
+const SPARSE_CHECKPOINT_WINDOW: u64 = 100;
+const _: () = assert!(
+    SPARSE_CHECKPOINT_WINDOW as usize == MAX_CHECKPOINTS,
+    "window must mirror upstream PRUNING_DEPTH / max_checkpoints"
+);
+
 // ── In-memory shard store ──────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
@@ -506,6 +530,7 @@ pub fn sparse_put_blocks(
     let mut rows_ms = 0u128;
     let mut tree_ms = 0u128;
     let mut flush_ms = 0u128;
+    let mut downgraded = 0u64;
 
     inner.transactionally::<_, _, SqliteClientError>(|wdb| {
         let mut sapling_commitments = vec![];
@@ -673,7 +698,51 @@ pub fn sparse_put_blocks(
         if let Some(last_scanned_height) = last_scanned_height {
             let t_tree = std::time::Instant::now();
 
+            // ── T6.3b checkpoint downgrade ────────────────────────────────────
+            // Full (pre-downgrade) checkpoint position maps, computed straight
+            // from the commitment streams. These are EXACTLY the maps upstream's
+            // `checkpoint_positions(&subtrees)` would extract (from_iter records
+            // every Checkpoint retention as id → position, shardtree
+            // batch.rs:204) — but they must be taken BEFORE the downgrade:
+            // `ensure_checkpoints` below needs upstream-identical inputs, since
+            // a filtered `existing` map would remap an ensure-height whose
+            // nearest own-pool checkpoint lies below the cutoff onto the
+            // frontier position instead of that checkpoint's position.
+            let sapling_cp_pos = stream_checkpoint_positions(
+                Position::from(from_state.final_sapling_tree().tree_size()),
+                &sapling_commitments,
+            );
+            let orchard_cp_pos = stream_checkpoint_positions(
+                Position::from(from_state.final_orchard_tree().tree_size()),
+                &orchard_commitments,
+            );
+
+            // Cutoff per pool, per put_blocks call: the minimum of the newest
+            // SPARSE_CHECKPOINT_WINDOW checkpoint ids that will exist at the end
+            // of this call (already-stored ids ∪ the frontier id ∪ this batch's
+            // new ids) — i.e. exactly the post-prune retained set upstream's
+            // iterative oldest-first pruning leaves behind. Every Checkpoint
+            // retention below it is doomed and gets downgraded to the residue
+            // prune_excess_checkpoints would leave anyway (Marked survives the
+            // CHECKPOINT-flag clear; everything else becomes Ephemeral).
+            let frontier_id = from_state.block_height();
+            let sapling_downgraded = doomed_checkpoint_cutoff(
+                sap_tree.store().checkpoints.keys().copied(),
+                frontier_id,
+                sapling_cp_pos.keys().copied(),
+            )
+            .map_or(0, |cutoff| downgrade_doomed_checkpoints(&mut sapling_commitments, cutoff));
+            let orchard_downgraded = doomed_checkpoint_cutoff(
+                orch_tree.store().checkpoints.keys().copied(),
+                frontier_id,
+                orchard_cp_pos.keys().copied(),
+            )
+            .map_or(0, |cutoff| downgrade_doomed_checkpoints(&mut orchard_commitments, cutoff));
+            downgraded = sapling_downgraded + orchard_downgraded;
+
             // ll/wallet.rs:466-481 — build subtrees (rayon, same chunk size).
+            // Built from the downgraded streams, so the per-subtree checkpoint
+            // BTreeMaps fed to insert_tree only carry surviving ids ≥ cutoff.
             let sapling_subtrees = build_subtrees::<_, SAPLING_SHARD_HEIGHT>(
                 Position::from(from_state.final_sapling_tree().tree_size()),
                 &mut sapling_commitments,
@@ -683,9 +752,13 @@ pub fn sparse_put_blocks(
                 &mut orchard_commitments,
             );
 
-            // ll/wallet.rs:484-501 — cross-pool checkpoint reconciliation.
-            let sapling_cp_pos = checkpoint_positions(&sapling_subtrees);
-            let orchard_cp_pos = checkpoint_positions(&orchard_subtrees);
+            // ll/wallet.rs:484-501 — cross-pool checkpoint reconciliation, on
+            // the FULL maps (upstream-identical). The `height > min_cp` filter
+            // in the add loops below keeps the surviving add-set identical to
+            // upstream's: with the downgrade, the post-insert min checkpoint id
+            // equals upstream's post-prune min (the cutoff computation above is
+            // that same retained-set minimum), so only ids ≥ cutoff can reach
+            // the checkpoint tables.
             let missing_sapling = ensure_checkpoints(
                 orchard_cp_pos.keys(),
                 &sapling_cp_pos,
@@ -769,7 +842,7 @@ pub fn sparse_put_blocks(
         Ok(())
     })?;
 
-    info!(rows_ms, tree_ms, flush_ms, "sparse put_blocks");
+    info!(rows_ms, tree_ms, flush_ms, downgraded, "sparse put_blocks");
     Ok(())
 }
 
@@ -800,15 +873,79 @@ where
         .collect()
 }
 
-/// Mirror of ll/wallet.rs:1173-1183.
-fn checkpoint_positions<H>(
-    subtrees: &[(LocatedPrunableTree<H>, BTreeMap<BlockHeight, Position>)],
+/// Equivalent of ll/wallet.rs:1173-1183 `checkpoint_positions`, computed
+/// directly from a commitment stream instead of from the built subtrees:
+/// `LocatedTree::from_iter` records every `Retention::Checkpoint` it consumes
+/// as id → leaf position (shardtree batch.rs:204), and positions are assigned
+/// sequentially from the start position — so this map is identical to the one
+/// upstream extracts post-build. Needed pre-build so the T6.3b downgrade can
+/// run between map extraction and subtree construction.
+fn stream_checkpoint_positions<H>(
+    start: Position,
+    commitments: &[Option<(H, Retention<BlockHeight>)>],
 ) -> BTreeMap<BlockHeight, Position> {
-    subtrees
+    commitments
         .iter()
-        .flat_map(|(_, checkpoints)| checkpoints.iter())
-        .map(|(k, v)| (*k, *v))
+        .enumerate()
+        .filter_map(|(i, c)| {
+            c.as_ref().and_then(|(_, retention)| match retention {
+                Retention::Checkpoint { id, .. } => Some((*id, start + i as u64)),
+                _ => None,
+            })
+        })
         .collect()
+}
+
+/// T6.3b: the cutoff id below which a `Retention::Checkpoint` created in this
+/// `sparse_put_blocks` call is doomed — i.e. cannot survive upstream's
+/// `prune_excess_checkpoints` (oldest-first removal down to
+/// [`SPARSE_CHECKPOINT_WINDOW`] entries, re-run on every `insert_tree` call).
+///
+/// The retained set at the end of the call is the newest
+/// `SPARSE_CHECKPOINT_WINDOW` distinct ids out of (already-stored checkpoint
+/// ids ∪ the from_state frontier checkpoint id ∪ this batch's new checkpoint
+/// ids); the cutoff is that set's minimum. `None` when the union fits inside
+/// the window (nothing is doomed — e.g. sub-100-block batches).
+fn doomed_checkpoint_cutoff(
+    existing: impl Iterator<Item = BlockHeight>,
+    frontier_id: BlockHeight,
+    new_ids: impl Iterator<Item = BlockHeight>,
+) -> Option<BlockHeight> {
+    let mut union: BTreeSet<BlockHeight> = existing.collect();
+    union.insert(frontier_id);
+    union.extend(new_ids);
+    union
+        .iter()
+        .rev()
+        .nth(SPARSE_CHECKPOINT_WINDOW as usize - 1)
+        .copied()
+}
+
+/// T6.3b: downgrade doomed checkpoint retentions in place (ids strictly below
+/// `cutoff`) to the exact residue upstream's prune cycle would leave on the
+/// leaf: clearing the CHECKPOINT flag preserves MARKED and leaves everything
+/// else EPHEMERAL (shardtree lib.rs:550-660 + RetentionFlags at
+/// prunable.rs:55-67). The from_state frontier insert's checkpoint
+/// (`Marking::Reference`, applied by the update_tree mirror, never present in
+/// these streams — scanning.rs:777-786 emits only `Marked`/`None` markings)
+/// and all ids at/above the cutoff are untouched. Returns the downgrade count.
+fn downgrade_doomed_checkpoints<H>(
+    commitments: &mut [Option<(H, Retention<BlockHeight>)>],
+    cutoff: BlockHeight,
+) -> u64 {
+    let mut downgraded = 0u64;
+    for slot in commitments.iter_mut().flatten() {
+        if let Retention::Checkpoint { id, marking } = &slot.1
+            && *id < cutoff
+        {
+            slot.1 = match marking {
+                Marking::Marked => Retention::Marked,
+                _ => Retention::Ephemeral,
+            };
+            downgraded += 1;
+        }
+    }
+    downgraded
 }
 
 /// Mirror of ll/wallet.rs:1184-1226.
@@ -930,7 +1067,7 @@ impl WalletWrite for SparseFacade<'_> {
 #[cfg(test)]
 mod store_tests {
     use super::*;
-    use incrementalmerkletree::Address;
+    use incrementalmerkletree::{Address, Hashable as _};
 
     type Store = SparseShardStore<sapling::Node>;
 
@@ -982,5 +1119,89 @@ mod store_tests {
         let (id, _) = s.get_checkpoint_at_depth(2).unwrap().unwrap();
         assert_eq!(u32::from(id), 5);
         assert!(s.get_checkpoint_at_depth(3).unwrap().is_none());
+    }
+
+    // ── T6.3b checkpoint-downgrade helpers ─────────────────────────────────────
+
+    fn heights(range: std::ops::RangeInclusive<u32>) -> impl Iterator<Item = BlockHeight> {
+        range.map(BlockHeight::from)
+    }
+
+    #[test]
+    fn doomed_cutoff_none_when_window_not_exceeded() {
+        // 50 existing + frontier + 40 new = 91 distinct ids ≤ 100 → nothing doomed.
+        let cutoff = doomed_checkpoint_cutoff(
+            heights(1..=50),
+            BlockHeight::from(50),
+            heights(51..=90),
+        );
+        assert_eq!(cutoff, None);
+    }
+
+    #[test]
+    fn doomed_cutoff_is_upstream_retained_min_for_dense_stream() {
+        // 100 existing (heights 1..=100, frontier = 100) + 10_000 new
+        // (101..=10_100): upstream retains the newest 100 = 10_001..=10_100,
+        // i.e. the controller cutoff last_scanned − (WINDOW − 1).
+        let cutoff = doomed_checkpoint_cutoff(
+            heights(1..=100),
+            BlockHeight::from(100),
+            heights(101..=10_100),
+        );
+        assert_eq!(cutoff, Some(BlockHeight::from(10_001)));
+    }
+
+    #[test]
+    fn doomed_cutoff_reaches_below_window_for_sparse_stream() {
+        // A pool with only 30 new checkpoints: upstream's newest-100 keeps 70
+        // older ids alive — the cutoff must NOT be last_scanned − 100.
+        let cutoff = doomed_checkpoint_cutoff(
+            heights(1..=100),
+            BlockHeight::from(100),
+            heights(10_071..=10_100),
+        );
+        // union = {1..=100} ∪ {10_071..=10_100} (130 ids); newest 100 =
+        // {31..=100} ∪ {10_071..=10_100} → min = 31.
+        assert_eq!(cutoff, Some(BlockHeight::from(31)));
+    }
+
+    #[test]
+    fn downgrade_maps_marked_to_marked_and_plain_to_ephemeral() {
+        let h = |n: u32| BlockHeight::from(n);
+        let node = sapling::Node::empty_leaf();
+        let mut commitments: Vec<Option<(sapling::Node, Retention<BlockHeight>)>> = vec![
+            Some((node, Retention::Checkpoint { id: h(10), marking: Marking::Marked })),
+            Some((node, Retention::Checkpoint { id: h(11), marking: Marking::None })),
+            Some((node, Retention::Checkpoint { id: h(50), marking: Marking::None })),
+            Some((node, Retention::Marked)),
+            Some((node, Retention::Ephemeral)),
+        ];
+        let n = downgrade_doomed_checkpoints(&mut commitments, h(50));
+        assert_eq!(n, 2);
+        assert!(matches!(commitments[0].as_ref().unwrap().1, Retention::Marked));
+        assert!(matches!(commitments[1].as_ref().unwrap().1, Retention::Ephemeral));
+        // id == cutoff survives (only ids strictly below are doomed).
+        assert!(matches!(
+            commitments[2].as_ref().unwrap().1,
+            Retention::Checkpoint { .. }
+        ));
+        assert!(matches!(commitments[3].as_ref().unwrap().1, Retention::Marked));
+        assert!(matches!(commitments[4].as_ref().unwrap().1, Retention::Ephemeral));
+    }
+
+    #[test]
+    fn stream_checkpoint_positions_matches_from_iter_extraction() {
+        let h = |n: u32| BlockHeight::from(n);
+        let node = sapling::Node::empty_leaf();
+        let commitments: Vec<Option<(sapling::Node, Retention<BlockHeight>)>> = vec![
+            Some((node, Retention::Ephemeral)),
+            Some((node, Retention::Checkpoint { id: h(7), marking: Marking::None })),
+            Some((node, Retention::Marked)),
+            Some((node, Retention::Checkpoint { id: h(8), marking: Marking::Marked })),
+        ];
+        let map = stream_checkpoint_positions(Position::from(100u64), &commitments);
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get(&h(7)), Some(&Position::from(101u64)));
+        assert_eq!(map.get(&h(8)), Some(&Position::from(103u64)));
     }
 }

@@ -294,15 +294,16 @@ pub mod testkit {
     /// Open a fresh wallet at `dir/data.db`, import TEST_UFVK with an empty
     /// treestate birthday at SYNTH_START-1, set the chain tip, and scan `blocks`
     /// through `scan_cached_blocks` in `chunk_size`-block calls — through the
-    /// plain WalletDb when `sparse` is false. (T6.4 extends this with the sparse
-    /// facade branch; until then `sparse` must be false.)
+    /// plain WalletDb when `sparse` is false, through the `SparseFacade`
+    /// (exactly as scan.rs::scan_chunks does, with ONE `SparseTreeState` for the
+    /// whole call = one scan range) when `sparse` is true.
     pub fn scan_synthetic(
         dir: &Path,
         blocks: Vec<CompactBlock>,
         chunk_size: usize,
         sparse: bool,
     ) -> Result<(), SlipstreamError> {
-        assert!(!sparse, "sparse branch lands in T6.4");
+        let mut sparse_state = crate::persist::SparseTreeState::default();
         let db_path = dir.join("data.db");
         let mut session = WalletSession::open(crate::Network::MainNetwork, &db_path)?;
         // Same TreeState shape as wallet_session.rs tests (663_149 precedent):
@@ -330,15 +331,31 @@ pub mod testkit {
             let chunk = Chunk::from_blocks(0, window.to_vec());
             let source = MemBlockSource::new(&chunk);
             let network = session.network;
-            scan_cached_blocks(
-                &network,
-                &source,
-                session.db_mut(),
-                BlockHeight::from(from_height),
-                &from_state,
-                window.len(),
-            )
-            .map_err(|e| SlipstreamError::Wallet(format!("scan_cached_blocks: {e}")))?;
+            if sparse {
+                let mut facade = crate::persist::SparseFacade {
+                    inner: session.db_mut(),
+                    sparse: &mut sparse_state,
+                };
+                scan_cached_blocks(
+                    &network,
+                    &source,
+                    &mut facade,
+                    BlockHeight::from(from_height),
+                    &from_state,
+                    window.len(),
+                )
+                .map_err(|e| SlipstreamError::Wallet(format!("scan_cached_blocks (sparse): {e}")))?;
+            } else {
+                scan_cached_blocks(
+                    &network,
+                    &source,
+                    session.db_mut(),
+                    BlockHeight::from(from_height),
+                    &from_state,
+                    window.len(),
+                )
+                .map_err(|e| SlipstreamError::Wallet(format!("scan_cached_blocks: {e}")))?;
+            }
             // from_state for the NEXT window: re-synthesized from the chain's
             // known cmu sequence (no server in hermetic tests).
             from_state = synth_chain_state(last)?;
@@ -466,5 +483,31 @@ mod tests {
         super::testkit::scan_synthetic(&db, blocks, 10, false).expect("scan B");
         let report = semantic_diff(&da.join("data.db"), &db.join("data.db")).expect("diff");
         assert!(report.is_clean(), "upstream self-diff not clean:\n{}", report.render());
+    }
+
+    /// T6.3b hermetic identity proof: the SAME synthetic chain scanned through
+    /// the upstream path (A) and the sparse facade with the checkpoint
+    /// downgrade (B) must produce semantically identical databases. 3 chunks of
+    /// 1000 blocks each: ~1000 per-block sapling checkpoints per put_blocks
+    /// call against the 100-checkpoint window, so the doomed-checkpoint cutoff
+    /// fires in every chunk (~900 downgrades each) and the cross-chunk carry
+    /// (previous chunk's surviving checkpoints + missing-checkpoint table
+    /// entries) is exercised twice.
+    #[test]
+    fn sparse_path_matches_upstream_on_synthetic_chain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let da = dir.path().join("wa");
+        let db = dir.path().join("wb");
+        std::fs::create_dir_all(&da).unwrap();
+        std::fs::create_dir_all(&db).unwrap();
+        let blocks = super::testkit::synth_blocks(3000, 3);
+        super::testkit::scan_synthetic(&da, blocks.clone(), 1000, false).expect("upstream scan");
+        super::testkit::scan_synthetic(&db, blocks, 1000, true).expect("sparse scan");
+        let report = semantic_diff(&da.join("data.db"), &db.join("data.db")).expect("diff");
+        assert!(
+            report.is_clean(),
+            "sparse-vs-upstream diff not clean:\n{}",
+            report.render()
+        );
     }
 }
