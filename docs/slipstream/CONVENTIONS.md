@@ -75,3 +75,5 @@ Tests/lightwalletd/lightwalletd --no-tls-very-insecure --data-dir /tmp --darksid
 - Benchmarks are CLI subcommands (reproducible by any session), not one-off scripts.
 
 **STATE.md edit safety:** scripted/programmatic edits to STATE.md MUST assert their anchors exist before writing and verify the post-edit line count (append-only growth expected; any large deletion = abort and re-read). Recovery precedent: 2026-06-11 truncation, restored from git.
+
+**Device-build refresh checklist (the three-layer gotcha):** Zodl consumes the SDK as a local package, and the package consumes Rust as the PREBUILT `LocalPackages/libzcashlc.xcframework` — Xcode never compiles Rust in this flow. After ANY Rust change (`slipstream/` or `rust/src/`): (1) `./Scripts/init-local-ffi.sh` in the SDK repo (full — all 3 slices; mind the single-slice landmine), (2) in Xcode: File > Packages > Reset Package Caches (or the SPM manifest-cache purge) + clean, (3) rebuild the app. Swift-only changes need only (2)+(3). Field-test logs that look stale = check the framework's build date first.
