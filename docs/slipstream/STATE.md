@@ -5,7 +5,7 @@
 
 ## NEXT ACTION
 
-➡️ **T5.3** — Summary throttle while scan-bound. Detailed steps: docs/slipstream/plans/2026-06-11-phase-5-perf.md. T5.2 complete.
+➡️ **T5.4** — Field re-run (needs-user) + gate records. Full rebuild first (prior build predates T4.6); expect smoother bar everywhere; iPad chunk cadence ~3s; modest wall-clock change. Then NEXT → T6.0 (Phase 6 plan).
 
 ## Current phase: P5 — Performance pass (plan: `plans/2026-06-11-phase-5-perf.md`)
 
@@ -14,7 +14,7 @@
 | T5.0 compact phase plan | done | Scoped by the iPhone log decomposition (scan ≈195s of 208s; decrypt ~3-5% of scan; persistence ~95% → P6 leads with sparse tree). P5 = instruments + adaptive sub-batching + summary throttle ONLY. |
 | T5.1 instrumentation | done | Chunk.outputs (u64) added to chunk.rs — counts sapling outputs + orchard actions via one pass in from_blocks; per-chunk timing (elapsed_ms) added to scan.rs in both scan_chunks and scan_chunks_from_treestate (info! logging); stage-split (total_s, fetch_s, scan_s, enhance_s, blocks, bound) added to engine.rs sync_once tail (info! logging). Test: chunk_outputs_counts_vtx_outputs_and_actions (2 synthetic blocks with known vtx counts, assert sum). Suites: cargo test -p slipstream-core -p slipstream-cli 47/0; clippy clean both feature sets; darkside feature compiles. |
 | T5.2 adaptive scan sub-batching | done | Controller: fn next_batch_len(prev_len, prev_elapsed_ms, target_ms, min, max) → proportional adjust prev_len*target/elapsed, clamped [min,max]; TARGET_BATCH_MS=3_000, MIN_BATCH=1_000. Production scan_chunks splits each chunk into sub-batches; batch_len initialized from first chunk's full length (fast-path unchanged: on fast hardware batch_len grows to/stays at chunk size → exactly one scan call per chunk). Treestate threading: per sub-batch, prefetch spawned for sub_end before blocking scan; awaited after; becomes from_state for next sub-batch — upstream assert from_state.height+1==from_height satisfied at every boundary (proof in code comment). scan_chunks_from_treestate left whole-chunk (comment explains: synthesized states can't split mid-chunk). Per-sub-batch debug! log (batch_start, batch_end, batch_len, elapsed_ms); chunk-level info! log retained at chunk granularity. RPC cost: ~1 GetTreeState per ~3s on slow devices, zero extra on fast devices. 6 controller unit tests: clamps_to_max, grows_on_fast_device, shrinks_on_slow_device, clamps_to_min, zero_elapsed_returns_max, stable_when_on_target. Suites: cargo test -p slipstream-core -p slipstream-cli 53+14/0; clippy clean both feature sets; darkside --no-run compiles. |
-| T5.3 summary throttle | todo | 8s cadence while Syncing |
+| T5.3 summary throttle | done | While state==Syncing (1), wallet-summary refetch interval becomes SUMMARY_SYNC_INTERVAL=8s (state ticks stay 2s from cheap counters; cached summary bridges between fetches). All other states keep 2s. Implementation: extracted static helper summaryFetchInterval(forState:UInt8) → TimeInterval (pure function, no side effects); updated kickSummaryFetchIfNeeded(state:) to accept and use the current snapshot state. Done (state 3) path unchanged: immediate .synced without waiting. Tests: 5 new unit tests (testSummaryIntervalWhileSyncingIs8s + 4 other-state branches) verify interval selection. Suites: swift build clean; swift test --filter OfflineTests 450/0 (includes 5 new tests); all pass. |
 | T5.4 field re-run + records | todo | needs-user (full rebuild first — prior build predates T4.6) |
 
 ## Phase P4 — iOS Docking (plan: `plans/2026-06-11-phase-4-ios-docking.md`)

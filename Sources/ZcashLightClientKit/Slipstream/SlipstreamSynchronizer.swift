@@ -86,17 +86,25 @@ public final class SlipstreamSynchronizer: Synchronizer {
     //
     // Invariants:
     //   - Only ONE summary fetch is in flight at a time (`summaryTask != nil`).
-    //   - A new fetch starts only when the previous one is done AND ≥2 s have elapsed
-    //     since it completed (`lastSummaryFinishDate`).
+    //   - A new fetch starts only when the previous one is done AND ≥ the state-dependent
+    //     interval have elapsed since it completed (`lastSummaryFinishDate`).
     //   - The fetch is wrapped in a 3-second hard timeout; on expiry the cached value
     //     is left unchanged and the next tick will retry.
     //   - When state == 3 (Done), any in-flight task is cancelled and the tick emits
     //     `.synced` immediately without waiting.
+    //   - THROTTLE: While state == Syncing (1), summary fetches are throttled to 8-second
+    //     intervals (T5.3). The 2-second state ticks bridge from cachedSummary + cheap
+    //     snapshot counters; this wider cadence prevents summary computation from stealing
+    //     CPU from rayon trial-decryption on weak devices.
     private var cachedSummary: WalletSummary?
     private var summaryTask: Task<Void, Never>?
     private var lastSummaryFinishDate: Date?
-    // Minimum interval (seconds) between summary fetches (independent of 2s poll cadence).
+    // Minimum interval (seconds) between summary fetches when NOT syncing (Disconnected, Done, Error).
     private static let summaryRefetchIntervalSeconds: TimeInterval = 2.0
+    // Minimum interval (seconds) between summary fetches while Syncing (T5.3).
+    // Summary computation steals CPU from rayon trial-decryption on-device; widen the
+    // cadence while scan-bound. The 2s state ticks bridge from cachedSummary.
+    private static let SUMMARY_SYNC_INTERVAL: TimeInterval = 8.0
     // Hard timeout (nanoseconds) for a single getWalletSummary call: 3 seconds.
     private static let summaryTimeoutNanoseconds: UInt64 = 3_000_000_000
 
@@ -254,7 +262,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
         } else {
             // Kick off a background summary refresh when the previous one has finished
             // and enough time has elapsed (prevents overlapping calls and queue build-up).
-            kickSummaryFetchIfNeeded()
+            // Pass the current snapshot state for state-dependent throttling (T5.3).
+            kickSummaryFetchIfNeeded(state: snap.state)
 
             // Build progress from the cached summary (may be nil on the very first ticks).
             let summary = cachedSummary
@@ -343,23 +352,36 @@ public final class SlipstreamSynchronizer: Synchronizer {
         }
     }
 
-    /// Starts a background summary fetch if no fetch is in-flight and the minimum
-    /// refetch interval has elapsed since the last one completed.
+    /// Returns the minimum interval (seconds) between summary fetches based on the
+    /// current sync state. While Syncing (state 1), uses the wider 8-second interval
+    /// to avoid stealing CPU from rayon trial-decryption. All other states use 2 seconds.
+    /// Internal for testability (pure function, no side effects).
+    static func summaryFetchInterval(forState state: UInt8) -> TimeInterval {
+        state == 1 ? SUMMARY_SYNC_INTERVAL : summaryRefetchIntervalSeconds
+    }
+
+    /// Starts a background summary fetch if no fetch is in-flight and the state-dependent
+    /// minimum refetch interval has elapsed since the last one completed.
     ///
     /// The fetch is wrapped in a hard 3-second timeout.  On completion (success or
     /// timeout) the result is stored in `cachedSummary` and `lastSummaryFinishDate`
     /// is updated so the next tick can trigger another fetch after the interval.
     ///
+    /// State-dependent throttling (T5.3): while syncing (state 1), the interval is 8 seconds
+    /// instead of 2 seconds; the 2-second polling ticks bridge from the cached summary to
+    /// prevent summary CPU theft during active scan.
+    ///
     /// Invariant: only ONE summary fetch task is live at a time (`summaryTask != nil`
     /// while running).  This prevents DBActor queue build-up when the DB is slow.
-    private func kickSummaryFetchIfNeeded() {
+    private func kickSummaryFetchIfNeeded(state: UInt8) {
         // If a fetch is already running, do not start another.
         guard summaryTask == nil else { return }
 
-        // Enforce the minimum interval between fetches.
+        // Enforce the state-dependent minimum interval between fetches.
+        let interval = Self.summaryFetchInterval(forState: state)
         if let last = lastSummaryFinishDate {
             let elapsed = Date().timeIntervalSince(last)
-            guard elapsed >= Self.summaryRefetchIntervalSeconds else { return }
+            guard elapsed >= interval else { return }
         }
 
         let rustBackend = initializer.rustBackend

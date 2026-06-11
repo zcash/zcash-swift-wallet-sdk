@@ -601,4 +601,41 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertTrue(didAttemptSwitch,
                       "switchTo a different endpoint must attempt a reopen (not silently no-op)")
     }
+
+    // MARK: - 8. T5.3 Summary interval tests (state-dependent throttling)
+
+    /// summaryFetchInterval(forState:) returns 8 seconds when state == Syncing (1).
+    func testSummaryIntervalWhileSyncingIs8s() {
+        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 1) // Syncing
+        XCTAssertEqual(interval, 8.0, accuracy: 1e-6,
+                       "Summary interval while Syncing must be 8 seconds (T5.3)")
+    }
+
+    /// summaryFetchInterval(forState:) returns 2 seconds when state == Disconnected (0).
+    func testSummaryIntervalWhileDisconnectedIs2s() {
+        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 0) // Disconnected
+        XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
+                       "Summary interval while Disconnected must be 2 seconds")
+    }
+
+    /// summaryFetchInterval(forState:) returns 2 seconds when state == Error (2).
+    func testSummaryIntervalWhileErrorIs2s() {
+        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 2) // Error
+        XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
+                       "Summary interval while Error must be 2 seconds")
+    }
+
+    /// summaryFetchInterval(forState:) returns 2 seconds when state == Done (3).
+    func testSummaryIntervalWhileDoneIs2s() {
+        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 3) // Done
+        XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
+                       "Summary interval while Done must be 2 seconds")
+    }
+
+    /// summaryFetchInterval(forState:) returns 2 seconds for unknown states (default case).
+    func testSummaryIntervalForUnknownStateIs2s() {
+        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: UInt8(99)) // Unknown
+        XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
+                       "Summary interval for unknown states must default to 2 seconds")
+    }
 }
