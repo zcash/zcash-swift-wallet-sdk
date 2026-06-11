@@ -26,6 +26,8 @@ Heavier checks, run when the touched area demands it:
 cargo test -p slipstream-core --features darkside -- --ignored --test-threads=1   # darkside integration; SERIAL ONLY (tests share the darkside server state); needs local lightwalletd, see below
 ```
 
+**Single-slice landmine:** `./Scripts/rebuild-local-ffi.sh <arch>` REPLACES the whole local XCFramework with ONLY that slice (by design — fast iteration). After using it, other-platform builds/tests fail with "framework doesn't exist". Restore all 3 slices with `./Scripts/init-local-ffi.sh` (cargo-cached, mostly relink time). Slipstream work needs macOS (swift test) + ios-sim (Zodl simulator) + ios-device (device runs) — keep all three unless actively iterating on one.
+
 **SPM staleness landmine:** after ANY local-FFI mode switch (`init-local-ffi.sh`/`reset-local-ffi.sh`), `swift test` may fail with "package at .../LocalPackages cannot be accessed" — Package.swift is byte-identical in both modes, so SPM's shared manifest cache replays the stale evaluation. Fix (verified 2026-06-10):
 ```bash
 rm -rf ~/Library/Caches/org.swift.swiftpm/manifests && rm -rf .build
