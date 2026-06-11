@@ -117,9 +117,36 @@ impl Progress {
     /// Bump `ranges_completed` by 1. Called by the scheduler after each suggested range's
     /// scan + per-range enhancement completes. Swift observes this counter and triggers a
     /// single balance-summary fetch at each range boundary (F2 — boundary balance refresh).
+    ///
+    /// Monotonic per HANDLE (deliberately NOT reset by [`Self::begin_pass`]): Swift
+    /// detects boundaries via a strict-greater comparison against its last-seen value,
+    /// which only works if the counter never moves backwards while the handle lives.
     #[inline]
     pub fn add_ranges_completed(&self) {
         self.ranges_completed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Reset the per-pass RATIO counters at the start of a sync pass.
+    ///
+    /// The FFI handle outlives individual sync passes (Swift `prepare()` opens it once;
+    /// `stop()`/`start()` reuse it across app background/foreground cycles), so without
+    /// this reset a resumed pass would compute `scanned / pass_total` with a stale
+    /// numerator from the previous pass — e.g. 100k stale scanned / 169k remaining
+    /// = 59% at pass start, climbing past 100% (clamped) long before the pass is done.
+    ///
+    /// Resets: `scanned_blocks`, `fetched_blocks`, `pass_total_blocks`,
+    /// `current_range_end`, and the `spendable_hint` latch (the new pass's ChainTip
+    /// range re-latches it within seconds, mirroring old-SDK per-sync semantics).
+    ///
+    /// Deliberately NOT reset (monotonic per handle — Swift consumes these as deltas
+    /// via strict-greater/last-seen comparisons): `enhanced_txs`, `ranges_completed`,
+    /// `reorgs_recovered`. `chain_tip` is overwritten early in every pass anyway.
+    pub fn begin_pass(&self) {
+        self.scanned_blocks.store(0, Ordering::Relaxed);
+        self.fetched_blocks.store(0, Ordering::Relaxed);
+        self.pass_total_blocks.store(0, Ordering::Relaxed);
+        self.current_range_end.store(0, Ordering::Relaxed);
+        self.spendable_hint.store(0, Ordering::Relaxed);
     }
 
     /// Read `chain_tip` (Relaxed load).
@@ -380,5 +407,41 @@ mod tests {
         // Our thread adds 10; the spawned thread adds 42: total = 52.
         p.add_fetched(10);
         assert_eq!(p.fetched_blocks.load(Ordering::Relaxed), 52);
+    }
+
+    /// begin_pass resets the per-pass RATIO counters but preserves the monotonic
+    /// delta counters Swift consumes via last-seen comparisons. Simulates an
+    /// interrupted pass followed by a resume on the SAME handle (Swift prepare()
+    /// opens once; stop()/start() reuse the handle).
+    #[test]
+    fn begin_pass_resets_ratio_counters_only() {
+        let p = Progress::default();
+
+        // Pass 1: interrupted mid-restore.
+        p.set_chain_tip(3_374_188);
+        p.add_fetched(120_000);
+        p.add_scanned(100_000);
+        p.set_pass_total(269_188);
+        p.set_range_end(3_321_165);
+        p.set_spendable();
+        p.add_enhanced(20);
+        p.add_ranges_completed();
+        p.add_reorg();
+
+        // Pass 2 begins (app foregrounded, start() on the same handle).
+        p.begin_pass();
+
+        // Ratio counters reset: scanned/pass_total must start at 0/0, not 100k/0.
+        assert_eq!(p.scanned(), 0, "scanned must reset per pass");
+        assert_eq!(p.fetched(), 0, "fetched must reset per pass");
+        assert_eq!(p.pass_total(), 0, "pass_total must reset per pass");
+        assert_eq!(p.range_end(), 0, "range_end must reset per pass");
+        assert_eq!(p.spendable(), 0, "spendable latch re-arms each pass");
+
+        // Monotonic delta counters preserved (Swift compares strict-greater).
+        assert_eq!(p.enhanced(), 20, "enhanced_txs is monotonic per handle");
+        assert_eq!(p.ranges_completed(), 1, "ranges_completed is monotonic per handle");
+        assert_eq!(p.reorgs(), 1, "reorgs_recovered is cumulative diagnostics");
+        assert_eq!(p.chain_tip(), 3_374_188, "chain_tip is overwritten by the new pass anyway");
     }
 }

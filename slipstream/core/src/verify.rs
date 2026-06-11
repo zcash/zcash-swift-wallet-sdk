@@ -66,7 +66,7 @@ mod tests {
         c.verify_blocks(&all[..5]).expect("first half");
         // Second half must link to the first (its first prev_hash = hash of 104).
         let mut second = all[5..].to_vec();
-        second[0].prev_hash = vec![104u8 as u8; 32];
+        second[0].prev_hash = vec![104u8; 32];
         c.verify_blocks(&second).expect("second half");
         assert_eq!(c.last_height, Some(109));
     }

@@ -86,6 +86,16 @@ pub async fn sync_once(
 
     let started = Instant::now();
 
+    // Reset per-pass ratio counters (scanned/fetched/pass_total/range_end/spendable).
+    // The FFI handle — and therefore this Progress — outlives individual passes
+    // (Swift opens it once in prepare(); stop()/start() reuse it across app
+    // background/foreground cycles), so stale pass-1 counters would corrupt pass-2's
+    // scanned/pass_total ratio. Monotonic delta counters (enhanced_txs,
+    // ranges_completed, reorgs_recovered) are deliberately left untouched.
+    if let Some(ref p) = progress {
+        p.begin_pass();
+    }
+
     let mut session = WalletSession::open(config.network, &config.wallet_db_path)?;
     let mut client = grpc::connect(&config.endpoint).await?;
 
@@ -168,9 +178,11 @@ mod tests {
     /// Helper to construct a minimal SyncOutcome with specified stage durations.
     fn make_outcome(fetch_s: f64, scan_s: f64, enhance_s: f64) -> SyncOutcome {
         use std::time::Duration;
-        let mut report = crate::scheduler::SyncReport::default();
-        report.fetch_elapsed = Duration::from_secs_f64(fetch_s);
-        report.scan_elapsed = Duration::from_secs_f64(scan_s);
+        let report = crate::scheduler::SyncReport {
+            fetch_elapsed: Duration::from_secs_f64(fetch_s),
+            scan_elapsed: Duration::from_secs_f64(scan_s),
+            ..Default::default()
+        };
         SyncOutcome {
             report,
             enhance: crate::enhance::EnhanceStats::default(),

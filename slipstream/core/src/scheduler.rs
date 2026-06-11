@@ -27,6 +27,13 @@ use crate::{
 /// range completion, run_to_completion returns the error to break ping-pong.
 const MAX_CONSECUTIVE_REORGS: u64 = 5;
 
+// Compile-time bounds: ≥1 (otherwise the first reorg is never recovered) and
+// ≤10 (otherwise infinite ping-pong is possible). Fails the build if violated.
+const _: () = {
+    assert!(MAX_CONSECUTIVE_REORGS >= 1);
+    assert!(MAX_CONSECUTIVE_REORGS <= 10);
+};
+
 #[derive(Debug, Default, Clone)]
 pub struct SyncReport {
     pub ranges_processed: u64,
@@ -257,10 +264,10 @@ pub async fn run_to_completion(
         // Spendable latch: if this range was ChainTip priority, funds are now likely
         // spendable (SBS semantics — the tip-priority range covers the most-recent
         // blocks where the wallet's own notes appear as spendable).
-        if range.priority() == ScanPriority::ChainTip {
-            if let Some(ref p) = progress {
-                p.set_spendable();
-            }
+        if range.priority() == ScanPriority::ChainTip
+            && let Some(ref p) = progress
+        {
+            p.set_spendable();
         }
 
         // F3: Per-range interleaved enhancement.
@@ -271,23 +278,37 @@ pub async fn run_to_completion(
         // the very end. The engine's final post-loop run_enhancement still fires
         // (catches any leftovers) and its stats are accumulated into SyncOutcome
         // separately. We reuse a fresh gRPC client per call (same pattern as engine.rs).
+        //
+        // NON-FATAL: interleaved enhancement is an optimization (progressive tx
+        // visibility), not a correctness guarantee — that is the final post-loop run's
+        // job. A transient connect/fetch failure here must NOT abort a multi-minute
+        // sync at a range boundary; we log and continue scanning.
         {
             let enhance_started = std::time::Instant::now();
-            let mut enhance_client = grpc::connect(&config.endpoint).await?;
-            let enhance_stats = run_enhancement(
-                session,
-                &mut enhance_client,
-                config.network,
-                progress.clone(),
-            )
-            .await?;
-            let enhance_wall = enhance_started.elapsed();
-            // Accumulate into report so stage-split in engine.rs sums all runs.
-            report.enhance.requests += enhance_stats.requests;
-            report.enhance.txs_stored += enhance_stats.txs_stored;
-            report.enhance.statuses_set += enhance_stats.statuses_set;
-            report.enhance.skipped += enhance_stats.skipped;
-            report.enhance_elapsed += enhance_wall;
+            let enhance_result = async {
+                let mut enhance_client = grpc::connect(&config.endpoint).await?;
+                run_enhancement(session, &mut enhance_client, config.network, progress.clone())
+                    .await
+            }
+            .await;
+            match enhance_result {
+                Ok(enhance_stats) => {
+                    // Accumulate into report so stage-split in engine.rs sums all runs.
+                    report.enhance.requests += enhance_stats.requests;
+                    report.enhance.txs_stored += enhance_stats.txs_stored;
+                    report.enhance.statuses_set += enhance_stats.statuses_set;
+                    report.enhance.skipped += enhance_stats.skipped;
+                }
+                Err(err) => {
+                    warn!(
+                        %err,
+                        start,
+                        end,
+                        "per-range enhancement failed — continuing; final post-loop enhancement will retry"
+                    );
+                }
+            }
+            report.enhance_elapsed += enhance_started.elapsed();
         }
 
         // F2: Bump ranges_completed AFTER scan + per-range enhancement.
@@ -347,13 +368,8 @@ mod tests {
         assert_eq!(report.reorgs_recovered, 2);
     }
 
-    #[test]
-    fn max_consecutive_reorgs_constant() {
-        // The cap must be at least 1 (otherwise the first reorg is never recovered)
-        // and bounded (otherwise infinite ping-pong is possible).
-        assert!(MAX_CONSECUTIVE_REORGS >= 1, "cap must allow at least one recovery");
-        assert!(MAX_CONSECUTIVE_REORGS <= 10, "cap must be bounded to prevent infinite loops");
-    }
+    // NOTE: MAX_CONSECUTIVE_REORGS bounds are enforced at compile time via the
+    // `const _: () = { assert!(...) }` block next to the constant definition.
 
     #[test]
     fn report_accumulates_correctly() {
