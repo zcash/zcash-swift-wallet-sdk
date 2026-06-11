@@ -20,12 +20,21 @@ pub struct Chunk {
     /// can be 2–3× larger (Vec capacity, per-field allocations) — the budget
     /// is a conservative bound, not a tight one.
     pub estimated_bytes: usize,
+    /// Trial-decryption work denominator: sapling outputs + orchard actions
+    /// across all transactions in this chunk.
+    pub outputs: u64,
 }
 
 impl Chunk {
     pub fn from_blocks(index: u64, blocks: Vec<CompactBlock>) -> Self {
         let estimated_bytes = blocks.iter().map(Message::encoded_len).sum();
-        Self { index, blocks, estimated_bytes }
+        // Count total sapling outputs and orchard actions across all transactions.
+        let outputs: u64 = blocks
+            .iter()
+            .flat_map(|block| &block.vtx)
+            .map(|tx| (tx.outputs.len() + tx.actions.len()) as u64)
+            .sum();
+        Self { index, blocks, estimated_bytes, outputs }
     }
 
     pub fn start_height(&self) -> Option<u64> {
@@ -95,6 +104,7 @@ impl ChunkQueueReceiver {
 mod tests {
     use super::*;
     use std::time::Duration;
+    use zcash_client_backend::proto::compact_formats::{CompactSaplingOutput, CompactOrchardAction, CompactTx};
 
     fn block(height: u64) -> CompactBlock {
         CompactBlock { height, hash: vec![height as u8; 32], ..Default::default() }
@@ -102,6 +112,15 @@ mod tests {
 
     fn chunk_of(index: u64, heights: std::ops::RangeInclusive<u64>) -> Chunk {
         Chunk::from_blocks(index, heights.map(block).collect())
+    }
+
+    /// Helper to construct a CompactTx with known outputs and actions.
+    fn tx_with_outputs_and_actions(outputs: u32, actions: u32) -> CompactTx {
+        CompactTx {
+            outputs: (0..outputs).map(|_| CompactSaplingOutput::default()).collect(),
+            actions: (0..actions).map(|_| CompactOrchardAction::default()).collect(),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -166,5 +185,32 @@ mod tests {
             .expect("send completes under zero budget")
             .expect("send ok");
         assert!(rx.recv().await.is_some());
+    }
+
+    #[test]
+    fn chunk_outputs_counts_vtx_outputs_and_actions() {
+        // Build two blocks with known vtx contents.
+        let blocks = vec![
+            CompactBlock {
+                height: 1,
+                hash: vec![1; 32],
+                vtx: vec![
+                    tx_with_outputs_and_actions(3, 2), // 3 outputs + 2 actions = 5
+                    tx_with_outputs_and_actions(1, 0), // 1 output + 0 actions = 1
+                ],
+                ..Default::default()
+            },
+            CompactBlock {
+                height: 2,
+                hash: vec![2; 32],
+                vtx: vec![
+                    tx_with_outputs_and_actions(0, 4), // 0 outputs + 4 actions = 4
+                ],
+                ..Default::default()
+            },
+        ];
+        // Expected: 5 + 1 + 4 = 10
+        let chunk = Chunk::from_blocks(0, blocks);
+        assert_eq!(chunk.outputs, 10, "outputs must sum sapling outputs + orchard actions");
     }
 }

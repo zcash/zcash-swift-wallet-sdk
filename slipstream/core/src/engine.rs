@@ -121,14 +121,27 @@ pub async fn sync_once(
         run_enhancement(&mut session, &mut client, config.network, progress.clone()).await?;
     let enhance_elapsed = enhance_started.elapsed();
 
-    Ok(SyncOutcome {
+    let outcome = SyncOutcome {
         report,
         enhance,
         transparent,
         enhance_elapsed,
         elapsed: started.elapsed(),
         chain_tip: tip,
-    })
+    };
+
+    // Log the stage split: total time + per-stage breakdown + bound.
+    info!(
+        total_s = outcome.elapsed.as_secs_f64(),
+        fetch_s = outcome.report.fetch_elapsed.as_secs_f64(),
+        scan_s = outcome.report.scan_elapsed.as_secs_f64(),
+        enhance_s = outcome.enhance_elapsed.as_secs_f64(),
+        blocks = outcome.report.scan.blocks,
+        bound = outcome.bound(),
+        "sync stage split"
+    );
+
+    Ok(outcome)
 }
 
 #[cfg(test)]

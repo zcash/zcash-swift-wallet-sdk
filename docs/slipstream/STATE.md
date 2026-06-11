@@ -5,14 +5,14 @@
 
 ## NEXT ACTION
 
-➡️ **T5.1** — Instrumentation (per-chunk timing + outputs + stage-split log). Detailed steps: docs/slipstream/plans/2026-06-11-phase-5-perf.md. M1 housekeeping still open: flag-default revert after user sign-off.
+➡️ **T5.2** — Adaptive scan sub-batching (time-targeted commits; fetch chunks unchanged). Detailed steps: docs/slipstream/plans/2026-06-11-phase-5-perf.md. T5.1 complete.
 
 ## Current phase: P5 — Performance pass (plan: `plans/2026-06-11-phase-5-perf.md`)
 
 | Task | Status | Session notes |
 |---|---|---|
 | T5.0 compact phase plan | done | Scoped by the iPhone log decomposition (scan ≈195s of 208s; decrypt ~3-5% of scan; persistence ~95% → P6 leads with sparse tree). P5 = instruments + adaptive sub-batching + summary throttle ONLY. |
-| T5.1 instrumentation | todo | per-chunk elapsed_ms + outputs; engine stage-split info! |
+| T5.1 instrumentation | done | Chunk.outputs (u64) added to chunk.rs — counts sapling outputs + orchard actions via one pass in from_blocks; per-chunk timing (elapsed_ms) added to scan.rs in both scan_chunks and scan_chunks_from_treestate (info! logging); stage-split (total_s, fetch_s, scan_s, enhance_s, blocks, bound) added to engine.rs sync_once tail (info! logging). Test: chunk_outputs_counts_vtx_outputs_and_actions (2 synthetic blocks with known vtx counts, assert sum). Suites: cargo test -p slipstream-core -p slipstream-cli 47/0; clippy clean both feature sets; darkside feature compiles. |
 | T5.2 adaptive scan sub-batching | todo | time-targeted commits; intra-chunk treestate prefetch generalization; fast-path unchanged |
 | T5.3 summary throttle | todo | 8s cadence while Syncing |
 | T5.4 field re-run + records | todo | needs-user (full rebuild first — prior build predates T4.6) |

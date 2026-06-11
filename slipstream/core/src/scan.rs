@@ -5,8 +5,9 @@
 //! prefetch makes its latency invisible).
 
 use std::sync::Arc;
+use std::time::Instant;
 
-use tracing::{debug, info};
+use tracing::info;
 use zcash_client_backend::data_api::chain::{error::Error as ChainError, scan_cached_blocks};
 use zcash_protocol::consensus::BlockHeight;
 
@@ -104,6 +105,7 @@ pub async fn scan_chunks(
         // would require 'static, which &mut session does not satisfy; multi-thread runtime
         // is guaranteed by the CLI's #[tokio::main] with default flavor = multi_thread).
         // NOTE: block_in_place panics on a current_thread runtime — engine requires the multi-thread runtime (the CLI's Runtime::new()).
+        let scan_start = Instant::now();
         let scan_result = tokio::task::block_in_place(|| {
             let source = MemBlockSource::new(&chunk);
             scan_cached_blocks(
@@ -115,6 +117,7 @@ pub async fn scan_chunks(
                 len,
             )
         });
+        let elapsed_ms = scan_start.elapsed().as_millis() as u64;
 
         let summary = match scan_result {
             Ok(s) => s,
@@ -138,7 +141,7 @@ pub async fn scan_chunks(
         if let Some(ref p) = progress {
             p.add_scanned(scanned);
         }
-        debug!(chunk_start, chunk_end, len, "chunk scanned");
+        info!(chunk_start, chunk_end, len, outputs = chunk.outputs, elapsed_ms, "chunk scanned");
 
         drop(permit); // release byte budget only after the scan committed
 
@@ -201,6 +204,7 @@ pub async fn scan_chunks_from_treestate(
         let network = session.network;
         let len = chunk.blocks.len();
 
+        let scan_start = Instant::now();
         let summary = {
             let source = MemBlockSource::new(&chunk);
             let from_height = u32::try_from(chunk_start)
@@ -217,6 +221,7 @@ pub async fn scan_chunks_from_treestate(
             })
             .map_err(map_scan_error)?
         };
+        let elapsed_ms = scan_start.elapsed().as_millis() as u64;
 
         let scanned = u64::from(u32::from(summary.scanned_range().end))
             - u64::from(u32::from(summary.scanned_range().start));
@@ -224,7 +229,7 @@ pub async fn scan_chunks_from_treestate(
         stats.chunks += 1;
         stats.sapling_received += summary.received_sapling_note_count() as u64;
         stats.orchard_received += summary.received_orchard_note_count() as u64;
-        debug!(chunk_start, chunk_end, len, "chunk scanned (from_treestate)");
+        info!(chunk_start, chunk_end, len, outputs = chunk.outputs, elapsed_ms, "chunk scanned");
 
         drop(permit);
         next_state = synthesized_next;
