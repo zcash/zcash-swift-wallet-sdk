@@ -38,10 +38,10 @@
 | P4 | iOS docking | `zcashlc_slipstream_*` FFI; XCFramework all-arch build; `SlipstreamSynchronizer`; darkside subset on it; Zodl behind a debug flag | **M1 (THE milestone):** Zodl-on-Slipstream restores a known seed → correct balance + full tx history (vs Zodl-on-old-SDK control); wall-clock recorded. BUILT 2026-06-11 (autonomous portion): 3-slice XCFramework × 6 zcashlc_slipstream_* symbols; Zodl simulator BUILD SUCCEEDED + ENGINE=SlipstreamSynchronizer boot-log captured; OfflineTests 430/0 incl. 11 Slipstream tests. MEASURED 2026-06-11 (user device, real wallet, 268855 blocks): Slipstream 158s vs old SDK 1710s = 10.8× — ≥5× criterion EXCEEDED. Balance/tx parity confirmed by user's own wallet. Remaining: flag-default revert after sign-off. |
 | P5 | Performance pass (T0) | Per-stage instrumentation; commit/write tuning; fetcher adaptivity + server selection; device A/B methodology vs YWallet/Zingo | **G5:** 1M recent blocks ≤15 min on device, good Wi-Fi; published comparison table |
 | P6 | Kernel v2 + sparse tree (conditional) | Golden-oracle harness; column-oriented batch ECDH kernel; `put_blocks`-compatible output; tree fast-path eval | **G6:** ≥2× scan throughput vs upstream scanner with ZERO diffs vs oracle on recorded fixtures. *Enter only if G5 shows CPU-bound or spam-era targets unmet.* |
-| P7 | Android | uniffi (or JNI) bindings, cargo-ndk pipeline, Kotlin shell, docking analysis vs zcash-android-sdk seam | **M2:** Android wallet parity demo (same criteria as M1) |
+| P7 | Android (DECOUPLED 2026-06-11, user decision) | ~~uniffi bindings~~ — zcash-android-sdk already exists with its own Rust-FFI backend architecture; a uniffi blackbox is the wrong shape. iOS is the REFERENCE IMPLEMENTATION; Android = future port-by-reference (slipstream-core crate slots into their backend-lib the way it slotted into libzcashlc) — out of this prototype's scope | **M2: DEFERRED** — not a prototype gate |
 | P8 | Hardening | Tor transport, Drip/background modes, reorg fuzz suite, memory budgets, T1 warp-packet exporter + format spec | rolling gates per feature |
 
-Dependency chain: P0→P1→P2→P3→P4(M1). P5 after M1. P6 conditional on P5 data. P7 after G3 (can parallel P5/P6). P8 rolling.
+Dependency chain: P0→P1→P2→P3→P4(M1). P5 after M1. P6 entry condition MET (2026-06-11 device matrix). P7 DECOUPLED (future port-by-reference). P8 rolling.
 
 ---
 
