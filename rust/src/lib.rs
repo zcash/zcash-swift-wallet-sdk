@@ -4218,13 +4218,30 @@ pub(crate) fn parse_optional_height(value: i64) -> anyhow::Result<Option<BlockHe
 //
 // cbindgen note (C4/C12): cbindgen only parses the root crate. `FfiSlipstreamSnapshot`
 // and `FfiSlipstreamEvent` are therefore defined directly here so they appear in the
-// generated `zcashlc.h`. `SlipstreamHandle` uses the mirrored types from ffi_handle.rs;
-// at the FFI boundary the fields are copied (both are repr(C) with identical field
-// layouts, so the copy is a no-op transform).
+// generated `zcashlc.h`.
+//
+// `SlipstreamHandle` MUST also be defined here (not imported from the dep crate) so
+// cbindgen emits `typedef struct SlipstreamHandle SlipstreamHandle;` in the header.
+// Without it the ObjC module fails to compile with "unknown type name 'SlipstreamHandle'".
+// This is the TorRuntime pattern: `TorRuntime` is defined in rust/src/tor.rs (crate-local)
+// so cbindgen can see and emit its opaque typedef. We wrap the core handle in a thin
+// crate-local newtype here — the wrapper owns the core handle via `inner`.
 
-use slipstream_core::ffi_handle::{SlipstreamHandle, SyncState};
+use slipstream_core::ffi_handle::SyncState;
 // Internal event type (from slipstream-core) used by the handle's event ring.
 use slipstream_core::ffi_handle::FfiSlipstreamEvent as SlipstreamCoreEvent;
+
+/// Opaque handle to a Slipstream engine instance.
+///
+/// Wraps [`slipstream_core::ffi_handle::SlipstreamHandle`] as a crate-local newtype so
+/// that cbindgen (which only parses the root crate) emits the required opaque typedef
+/// `typedef struct SlipstreamHandle SlipstreamHandle;` in the generated `zcashlc.h`.
+///
+/// All state is stored in `inner`; the six `zcashlc_slipstream_*` functions delegate
+/// directly to it.
+pub struct SlipstreamHandle {
+    inner: slipstream_core::ffi_handle::SlipstreamHandle,
+}
 
 /// C-compatible snapshot of Slipstream engine progress. Returned by
 /// [`zcashlc_slipstream_snapshot`] (by value — no heap allocation).
@@ -4308,7 +4325,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
             .build()
             .map_err(|e| anyhow!("tokio runtime: {e}"))?;
 
-        let handle = SlipstreamHandle {
+        let inner = slipstream_core::ffi_handle::SlipstreamHandle {
             runtime,
             progress: std::sync::Arc::new(slipstream_core::events::Progress::default()),
             state: std::sync::Arc::new(std::sync::Mutex::new(SyncState::Idle)),
@@ -4323,7 +4340,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
             network,
         };
 
-        Ok(Box::into_raw(Box::new(handle)))
+        Ok(Box::into_raw(Box::new(SlipstreamHandle { inner })))
     });
     unwrap_exc_or_null(res)
 }
@@ -4359,12 +4376,13 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
     let handle = AssertUnwindSafe(handle);
     let res = catch_panic(|| {
         let handle = unsafe { handle.as_mut() }.ok_or_else(|| anyhow!("null handle"))?;
+        let h = &mut handle.inner;
 
         // Cancel any in-flight task before spawning a new one.
-        if let Some(task) = handle.task.take() {
+        if let Some(task) = h.task.take() {
             task.abort();
         }
-        *handle.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Syncing;
+        *h.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Syncing;
 
         let ufvk_str: Option<String> = if ufvk.is_null() || ufvk_len == 0 {
             None
@@ -4377,19 +4395,19 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         };
 
         let cfg = slipstream_core::config::EngineConfig::new(
-            handle.network,
-            handle.wallet_db_path.clone(),
-            handle.endpoint.clone(),
+            h.network,
+            h.wallet_db_path.clone(),
+            h.endpoint.clone(),
         );
 
         // The ufvk String is moved into the task; `as_str()` on it is safe within the
         // task's lifetime (the String outlives the async block inside the task).
         let ufvk_arg: Option<(String, u64)> = ufvk_str.map(|s| (s, birthday_height));
-        let progress = std::sync::Arc::clone(&handle.progress);
-        let state = std::sync::Arc::clone(&handle.state);
-        let events = std::sync::Arc::clone(&handle.events);
+        let progress = std::sync::Arc::clone(&h.progress);
+        let state = std::sync::Arc::clone(&h.state);
+        let events = std::sync::Arc::clone(&h.events);
 
-        let task = handle.runtime.spawn(async move {
+        let task = h.runtime.spawn(async move {
             // Notify SyncStarted (tag=1).
             // Use SlipstreamCoreEvent (the type stored in the handle's event ring).
             {
@@ -4431,7 +4449,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
             }
         });
 
-        handle.task = Some(task);
+        h.task = Some(task);
         Ok(true)
     });
     unwrap_exc_or(res, false)
@@ -4452,10 +4470,11 @@ pub unsafe extern "C" fn zcashlc_slipstream_stop(handle: *mut SlipstreamHandle) 
     let handle = AssertUnwindSafe(handle);
     let res = catch_panic(|| {
         let handle = unsafe { handle.as_mut() }.ok_or_else(|| anyhow!("null handle"))?;
-        if let Some(task) = handle.task.take() {
+        let h = &mut handle.inner;
+        if let Some(task) = h.task.take() {
             task.abort();
         }
-        *handle.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Idle;
+        *h.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Idle;
         Ok(true)
     });
     unwrap_exc_or(res, false)
@@ -4477,9 +4496,9 @@ pub unsafe extern "C" fn zcashlc_slipstream_snapshot(
     let handle = AssertUnwindSafe(handle);
     let res = catch_panic(|| {
         let handle = unsafe { handle.as_ref() }.ok_or_else(|| anyhow!("null handle"))?;
-        // Convert from the ffi_handle module's snapshot to the cbindgen-visible type
-        // defined in this file. Both are repr(C) with identical field layout; copy fields.
-        let s = handle.snapshot();
+        // Delegate to the inner handle's snapshot() and copy fields into the
+        // cbindgen-visible FfiSlipstreamSnapshot defined in this file.
+        let s = handle.inner.snapshot();
         Ok(FfiSlipstreamSnapshot {
             chain_tip: s.chain_tip,
             fetched_blocks: s.fetched_blocks,
@@ -4520,7 +4539,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_drain_events(
     let buf = AssertUnwindSafe(buf);
     let res = catch_panic(|| {
         let handle = unsafe { handle.as_mut() }.ok_or_else(|| anyhow!("null handle"))?;
-        let mut ring = handle.events.lock().unwrap_or_else(|p| p.into_inner());
+        let mut ring = handle.inner.events.lock().unwrap_or_else(|p| p.into_inner());
         let to_copy = ring.len().min(buf_len);
         // Convert from SlipstreamCoreEvent (ffi_handle module) to the cbindgen-visible
         // FfiSlipstreamEvent (defined in this file). Both are repr(C); copy fields.
@@ -4552,7 +4571,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_free(handle: *mut SlipstreamHandle) 
         let mut h: Box<SlipstreamHandle> = unsafe { Box::from_raw(handle) };
         // Abort the in-flight task before dropping the runtime; dropping a Runtime with
         // live tasks causes a panic on some platforms.
-        if let Some(task) = h.task.take() {
+        if let Some(task) = h.inner.task.take() {
             task.abort();
         }
         drop(h);
