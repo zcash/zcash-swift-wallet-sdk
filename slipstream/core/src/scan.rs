@@ -179,6 +179,7 @@ pub async fn scan_chunks(
         let mut chunk_scanned_blocks: u64 = 0;
         let mut chunk_sapling: u64 = 0;
         let mut chunk_orchard: u64 = 0;
+        let mut chunk_elapsed_ms: u64 = 0;
 
         loop {
             // How many blocks remain in this chunk from sub_start?
@@ -197,9 +198,7 @@ pub async fn scan_chunks(
             // prefetch; the chunk-boundary case (current_batch_len == remaining) is
             // the degenerate single-batch path.
             //
-            // The final sub-batch's prefetch task runs to completion detached
-            // (JoinHandle dropped) — one extra gRPC call per chunk boundary,
-            // acceptable (same as before T5.2).
+            // On scan failure, prefetch.abort() is called before returning. The to_chain_state() and height-overflow error paths return without aborting — the spawned task completes detached, which is harmless.
             let prefetch = tokio::spawn({
                 let mut c = client.clone();
                 async move { grpc::get_tree_state(&mut c, sub_end).await }
@@ -259,6 +258,8 @@ pub async fn scan_chunks(
                 "sub-batch scanned"
             );
 
+            chunk_elapsed_ms += elapsed_ms;
+
             // Await the prefetch; it ran concurrently with the blocking scan.
             let fetched = prefetch
                 .await
@@ -294,7 +295,7 @@ pub async fn scan_chunks(
         // T5.1 per-chunk info log (kept at chunk granularity — would spam on fast devices
         // if emitted per sub-batch at info level; sub-batch detail is at debug level above).
         let len = chunk.blocks.len();
-        info!(chunk_start, chunk_end, len, outputs = chunk.outputs, "chunk scanned");
+        info!(chunk_start, chunk_end, len, outputs = chunk.outputs, chunk_elapsed_ms, "chunk scanned");
 
         drop(permit); // release byte budget only after the chunk's last sub-batch committed
     }
@@ -393,7 +394,7 @@ pub async fn scan_chunks_from_treestate(
         stats.chunks += 1;
         stats.sapling_received += summary.received_sapling_note_count() as u64;
         stats.orchard_received += summary.received_orchard_note_count() as u64;
-        info!(chunk_start, chunk_end, len, outputs = chunk.outputs, elapsed_ms, "chunk scanned");
+        info!(chunk_start, chunk_end, len, outputs = chunk.outputs, chunk_elapsed_ms = elapsed_ms, "chunk scanned");
 
         drop(permit);
         next_state = synthesized_next;
