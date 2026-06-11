@@ -818,4 +818,73 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertEqual(idleTimeout, 3_000_000_000, "idle summary timeout must be 3s")
         XCTAssertEqual(boundaryTimeout, 20_000_000_000, "boundary summary timeout must be 20s")
     }
+
+    // MARK: - 13. shouldMarkChainTipUpdated pure-helper unit tests (field bug 2026-06-11)
+    //
+    // Oracle: UpdateChainTipAction.swift:49 marks `SDKFlags.chainTipUpdated` right after
+    // `rustBackend.updateChainTip` succeeds. The Slipstream engine stores the snapshot
+    // tip ONLY AFTER `session.update_chain_tip(tip)` succeeds (engine.rs:111 → :116), so:
+    //   - tip changed vs run start  → DB tip refreshed by THIS run → mark.
+    //   - tip == run-start value    → only trust when the pass reached Done (state 3).
+    //   - tip == 0                  → engine never advertised a tip → never mark.
+    //   - already marked            → once per run, no re-marking.
+    // Without this marking, ZcashRustBackend.getWalletSummary() masks spendableValue to
+    // zero forever in the Slipstream path (field report: pending spinner, cannot pay).
+
+    /// Fresh handle, first nonzero tip while syncing → mark (the field-bug case: a fresh
+    /// 269k restore must unmask spendable balances during/after the first pass).
+    func testShouldMarkChainTipFreshHandleFirstNonZeroTip() {
+        XCTAssertTrue(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
+            snapshotTip: 3_374_491, tipAtRunStart: 0, state: 1, alreadyMarked: false
+        ))
+    }
+
+    /// Snapshot tip 0 (engine not yet past update_chain_tip) → never mark, in any state.
+    func testShouldMarkChainTipZeroTipNeverMarks() {
+        for state: UInt8 in [0, 1, 2, 3] {
+            XCTAssertFalse(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
+                snapshotTip: 0, tipAtRunStart: 0, state: state, alreadyMarked: false
+            ), "tip 0 must never mark (state \(state))")
+        }
+    }
+
+    /// Restarted handle: tip advanced past the run-start residue → mark (the engine's
+    /// update_chain_tip stored a fresh tip in this pass).
+    func testShouldMarkChainTipAdvancedTipMarks() {
+        XCTAssertTrue(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
+            snapshotTip: 3_374_500, tipAtRunStart: 3_374_491, state: 1, alreadyMarked: false
+        ))
+    }
+
+    /// Restarted handle, tip UNCHANGED while still syncing → do NOT mark: the nonzero tip
+    /// may be residue from a previous pass (stale-tip protection, [#1591]).
+    func testShouldMarkChainTipSameTipWhileSyncingDoesNotMark() {
+        XCTAssertFalse(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
+            snapshotTip: 3_374_491, tipAtRunStart: 3_374_491, state: 1, alreadyMarked: false
+        ))
+    }
+
+    /// Restarted handle, tip unchanged but the pass reached Done → mark: sync_once cannot
+    /// complete without update_chain_tip having succeeded.
+    func testShouldMarkChainTipSameTipDoneMarks() {
+        XCTAssertTrue(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
+            snapshotTip: 3_374_491, tipAtRunStart: 3_374_491, state: 3, alreadyMarked: false
+        ))
+    }
+
+    /// Same-tip error state (pass failed, possibly BEFORE update_chain_tip) → do not mark.
+    func testShouldMarkChainTipSameTipErrorDoesNotMark() {
+        XCTAssertFalse(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
+            snapshotTip: 3_374_491, tipAtRunStart: 3_374_491, state: 2, alreadyMarked: false
+        ))
+    }
+
+    /// Once marked, later ticks never re-mark within the same run.
+    func testShouldMarkChainTipAlreadyMarkedNeverMarks() {
+        for state: UInt8 in [0, 1, 2, 3] {
+            XCTAssertFalse(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
+                snapshotTip: 3_374_999, tipAtRunStart: 0, state: state, alreadyMarked: true
+            ), "alreadyMarked must suppress re-marking (state \(state))")
+        }
+    }
 }

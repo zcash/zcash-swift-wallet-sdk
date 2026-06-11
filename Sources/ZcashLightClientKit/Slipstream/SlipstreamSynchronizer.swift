@@ -87,6 +87,21 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // abandoning the call on an iPad A10 where summary may take 5-15s.
     private var lastRangesCompleted: UInt64 = 0
     private var boundarySummaryTask: Task<Void, Never>?
+
+    // ── Chain-tip-updated flag parity (field bug 2026-06-11) ───────────────────
+    // `ZcashRustBackend.getWalletSummary()` masks `spendableValue` to zero (moving it
+    // into `valuePendingSpendability`) while `SDKFlags.chainTipUpdated == false` — the
+    // [#1591] stale-chain-tip protection. In the old SDK that flag is set by
+    // `UpdateChainTipAction.swift:49` right after `rustBackend.updateChainTip` succeeds.
+    // The Slipstream engine performs the equivalent DB update inside `sync_once`
+    // (engine.rs:111 `session.update_chain_tip(tip)`) and only THEN advertises the tip
+    // to the snapshot (engine.rs:116 `p.set_chain_tip(tip)`), so a snapshot tip that
+    // differs from the value captured at start() — or any nonzero tip once the pass
+    // reaches Done — proves the wallet DB chain tip was refreshed by THIS run.
+    // Without this marking, every balance the Slipstream path emits has
+    // spendableValue == 0 forever (field report: balance pending-spinner, cannot pay).
+    private var chainTipMarkedThisRun = false
+    private var chainTipAtRunStart: UInt64 = 0
     // Hard timeout (nanoseconds) for a boundary getWalletSummary call: 20 seconds.
     // Longer than the 3s idle timeout because this fires mid-sync when the DB is
     // quiet (scanner paused) — we can afford to wait for a fresh balance.
@@ -195,6 +210,16 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// (keyless update — engine calls `ensure_account` only when `ufvk=Some`).
     public func start(retry: Bool = false) async throws {
         let birthday = BlockHeight(initializer.walletBirthday)
+        // Parity with SDKSynchronizer.start (SDKSynchronizer.swift:198/204): re-enables
+        // `SDKFlags.chainTipUpdated` when the SDK was stopped less than 120 s ago, so a
+        // quick background/foreground hop does not re-mask spendable balances.
+        let sdkFlags = initializer.container.resolve(SDKFlags.self)
+        await sdkFlags.sdkStarted()
+        // Capture the engine's snapshot tip BEFORE the new pass starts: any LATER tip
+        // change (or a Done state) proves THIS pass refreshed the wallet DB chain tip
+        // (engine.rs:111 → :116 ordering) — the condition for markChainTipAsUpdated().
+        chainTipAtRunStart = await engine.snapshot()?.chainTip ?? 0
+        chainTipMarkedThisRun = false
         // TODO: [#1755] Consider passing ufvk=Some after T4.4 integration tests confirm
         //   idempotency. Current strategy: ufvk=nil (keyless) since prepare() already
         //   imported the account and stored its birthday treestate.
@@ -215,7 +240,15 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// Per plan binding note C8: engine.stop() is an actor method; the synchronous
     /// protocol method wraps it in `Task {}`.
     public func stop() {
-        Task { await engine.stop() }
+        // Parity with SDKSynchronizer.stop (SDKSynchronizer.swift:244): reset
+        // `SDKFlags.chainTipUpdated` so spendable balances are re-masked until the next
+        // pass refreshes the wallet DB chain tip ([#1591] stale-tip protection).
+        let sdkFlags = initializer.container.resolve(SDKFlags.self)
+        Task {
+            await sdkFlags.sdkStopped()
+            await engine.stop()
+        }
+        chainTipMarkedThisRun = false
         isRunning = false
         stopPolling()
         stateSubject.send(SynchronizerState(
@@ -254,6 +287,9 @@ public final class SlipstreamSynchronizer: Synchronizer {
     private func tickPoll() async {
         guard let snap = await engine.snapshot() else { return }
         let events = await engine.drainEvents()
+
+        // Chain-tip flag marking (field bug 2026-06-11) — see markChainTipFlagIfNeeded.
+        await markChainTipFlagIfNeeded(snap)
 
         // ── T5.5 state-dispatch: Syncing vs Done vs other ─────────────────────
         //
@@ -373,6 +409,33 @@ public final class SlipstreamSynchronizer: Synchronizer {
                 eventSubject.send(.foundTransactions(txs, nil))
             }
         }
+    }
+
+    /// Marks `SDKFlags.chainTipUpdated` once per run when the engine has refreshed the
+    /// wallet DB chain tip — the mirror of `UpdateChainTipAction.swift:49` for the
+    /// Slipstream path (field bug 2026-06-11).
+    ///
+    /// `ZcashRustBackend.getWalletSummary()` masks `spendableValue` to zero while
+    /// `SDKFlags.chainTipUpdated == false` ([#1591] stale-tip protection). Without this
+    /// marking the Slipstream path never lifts that mask and the app shows all funds as
+    /// pending/unspendable forever. The decision itself is the pure helper
+    /// `shouldMarkChainTipUpdated` (see its doc for the engine-ordering argument).
+    private func markChainTipFlagIfNeeded(_ snap: SlipstreamSnapshot) async {
+        guard Self.shouldMarkChainTipUpdated(
+            snapshotTip: snap.chainTip,
+            tipAtRunStart: chainTipAtRunStart,
+            state: snap.state,
+            alreadyMarked: chainTipMarkedThisRun
+        ) else { return }
+
+        chainTipMarkedThisRun = true
+        await initializer.container.resolve(SDKFlags.self).markChainTipAsUpdated()
+        initializer.logger.debug(
+            "chainTipUpdated marked (snapshot tip \(snap.chainTip), state \(snap.state))",
+            file: #file,
+            function: #function,
+            line: #line
+        )
     }
 
     /// Returns the minimum interval (seconds) between summary fetches based on the
@@ -830,6 +893,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
             // 3a-F2. Reset the ranges-completed counter: the engine handle is being destroyed.
             lastRangesCompleted = 0
 
+            // 3a-chainTip. Reset the chain-tip marking state: the handle (and its
+            // snapshot tip) is destroyed; the next start() re-evaluates from scratch.
+            chainTipMarkedThisRun = false
+            chainTipAtRunStart = 0
+
             // 3b-F1. Reset the cached wallet summary: the DB is being wiped, so the
             //        cached values would be stale for any subsequent prepare()/start().
             cachedSummary = nil
@@ -930,6 +998,10 @@ public final class SlipstreamSynchronizer: Synchronizer {
         lastEnhancedCount = 0
         // F2: reset range-boundary counter: new handle starts from zero.
         lastRangesCompleted = 0
+        // Chain-tip marking: the new handle's snapshot tip starts at zero; start()
+        // below re-captures the baseline. Reset here for the not-restarting case.
+        chainTipMarkedThisRun = false
+        chainTipAtRunStart = 0
 
         // Restart if the engine was previously running.
         if wasRunning {
@@ -1087,73 +1159,6 @@ public final class SlipstreamSynchronizer: Synchronizer {
 }
 
 // MARK: - Internal test-visible helpers
-
-extension SlipstreamSynchronizer {
-    /// Counter-based sync progress — derived purely from engine atomics, no DB call.
-    ///
-    /// Formula: `Float(scanned) / Float(max(total, 1))`, clamped to [0.0, 1.0].
-    ///   - `total == 0` (no ranges taken yet) → 0.0 (prevents division by zero).
-    ///   - Result > 1.0 (defensive) → clamped to 1.0.
-    ///
-    /// This is the primary progress source while `state == 1` (Syncing). It eliminates
-    /// the `getWalletSummary` call that caused ~20–35% per-output CPU overhead on iPad A10
-    /// (T5.5 — A10 log evidence: summary-parasite root cause confirmed).
-    ///
-    /// - Parameters:
-    ///   - scanned: `snap.scannedBlocks` from the FFI snapshot.
-    ///   - total:   `snap.passTotalBlocks` from the FFI snapshot.
-    /// - Returns: progress fraction ∈ [0.0, 1.0].
-    static func counterProgress(scanned: UInt64, total: UInt64) -> Float {
-        let denominator = max(total, 1)
-        return min(Float(scanned) / Float(denominator), 1.0)
-    }
-
-    /// Pure progress composition — mirrors the old SDK's ScanAction formula verbatim.
-    ///
-    /// Formula source: `ScanAction.swift` lines ~81-99.
-    /// ```
-    ///   composedNumerator   = scanProgress.numerator   + (recoveryProgress?.numerator   ?? 0)
-    ///   composedDenominator = scanProgress.denominator + (recoveryProgress?.denominator ?? 0)
-    ///   denominator == 0    → 1.0
-    ///   progress > 1.0      → clamp to 1.0 (old SDK threw; we log-warn, then clamp)
-    ///   areFundsSpendable   = scanProgress.isComplete  (ScanAction.swift:99)
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - scanProgress:     `(numerator, denominator, isComplete)` from `WalletSummary.scanProgress`,
-    ///                       or `nil` when the summary is unavailable (fresh db).
-    ///   - recoveryProgress: `(numerator, denominator)` from `WalletSummary.recoveryProgress`,
-    ///                       or `nil` when no recovery range exists.
-    /// - Returns: `(progress, spendable)` where `progress` ∈ [0.0, 1.0].
-    static func composeProgress(
-        scanProgress: (numerator: UInt64, denominator: UInt64, isComplete: Bool)?,
-        recoveryProgress: (numerator: UInt64, denominator: UInt64)?
-    ) -> (progress: Float, spendable: Bool) {
-        guard let scan = scanProgress else {
-            return (0.0, false)
-        }
-
-        let composedNumerator = Float(scan.numerator) + Float(recoveryProgress?.numerator ?? 0)
-        let composedDenominator = Float(scan.denominator) + Float(recoveryProgress?.denominator ?? 0)
-
-        let progress: Float
-        if composedDenominator == 0 {
-            progress = 1.0
-        } else {
-            let raw = composedNumerator / composedDenominator
-            if raw > 1.0 {
-                // Defensive clamp — should not happen, but protect the UI from an out-of-range
-                // fraction; the old SDK threw ZcashError.rustScanProgressOutOfRange here.
-                // We clamp and let the caller emit a warning (single emission point in tickPoll).
-                progress = 1.0
-            } else {
-                progress = raw
-            }
-        }
-
-        return (progress, scan.isComplete)
-    }
-}
 
 // MARK: - withTaskTimeout helper (F1)
 

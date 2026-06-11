@@ -39,6 +39,7 @@
 //! Then: cargo test -p slipstream-core --features darkside -- --ignored --test-threads=1
 #![cfg(feature = "darkside")]
 
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -53,8 +54,10 @@ use slipstream_core::{
     scan::scan_chunks_from_treestate,
     wallet_session::{WalletSession, TEST_UFVK},
 };
+use zcash_client_backend::data_api::{WalletRead, wallet::ConfirmationsPolicy};
 use zcash_client_backend::proto::service::{BlockId, BlockRange, TreeState};
 use zcash_protocol::consensus::Network;
+use zcash_protocol::value::Zatoshis;
 
 // ---------------------------------------------------------------------------
 // Fixture constants — values extracted from Swift test sources listed below.
@@ -722,4 +725,276 @@ async fn sync_enhancement_stores_raw_fields() {
         "balance must be unchanged after enhancement: expected {EXPECTED_BALANCE_ZATOSHI} zatoshi \
          (got {received_value_post:?}). Source: BalanceTests.swift:889"
     );
+}
+
+// ---------------------------------------------------------------------------
+// H4 spendability gate (field bug 2026-06-11, tracking #1755)
+// ---------------------------------------------------------------------------
+
+/// Height at which staged blocks are applied for the SPENDABILITY gate: all 100 staged
+/// empty blocks (663151..=663250), so both receive txs are DEEPLY confirmed at the tip:
+///   663174 → 663250 − 663174 + 1 = 77 confirmations
+///   663188 → 663250 − 663188 + 1 = 63 confirmations
+/// Both far above the Swift SDK's default untrusted minimum of 10 (ZIP 315).
+/// Precedent for applying at a height other than 663188: darkside_reorg.rs applies 663200/663202.
+const SPENDABILITY_APPLY_HEIGHT: i32 = 663_250;
+
+/// Permanent regression gate: after a full pipeline sync of the 2-tx fixture, upstream's
+/// OWN `get_wallet_summary` (zcash_client_sqlite `WalletDb`) must report the entire
+/// fixture balance as SPENDABLE under the exact confirmations policy the Swift SDK uses.
+///
+/// ## Why this test exists (field bug, 2026-06-11)
+///
+/// iPad A10 field report (build d6b4472f): after a fully completed Slipstream sync, the
+/// Zodl app showed the balance as PENDING (spinner) and funds could not be spent. This
+/// gate closes hypothesis H4 — "the engine-produced database itself does not yield
+/// spendable funds" — by asking upstream's own summary the question directly. If this
+/// test passes, the Rust/DB layer is exonerated for any such field report, and the bug
+/// must live in the Swift seam or the app layer.
+/// (2026-06-11 verdict: PASSED on first run — Rust/DB exonerated; the field bug was the
+/// Swift seam never marking `SDKFlags.chainTipUpdated`, so `ZcashRustBackend.getWalletSummary`
+/// masked `spendableValue` to zero. See STATE.md session log.)
+///
+/// ## Confirmations-policy provenance (MUST mirror the Swift SDK)
+///
+/// `ZcashRustBackend.swift:46-54` — `ConfirmationsPolicy.defaultTransferPolicy()` =
+/// `(trusted: 3, untrusted: 10, allowZeroConfShielding: true)`; passed to
+/// `zcashlc_get_wallet_summary` (rust/src/lib.rs:1644) and converted 1:1 by
+/// `rust/src/ffi.rs:1183-1213` into `data_api::wallet::ConfirmationsPolicy::new(3, 10, true)`.
+/// The same values are upstream's ZIP-315 defaults (rust/src/ffi.rs:1173-1181).
+///
+/// ## Pipeline parity
+///
+/// Setup mirrors `sync_finds_fixture_transactions` (same fixture, same v0.4.9
+/// workarounds), with two deliberate differences:
+///   1. Apply height 663250 (see `SPENDABILITY_APPLY_HEIGHT`) so confirmations cannot
+///      be the reason funds are unspendable — the gate isolates scan-data correctness
+///      (commitment tree positions, scan_queue completeness) from min-conf effects.
+///   2. `sparse = true` — the production default since T6.6. Byte-level equivalence of
+///      sparse vs upstream persistence on THIS fixture is already proven by
+///      `darkside_oracle::sparse_pipeline_matches_upstream_on_darkside_fixture`
+///      (semantic_diff CLEAN), so gating the shipped path adds coverage without
+///      sacrificing upstream comparability.
+///
+/// ## Asserts
+///
+///   1. Account count == 1, account total == 200000 zatoshi (fixture truth).
+///   2. **THE GATE:** per-account `spendable_value() == total()` — every zatoshi spendable.
+///   3. Sapling pool: `spendable_value == 200000` (fixture is Sapling-only).
+///
+/// On failure, the assert messages carry the full bucket split
+/// (spendable / change_pending_confirmation / value_pending_spendability), the
+/// scan_queue residue and the count of notes with NULL commitment_tree_position —
+/// the three upstream causes of value parking in `value_pending_spendability`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires local darkside lightwalletd + internet (fixture URLs)"]
+async fn fixture_funds_are_spendable_after_full_sync() {
+    let ep = darkside_endpoint();
+
+    // --- Set up darkside chain (same fixture as sync_finds_fixture_transactions) ---
+    let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
+    ctl.reset_with_tree_sizes(START_SAPLING_TREE_SIZE, 0)
+        .await
+        .expect("reset");
+    ctl.stage_blocks_url(TX_MAINNET_BLOCK_URL).await.expect("stage 663150 block");
+    ctl.stage_blocks_create(663_151, 100).await.expect("stage empty blocks");
+    ctl.stage_transactions_url(TX_663174_URL, 663_174)
+        .await
+        .expect("stage tx at 663174");
+    ctl.stage_transactions_url(TX_663188_URL, 663_188)
+        .await
+        .expect("stage tx at 663188");
+
+    // Apply ALL staged blocks (663250) — deep confirmation for both fixture txs.
+    ctl.apply_staged(SPENDABILITY_APPLY_HEIGHT).await.expect("apply staged");
+
+    // Darkside propagates staged state asynchronously — sleep 2s (Swift pattern).
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // --- Wallet session + account + tip + seed metadata (v0.4.9 workarounds,
+    //     identical to sync_finds_fixture_transactions) ---
+    let wallet_dir = tempfile::tempdir().expect("tempdir");
+    let db_path = wallet_dir.path().join("data.db");
+
+    let mut cfg = EngineConfig::new(Network::MainNetwork, db_path.clone(), ep.clone());
+    // ONE chunk for the whole 101-block range (663150..=663250): scan_chunks_from_treestate
+    // synthesizes inter-chunk tree states by COPYING the previous frontier, which is only
+    // valid when the later chunks contain no shielded outputs. Chunk 1 here contains both
+    // fixture txs (tree grows by their outputs), so a second chunk would fail put_blocks'
+    // sequential check. Single-chunk is the established darkside pattern (39/51-block
+    // ranges elsewhere are naturally single-chunk at chunk_blocks=100).
+    cfg.chunk_blocks = 200;
+    cfg.fetch_streams = 2;
+
+    let mut session =
+        WalletSession::open(Network::MainNetwork, &db_path).expect("open wallet");
+
+    let birthday_ts = TreeState {
+        network: "main".into(),
+        height: 663_149,
+        hash: "0".repeat(64),
+        time: 1,
+        sapling_tree: SAPLING_TREE_128607.into(),
+        ..Default::default()
+    };
+    session
+        .ensure_account(TEST_UFVK, birthday_ts)
+        .expect("ensure_account");
+
+    let mut client = grpc::connect(&ep).await.expect("grpc connect");
+    let chain_tip = grpc::get_latest_block_height(&mut client)
+        .await
+        .expect("get_latest_block_height");
+    assert_eq!(
+        chain_tip, SPENDABILITY_APPLY_HEIGHT as u64,
+        "darkside tip must equal the applied height"
+    );
+    session
+        .update_chain_tip(chain_tip)
+        .expect("update_chain_tip");
+
+    let block_663149_hash: Vec<u8> = {
+        let req = BlockRange {
+            start: Some(BlockId { height: BIRTHDAY_HEIGHT, hash: vec![] }),
+            end:   Some(BlockId { height: BIRTHDAY_HEIGHT, hash: vec![] }),
+            ..Default::default()
+        };
+        let mut stream = client
+            .get_block_range(req)
+            .await
+            .expect("get_block_range for birthday")
+            .into_inner();
+        let first_block = stream.next().await
+            .expect("stream should yield birthday block")
+            .expect("block 663150 ok");
+        first_block.prev_hash
+    };
+    assert_eq!(block_663149_hash.len(), 32, "prev_hash should be 32 bytes");
+    session
+        .seed_block_metadata(BIRTHDAY_HEIGHT - 1, START_SAPLING_TREE_SIZE, &block_663149_hash)
+        .expect("seed_block_metadata");
+
+    // --- Fetch ∥ scan: full pipeline, PRODUCTION persistence path (sparse = true) ---
+    let initial_scan_state = TreeState {
+        network: "main".into(),
+        height: BIRTHDAY_HEIGHT - 1,
+        hash: "0".repeat(64),
+        time: 1,
+        sapling_tree: SAPLING_TREE_128607.into(),
+        ..Default::default()
+    };
+
+    let (tx, rx) = chunk_queue(cfg.memory_budget_bytes);
+    let plan = FetchPlan::new(BIRTHDAY_HEIGHT, chain_tip, cfg.chunk_blocks, cfg.fetch_streams);
+    let fetch_ep = ep.clone();
+
+    let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
+
+    let scan_stats = scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, true)
+        .await
+        .expect("scan_chunks_from_treestate");
+
+    fetch_task
+        .await
+        .expect("fetch task join")
+        .expect("fetch stats");
+
+    let expected_blocks = SPENDABILITY_APPLY_HEIGHT as u64 - BIRTHDAY_HEIGHT + 1;
+    assert!(
+        scan_stats.blocks >= expected_blocks,
+        "expected scan.blocks >= {expected_blocks}, got {}",
+        scan_stats.blocks
+    );
+
+    // --- Diagnostics (gathered BEFORE the gate so failures carry the full picture) ---
+    // The three upstream causes of value parking in `value_pending_spendability`:
+    //   (a) scan_queue residue — unscanned ranges intersecting the note's shard
+    //       keep `v_sapling_shard_unscanned_ranges` non-empty;
+    //   (b) commitment_tree_position IS NULL — the note has no tree position, so no
+    //       witness can be computed;
+    //   (c) insufficient confirmations — excluded by SPENDABILITY_APPLY_HEIGHT (77/63 confs).
+    let (scan_queue, null_position_notes) = {
+        let conn = Connection::open_with_flags(
+            &db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .expect("open wallet db read-only for diagnostics");
+        let mut stmt = conn
+            .prepare("SELECT block_range_start, block_range_end, priority FROM scan_queue ORDER BY block_range_start")
+            .expect("prepare scan_queue query");
+        let scan_queue: Vec<(i64, i64, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("query scan_queue")
+            .collect::<Result<_, _>>()
+            .expect("collect scan_queue rows");
+        let null_position_notes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sapling_received_notes WHERE commitment_tree_position IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query NULL commitment_tree_position count");
+        (scan_queue, null_position_notes)
+    };
+
+    // --- THE GATE: upstream's own wallet summary under the Swift SDK's policy ---
+    // trusted=3 / untrusted=10 / allow_zero_conf_shielding=true
+    // (ZcashRustBackend.swift:46-54 defaultTransferPolicy → rust/src/ffi.rs:1183-1213).
+    let policy = ConfirmationsPolicy::new(
+        NonZeroU32::new(3).expect("3 is non-zero"),
+        NonZeroU32::new(10).expect("10 is non-zero"),
+        true,
+    )
+    .expect("trusted <= untrusted is a valid policy");
+
+    let summary = session
+        .db_mut()
+        .get_wallet_summary(policy)
+        .expect("get_wallet_summary")
+        .expect("wallet summary must be available after a full sync");
+
+    let balances = summary.account_balances();
+    assert_eq!(balances.len(), 1, "fixture wallet has exactly one account");
+
+    let expected_total = Zatoshis::const_from_u64(EXPECTED_BALANCE_ZATOSHI as u64);
+    for (account, balance) in balances {
+        let total = balance.total();
+        let spendable = balance.spendable_value();
+        let change_pending = balance.change_pending_confirmation();
+        let pending_spendability = balance.value_pending_spendability();
+        let sapling = balance.sapling_balance();
+
+        // 1. Fixture truth: every zatoshi of the 200000 is accounted for.
+        assert_eq!(
+            total, expected_total,
+            "account {account:?}: total must equal the fixture's 200000 zatoshi \
+             (Source: BalanceTests.swift:889). \
+             Buckets: spendable={spendable:?} change_pending={change_pending:?} \
+             pending_spendability={pending_spendability:?}"
+        );
+
+        // 2. THE GATE: everything is spendable (deep confirmations + complete scan).
+        assert_eq!(
+            spendable, total,
+            "SPENDABILITY GATE FAILED for account {account:?}: \
+             spendable={spendable:?} != total={total:?}. \
+             Buckets: change_pending_confirmation={change_pending:?}, \
+             value_pending_spendability={pending_spendability:?}. \
+             Sapling pool: spendable={:?} change_pending={:?} pending_spendability={:?}. \
+             scan_queue residue (start, end, priority): {scan_queue:?}. \
+             sapling notes with NULL commitment_tree_position: {null_position_notes}. \
+             Confirmations are NOT the cause (77/63 confs vs untrusted=10) — \
+             suspect scan_queue residue or missing tree positions above.",
+            sapling.spendable_value(),
+            sapling.change_pending_confirmation(),
+            sapling.value_pending_spendability(),
+        );
+
+        // 3. Pool-level: the fixture is Sapling-only.
+        assert_eq!(
+            sapling.spendable_value(),
+            expected_total,
+            "sapling pool spendable must be the full 200000 zatoshi"
+        );
+    }
 }
