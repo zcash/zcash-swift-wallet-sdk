@@ -13,6 +13,7 @@ use zcash_protocol::consensus::BlockHeight;
 use crate::{
     chunk::chunk_queue,
     config::EngineConfig,
+    enhance::{EnhanceStats, run_enhancement},
     error::SlipstreamError,
     events::Progress,
     fetch::{FetchPlan, FetchStats, run_fetch},
@@ -31,6 +32,10 @@ pub struct SyncReport {
     pub ranges_processed: u64,
     pub fetch: FetchStatsTotals,
     pub scan: ScanStatsTotals,
+    /// Enhancement stats accumulated across ALL per-range enhancement runs.
+    /// F3: each range's enhancement contributes to this sum; the engine's final
+    /// post-loop enhancement also accumulates here via SyncOutcome merge in engine.rs.
+    pub enhance: EnhanceStats,
     /// Number of reorg recoveries performed (truncate + re-suggest) during this sync.
     pub reorgs_recovered: u64,
     /// Total wall-clock time spent in the fetch pipeline (across all ranges).
@@ -39,6 +44,10 @@ pub struct SyncReport {
     /// Total wall-clock time spent in scan_chunks (across all ranges).
     /// Measured around the scan call per range. Default: zero.
     pub scan_elapsed: Duration,
+    /// Total wall-clock time spent in per-range run_enhancement calls (F3).
+    /// The engine's final post-loop enhancement adds its own elapsed to SyncOutcome
+    /// directly; this field covers the scheduler's interleaved runs only.
+    pub enhance_elapsed: Duration,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -70,12 +79,35 @@ pub async fn run_to_completion(
     // Reset to 0 on any successful range completion. Capped at MAX_CONSECUTIVE_REORGS
     // to prevent infinite ping-pong (e.g. adversarial server or database corruption).
     let mut consecutive_reorgs: u64 = 0;
+    // F1: track blocks scanned so far in this pass (local accumulator).
+    // Used to compute the whole-pass denominator: scanned_so_far + sum(remaining ranges).
+    let mut scanned_so_far_in_pass: u64 = 0;
     loop {
         let ranges = session.suggest_scan_ranges()?;
         let Some(range) = ranges.first() else {
             info!("scan queue empty — sync complete");
             return Ok(report);
         };
+
+        // F1: Compute whole-pass denominator from ALL returned ranges (not just the first).
+        // `suggest_scan_ranges` returns all pending ranges for this pass together
+        // (both ChainTip and Historic are returned on the first call — confirmed by the
+        // user's iPad log showing the 0→100→60% snap-back: the old code accumulated
+        // per-range, so ChainTip alone filled 100% before Historic expanded the denominator).
+        // By summing ALL returned ranges and STORING (not adding), the denominator is
+        // complete from the very first suggestion. Re-suggest after each range recomputes
+        // correctly: scanned_so_far + sum(remaining) stays constant unless new ranges appear.
+        if let Some(ref p) = progress {
+            let sum_remaining: u64 = ranges
+                .iter()
+                .map(|r| {
+                    let s = u64::from(r.block_range().start);
+                    let e = u64::from(r.block_range().end);
+                    e.saturating_sub(s)
+                })
+                .sum();
+            p.set_pass_total(scanned_so_far_in_pass + sum_remaining);
+        }
 
         // block_range() returns a Range<BlockHeight> where .end is END-EXCLUSIVE
         // (standard Rust Range semantics, confirmed at zcash_client_backend-0.22.0/src/data_api/scanning.rs:62).
@@ -96,12 +128,9 @@ pub async fn run_to_completion(
         let end = end_exclusive - 1;
         info!(start, end, priority = ?range.priority(), "processing suggested range");
 
-        // Advertise the current range end to poll-based consumers and accumulate the
-        // block-length of this range into pass_total_blocks so counter-based progress
-        // (scanned_blocks / pass_total_blocks) is valid without getWalletSummary.
+        // Advertise the current range end to poll-based consumers.
         if let Some(ref p) = progress {
             p.set_range_end(end);
-            p.add_pass_total(end - start + 1);
         }
 
         let (tx, rx) = chunk_queue(config.memory_budget_bytes);
@@ -222,6 +251,9 @@ pub async fn run_to_completion(
         report.scan.orchard_received += scan_stats.orchard_received;
         report.scan_elapsed += scan_wall;
 
+        // F1: accumulate scanned blocks for next iteration's whole-pass denominator.
+        scanned_so_far_in_pass += scan_stats.blocks;
+
         // Spendable latch: if this range was ChainTip priority, funds are now likely
         // spendable (SBS semantics — the tip-priority range covers the most-recent
         // blocks where the wallet's own notes appear as spendable).
@@ -229,6 +261,39 @@ pub async fn run_to_completion(
             if let Some(ref p) = progress {
                 p.set_spendable();
             }
+        }
+
+        // F3: Per-range interleaved enhancement.
+        // Runs AFTER scan_chunks completes for this range (scanner paused, DB in a
+        // consistent state, low contention vs. rayon trial-decryption).
+        // Cost on iPad A10: ~0.69s/run at sync end → interleaving is ~free per range.
+        // This makes transactions visible progressively during the sync, not just at
+        // the very end. The engine's final post-loop run_enhancement still fires
+        // (catches any leftovers) and its stats are accumulated into SyncOutcome
+        // separately. We reuse a fresh gRPC client per call (same pattern as engine.rs).
+        {
+            let enhance_started = std::time::Instant::now();
+            let mut enhance_client = grpc::connect(&config.endpoint).await?;
+            let enhance_stats = run_enhancement(
+                session,
+                &mut enhance_client,
+                config.network,
+                progress.clone(),
+            )
+            .await?;
+            let enhance_wall = enhance_started.elapsed();
+            // Accumulate into report so stage-split in engine.rs sums all runs.
+            report.enhance.requests += enhance_stats.requests;
+            report.enhance.txs_stored += enhance_stats.txs_stored;
+            report.enhance.statuses_set += enhance_stats.statuses_set;
+            report.enhance.skipped += enhance_stats.skipped;
+            report.enhance_elapsed += enhance_wall;
+        }
+
+        // F2: Bump ranges_completed AFTER scan + per-range enhancement.
+        // Swift observes this counter and triggers ONE balance-summary fetch per boundary.
+        if let Some(ref p) = progress {
+            p.add_ranges_completed();
         }
     }
 }
@@ -249,6 +314,12 @@ mod tests {
         assert_eq!(r.reorgs_recovered, 0);
         assert_eq!(r.fetch_elapsed, Duration::ZERO);
         assert_eq!(r.scan_elapsed, Duration::ZERO);
+        assert_eq!(r.enhance_elapsed, Duration::ZERO);
+        // F3 EnhanceStats default
+        assert_eq!(r.enhance.requests, 0);
+        assert_eq!(r.enhance.txs_stored, 0);
+        assert_eq!(r.enhance.statuses_set, 0);
+        assert_eq!(r.enhance.skipped, 0);
     }
 
     #[test]
@@ -308,5 +379,33 @@ mod tests {
         assert_eq!(report.ranges_processed, 2);
         assert_eq!(report.fetch.blocks, 15_000);
         assert_eq!(report.scan.blocks, 14_500);
+    }
+
+    /// F3: EnhanceStats fields in SyncReport accumulate correctly across multiple ranges.
+    #[test]
+    fn enhance_stats_accumulate_across_ranges() {
+        let mut report = SyncReport::default();
+
+        // Simulate per-range enhancement for range 1.
+        report.enhance.requests += 5;
+        report.enhance.txs_stored += 2;
+        report.enhance.statuses_set += 1;
+        report.enhance.skipped += 0;
+
+        assert_eq!(report.enhance.requests, 5);
+        assert_eq!(report.enhance.txs_stored, 2);
+        assert_eq!(report.enhance.statuses_set, 1);
+        assert_eq!(report.enhance.skipped, 0);
+
+        // Simulate per-range enhancement for range 2.
+        report.enhance.requests += 3;
+        report.enhance.txs_stored += 1;
+        report.enhance.statuses_set += 2;
+        report.enhance.skipped += 1;
+
+        assert_eq!(report.enhance.requests, 8, "requests must sum across ranges");
+        assert_eq!(report.enhance.txs_stored, 3, "txs_stored must sum across ranges");
+        assert_eq!(report.enhance.statuses_set, 3, "statuses_set must sum across ranges");
+        assert_eq!(report.enhance.skipped, 1, "skipped must sum across ranges");
     }
 }

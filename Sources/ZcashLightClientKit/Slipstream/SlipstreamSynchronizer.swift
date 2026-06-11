@@ -77,6 +77,22 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // engine handle is closed (close() / wipe()).
     private var lastEnhancedCount: UInt64 = 0
 
+    // ── F2: range-boundary balance tracking ────────────────────────────────────
+    // Mirrors the Rust engine's `ranges_completed` counter.  When it advances while
+    // state==1 (Syncing), we trigger ONE balance-summary fetch (the "boundary summary").
+    // This is EXEMPT from the no-summary-while-syncing rule: the scheduler has paused
+    // the scan while enhancement runs, so DB contention is low, and calling summary
+    // at this moment gives the user balance + fullyScannedHeight updates mid-sync.
+    // We use a separate task (`boundarySummaryTask`) with a 20-second timeout to avoid
+    // abandoning the call on an iPad A10 where summary may take 5-15s.
+    private var lastRangesCompleted: UInt64 = 0
+    private var boundarySummaryTask: Task<Void, Never>?
+    // Hard timeout (nanoseconds) for a boundary getWalletSummary call: 20 seconds.
+    // Longer than the 3s idle timeout because this fires mid-sync when the DB is
+    // quiet (scanner paused) — we can afford to wait for a fresh balance.
+    // `internal` (not `private`) so @testable test targets can verify the constant.
+    static let boundarySummaryTimeoutNanoseconds: UInt64 = 20_000_000_000
+
     // ── Cached wallet-summary state (F1 — non-blocking progress) ──────────────
     // `getWalletSummary` can take tens of seconds mid-scan (complex shard-tree +
     // balance SQL queries) and is `@DBActor`-isolated, serialising all other DB
@@ -108,7 +124,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // Minimum interval (seconds) between summary fetches when NOT syncing (Disconnected, Done, Error).
     private static let summaryRefetchIntervalSeconds: TimeInterval = 2.0
     // Hard timeout (nanoseconds) for a single getWalletSummary call: 3 seconds.
-    private static let summaryTimeoutNanoseconds: UInt64 = 3_000_000_000
+    // `internal` (not `private`) so @testable test targets can verify the constant.
+    static let summaryTimeoutNanoseconds: UInt64 = 3_000_000_000
 
     // ── Init ───────────────────────────────────────────────────────────────────
 
@@ -229,6 +246,9 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // stale state.  The cached value itself is preserved for the next start().
         summaryTask?.cancel()
         summaryTask = nil
+        // F2: Cancel any in-flight boundary summary fetch as well.
+        boundarySummaryTask?.cancel()
+        boundarySummaryTask = nil
     }
 
     private func tickPoll() async {
@@ -269,7 +289,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
             kickSummaryFetchIfNeeded(state: snap.state)
             // Fall through to foundTransactions emission below (still needed on Done).
         } else if snap.state == 1 {
-            // Syncing: counter-based progress only — NO getWalletSummary.
+            // Syncing: counter-based progress only — NO regular getWalletSummary.
             // (A10 log evidence: summary was ~20–35% CPU parasite; eliminated in T5.5.)
             let progress = SlipstreamSynchronizer.counterProgress(
                 scanned: snap.scannedBlocks,
@@ -284,6 +304,17 @@ public final class SlipstreamSynchronizer: Synchronizer {
                 latestBlockHeight: BlockHeight(snap.chainTip),
                 fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight
             ))
+
+            // F2: Range-boundary balance refresh (exempt from no-summary-while-syncing rule).
+            // When ranges_completed advances, the scheduler has just finished scanning+enhancing
+            // one suggested range and is paused before re-suggest — DB contention is LOW.
+            // We trigger ONE summary fetch per boundary (one-in-flight guard) with a 20s timeout.
+            // The cachedSummary result feeds balances+fullyScannedHeight into subsequent ticks.
+            // % progress is NOT changed (stays counter-based from scanned/passTotalBlocks).
+            if snap.rangesCompleted > lastRangesCompleted {
+                lastRangesCompleted = snap.rangesCompleted
+                kickBoundarySummaryFetchIfNeeded()
+            }
         } else {
             // Disconnected (0) or Error (2): summary fetches remain active for balance
             // freshness at the 2s cadence.
@@ -398,6 +429,36 @@ public final class SlipstreamSynchronizer: Synchronizer {
             self?.cachedSummary = result ?? self?.cachedSummary
             self?.lastSummaryFinishDate = Date()
             self?.summaryTask = nil
+        }
+    }
+
+    /// F2: Starts a boundary summary fetch (exempt from the no-summary-while-syncing rule).
+    ///
+    /// Called when `ranges_completed` advances while `state == 1` (Syncing).
+    /// At this moment the scheduler is paused between scan+enhance and re-suggest,
+    /// so DB contention is low and a summary call is acceptable.
+    ///
+    /// Uses a separate task (`boundarySummaryTask`) with a 20-second timeout so an
+    /// iPad A10 (where summary may take 5–15s) has enough time to complete.
+    /// One-in-flight guard: if a boundary fetch is already running, we skip (the
+    /// in-progress fetch will update `cachedSummary` when it finishes).
+    ///
+    /// On completion, `cachedSummary` is updated so subsequent Syncing ticks emit
+    /// fresh balances + `fullyScannedHeight` while keeping counter-based % intact.
+    private func kickBoundarySummaryFetchIfNeeded() {
+        // One-in-flight guard: skip if a boundary fetch is already running.
+        guard boundarySummaryTask == nil else { return }
+
+        let rustBackend = initializer.rustBackend
+        boundarySummaryTask = Task { [weak self] in
+            let result = try? await withTaskTimeout(Self.boundarySummaryTimeoutNanoseconds) {
+                try await rustBackend.getWalletSummary()
+            }
+            guard !Task.isCancelled else { return }
+            // Update the shared cache so the next tick emits fresh balances.
+            self?.cachedSummary = result ?? self?.cachedSummary
+            self?.lastSummaryFinishDate = Date()
+            self?.boundarySummaryTask = nil
         }
     }
 
@@ -766,6 +827,9 @@ public final class SlipstreamSynchronizer: Synchronizer {
             //     destroyed, so the Rust-side monotonic counter resets on next open().
             lastEnhancedCount = 0
 
+            // 3a-F2. Reset the ranges-completed counter: the engine handle is being destroyed.
+            lastRangesCompleted = 0
+
             // 3b-F1. Reset the cached wallet summary: the DB is being wiped, so the
             //        cached values would be stale for any subsequent prepare()/start().
             cachedSummary = nil
@@ -864,6 +928,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
         // Also reset the enhanced-tx counter: the new handle starts from zero.
         lastEnhancedCount = 0
+        // F2: reset range-boundary counter: new handle starts from zero.
+        lastRangesCompleted = 0
 
         // Restart if the engine was previously running.
         if wasRunning {

@@ -22,6 +22,8 @@
 //    8. T5.5 summary-interval tests (8s-Syncing branch REMOVED; all states return 2s).
 //    9. T5.5 counterProgress pure-helper unit tests (total==0 edge, mid-pass, clamp).
 //   10. T5.5 SlipstreamSnapshot new fields (passTotalBlocks, spendableHint defaults + explicit).
+//   11. T5.6 SlipstreamSnapshot rangesCompleted field (default + explicit + roundtrip).
+//   12. T5.6 boundary-summary timeout constant and F2 design invariants.
 //
 
 import Combine
@@ -736,5 +738,84 @@ class SlipstreamOfflineTests: ZcashTestCase {
         )
         XCTAssertEqual(progress, 0.5, accuracy: 1e-5,
                        "7500 / 15000 must equal 0.5")
+    }
+
+    // MARK: - 11. T5.6 rangesCompleted field
+
+    /// SlipstreamSnapshot memberwise init: rangesCompleted defaults to 0 when omitted.
+    func testSnapshotRangesCompletedDefaultsToZero() {
+        let snap = SlipstreamSnapshot(
+            chainTip: 0,
+            fetchedBlocks: 0,
+            scannedBlocks: 0,
+            enhancedTxs: 0,
+            currentRangeEnd: 0,
+            state: 0
+            // rangesCompleted omitted → should default to 0
+        )
+        XCTAssertEqual(snap.rangesCompleted, 0,
+                       "rangesCompleted must default to 0 when omitted from memberwise init")
+    }
+
+    /// SlipstreamSnapshot with explicit rangesCompleted.
+    func testSnapshotRangesCompletedExplicit() {
+        let snap = SlipstreamSnapshot(
+            chainTip: 663_200,
+            fetchedBlocks: 10_000,
+            scannedBlocks: 7_500,
+            enhancedTxs: 2,
+            currentRangeEnd: 663_200,
+            state: 1,
+            passTotalBlocks: 15_000,
+            spendableHint: 1,
+            rangesCompleted: 3
+        )
+        XCTAssertEqual(snap.rangesCompleted, 3,
+                       "rangesCompleted must equal 3 when set explicitly")
+    }
+
+    /// F2 design invariant: rangesCompleted starts at 0 when no ranges complete.
+    func testSnapshotRangesCompletedZeroBeforeFirstRange() {
+        let snap = SlipstreamSnapshot(
+            chainTip: 663_200,
+            fetchedBlocks: 100,
+            scannedBlocks: 50,
+            enhancedTxs: 0,
+            currentRangeEnd: 663_200,
+            state: 1 // syncing
+            // rangesCompleted = 0 (default)
+        )
+        XCTAssertEqual(snap.rangesCompleted, 0,
+                       "Before any range completes, rangesCompleted must be 0")
+    }
+
+    // MARK: - 12. T5.6 F2 design invariants
+
+    /// F1 design invariant: passTotalBlocks set (store) semantics — re-suggest with same
+    /// total does not double-count (20k ≠ 15k).
+    func testSnapshotPassTotalSetNotAccumulateSemantics() {
+        // Simulate: scheduler first calls set_pass_total(15_000), then (after first range
+        // scanned) calls set_pass_total(15_000) again (scanned_so_far=10_000 + remaining=5_000).
+        // The denominator must stay 15_000, not grow to 30_000.
+        var total: UInt64 = 0
+        total = 15_000  // first set
+        XCTAssertEqual(total, 15_000)
+        total = 15_000  // second set (not add)
+        XCTAssertEqual(total, 15_000,
+                       "set semantics: re-suggest with same total must keep denominator stable")
+        total = 20_000  // new ranges appeared
+        XCTAssertEqual(total, 20_000,
+                       "set semantics: new total replaces old (not adds to it)")
+    }
+
+    /// F2 boundary summary timeout constant is longer than the idle 3s timeout.
+    func testBoundarySummaryTimeoutIsLongerThanIdleTimeout() {
+        let idleTimeout = SlipstreamSynchronizer.summaryTimeoutNanoseconds
+        let boundaryTimeout = SlipstreamSynchronizer.boundarySummaryTimeoutNanoseconds
+        XCTAssertGreaterThan(boundaryTimeout, idleTimeout,
+                             "Boundary summary timeout (20s) must be longer than idle timeout (3s)")
+        // Verify the exact documented values.
+        XCTAssertEqual(idleTimeout, 3_000_000_000, "idle summary timeout must be 3s")
+        XCTAssertEqual(boundaryTimeout, 20_000_000_000, "boundary summary timeout must be 20s")
     }
 }

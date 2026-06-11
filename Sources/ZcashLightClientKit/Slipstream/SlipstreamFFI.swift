@@ -28,13 +28,17 @@ public struct SlipstreamSnapshot {
     /// Sync state: 0 = idle, 1 = syncing, 2 = error, 3 = done.
     public let state: UInt8
     /// Total blocks in the current pass (denominator for counter-based progress).
-    /// Accumulates the block-length of every suggested range as the scheduler takes it.
-    /// Monotonically increases alongside `scannedBlocks` so `scannedBlocks / passTotalBlocks`
-    /// is a valid in-pass ratio with no `getWalletSummary` call required.
+    /// Set (not accumulated) by the scheduler each time suggest_scan_ranges returns:
+    /// value = scanned_so_far + sum(all returned ranges). F1 fix: whole-pass denominator
+    /// is complete from the first suggestion — no 0→100→60% snap-back.
     public let passTotalBlocks: UInt64
     /// Spendable hint: 0 = not yet spendable; 1 = a ChainTip-priority range completed
     /// scanning (≈ SBS funds-spendable semantics). Latches to 1; never resets within a pass.
     public let spendableHint: UInt8
+    /// Number of suggested ranges whose scan+enhancement has completed in the current pass.
+    /// Monotonically increases. Swift observes changes to trigger ONE balance-summary fetch
+    /// per range boundary while Syncing (F2 — boundary balance refresh).
+    public let rangesCompleted: UInt64
 
     init(_ cSnapshot: FfiSlipstreamSnapshot) {
         chainTip = cSnapshot.chain_tip
@@ -45,6 +49,7 @@ public struct SlipstreamSnapshot {
         state = cSnapshot.state
         passTotalBlocks = cSnapshot.pass_total_blocks
         spendableHint = cSnapshot.spendable_hint
+        rangesCompleted = cSnapshot.ranges_completed
     }
 
     /// Memberwise initializer for tests (avoids a direct dependency on `FfiSlipstreamSnapshot` / libzcashlc in test targets).
@@ -56,7 +61,8 @@ public struct SlipstreamSnapshot {
         currentRangeEnd: UInt64,
         state: UInt8,
         passTotalBlocks: UInt64 = 0,
-        spendableHint: UInt8 = 0
+        spendableHint: UInt8 = 0,
+        rangesCompleted: UInt64 = 0
     ) {
         self.chainTip = chainTip
         self.fetchedBlocks = fetchedBlocks
@@ -66,6 +72,7 @@ public struct SlipstreamSnapshot {
         self.state = state
         self.passTotalBlocks = passTotalBlocks
         self.spendableHint = spendableHint
+        self.rangesCompleted = rangesCompleted
     }
 }
 

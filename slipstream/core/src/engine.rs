@@ -32,6 +32,7 @@ impl SyncOutcome {
     /// `"fetch"`, `"scan"`, `"enhance"`, or `"idle"` if all stages are < 1 s.
     ///
     /// Used for honest G5 "bound" reporting (Decision-Log requirement, 2026-06-10).
+    /// F3: `enhance_elapsed` is now the SUM of all per-range runs + the final post-loop run.
     pub fn bound(&self) -> &'static str {
         let fetch_s = self.report.fetch_elapsed.as_secs_f64();
         let scan_s = self.report.scan_elapsed.as_secs_f64();
@@ -113,13 +114,28 @@ pub async fn sync_once(
 
     let report = run_to_completion(config, &mut session, progress.clone()).await?;
 
-    // Enhancement: fetch full tx data for all pending TransactionDataRequests.
-    // Runs AFTER the scan loop so all detected transactions are in the DB before
-    // we try to enhance them (scan enqueues Enhancement/GetStatus requests).
+    // Final enhancement: fetch full tx data for any remaining TransactionDataRequests
+    // that were not caught by the per-range enhancement (F3 cleanup run). This is cheap
+    // on a wallet with few remaining requests (typically zero after per-range runs).
+    // Stats are merged into the report's `enhance` field so the stage-split log
+    // reports total enhancement time (per-range runs + this final run) correctly.
     let enhance_started = Instant::now();
-    let enhance =
+    let final_enhance =
         run_enhancement(&mut session, &mut client, config.network, progress.clone()).await?;
-    let enhance_elapsed = enhance_started.elapsed();
+    let final_enhance_elapsed = enhance_started.elapsed();
+
+    // F3: merge final enhancement stats into report so the total is correct.
+    let mut report = report;
+    report.enhance.requests += final_enhance.requests;
+    report.enhance.txs_stored += final_enhance.txs_stored;
+    report.enhance.statuses_set += final_enhance.statuses_set;
+    report.enhance.skipped += final_enhance.skipped;
+    // Total enhance_elapsed = per-range elapsed (in report) + final run elapsed.
+    let total_enhance_elapsed = report.enhance_elapsed + final_enhance_elapsed;
+
+    // Expose the merged enhance stats and total elapsed via SyncOutcome.
+    let enhance = report.enhance.clone();
+    let enhance_elapsed = total_enhance_elapsed;
 
     let outcome = SyncOutcome {
         report,
@@ -131,6 +147,7 @@ pub async fn sync_once(
     };
 
     // Log the stage split: total time + per-stage breakdown + bound.
+    // F3: enhance_s is now the SUM of all per-range runs + the final post-loop run.
     info!(
         total_s = outcome.elapsed.as_secs_f64(),
         fetch_s = outcome.report.fetch_elapsed.as_secs_f64(),

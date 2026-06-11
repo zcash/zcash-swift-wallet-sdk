@@ -5,7 +5,7 @@
 
 ## NEXT ACTION
 
-➡️ **T5.4** — Field re-run (needs-user: full rebuild + matrix re-run with T5.5 patch — prior device build predates these fixes). After field confirmation → T6.0.
+➡️ **T5.4** — Field re-run (needs-user: full rebuild + matrix re-run with T5.6 patch — iPad build from T5.5 predates F1/F2/F3 fixes). After field confirmation → T6.0.
 
 ## Current phase: P5 — Performance pass (plan: `plans/2026-06-11-phase-5-perf.md`)
 
@@ -16,7 +16,8 @@
 | T5.2 adaptive scan sub-batching | done | Controller: fn next_batch_len(prev_len, prev_elapsed_ms, target_ms, min, max) → proportional adjust prev_len*target/elapsed, clamped [min,max]; TARGET_BATCH_MS=3_000, MIN_BATCH=1_000. Production scan_chunks splits each chunk into sub-batches; batch_len initialized from first chunk's full length (fast-path unchanged: on fast hardware batch_len grows to/stays at chunk size → exactly one scan call per chunk). Treestate threading: per sub-batch, prefetch spawned for sub_end before blocking scan; awaited after; becomes from_state for next sub-batch — upstream assert from_state.height+1==from_height satisfied at every boundary (proof in code comment). scan_chunks_from_treestate left whole-chunk (comment explains: synthesized states can't split mid-chunk). Per-sub-batch debug! log (batch_start, batch_end, batch_len, elapsed_ms); chunk-level info! log retained at chunk granularity. RPC cost: ~1 GetTreeState per ~3s on slow devices, zero extra on fast devices. 6 controller unit tests: clamps_to_max, grows_on_fast_device, shrinks_on_slow_device, clamps_to_min, zero_elapsed_returns_max, stable_when_on_target. Suites: cargo test -p slipstream-core -p slipstream-cli 53+14/0; clippy clean both feature sets; darkside --no-run compiles. P5 review: from_state threading verified correct at all boundaries; detached-prefetch comment corrected. |
 | T5.3 summary throttle | done | While state==Syncing (1), wallet-summary refetch interval becomes SUMMARY_SYNC_INTERVAL=8s (state ticks stay 2s from cheap counters; cached summary bridges between fetches). All other states keep 2s. Implementation: extracted static helper summaryFetchInterval(forState:UInt8) → TimeInterval (pure function, no side effects); updated kickSummaryFetchIfNeeded(state:) to accept and use the current snapshot state. Done (state 3) path unchanged: immediate .synced without waiting. Tests: 5 new unit tests (testSummaryIntervalWhileSyncingIs8s + 4 other-state branches) verify interval selection. Suites: swift build clean; swift test --filter OfflineTests 450/0 (includes 5 new tests); all pass. |
 | T5.5 counter-based progress + no-summary-while-syncing | done | See session log 2026-06-11 T5.5 entry below. |
-| T5.4 field re-run + records | todo | needs-user: full rebuild (prior device build predates T4.6 — now also includes T5.5 fixes) then matrix re-run. |
+| T5.6 whole-pass progress + boundary balance + interleaved enhancement | done | See session log 2026-06-11 T5.6 entry below. |
+| T5.4 field re-run + records | todo | needs-user: full rebuild (T5.6 fixes required — iPad A10 predates F1/F2/F3) then matrix re-run. |
 
 ## Phase P4 — iOS Docking (plan: `plans/2026-06-11-phase-4-ios-docking.md`)
 
@@ -109,6 +110,7 @@
 - 2026-06-11 — cbindgen dep-crate resolution (T4.1): cbindgen in build.rs does NOT have parse_deps=true; it only parses the root lib.rs. The plan's C4/C12 correction correctly identified this — but the fix implemented was to define FfiSlipstreamSnapshot + FfiSlipstreamEvent DIRECTLY in rust/src/lib.rs (additive), rather than enabling parse_deps (which would parse all workspace deps and risk spurious header entries). SlipstreamHandle's event ring stores slipstream_core::ffi_handle::FfiSlipstreamEvent; the drain function converts to the lib.rs-defined type by field-copy (identical repr(C) layout). This is a minor implementation deviation from the plan's preferred approach but achieves the same result.
 - 2026-06-11 — tokio added to root Cargo.toml [dependencies] (T4.1): libzcashlc uses arti/PreferredRuntime for Tor but tokio was not a direct dep of the libzcashlc package before this task. The zcashlc_slipstream_open function needs tokio::runtime::Builder; adding `tokio = { workspace = true }` to root [dependencies] resolved the compile error.
 - 2026-06-11 — D1 containment extension (T4.4): Tests/OfflineTests/Slipstream* and Tests/DarksideTests/Slipstream* are added as enumerated exceptions to the D1 containment rule (test files are additive). SlipstreamFFI.swift received a memberwise SlipstreamSnapshot init (additive, no deletion) to avoid test targets importing libzcashlc directly. Error files touched additively only: ZRUST0097 (rustSlipstreamUnsupported) added to ZcashErrorCodeDefinition.swift, ZcashError.swift (case+message+code arm), ZcashErrorCode.swift; zero deletions confirmed (git diff | grep '^-' = empty).
+- 2026-06-11 — T5.6 design choices: (1) F1 whole-pass denominator: set_pass_total(scanned_so_far + sum(all_returned_ranges)) stores the complete denominator atomically on each re-suggest; deprecated add_pass_total (accumulate per-range caused 0→100→60% snap-back). (2) F2 boundary summary: 20s timeout (vs 3s idle) for kickBoundarySummaryFetchIfNeeded; separate boundarySummaryTask (one-in-flight guard); exempt from no-summary-while-syncing rule; cachedSummary feeds balances into subsequent Syncing ticks. (3) F3 interleaved enhancement: per-range run_enhancement in scheduler (fresh gRPC client per call, same pattern as engine.rs final run); per-range EnhanceStats accumulated in SyncReport.enhance (sum); engine's final post-loop run also merges into same field; enhance_s in stage-split = total across all runs. K-chunk hoisting NOT done (restructuring not clean in <1h, per-range is sufficient requirement). Darkside suite: unchanged paths (scheduler enhancement path exercises new code). `add_pass_total` kept as deprecated shim (store semantics).
 
 ## Performance truth table
 
@@ -141,6 +143,7 @@
 | G3 50k full-path (birthday=3323515, tip=3373526) | MacBook (darwin 25.5) | zec.rocks:443 | 3323515..3373526 (50012 blk / 33.3 MB) | **30.4 s** (fetch 1.1s / scan 30.0s / enhance 0.0s) | scan-bound | 2026-06-11 |
 | **M1 first real-wallet recovery (user run, env user-side)** | user device | user server | 36321 blocks / 24 MB fetched in ~1s (4 streams) | ~1s fetch | network | 2026-06-11 |
 | **M1 A/B (user device, real wallet, 268855-blk restore)** | user device | default | 268855 blocks | Slipstream 158s vs old SDK 1710s = **10.8×** | scan-bound | 2026-06-11 |
+| **T5.6 field baseline (user iPad, 269,188-blk restore)** | iPad A10 (6th Gen) | user server | ~269,188 blocks | total 1008s / scan 1006.6s / fetch 23s / enhance 0.69s | scan-bound | 2026-06-11 |
 
 ## M1 recovery record
 

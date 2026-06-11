@@ -30,15 +30,22 @@ pub struct Progress {
     pub current_range_end: AtomicU64,
     /// Number of reorg recoveries (truncate + re-suggest) performed.
     pub reorgs_recovered: AtomicU64,
-    /// Total blocks in the current pass (sum of block-lengths of all suggested ranges
-    /// taken so far in this pass). Monotonically accumulates alongside `scanned_blocks`
-    /// so `scanned_blocks / pass_total_blocks` is a valid in-pass ratio. The scheduler
-    /// adds `end - start + 1` for each range when it begins processing.
+    /// Total blocks in the current pass. Set (not accumulated) by the scheduler each
+    /// time it calls `suggest_scan_ranges`: the new value is `scanned_so_far_in_pass +
+    /// sum(block-lengths of ALL returned ranges)`. Because all ranges for a pass are
+    /// returned together by `suggest_scan_ranges`, the denominator is complete from the
+    /// very first suggestion — no snap-back when Historic ranges are revealed.
+    /// Updated via `set_pass_total(n)`.
     pub pass_total_blocks: AtomicU64,
     /// Spendable hint latch: 0 = funds not yet spendable; 1 = a ChainTip-priority range
     /// completed scanning (≈ SBS "funds-spendable" semantics). Latches to 1 and never
     /// resets to 0 within a pass. Read with `spendable()`.
     pub spendable_hint: AtomicU64,
+    /// Number of suggested ranges whose scan+enhancement has completed in the current
+    /// pass. Monotonically incremented by the scheduler after each range finishes
+    /// (scan + per-range enhancement). Used by Swift to trigger a balance-summary
+    /// fetch at each range boundary while Syncing.
+    pub ranges_completed: AtomicU64,
 }
 
 impl Progress {
@@ -78,12 +85,26 @@ impl Progress {
         self.reorgs_recovered.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Bump `pass_total_blocks` by `n`. Called by the scheduler when it takes a range:
-    /// accumulates `end - start + 1` so `scanned_blocks / pass_total_blocks` is a valid
-    /// in-pass ratio for counter-based progress (no `getWalletSummary` needed).
+    /// Set `pass_total_blocks` to `n` (STORE, not add). Called by the scheduler each
+    /// time `suggest_scan_ranges` returns: the new value is `scanned_so_far_in_pass +
+    /// sum(block-lengths of all returned ranges)`. Because the scheduler computes the
+    /// whole-pass denominator in one shot after every re-suggest, the denominator is
+    /// complete from the first suggestion and never causes a % snap-back when Historic
+    /// ranges appear. Supersedes the old `add_pass_total` (accumulated per-range),
+    /// which caused the 0→100→60% oscillation observed on the user's iPad A10 run.
     #[inline]
+    pub fn set_pass_total(&self, n: u64) {
+        self.pass_total_blocks.store(n, Ordering::Relaxed);
+    }
+
+    /// Deprecated: use `set_pass_total` instead.  Retained for any call sites that
+    /// have not yet been updated; calls store (not add) to avoid accumulated-per-range
+    /// semantics that caused the % snap-back bug.
+    #[inline]
+    #[deprecated(note = "use set_pass_total (store semantics); add_pass_total (accumulate) caused % snap-back")]
     pub fn add_pass_total(&self, n: u64) {
-        self.pass_total_blocks.fetch_add(n, Ordering::Relaxed);
+        // Preserve behaviour for callers that haven't migrated: treat as set.
+        self.pass_total_blocks.store(n, Ordering::Relaxed);
     }
 
     /// Latch `spendable_hint` to 1. Called by the scheduler after a `ChainTip`-priority
@@ -91,6 +112,14 @@ impl Progress {
     #[inline]
     pub fn set_spendable(&self) {
         self.spendable_hint.store(1, Ordering::Relaxed);
+    }
+
+    /// Bump `ranges_completed` by 1. Called by the scheduler after each suggested range's
+    /// scan + per-range enhancement completes. Swift observes this counter and triggers a
+    /// single balance-summary fetch at each range boundary (F2 — boundary balance refresh).
+    #[inline]
+    pub fn add_ranges_completed(&self) {
+        self.ranges_completed.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Read `chain_tip` (Relaxed load).
@@ -139,6 +168,12 @@ impl Progress {
     #[inline]
     pub fn spendable(&self) -> u64 {
         self.spendable_hint.load(Ordering::Relaxed)
+    }
+
+    /// Read `ranges_completed` (Relaxed load).
+    #[inline]
+    pub fn ranges_completed(&self) -> u64 {
+        self.ranges_completed.load(Ordering::Relaxed)
     }
 }
 
@@ -211,6 +246,7 @@ mod tests {
         assert_eq!(p.reorgs(), 0);
         assert_eq!(p.pass_total(), 0);
         assert_eq!(p.spendable(), 0);
+        assert_eq!(p.ranges_completed(), 0);
 
         // Set helpers.
         p.set_chain_tip(3_373_435);
@@ -243,11 +279,16 @@ mod tests {
         assert_eq!(p.pass_total(), 0);
         assert_eq!(p.spendable(), 0);
 
-        // add_pass_total accumulates block-lengths of suggested ranges.
-        p.add_pass_total(10_000); // first range
-        assert_eq!(p.pass_total(), 10_000);
-        p.add_pass_total(5_000); // second range
+        // set_pass_total stores (not accumulates) — F1 whole-pass denominator fix.
+        // First suggest: scanned_so_far=0, sum_of_ranges=15_000 → store 15_000.
+        p.set_pass_total(15_000);
         assert_eq!(p.pass_total(), 15_000);
+        // Re-suggest after first range (scanned_so_far=10_000 + remaining 5_000) → still 15_000.
+        p.set_pass_total(15_000);
+        assert_eq!(p.pass_total(), 15_000, "re-suggest with same total stays stable");
+        // Re-suggest exposes more ranges: new total = 20_000 → store overwrites.
+        p.set_pass_total(20_000);
+        assert_eq!(p.pass_total(), 20_000, "set_pass_total must overwrite, not add");
 
         // spendable latches to 1 and stays there.
         assert_eq!(p.spendable(), 0, "not yet spendable before set_spendable()");
@@ -258,11 +299,42 @@ mod tests {
     }
 
     #[test]
+    fn pass_total_is_whole_pass() {
+        // Simulates the F1 scheduler logic:
+        //   - suggest returns [ChainTip(100), Historic(200)] → total = 0+100+200 = 300
+        //   - after scanning ChainTip (100 blocks), re-suggest returns [Historic(200)]
+        //     → scanned_so_far = 100, remaining = 200 → total = 100+200 = 300 (unchanged)
+        //   - after scanning Historic (200 blocks), queue empty → done.
+        // The denominator must be 300 throughout — no snap-back.
+        let p = Progress::default();
+
+        // First suggest: 0 scanned + 100 (ChainTip) + 200 (Historic) = 300.
+        p.set_pass_total(300);
+        assert_eq!(p.pass_total(), 300, "whole-pass denominator set on first suggest");
+
+        // Scan ChainTip range.
+        p.add_scanned(100);
+
+        // Re-suggest: 100 scanned + 200 remaining = 300 → same value; store is idempotent.
+        p.set_pass_total(300);
+        assert_eq!(p.pass_total(), 300, "denominator stays 300 after re-suggest");
+
+        // At this point, progress = 100/300 ≈ 33.3% — no 100→60% snap-back.
+        let ratio = p.scanned() as f64 / p.pass_total() as f64;
+        assert!((ratio - 1.0 / 3.0).abs() < 1e-9, "progress must be ~33.3% mid-pass");
+
+        // Scan Historic range.
+        p.add_scanned(200);
+        let final_ratio = p.scanned() as f64 / p.pass_total() as f64;
+        assert!((final_ratio - 1.0).abs() < 1e-9, "progress must be 100% when all ranges done");
+    }
+
+    #[test]
     fn counter_progress_ratio() {
         // scanned / max(pass_total, 1) is used in Swift tickPoll.
         // Mirror the formula here to verify the Rust side provides the right inputs.
         let p = Progress::default();
-        p.add_pass_total(10_000);
+        p.set_pass_total(10_000);
         p.add_scanned(5_000);
 
         let ratio = p.scanned() as f64 / p.pass_total().max(1) as f64;
@@ -272,6 +344,24 @@ mod tests {
         let p2 = Progress::default();
         let ratio2 = p2.scanned() as f64 / p2.pass_total().max(1) as f64;
         assert_eq!(ratio2, 0.0, "0 scanned / 1 (clamped) must be 0.0");
+    }
+
+    #[test]
+    fn ranges_completed_increments() {
+        let p = Progress::default();
+        assert_eq!(p.ranges_completed(), 0, "initial value must be 0");
+
+        p.add_ranges_completed();
+        assert_eq!(p.ranges_completed(), 1, "must be 1 after first range");
+
+        p.add_ranges_completed();
+        assert_eq!(p.ranges_completed(), 2, "must be 2 after second range");
+
+        // Monotonic: never resets to 0 within a pass.
+        for _ in 0..10 {
+            p.add_ranges_completed();
+        }
+        assert_eq!(p.ranges_completed(), 12, "must accumulate across all ranges");
     }
 
     #[test]

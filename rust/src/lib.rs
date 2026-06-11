@@ -4263,12 +4263,17 @@ pub struct FfiSlipstreamSnapshot {
     /// Sync state: 0 = idle, 1 = syncing, 2 = error, 3 = done.
     pub state: u8,
     // ── T5.5 counter-based progress fields (appended at END for padding stability) ──
-    /// Total blocks in the current pass (sum of all suggested-range block-lengths taken
-    /// so far). Denominator for counter-based progress: scanned_blocks / pass_total_blocks.
+    /// Total blocks in the current pass. Set (not accumulated) by the scheduler each time
+    /// suggest_scan_ranges returns: value = scanned_so_far + sum(all returned ranges).
+    /// Denominator for counter-based progress: scanned_blocks / pass_total_blocks.
     pub pass_total_blocks: u64,
     /// Spendable hint: 0 = not yet spendable; 1 = a ChainTip-priority range has completed
     /// scanning (≈ SBS funds-spendable semantics). Latches to 1; never resets within a pass.
     pub spendable_hint: u8,
+    // ── T5.6 range-boundary signals (appended at END for padding stability) ──
+    /// Number of suggested ranges whose scan+enhancement has completed in the current pass.
+    /// Swift observes this counter and triggers ONE balance-summary fetch per boundary.
+    pub ranges_completed: u64,
 }
 
 /// C-compatible Slipstream engine event record. Returned by
@@ -4515,6 +4520,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_snapshot(
             state: s.state,
             pass_total_blocks: s.pass_total_blocks,
             spendable_hint: s.spendable_hint,
+            ranges_completed: s.ranges_completed,
         })
     });
     unwrap_exc_or(res, FfiSlipstreamSnapshot::default())

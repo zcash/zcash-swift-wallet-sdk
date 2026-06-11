@@ -35,12 +35,17 @@ pub struct FfiSlipstreamSnapshot {
     /// Sync state: 0=idle, 1=syncing, 2=error, 3=done.
     pub state: u8,
     // ── T5.5 counter-based progress fields (appended at END for padding stability) ──
-    /// Total blocks in the current pass (sum of all suggested-range block-lengths taken
-    /// so far). Denominator for counter-based progress: scanned_blocks / pass_total_blocks.
+    /// Total blocks in the current pass. Set (not accumulated) by the scheduler each time
+    /// suggest_scan_ranges returns: value = scanned_so_far + sum(all returned ranges).
+    /// Denominator for counter-based progress: scanned_blocks / pass_total_blocks.
     pub pass_total_blocks: u64,
     /// Spendable hint: 0 = not yet spendable; 1 = a ChainTip-priority range has completed
     /// scanning (≈ SBS funds-spendable semantics). Latches to 1; never resets within a pass.
     pub spendable_hint: u8,
+    // ── T5.6 range-boundary signals (appended at END for padding stability) ──
+    /// Number of suggested ranges whose scan+enhancement has completed in the current pass.
+    /// Swift observes this counter and triggers ONE balance-summary fetch per boundary.
+    pub ranges_completed: u64,
 }
 
 /// C-compatible event record.
@@ -114,6 +119,7 @@ impl SlipstreamHandle {
             state: state_u8,
             pass_total_blocks: p.pass_total(),
             spendable_hint: p.spendable() as u8,
+            ranges_completed: p.ranges_completed(),
         }
     }
 }
@@ -133,6 +139,7 @@ mod tests {
         assert_eq!(s.state, 0);
         assert_eq!(s.pass_total_blocks, 0, "pass_total_blocks default must be 0");
         assert_eq!(s.spendable_hint, 0, "spendable_hint default must be 0");
+        assert_eq!(s.ranges_completed, 0, "ranges_completed default must be 0");
     }
 
     #[test]
@@ -155,20 +162,54 @@ mod tests {
             network: zcash_protocol::consensus::Network::TestNetwork,
         };
 
-        // Simulate scheduler taking two ranges.
-        progress.add_pass_total(10_000); // first range
-        progress.add_pass_total(5_000);  // second range
+        // Simulate F1: scheduler calls set_pass_total with whole-pass total.
+        // First suggest: scanned=0 + 10_000 (ChainTip) + 5_000 (Historic) = 15_000.
+        progress.set_pass_total(15_000);
         progress.add_scanned(7_500);
         progress.set_spendable();
 
+        // F2: simulate completing two ranges.
+        progress.add_ranges_completed(); // range 1 done
+        progress.add_ranges_completed(); // range 2 done
+
         let snap = handle.snapshot();
         assert_eq!(snap.pass_total_blocks, 15_000,
-                   "pass_total_blocks must equal sum of add_pass_total calls");
+                   "pass_total_blocks must equal set_pass_total value (F1 store semantics)");
         assert_eq!(snap.spendable_hint, 1,
                    "spendable_hint must be 1 after set_spendable()");
         assert_eq!(snap.scanned_blocks, 7_500,
                    "scanned_blocks must equal add_scanned total");
         assert_eq!(snap.state, 1, "state must be 1 (Syncing)");
+        assert_eq!(snap.ranges_completed, 2,
+                   "ranges_completed must reflect add_ranges_completed calls (F2)");
+    }
+
+    #[test]
+    fn ffi_snapshot_ranges_completed_roundtrip() {
+        // Verify ranges_completed surfaces correctly from Progress → snapshot.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let progress = std::sync::Arc::new(crate::events::Progress::default());
+        let handle = SlipstreamHandle {
+            runtime,
+            progress: progress.clone(),
+            state: std::sync::Arc::new(Mutex::new(SyncState::Idle)),
+            events: std::sync::Arc::new(Mutex::new(Vec::new())),
+            task: None,
+            endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
+            wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
+            network: zcash_protocol::consensus::Network::TestNetwork,
+        };
+
+        assert_eq!(handle.snapshot().ranges_completed, 0, "initial value must be 0");
+        progress.add_ranges_completed();
+        assert_eq!(handle.snapshot().ranges_completed, 1, "must be 1 after first range");
+        progress.add_ranges_completed();
+        progress.add_ranges_completed();
+        assert_eq!(handle.snapshot().ranges_completed, 3, "must be 3 after three ranges");
     }
 
     #[test]
