@@ -75,19 +75,19 @@ const FETCH_CONCURRENCY: usize = 8;
 ///
 /// `progress` — if `Some`, bumps `enhanced_txs` each time a transaction is stored
 /// via `decrypt_and_store_transaction` (Relaxed; poll-based).
+///
+/// `skipped_keys` — caller-owned dedupe set for `TransactionsInvolvingAddress` skip
+/// keys (T6.1). Dedupe scope is now **one sync pass**: each unique skip is `warn!`-logged
+/// once per pass and counted once in `stats.skipped`; duplicates across all
+/// interleaved/per-range/final runs are `debug!` only and do not increment the counter.
 pub async fn run_enhancement(
     session: &mut WalletSession,
     client: &mut LwdClient,
     network: Network,
     progress: Option<Arc<Progress>>,
+    skipped_keys: &mut HashSet<String>,
 ) -> Result<EnhanceStats, SlipstreamError> {
     let mut stats = EnhanceStats::default();
-
-    // Per-run dedupe set for `TransactionsInvolvingAddress` skip keys.
-    // Key = "address:range_start-range_end" (or "address:open" for open-ended ranges).
-    // Unique skips are counted once in `stats.skipped`; subsequent identical skips
-    // in later rounds are silently dropped (one `debug!` per duplicate, not `warn!`).
-    let mut skipped_address_keys: HashSet<String> = HashSet::new();
 
     for round in 0..3_u32 {
         let requests = session
@@ -158,7 +158,7 @@ pub async fn run_enhancement(
 
         // ── Phase 2: serial address-window requests ────────────────────────────
         for tia in address_reqs {
-            apply_address_request(session, client, &network, tia, &mut stats, &mut skipped_address_keys, progress.as_deref())
+            apply_address_request(session, client, &network, tia, &mut stats, skipped_keys, progress.as_deref())
                 .await?;
         }
     }

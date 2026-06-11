@@ -122,7 +122,11 @@ pub async fn sync_once(
     // chain tip.").
     let transparent = refresh_utxos(&mut session, &mut client).await?;
 
-    let report = run_to_completion(config, &mut session, progress.clone()).await?;
+    // T6.1: per-pass dedupe set for TransactionsInvolvingAddress skip keys.
+    // Scope = one sync pass (all interleaved/per-range/final runs share it).
+    let mut skipped_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let report = run_to_completion(config, &mut session, progress.clone(), &mut skipped_keys).await?;
 
     // Final enhancement: fetch full tx data for any remaining TransactionDataRequests
     // that were not caught by the per-range enhancement (F3 cleanup run). This is cheap
@@ -131,7 +135,7 @@ pub async fn sync_once(
     // reports total enhancement time (per-range runs + this final run) correctly.
     let enhance_started = Instant::now();
     let final_enhance =
-        run_enhancement(&mut session, &mut client, config.network, progress.clone()).await?;
+        run_enhancement(&mut session, &mut client, config.network, progress.clone(), &mut skipped_keys).await?;
     let final_enhance_elapsed = enhance_started.elapsed();
 
     // F3: merge final enhancement stats into report so the total is correct.

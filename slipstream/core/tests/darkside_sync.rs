@@ -606,7 +606,7 @@ async fn sync_enhancement_stores_raw_fields() {
     //   until they appear in a mined block. After ApplyStaged(663188), both txs are in
     //   the active blockchain and GetTransaction returns them. This is verified by
     //   the strict `stats.txs_stored == 2` assertion below.
-    let enhance_stats = run_enhancement(&mut session, &mut client, Network::MainNetwork, None)
+    let enhance_stats = run_enhancement(&mut session, &mut client, Network::MainNetwork, None, &mut std::collections::HashSet::new())
         .await
         .expect("run_enhancement");
 

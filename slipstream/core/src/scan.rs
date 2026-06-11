@@ -9,10 +9,11 @@
 //! sub-batches (~ms each).  Default `None` = one scan call per chunk
 //! (pre-T5.2 behaviour; fastest on all hardware).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use zcash_client_backend::data_api::chain::{error::Error as ChainError, scan_cached_blocks};
 use zcash_protocol::consensus::BlockHeight;
 
@@ -22,6 +23,8 @@ use zcash_client_backend::proto::service::TreeState;
 use crate::{
     block_source::MemBlockSource,
     chunk::ChunkQueueReceiver,
+    config::EngineConfig,
+    enhance::run_enhancement,
     error::SlipstreamError,
     events::Progress,
     grpc::{self, LwdClient},
@@ -60,6 +63,15 @@ pub fn next_batch_len(
     raw.clamp(min as u64, max as u64) as u32
 }
 
+// ── Interleave cadence helper ──────────────────────────────────────────────────
+
+/// True when an interleaved enhancement run should fire after `chunks_done`
+/// completed chunks with cadence `every` (T6.1). Never fires before the first
+/// chunk completes.
+pub fn should_interleave_enhancement(chunks_done: u64, every: u32) -> bool {
+    every > 0 && chunks_done > 0 && chunks_done.is_multiple_of(u64::from(every))
+}
+
 // ── Scan-error mapper ──────────────────────────────────────────────────────────
 
 /// Convert a `scan_cached_blocks` error into a [`SlipstreamError`].
@@ -94,6 +106,10 @@ pub struct ScanStats {
     pub chunks: u64,
     pub sapling_received: u64,
     pub orchard_received: u64,
+    /// Stats from interleaved (per-K-chunk) enhancement runs (T6.1).
+    pub interleaved_enhance: crate::enhance::EnhanceStats,
+    /// Wall-clock spent in interleaved enhancement (excluded from scan-stage time).
+    pub interleaved_enhance_elapsed: std::time::Duration,
 }
 
 // ── Production scan driver ─────────────────────────────────────────────────────
@@ -137,11 +153,16 @@ pub async fn scan_chunks(
     range_start: u64,
     mut rx: ChunkQueueReceiver,
     progress: Option<Arc<Progress>>,
-    batch_target_ms: Option<u64>,
+    config: &EngineConfig,
+    skipped_keys: &mut HashSet<String>,
 ) -> Result<ScanStats, SlipstreamError> {
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
     }
+    // Read config fields once.
+    let batch_target_ms = config.scan_batch_target_ms;
+    let network = config.network;
+
     let mut stats = ScanStats::default();
     // State for the FIRST chunk: boundary just below the range.
     let mut next_state = grpc::get_tree_state(client, range_start - 1).await?;
@@ -170,8 +191,6 @@ pub async fn scan_chunks(
         if batch_target_ms.is_none() || batch_len == 0 {
             batch_len = chunk_len.min(u32::MAX as usize) as u32;
         }
-
-        let network = session.network;
 
         // ── Sub-batch loop ────────────────────────────────────────────────────
         // Iterate over the chunk's blocks in controller-sized windows.
@@ -302,6 +321,27 @@ pub async fn scan_chunks(
         info!(chunk_start, chunk_end, len, outputs = chunk.outputs, chunk_elapsed_ms, "chunk scanned");
 
         drop(permit); // release byte budget only after the chunk's last sub-batch committed
+
+        // T6.1 — interleaved enhancement every K chunks. Non-fatal by design:
+        // it is an optimization (progressive tx visibility); the per-range and
+        // final post-loop runs are the correctness backstops. from_state
+        // threading is untouched (next_state is not read or written here).
+        if should_interleave_enhancement(stats.chunks, config.enhance_every_chunks) {
+            let started = Instant::now();
+            let mut enhance_client = client.clone();
+            match run_enhancement(session, &mut enhance_client, network, progress.clone(), skipped_keys).await {
+                Ok(es) => {
+                    stats.interleaved_enhance.requests += es.requests;
+                    stats.interleaved_enhance.txs_stored += es.txs_stored;
+                    stats.interleaved_enhance.statuses_set += es.statuses_set;
+                    stats.interleaved_enhance.skipped += es.skipped;
+                }
+                Err(err) => {
+                    warn!(%err, chunk_end, "interleaved enhancement failed — continuing scan");
+                }
+            }
+            stats.interleaved_enhance_elapsed += started.elapsed();
+        }
     }
     info!(
         blocks = stats.blocks,
@@ -464,6 +504,19 @@ mod tests {
     fn controller_stable_when_on_target() {
         let result = next_batch_len(5_000, 3_000, 3_000, 1_000, 10_000);
         assert_eq!(result, 5_000);
+    }
+
+    // T6.1 — interleave cadence helper.
+    #[test]
+    fn interleave_fires_every_k_chunks() {
+        assert!(!should_interleave_enhancement(0, 3));
+        assert!(!should_interleave_enhancement(1, 3));
+        assert!(!should_interleave_enhancement(2, 3));
+        assert!(should_interleave_enhancement(3, 3));
+        assert!(!should_interleave_enhancement(4, 3));
+        assert!(should_interleave_enhancement(6, 3));
+        assert!(should_interleave_enhancement(1, 1));
+        assert!(should_interleave_enhancement(2, 1));
     }
 
     // T5.5 — None-path decision logic: with batch_target_ms=None, batch_len is

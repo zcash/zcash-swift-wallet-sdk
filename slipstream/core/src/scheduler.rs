@@ -4,7 +4,7 @@
 //! Priority handling (Verify-first) comes for free: suggest_scan_ranges returns
 //! Verify ranges first by upstream contract.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use tracing::{info, warn};
 use zcash_client_backend::data_api::{WalletWrite, scanning::ScanPriority};
@@ -80,6 +80,7 @@ pub async fn run_to_completion(
     config: &EngineConfig,
     session: &mut WalletSession,
     progress: Option<Arc<Progress>>,
+    skipped_keys: &mut HashSet<String>,
 ) -> Result<SyncReport, SlipstreamError> {
     let mut report = SyncReport::default();
     // Counter for back-to-back ScanContinuity recoveries without a successful range.
@@ -159,7 +160,7 @@ pub async fn run_to_completion(
 
         let scan_started = std::time::Instant::now();
         let scan_result: Result<ScanStats, SlipstreamError> =
-            scan_chunks(session, &mut scan_client, start, rx, progress.clone(), config.scan_batch_target_ms).await;
+            scan_chunks(session, &mut scan_client, start, rx, progress.clone(), config, skipped_keys).await;
         let scan_wall = scan_started.elapsed();
 
         // Error-precedence rationale (deviation from plan's draft `??` which loses nuance):
@@ -256,7 +257,13 @@ pub async fn run_to_completion(
         report.scan.blocks += scan_stats.blocks;
         report.scan.sapling_received += scan_stats.sapling_received;
         report.scan.orchard_received += scan_stats.orchard_received;
-        report.scan_elapsed += scan_wall;
+        // T6.1: interleaved-enhancement time is enhancement, not scan.
+        report.scan_elapsed += scan_wall.saturating_sub(scan_stats.interleaved_enhance_elapsed);
+        report.enhance_elapsed += scan_stats.interleaved_enhance_elapsed;
+        report.enhance.requests += scan_stats.interleaved_enhance.requests;
+        report.enhance.txs_stored += scan_stats.interleaved_enhance.txs_stored;
+        report.enhance.statuses_set += scan_stats.interleaved_enhance.statuses_set;
+        report.enhance.skipped += scan_stats.interleaved_enhance.skipped;
 
         // F1: accumulate scanned blocks for next iteration's whole-pass denominator.
         scanned_so_far_in_pass += scan_stats.blocks;
@@ -287,7 +294,7 @@ pub async fn run_to_completion(
             let enhance_started = std::time::Instant::now();
             let enhance_result = async {
                 let mut enhance_client = grpc::connect(&config.endpoint).await?;
-                run_enhancement(session, &mut enhance_client, config.network, progress.clone())
+                run_enhancement(session, &mut enhance_client, config.network, progress.clone(), skipped_keys)
                     .await
             }
             .await;

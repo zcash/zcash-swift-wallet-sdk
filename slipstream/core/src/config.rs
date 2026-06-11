@@ -45,12 +45,19 @@ pub struct EngineConfig {
     ///
     /// `None` = one `scan_cached_blocks` call per fetch chunk (default; fastest).
     pub scan_batch_target_ms: Option<u64>,
+    /// Run an interleaved (non-fatal) enhancement pass every N completed chunks
+    /// during a range scan, so found transactions surface continuously instead of
+    /// only at range boundaries (T6.1). Must be >= 1; the per-range and final
+    /// post-loop enhancement runs are unaffected backstops.
+    pub enhance_every_chunks: u32,
 }
 
 impl EngineConfig {
     pub const DEFAULT_FETCH_STREAMS: usize = 4;
     pub const DEFAULT_CHUNK_BLOCKS: u32 = 10_000;
     pub const DEFAULT_MEMORY_BUDGET: usize = 256 * 1024 * 1024;
+    /// Run an interleaved enhancement pass every 3 completed chunks by default (T6.1).
+    pub const DEFAULT_ENHANCE_EVERY_CHUNKS: u32 = 3;
 
     pub fn new(network: Network, wallet_db_path: PathBuf, endpoint: Endpoint) -> Self {
         Self {
@@ -61,6 +68,7 @@ impl EngineConfig {
             chunk_blocks: Self::DEFAULT_CHUNK_BLOCKS,
             memory_budget_bytes: Self::DEFAULT_MEMORY_BUDGET,
             scan_batch_target_ms: None,
+            enhance_every_chunks: Self::DEFAULT_ENHANCE_EVERY_CHUNKS,
         }
     }
 
@@ -84,6 +92,11 @@ impl EngineConfig {
                 "scan_batch_target_ms must be >= 500 ms".into(),
             ));
         }
+        if self.enhance_every_chunks == 0 {
+            return Err(SlipstreamError::Config(
+                "enhance_every_chunks must be >= 1".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -102,7 +115,9 @@ mod tests {
 
     #[test]
     fn defaults_are_valid() {
-        assert!(config().validate().is_ok());
+        let c = config();
+        assert!(c.validate().is_ok());
+        assert_eq!(c.enhance_every_chunks, 3);
     }
 
     #[test]
@@ -159,5 +174,19 @@ mod tests {
     fn scan_batch_target_ms_none_accepted() {
         let c = config();
         assert!(c.validate().is_ok()); // None is the default, already tested via defaults_are_valid
+    }
+
+    #[test]
+    fn enhance_every_chunks_zero_rejected() {
+        let mut c = config();
+        c.enhance_every_chunks = 0;
+        assert!(matches!(c.validate(), Err(SlipstreamError::Config(_))));
+    }
+
+    #[test]
+    fn enhance_every_chunks_one_accepted() {
+        let mut c = config();
+        c.enhance_every_chunks = 1;
+        assert!(c.validate().is_ok());
     }
 }
