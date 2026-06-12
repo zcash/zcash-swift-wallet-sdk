@@ -34,6 +34,20 @@ const _: () = {
     assert!(MAX_CONSECUTIVE_REORGS <= 10);
 };
 
+/// B3 (#1755 failure-path hardening): backoff before re-suggesting after a reorg
+/// truncate, growing with the consecutive-recovery count.
+///
+/// Rationale: a tip-desync across a load-balanced lightwalletd cluster (zec.rocks /
+/// eu.zec.rocks terminate one hostname on several backends) heals within seconds —
+/// but instant retries can burn the whole MAX_CONSECUTIVE_REORGS budget against the
+/// same momentarily-stale view, failing a multi-minute restore for a transient
+/// condition (field failure 1 candidate trigger, 2026-06-12). Deterministic growth:
+/// 500 ms × consecutive, capped at 3 s — total worst-case added latency across the
+/// 5-recovery budget is 500+1000+1500+2000+2500 = 7.5 s, negligible vs a restore.
+pub(crate) fn reorg_backoff_ms(consecutive: u64) -> u64 {
+    consecutive.saturating_mul(500).min(3_000)
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct SyncReport {
     pub ranges_processed: u64,
@@ -226,6 +240,22 @@ pub async fn run_to_completion(
             if let Some(ref p) = progress {
                 p.add_reorg();
             }
+
+            // B3 (#1755): give a desynced load-balanced cluster a heal window before
+            // retrying — see reorg_backoff_ms. Connection freshness on retry is
+            // structural, not added here: the next loop iteration creates a NEW
+            // scan-side client (grpc::connect per range, above) and run_fetch spawns
+            // NEW per-worker connections (fetch.rs worker() connects per worker, per
+            // range) — no gRPC channel survives into the retry, so the retry cannot
+            // be pinned to the same stale backend.
+            let backoff_ms = reorg_backoff_ms(consecutive_reorgs);
+            warn!(
+                backoff_ms,
+                consecutive = consecutive_reorgs,
+                "reorg backoff before re-suggest (cluster tip-desync heal window)"
+            );
+            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+
             // `continue` causes the outer loop to call suggest_scan_ranges again;
             // the repair range (from rewind_height up to current tip) is now suggested.
             continue;
@@ -377,6 +407,17 @@ mod tests {
 
     // NOTE: MAX_CONSECUTIVE_REORGS bounds are enforced at compile time via the
     // `const _: () = { assert!(...) }` block next to the constant definition.
+
+    /// B3 (#1755): backoff grows 500 ms per consecutive recovery and caps at 3 s.
+    #[test]
+    fn reorg_backoff_grows_and_caps() {
+        assert_eq!(reorg_backoff_ms(0), 0, "no recoveries -> no wait (unreachable in the arm)");
+        assert_eq!(reorg_backoff_ms(1), 500, "first recovery waits 500 ms");
+        assert_eq!(reorg_backoff_ms(2), 1_000);
+        assert_eq!(reorg_backoff_ms(5), 2_500, "the cap budget's last step");
+        assert_eq!(reorg_backoff_ms(6), 3_000, "capped at 3 s");
+        assert_eq!(reorg_backoff_ms(u64::MAX), 3_000, "saturating mul + cap, no overflow");
+    }
 
     #[test]
     fn report_accumulates_correctly() {

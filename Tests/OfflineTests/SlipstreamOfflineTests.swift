@@ -887,4 +887,122 @@ class SlipstreamOfflineTests: ZcashTestCase {
             ), "alreadyMarked must suppress re-marking (state \(state))")
         }
     }
+
+    // MARK: - 14. B4 stall-watchdog pure helpers (#1755 failure-path hardening)
+    //
+    // Field failure 2 (2026-06-12): the UI froze at exactly one chunk with state stuck
+    // "Syncing" — no logs, no error, no counter movement. The watchdog makes such
+    // silent stalls VISIBLE: when state==Syncing and the progress-counter signature
+    // has not changed for stallWatchdogThresholdSeconds, tickPoll logs ONE loud error
+    // per stall episode. It never restarts anything (policy stays with the app).
+
+    /// Syncing + window exceeded → stalled.
+    func testIsSyncStalledFiresWhenSyncingPastThreshold() {
+        XCTAssertTrue(SlipstreamSynchronizer.isSyncStalled(
+            state: 1, secondsSinceLastCounterChange: 120, threshold: 120
+        ), "exactly at threshold must fire (>= semantics)")
+        XCTAssertTrue(SlipstreamSynchronizer.isSyncStalled(
+            state: 1, secondsSinceLastCounterChange: 3_600, threshold: 120
+        ))
+    }
+
+    /// Syncing but inside the window → not stalled (a slow A10 chunk is ~36s; the
+    /// 120s threshold must tolerate it with a wide margin).
+    func testIsSyncStalledQuietInsideWindow() {
+        XCTAssertFalse(SlipstreamSynchronizer.isSyncStalled(
+            state: 1, secondsSinceLastCounterChange: 0, threshold: 120
+        ))
+        XCTAssertFalse(SlipstreamSynchronizer.isSyncStalled(
+            state: 1, secondsSinceLastCounterChange: 119.9, threshold: 120
+        ))
+    }
+
+    /// Non-Syncing states never stall: Idle/Done/Error are legitimate steady states
+    /// with frozen counters.
+    func testIsSyncStalledOnlyFiresWhileSyncing() {
+        for state: UInt8 in [0, 2, 3] {
+            XCTAssertFalse(SlipstreamSynchronizer.isSyncStalled(
+                state: state, secondsSinceLastCounterChange: 10_000, threshold: 120
+            ), "state \(state) must never report a stall")
+        }
+    }
+
+    /// The shipped threshold constant is 120 s.
+    func testStallWatchdogThresholdConstant() {
+        XCTAssertEqual(SlipstreamSynchronizer.stallWatchdogThresholdSeconds, 120)
+    }
+
+    /// Signature equality: identical counters → equal; ANY single counter change
+    /// (fetched / scanned / enhanced / rangesCompleted / chainTip) → not equal, which
+    /// re-arms the watchdog window in tickPoll.
+    func testWatchdogSignatureDetectsEveryCounter() {
+        let base = SlipstreamSnapshot(
+            chainTip: 3_375_119,
+            fetchedBlocks: 10_000,
+            scannedBlocks: 10_000,
+            enhancedTxs: 2,
+            currentRangeEnd: 3_375_119,
+            state: 1,
+            passTotalBlocks: 270_000,
+            spendableHint: 0,
+            rangesCompleted: 1
+        )
+        let fp = SlipstreamSynchronizer.watchdogSignature(base)
+        XCTAssertEqual(fp, SlipstreamSynchronizer.watchdogSignature(base), "same snapshot → same signature")
+
+        // Each watched counter, changed alone, must change the fingerprint.
+        let variants: [SlipstreamSnapshot] = [
+            SlipstreamSnapshot(
+                chainTip: base.chainTip, fetchedBlocks: 10_001, scannedBlocks: base.scannedBlocks,
+                enhancedTxs: base.enhancedTxs, currentRangeEnd: base.currentRangeEnd, state: base.state,
+                passTotalBlocks: base.passTotalBlocks, spendableHint: base.spendableHint,
+                rangesCompleted: base.rangesCompleted
+            ),
+            SlipstreamSnapshot(
+                chainTip: base.chainTip, fetchedBlocks: base.fetchedBlocks, scannedBlocks: 10_001,
+                enhancedTxs: base.enhancedTxs, currentRangeEnd: base.currentRangeEnd, state: base.state,
+                passTotalBlocks: base.passTotalBlocks, spendableHint: base.spendableHint,
+                rangesCompleted: base.rangesCompleted
+            ),
+            SlipstreamSnapshot(
+                chainTip: base.chainTip, fetchedBlocks: base.fetchedBlocks, scannedBlocks: base.scannedBlocks,
+                enhancedTxs: 3, currentRangeEnd: base.currentRangeEnd, state: base.state,
+                passTotalBlocks: base.passTotalBlocks, spendableHint: base.spendableHint,
+                rangesCompleted: base.rangesCompleted
+            ),
+            SlipstreamSnapshot(
+                chainTip: base.chainTip, fetchedBlocks: base.fetchedBlocks, scannedBlocks: base.scannedBlocks,
+                enhancedTxs: base.enhancedTxs, currentRangeEnd: base.currentRangeEnd, state: base.state,
+                passTotalBlocks: base.passTotalBlocks, spendableHint: base.spendableHint,
+                rangesCompleted: 2
+            ),
+            SlipstreamSnapshot(
+                chainTip: 3_375_120, fetchedBlocks: base.fetchedBlocks, scannedBlocks: base.scannedBlocks,
+                enhancedTxs: base.enhancedTxs, currentRangeEnd: base.currentRangeEnd, state: base.state,
+                passTotalBlocks: base.passTotalBlocks, spendableHint: base.spendableHint,
+                rangesCompleted: base.rangesCompleted
+            )
+        ]
+        for (i, snap) in variants.enumerated() {
+            XCTAssertNotEqual(
+                SlipstreamSynchronizer.watchdogSignature(snap),
+                fp,
+                "variant \(i): a counter change must change the signature"
+            )
+        }
+
+        // state / passTotalBlocks / spendableHint / currentRangeEnd are deliberately
+        // NOT part of the fingerprint (they are not progress counters); changing them
+        // alone keeps the fingerprint equal.
+        let nonCounter = SlipstreamSnapshot(
+            chainTip: base.chainTip, fetchedBlocks: base.fetchedBlocks, scannedBlocks: base.scannedBlocks,
+            enhancedTxs: base.enhancedTxs, currentRangeEnd: 999, state: 3,
+            passTotalBlocks: 1, spendableHint: 1, rangesCompleted: base.rangesCompleted
+        )
+        XCTAssertEqual(
+            SlipstreamSynchronizer.watchdogSignature(nonCounter),
+            fp,
+            "non-counter fields must not affect the signature"
+        )
+    }
 }

@@ -102,6 +102,27 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // spendableValue == 0 forever (field report: balance pending-spinner, cannot pay).
     private var chainTipMarkedThisRun = false
     private var chainTipAtRunStart: UInt64 = 0
+
+    // ── B4 (#1755): stall watchdog ─────────────────────────────────────────────
+    // Detects the silent-freeze failure mode (field, 2026-06-12): state stuck at
+    // Syncing while NO engine counter moves — the sync task hung (transport stall)
+    // or died (panic — now also surfaced by the Rust-side B1 supervisor). The
+    // watchdog only LOGS (Logger.error, once per stall episode); it never restarts
+    // anything. Methods live in SlipstreamSynchronizer+StallWatchdog.swift; pure
+    // decision logic in +PureHelpers.swift (isSyncStalled / watchdogSignature).
+    // State is `internal` (not private) so the extension file can reach it.
+    var watchdogLastSignature: ProgressSignature?
+    var watchdogLastChangeDate = Date()
+    var watchdogStallLogged = false
+    /// Logger accessor for same-class extensions in other files (`initializer` is
+    /// fileprivate; the StallWatchdog extension needs the injected logger).
+    var watchdogLogger: Logger { initializer.logger }
+    /// Stall window before the watchdog fires: 120 s with zero counter movement
+    /// while Syncing. The slowest legitimate counter gap observed in the field is
+    /// ~36 s (iPad A10 worst chunk), so 120 s is comfortably out of reach for a
+    /// healthy sync. `internal` so tests can reference the constant.
+    static let stallWatchdogThresholdSeconds: TimeInterval = 120
+
     // Hard timeout (nanoseconds) for a boundary getWalletSummary call: 20 seconds.
     // Longer than the 3s idle timeout because this fires mid-sync when the DB is
     // quiet (scanner paused) — we can afford to wait for a fresh balance.
@@ -220,6 +241,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // (engine.rs:111 → :116 ordering) — the condition for markChainTipAsUpdated().
         chainTipAtRunStart = await engine.snapshot()?.chainTip ?? 0
         chainTipMarkedThisRun = false
+        // B4: a new run starts with a fresh stall-watchdog window.
+        resetStallWatchdog()
         // TODO: [#1755] Consider passing ufvk=Some after T4.4 integration tests confirm
         //   idempotency. Current strategy: ufvk=nil (keyless) since prepare() already
         //   imported the account and stored its birthday treestate.
@@ -287,6 +310,9 @@ public final class SlipstreamSynchronizer: Synchronizer {
     private func tickPoll() async {
         guard let snap = await engine.snapshot() else { return }
         let events = await engine.drainEvents()
+
+        // B4: surface silent stalls (state==Syncing, zero counter movement) loudly.
+        checkStallWatchdog(snap)
 
         // Chain-tip flag marking (field bug 2026-06-11) — see markChainTipFlagIfNeeded.
         await markChainTipFlagIfNeeded(snap)
@@ -898,6 +924,9 @@ public final class SlipstreamSynchronizer: Synchronizer {
             chainTipMarkedThisRun = false
             chainTipAtRunStart = 0
 
+            // 3a-B4. Re-arm the stall watchdog: the handle is destroyed.
+            resetStallWatchdog()
+
             // 3b-F1. Reset the cached wallet summary: the DB is being wiped, so the
             //        cached values would be stale for any subsequent prepare()/start().
             cachedSummary = nil
@@ -1002,6 +1031,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // below re-captures the baseline. Reset here for the not-restarting case.
         chainTipMarkedThisRun = false
         chainTipAtRunStart = 0
+        // B4: re-arm the stall watchdog for the new handle.
+        resetStallWatchdog()
 
         // Restart if the engine was previously running.
         if wasRunning {
@@ -1155,42 +1186,6 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
     public func debugDatabase(sql: String) -> String {
         transactionRepository.debugDatabase(sql: sql)
-    }
-}
-
-// MARK: - Internal test-visible helpers
-
-// MARK: - withTaskTimeout helper (F1)
-
-/// Races `operation` against a nanosecond timer.  Returns the operation's value if it
-/// completes first; throws `_SummaryTimeoutError` when the timer wins.
-///
-/// Uses `Task.sleep(nanoseconds:)` for iOS 13+/macOS 12+ compatibility (the newer
-/// `Task.sleep(for: Duration)` requires iOS 16+/macOS 13+).
-///
-/// Both the operation task and the timer task are cancelled when the other wins
-/// (structured cancellation via `withThrowingTaskGroup`).  Structured concurrency
-/// means this returns only once both child tasks have acknowledged cancellation.
-///
-/// `internal` (not `private`) so `@testable` test targets can exercise the timeout
-/// behaviour directly without requiring a full `SlipstreamSynchronizer` instance.
-struct _SummaryTimeoutError: Error {}
-
-func withTaskTimeout<T: Sendable>(
-    _ nanoseconds: UInt64,
-    operation: @escaping @Sendable () async throws -> T
-) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await operation() }
-        group.addTask {
-            try await Task.sleep(nanoseconds: nanoseconds)
-            throw _SummaryTimeoutError()
-        }
-        defer { group.cancelAll() }
-        guard let result = try await group.next() else {
-            throw _SummaryTimeoutError()
-        }
-        return result
     }
 }
 

@@ -37,3 +37,7 @@ zcash_script = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# `test-util` enables `#[tokio::test(start_paused = true)]` so the B2 transport
+# deadline tests auto-advance the mock clock instead of sleeping 30 s for real.
+# Test-only feature of an existing workspace dep (never enabled in the FFI build).
+tokio = { workspace = true, features = ["test-util"] }

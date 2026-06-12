@@ -2,7 +2,9 @@
 //! `rust/src/tor.rs` uses (`CompactTxStreamerClient<Channel>`) so a Tor-backed
 //! channel can be swapped in later (P8) without touching callers.
 
-use futures_util::TryStreamExt;
+use std::time::Duration;
+
+use futures_util::StreamExt;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint as TonicEndpoint};
 use zcash_client_backend::{
     data_api::chain::CommitmentTreeRoot,
@@ -18,8 +20,59 @@ use crate::{config::Endpoint, error::SlipstreamError};
 
 pub type LwdClient = CompactTxStreamerClient<Channel>;
 
+// ── B2 (#1755 failure-path hardening) transport deadlines ──────────────────────
+//
+// A stalled-but-open connection (NAT/LB silently dropping a flow, a wedged
+// backend in a load-balanced cluster) previously hung the corresponding await
+// FOREVER — the engine state stayed "Syncing" with frozen counters and zero
+// logs (field failure 2, 2026-06-12). Every call below now carries a deadline;
+// the resulting Transport error flows into the existing retry/recovery
+// semantics (fetch chunks retry+reconnect; per-range/interleaved enhancement is
+// non-fatal; preflight/treestate/final-enhancement errors fail the pass loudly).
+
+/// Hard deadline for a single unary gRPC call (and for the response headers of
+/// a server-streaming call).
+pub(crate) const UNARY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Idle deadline between consecutive messages of a server-streaming response.
+/// A healthy stream delivers messages continuously; 30 s of silence on an open
+/// stream means the connection is dead.
+pub(crate) const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn transport_err(context: &str, e: impl std::fmt::Display) -> SlipstreamError {
     SlipstreamError::Transport(format!("{context}: {e}"))
+}
+
+/// Awaits a unary gRPC call under [`UNARY_TIMEOUT`]; maps both the gRPC status
+/// and a deadline expiry into [`SlipstreamError::Transport`].
+async fn with_unary_timeout<T>(
+    context: &str,
+    fut: impl std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+) -> Result<T, SlipstreamError> {
+    match tokio::time::timeout(UNARY_TIMEOUT, fut).await {
+        Ok(Ok(resp)) => Ok(resp.into_inner()),
+        Ok(Err(status)) => Err(transport_err(context, status)),
+        Err(_) => Err(SlipstreamError::Transport(format!(
+            "{context}: timed out after {}s",
+            UNARY_TIMEOUT.as_secs()
+        ))),
+    }
+}
+
+/// `stream.next()` under [`STREAM_IDLE_TIMEOUT`]; `Ok(None)` = clean end of stream.
+pub(crate) async fn next_with_idle_timeout<T, S>(
+    stream: &mut S,
+    context: &str,
+) -> Result<Option<Result<T, tonic::Status>>, SlipstreamError>
+where
+    S: futures_util::Stream<Item = Result<T, tonic::Status>> + Unpin,
+{
+    tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await.map_err(|_| {
+        SlipstreamError::Transport(format!(
+            "{context}: stream idle timeout ({}s without a message)",
+            STREAM_IDLE_TIMEOUT.as_secs()
+        ))
+    })
 }
 
 /// Open a channel to lightwalletd. TLS uses webpki roots (same trust source
@@ -41,28 +94,18 @@ pub async fn connect(endpoint: &Endpoint) -> Result<LwdClient, SlipstreamError> 
 }
 
 pub async fn get_lightd_info(client: &mut LwdClient) -> Result<LightdInfo, SlipstreamError> {
-    Ok(client
-        .get_lightd_info(Empty {})
-        .await
-        .map_err(|e| transport_err("get_lightd_info", e))?
-        .into_inner())
+    with_unary_timeout("get_lightd_info", client.get_lightd_info(Empty {})).await
 }
 
 pub async fn get_latest_block_height(client: &mut LwdClient) -> Result<u64, SlipstreamError> {
-    Ok(client
-        .get_latest_block(ChainSpec {})
-        .await
-        .map_err(|e| transport_err("get_latest_block", e))?
-        .into_inner()
+    Ok(with_unary_timeout("get_latest_block", client.get_latest_block(ChainSpec {}))
+        .await?
         .height)
 }
 
 pub async fn get_tree_state(client: &mut LwdClient, height: u64) -> Result<TreeState, SlipstreamError> {
-    Ok(client
-        .get_tree_state(BlockId { height, hash: vec![] })
+    with_unary_timeout("get_tree_state", client.get_tree_state(BlockId { height, hash: vec![] }))
         .await
-        .map_err(|e| transport_err("get_tree_state", e))?
-        .into_inner())
 }
 
 /// Collected subtree roots for both pools (Sapling first, Orchard second).
@@ -71,45 +114,39 @@ pub struct SubtreeRoots {
     pub orchard: Vec<CommitmentTreeRoot<orchard::tree::MerkleHashOrchard>>,
 }
 
+/// One pool's subtree-root stream, collected under per-message idle deadlines (B2).
+async fn collect_subtree_roots<H: HashSer>(
+    client: &mut LwdClient,
+    protocol: ShieldedProtocol,
+    label: &str,
+) -> Result<Vec<CommitmentTreeRoot<H>>, SlipstreamError> {
+    let mut req = GetSubtreeRootsArg::default();
+    req.set_shielded_protocol(protocol);
+    let context = format!("get_subtree_roots({label})");
+    let mut stream = with_unary_timeout(&context, client.get_subtree_roots(req)).await?;
+    let mut roots = Vec::new();
+    while let Some(item) = next_with_idle_timeout(&mut stream, &context).await? {
+        let r = item.map_err(|e| SlipstreamError::Transport(format!("subtree root stream: {e}")))?;
+        let node = H::read(&r.root_hash[..])
+            .map_err(|e| SlipstreamError::Transport(format!("{label} root: {e}")))?;
+        roots.push(CommitmentTreeRoot::from_parts(
+            zcash_protocol::consensus::BlockHeight::from_u32(r.completing_block_height as u32),
+            node,
+        ));
+    }
+    Ok(roots)
+}
+
 pub async fn get_subtree_roots(client: &mut LwdClient) -> Result<SubtreeRoots, SlipstreamError> {
-    let mut req = GetSubtreeRootsArg::default();
-    req.set_shielded_protocol(ShieldedProtocol::Sapling);
-    let sapling_roots: Vec<CommitmentTreeRoot<sapling::Node>> = client
-        .get_subtree_roots(req)
-        .await
-        .map_err(|e| transport_err("get_subtree_roots(sapling)", e))?
-        .into_inner()
-        .map_err(|e| SlipstreamError::Transport(format!("subtree root stream: {e}")))
-        .and_then(|r| async move {
-            let node = sapling::Node::read(&r.root_hash[..])
-                .map_err(|e| SlipstreamError::Transport(format!("sapling root: {e}")))?;
-            Ok(CommitmentTreeRoot::from_parts(
-                zcash_protocol::consensus::BlockHeight::from_u32(r.completing_block_height as u32),
-                node,
-            ))
-        })
-        .try_collect()
-        .await?;
-
-    let mut req = GetSubtreeRootsArg::default();
-    req.set_shielded_protocol(ShieldedProtocol::Orchard);
-    let orchard_roots: Vec<CommitmentTreeRoot<orchard::tree::MerkleHashOrchard>> = client
-        .get_subtree_roots(req)
-        .await
-        .map_err(|e| transport_err("get_subtree_roots(orchard)", e))?
-        .into_inner()
-        .map_err(|e| SlipstreamError::Transport(format!("subtree root stream: {e}")))
-        .and_then(|r| async move {
-            let node = orchard::tree::MerkleHashOrchard::read(&r.root_hash[..])
-                .map_err(|e| SlipstreamError::Transport(format!("orchard root: {e}")))?;
-            Ok(CommitmentTreeRoot::from_parts(
-                zcash_protocol::consensus::BlockHeight::from_u32(r.completing_block_height as u32),
-                node,
-            ))
-        })
-        .try_collect()
-        .await?;
-
+    let sapling_roots =
+        collect_subtree_roots::<sapling::Node>(client, ShieldedProtocol::Sapling, "sapling")
+            .await?;
+    let orchard_roots = collect_subtree_roots::<orchard::tree::MerkleHashOrchard>(
+        client,
+        ShieldedProtocol::Orchard,
+        "orchard",
+    )
+    .await?;
     Ok(SubtreeRoots { sapling: sapling_roots, orchard: orchard_roots })
 }
 
@@ -129,10 +166,20 @@ pub async fn get_transaction(
     client: &mut LwdClient,
     txid: [u8; 32],
 ) -> Result<Option<RawTransaction>, SlipstreamError> {
-    match client
-        .get_transaction(TxFilter { hash: txid.to_vec(), ..Default::default() })
-        .await
-    {
+    // B2: unary deadline; the not-found mapping below needs the raw status, so this
+    // call cannot reuse with_unary_timeout's uniform error mapping.
+    let outcome = tokio::time::timeout(
+        UNARY_TIMEOUT,
+        client.get_transaction(TxFilter { hash: txid.to_vec(), ..Default::default() }),
+    )
+    .await
+    .map_err(|_| {
+        SlipstreamError::Transport(format!(
+            "get_transaction: timed out after {}s",
+            UNARY_TIMEOUT.as_secs()
+        ))
+    })?;
+    match outcome {
         Ok(resp) => Ok(Some(resp.into_inner())),
         Err(status) => {
             // lightwalletd returns NotFound or Unknown/Internal with "not found" message
@@ -158,14 +205,15 @@ pub async fn get_taddress_txids(
     client: &mut LwdClient,
     filter: TransparentAddressBlockFilter,
 ) -> Result<Vec<RawTransaction>, SlipstreamError> {
-    client
-        .get_taddress_txids(filter)
-        .await
-        .map_err(|e| transport_err("get_taddress_txids", e))?
-        .into_inner()
-        .map_err(|e| SlipstreamError::Transport(format!("taddress txid stream: {e}")))
-        .try_collect()
-        .await
+    let mut stream =
+        with_unary_timeout("get_taddress_txids", client.get_taddress_txids(filter)).await?;
+    let mut txs = Vec::new();
+    while let Some(item) = next_with_idle_timeout(&mut stream, "get_taddress_txids").await? {
+        txs.push(
+            item.map_err(|e| SlipstreamError::Transport(format!("taddress txid stream: {e}")))?,
+        );
+    }
+    Ok(txs)
 }
 
 /// Collect UTXOs for the given transparent addresses from `start_height`.
@@ -174,18 +222,20 @@ pub async fn get_address_utxos(
     addresses: Vec<String>,
     start_height: u64,
 ) -> Result<Vec<GetAddressUtxosReply>, SlipstreamError> {
-    client
-        .get_address_utxos_stream(GetAddressUtxosArg {
+    let mut stream = with_unary_timeout(
+        "get_address_utxos",
+        client.get_address_utxos_stream(GetAddressUtxosArg {
             addresses,
             start_height,
             max_entries: 0,
-        })
-        .await
-        .map_err(|e| transport_err("get_address_utxos", e))?
-        .into_inner()
-        .map_err(|e| SlipstreamError::Transport(format!("utxo stream: {e}")))
-        .try_collect()
-        .await
+        }),
+    )
+    .await?;
+    let mut utxos = Vec::new();
+    while let Some(item) = next_with_idle_timeout(&mut stream, "get_address_utxos").await? {
+        utxos.push(item.map_err(|e| SlipstreamError::Transport(format!("utxo stream: {e}")))?);
+    }
+    Ok(utxos)
 }
 
 #[cfg(test)]
@@ -200,6 +250,51 @@ mod tests {
             Err(SlipstreamError::Transport(msg)) => assert!(msg.contains("connect")),
             other => panic!("expected Transport error, got {other:?}"),
         }
+    }
+
+    // ── B2 (#1755) deadline tests — `start_paused` auto-advances the mock clock
+    // when the runtime is idle, so the 30 s deadlines fire instantly. ───────────
+
+    /// A unary call that never resolves (stalled-but-open connection) must
+    /// surface as a Transport timeout, never hang.
+    #[tokio::test(start_paused = true)]
+    async fn unary_timeout_fires_on_stalled_call() {
+        let fut =
+            futures_util::future::pending::<Result<tonic::Response<()>, tonic::Status>>();
+        match with_unary_timeout("stalled_unary", fut).await {
+            Err(SlipstreamError::Transport(msg)) => {
+                assert!(msg.contains("stalled_unary"), "context missing: {msg}");
+                assert!(msg.contains("timed out"), "timeout marker missing: {msg}");
+            }
+            other => panic!("expected Transport timeout, got {other:?}"),
+        }
+    }
+
+    /// A stream that stops delivering messages while staying open must surface
+    /// as a stream-idle Transport timeout, never hang.
+    #[tokio::test(start_paused = true)]
+    async fn stream_idle_timeout_fires_on_stalled_stream() {
+        let mut stream = futures_util::stream::pending::<Result<u32, tonic::Status>>();
+        match next_with_idle_timeout(&mut stream, "stalled_stream").await {
+            Err(SlipstreamError::Transport(msg)) => {
+                assert!(msg.contains("stalled_stream"), "context missing: {msg}");
+                assert!(msg.contains("stream idle timeout"), "idle marker missing: {msg}");
+            }
+            other => panic!("expected Transport idle timeout, got {other:?}"),
+        }
+    }
+
+    /// Healthy streams pass through unchanged: messages then a clean end.
+    #[tokio::test]
+    async fn stream_idle_timeout_passes_messages_and_end() {
+        let mut stream =
+            futures_util::stream::iter(vec![Ok::<u32, tonic::Status>(7), Ok(8)]);
+        let first = next_with_idle_timeout(&mut stream, "healthy").await.expect("no timeout");
+        assert_eq!(first.expect("a message").expect("ok item"), 7);
+        let second = next_with_idle_timeout(&mut stream, "healthy").await.expect("no timeout");
+        assert_eq!(second.expect("a message").expect("ok item"), 8);
+        let end = next_with_idle_timeout(&mut stream, "healthy").await.expect("no timeout");
+        assert!(end.is_none(), "clean end of stream must be Ok(None)");
     }
 
     // Live-network smoke; run manually: cargo test -p slipstream-core -- --ignored

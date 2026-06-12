@@ -4290,6 +4290,27 @@ pub struct FfiSlipstreamEvent {
     pub value: u64,
 }
 
+/// Installs (once per process) a chaining panic hook that reports every Rust panic
+/// through `tracing::error!` before delegating to the previously-installed hook.
+///
+/// B1 (#1755 failure-path hardening): `zcashlc_init_on_load` installs `log_panics`,
+/// which reports panics via the `log` facade — that reaches os_log only through the
+/// `tracing-log` bridge AND only when the app initialized logging at a level that
+/// admits it. This hook reports directly through `tracing` so device logs always
+/// carry the panic message and backtrace location, no matter how the `log` facade
+/// is configured. Chaining preserves `log_panics` (and any test-harness hook).
+static SLIPSTREAM_PANIC_HOOK: std::sync::Once = std::sync::Once::new();
+
+fn install_slipstream_panic_hook() {
+    SLIPSTREAM_PANIC_HOOK.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            tracing::error!(panic = %info, "rust panic");
+            previous(info);
+        }));
+    });
+}
+
 /// Opens a Slipstream engine handle.
 ///
 /// - `db_data`/`db_data_len`: path to the wallet data.db (UTF-8 bytes, no NUL terminator).
@@ -4323,6 +4344,10 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
     network_id: u32,
 ) -> *mut SlipstreamHandle {
     let res = catch_panic(|| {
+        // B1 (#1755): make sure every panic is visible in device logs (os_log via
+        // the tracing layers) — see install_slipstream_panic_hook.
+        install_slipstream_panic_hook();
+
         let db_path = Path::new(OsStr::from_bytes(unsafe {
             slice::from_raw_parts(db_data, db_data_len)
         }));
@@ -4419,7 +4444,14 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         let state = std::sync::Arc::clone(&h.state);
         let events = std::sync::Arc::clone(&h.events);
 
-        let task = h.runtime.spawn(async move {
+        // ── B1 (#1755): the sync task is spawned SUPERVISED — see
+        // slipstream_core::ffi_handle::spawn_supervised. A panic inside the task body
+        // (anywhere in sync_once, including rayon::join sections re-entered via
+        // block_in_place) becomes SyncState::Error(2) + a tag=4/value=2 event instead
+        // of a silent death that leaves the state stuck at "Syncing" forever.
+        let sup_state = std::sync::Arc::clone(&h.state);
+        let sup_events = std::sync::Arc::clone(&h.events);
+        let sync_body = async move {
             // Notify SyncStarted (tag=1).
             // Use SlipstreamCoreEvent (the type stored in the handle's event ring).
             {
@@ -4459,9 +4491,14 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                     ring.push(SlipstreamCoreEvent { tag: 4, value: 1 });
                 }
             }
-        });
+        };
 
-        h.task = Some(task);
+        h.task = Some(slipstream_core::ffi_handle::spawn_supervised(
+            &h.runtime,
+            sync_body,
+            sup_state,
+            sup_events,
+        ));
         Ok(true)
     });
     unwrap_exc_or(res, false)

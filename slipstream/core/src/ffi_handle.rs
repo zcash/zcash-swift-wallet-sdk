@@ -13,7 +13,7 @@
 //! are internal. The C header only sees `typedef struct SlipstreamHandle SlipstreamHandle;`.
 
 use std::sync::{Arc, Mutex};
-use tokio::{runtime::Runtime, task::JoinHandle};
+use tokio::{runtime::Runtime, task::AbortHandle};
 
 use crate::{config::Endpoint, events::Progress};
 
@@ -80,14 +80,82 @@ pub struct SlipstreamHandle {
     pub state: Arc<Mutex<SyncState>>,
     /// Event ring — sync task pushes; Swift drains.
     pub events: Arc<Mutex<Vec<FfiSlipstreamEvent>>>,
-    /// Join handle for the currently-running sync task (None = not started or stopped).
-    pub task: Option<JoinHandle<()>>,
+    /// Abort handle for the currently-running sync task (None = not started or stopped).
+    ///
+    /// B1 (#1755 failure-path hardening): the sync task's `JoinHandle` is OWNED by a
+    /// supervisor task (spawned alongside it in `zcashlc_slipstream_start`) that awaits
+    /// it and converts a panic (`JoinError::is_panic`) into `SyncState::Error` + a
+    /// tag=4 event — a panicking pass can no longer die silently leaving the state
+    /// stuck at "Syncing" forever (field failure 2, 2026-06-12). `stop()` / `free()` /
+    /// restart only need to CANCEL the task, so they hold this `AbortHandle` instead
+    /// of the `JoinHandle` (the abort is observed by the supervisor as a cancellation
+    /// and deliberately ignored — `stop()` already set the state to Idle).
+    pub task: Option<AbortHandle>,
     /// Server endpoint — set at open; used for start.
     pub endpoint: Endpoint,
     /// Wallet db path — set at open.
     pub wallet_db_path: std::path::PathBuf,
     /// Network (MainNetwork or TestNetwork).
     pub network: zcash_protocol::consensus::Network,
+}
+
+/// Spawns `fut` on `runtime` together with a SUPERVISOR task that owns the
+/// spawned task's `JoinHandle`, and returns the `AbortHandle` for the spawned task.
+///
+/// B1 (#1755 failure-path hardening): tokio swallows panics inside spawned tasks —
+/// they surface only through the `JoinHandle`, which nothing previously inspected,
+/// so a panicking sync pass died silently and the state stayed "Syncing" forever
+/// (field failure 2, 2026-06-12). The supervisor converts a PANIC `JoinError` into
+/// `SyncState::Error(2)` + a tag=4/value=2 event + a `tracing::error!` carrying the
+/// panic payload. A CANCELLED `JoinError` (the returned `AbortHandle` was used by
+/// stop()/free()/restart) is deliberately ignored — the canceller already set the
+/// state. Normal completion needs nothing (the task body sets Done/Error itself).
+///
+/// Known benign race (pre-existing class): a start()-while-running restart aborts the
+/// old task, but if that task panicked just before the abort landed, its supervisor
+/// writes Error(2) concurrently with the new pass — the same unguarded window in
+/// which the OLD task body could always write Done/Error around a restart. The Swift
+/// layer never restarts without stop() (which aborts first → supervisor sees
+/// cancellation), and switchTo() re-opens a fresh handle with fresh state Arcs.
+pub fn spawn_supervised<F>(
+    runtime: &Runtime,
+    fut: F,
+    state: Arc<Mutex<SyncState>>,
+    events: Arc<Mutex<Vec<FfiSlipstreamEvent>>>,
+) -> AbortHandle
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let task = runtime.spawn(fut);
+    let abort_handle = task.abort_handle();
+    runtime.spawn(async move {
+        match task.await {
+            Ok(()) => {}
+            Err(join_err) if join_err.is_cancelled() => {}
+            Err(join_err) => {
+                let panic_msg = match join_err.try_into_panic() {
+                    Ok(payload) => payload
+                        .downcast_ref::<&str>()
+                        .map(|s| (*s).to_string())
+                        .or_else(|| payload.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "non-string panic payload".to_string()),
+                    Err(join_err) => join_err.to_string(),
+                };
+                tracing::error!(
+                    panic = %panic_msg,
+                    "slipstream sync task PANICKED — converting to error state"
+                );
+                *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(2);
+                let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
+                if ring.len() >= EVENT_RING_CAP {
+                    ring.remove(0);
+                }
+                // SyncError (tag=4): value = error code 2 (task panicked).
+                ring.push(FfiSlipstreamEvent { tag: 4, value: 2 });
+            }
+        }
+    });
+    abort_handle
 }
 
 impl SlipstreamHandle {
@@ -241,6 +309,116 @@ mod tests {
         assert_eq!(ring[0].value, 6);
         // Last kept value is 69.
         assert_eq!(ring[EVENT_RING_CAP - 1].value, 69);
+    }
+
+    // ── B1 (#1755) supervisor tests ────────────────────────────────────────────
+
+    /// Polls `state` until `pred` holds or ~5 s elapse. The supervisor runs on the
+    /// runtime's worker threads; the test thread observes its effects.
+    fn wait_for_state(
+        state: &Arc<Mutex<SyncState>>,
+        pred: impl Fn(&SyncState) -> bool,
+    ) -> SyncState {
+        for _ in 0..500 {
+            {
+                let s = state.lock().unwrap();
+                if pred(&s) {
+                    return *s;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        *state.lock().unwrap()
+    }
+
+    /// A panicking sync task must surface as Error(2) + a tag=4/value=2 event —
+    /// never a silent death with the state stuck at Syncing (field failure 2).
+    #[test]
+    fn supervisor_converts_panic_to_error_state() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let state = Arc::new(Mutex::new(SyncState::Syncing));
+        let events: Arc<Mutex<Vec<FfiSlipstreamEvent>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let _abort = spawn_supervised(
+            &runtime,
+            async { panic!("boom: synthetic sync panic") },
+            Arc::clone(&state),
+            Arc::clone(&events),
+        );
+
+        let observed = wait_for_state(&state, |s| matches!(s, SyncState::Error(_)));
+        assert_eq!(observed, SyncState::Error(2), "panic must become Error(2)");
+        let ring = events.lock().unwrap();
+        assert!(
+            ring.iter().any(|e| e.tag == 4 && e.value == 2),
+            "panic must push a tag=4/value=2 event, got {ring:?}"
+        );
+    }
+
+    /// Cancellation via the AbortHandle (stop()/free()/restart) must NOT be
+    /// reported as an error — the canceller owns the state transition.
+    #[test]
+    fn supervisor_ignores_cancellation() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let state = Arc::new(Mutex::new(SyncState::Syncing));
+        let events: Arc<Mutex<Vec<FfiSlipstreamEvent>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let abort = spawn_supervised(
+            &runtime,
+            async {
+                tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            },
+            Arc::clone(&state),
+            Arc::clone(&events),
+        );
+        abort.abort();
+
+        // Give the supervisor time to observe the cancellation; the state and the
+        // event ring must remain untouched.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(*state.lock().unwrap(), SyncState::Syncing, "cancel must not write state");
+        assert!(events.lock().unwrap().is_empty(), "cancel must not push events");
+    }
+
+    /// Normal completion writes nothing — the task body owns Done/Error.
+    #[test]
+    fn supervisor_passes_through_normal_completion() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let state = Arc::new(Mutex::new(SyncState::Syncing));
+        let events: Arc<Mutex<Vec<FfiSlipstreamEvent>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_inner = Arc::clone(&done);
+        let _abort = spawn_supervised(
+            &runtime,
+            async move {
+                done_inner.store(true, std::sync::atomic::Ordering::SeqCst);
+            },
+            Arc::clone(&state),
+            Arc::clone(&events),
+        );
+
+        for _ in 0..500 {
+            if done.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200)); // let the supervisor settle
+        assert_eq!(*state.lock().unwrap(), SyncState::Syncing, "completion must not write state");
+        assert!(events.lock().unwrap().is_empty(), "completion must not push events");
     }
 
     #[test]

@@ -109,4 +109,90 @@ extension SlipstreamSynchronizer {
         if snapshotTip != tipAtRunStart { return true }
         return state == 3
     }
+
+    // ── B4 (#1755 failure-path hardening): stall watchdog ─────────────────────
+
+    /// Signature of every engine progress counter the poll loop can observe.
+    /// Two consecutive snapshots with EQUAL signatures mean the engine made zero
+    /// observable progress between the ticks.
+    /// (Named "signature" — the natural alternative collides with the
+    /// `print_function_usage` lint regex.)
+    struct ProgressSignature: Equatable {
+        let fetched: UInt64
+        let scanned: UInt64
+        let enhanced: UInt64
+        let rangesCompleted: UInt64
+        let chainTip: UInt64
+    }
+
+    /// Extracts the stall-watchdog progress signature from an engine snapshot.
+    static func watchdogSignature(_ snap: SlipstreamSnapshot) -> ProgressSignature {
+        ProgressSignature(
+            fetched: snap.fetchedBlocks,
+            scanned: snap.scannedBlocks,
+            enhanced: snap.enhancedTxs,
+            rangesCompleted: snap.rangesCompleted,
+            chainTip: snap.chainTip
+        )
+    }
+
+    /// Pure staleness predicate: the engine claims to be Syncing (`state == 1`) but
+    /// NO progress counter has changed for at least `threshold` seconds.
+    ///
+    /// Field failure 2 (2026-06-12): the UI froze at one chunk with the state stuck
+    /// "Syncing" — no logs, no error, forever. This predicate makes such silent
+    /// stalls VISIBLE (a loud `Logger.error` in `tickPoll`); it deliberately does
+    /// NOT auto-restart anything — recovery policy stays with the app.
+    ///
+    /// - Parameters:
+    ///   - state: `snap.state` (0=idle, 1=syncing, 2=error, 3=done). Only Syncing
+    ///     can stall silently; Done/Error/Idle are legitimate steady states.
+    ///   - secondsSinceLastCounterChange: elapsed wall time since the watchdog
+    ///     progress signature last changed.
+    ///   - threshold: the stall window (`stallWatchdogThresholdSeconds`, 120 s — far
+    ///     above any legitimate counter gap: the slowest observed device chunk is
+    ///     ~36 s on iPad A10, and treestate/scan boundaries bump counters within it).
+    /// - Returns: true when the stall warning should fire.
+    static func isSyncStalled(
+        state: UInt8,
+        secondsSinceLastCounterChange: TimeInterval,
+        threshold: TimeInterval
+    ) -> Bool {
+        state == 1 && secondsSinceLastCounterChange >= threshold
+    }
+}
+
+// MARK: - withTaskTimeout helper (F1)
+
+/// Races `operation` against a nanosecond timer.  Returns the operation's value if it
+/// completes first; throws `_SummaryTimeoutError` when the timer wins.
+///
+/// Uses `Task.sleep(nanoseconds:)` for iOS 13+/macOS 12+ compatibility (the newer
+/// `Task.sleep(for: Duration)` requires iOS 16+/macOS 13+).
+///
+/// Both the operation task and the timer task are cancelled when the other wins
+/// (structured cancellation via `withThrowingTaskGroup`).  Structured concurrency
+/// means this returns only once both child tasks have acknowledged cancellation.
+///
+/// `internal` (not `private`) so `@testable` test targets can exercise the timeout
+/// behaviour directly without requiring a full `SlipstreamSynchronizer` instance.
+/// (Moved here from SlipstreamSynchronizer.swift for file_length — B4 hardening.)
+struct _SummaryTimeoutError: Error {}
+
+func withTaskTimeout<T: Sendable>(
+    _ nanoseconds: UInt64,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: nanoseconds)
+            throw _SummaryTimeoutError()
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else {
+            throw _SummaryTimeoutError()
+        }
+        return result
+    }
 }

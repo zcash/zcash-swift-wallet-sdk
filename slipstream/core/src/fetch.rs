@@ -14,7 +14,6 @@ use std::{
 
 use crate::events::Progress;
 
-use futures_util::StreamExt;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use zcash_client_backend::proto::{
@@ -100,13 +99,26 @@ async fn fetch_one_chunk(
         end: Some(BlockId { height: end, hash: vec![] }),
         ..Default::default()
     };
-    let mut stream = client
-        .get_block_range(req)
+    // B2 (#1755): response-headers deadline. A server that accepts the request but
+    // never answers must fail fast into the worker's retry+reconnect loop instead of
+    // riding out the whole 120 s chunk timeout.
+    let mut stream = tokio::time::timeout(grpc::UNARY_TIMEOUT, client.get_block_range(req))
         .await
+        .map_err(|_| {
+            SlipstreamError::Transport(format!(
+                "get_block_range {start}..{end}: timed out after {}s",
+                grpc::UNARY_TIMEOUT.as_secs()
+            ))
+        })?
         .map_err(|e| SlipstreamError::Transport(format!("get_block_range {start}..{end}: {e}")))?
         .into_inner();
     let mut blocks = Vec::with_capacity((end - start + 1) as usize);
-    while let Some(item) = stream.next().await {
+    // B2 (#1755): per-message idle deadline. A stalled-but-open stream (silently
+    // dropped flow) surfaces as a Transport error -> worker retry+reconnect, instead
+    // of hanging until the 120 s whole-chunk backstop (which stays in place).
+    while let Some(item) =
+        grpc::next_with_idle_timeout(&mut stream, &format!("block stream {start}..{end}")).await?
+    {
         blocks.push(item.map_err(|e| {
             SlipstreamError::Transport(format!("block stream {start}..{end}: {e}"))
         })?);
