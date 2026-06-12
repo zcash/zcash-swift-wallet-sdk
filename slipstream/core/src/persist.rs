@@ -698,7 +698,17 @@ pub fn sparse_put_blocks(
         if let Some(last_scanned_height) = last_scanned_height {
             let t_tree = std::time::Instant::now();
 
-            // ── T6.3b checkpoint downgrade ────────────────────────────────────
+            // ── T6.3b checkpoint downgrade — cross-pool dependency boundary ───
+            // The two cp_pos maps MUST be computed serially before the per-pool
+            // pipeline: ensure_checkpoints is CROSS-POOL (missing_sapling uses
+            // orchard_cp_pos.keys(); missing_orchard uses sapling_cp_pos.keys()).
+            // Both maps come from immutable commitment slices so the two
+            // stream_checkpoint_positions calls are independent, but their results
+            // must both exist before we can compute the cross-pool ensure-heights.
+            // Everything below (downgrade → build_subtrees → insert_frontier →
+            // insert_tree loops → ensure_add) is fully per-pool and runs in
+            // parallel via rayon::join.
+            //
             // Full (pre-downgrade) checkpoint position maps, computed straight
             // from the commitment streams. These are EXACTLY the maps upstream's
             // `checkpoint_positions(&subtrees)` would extract (from_iter records
@@ -717,48 +727,15 @@ pub fn sparse_put_blocks(
                 &orchard_commitments,
             );
 
-            // Cutoff per pool, per put_blocks call: the minimum of the newest
-            // SPARSE_CHECKPOINT_WINDOW checkpoint ids that will exist at the end
-            // of this call (already-stored ids ∪ the frontier id ∪ this batch's
-            // new ids) — i.e. exactly the post-prune retained set upstream's
-            // iterative oldest-first pruning leaves behind. Every Checkpoint
-            // retention below it is doomed and gets downgraded to the residue
-            // prune_excess_checkpoints would leave anyway (Marked survives the
-            // CHECKPOINT-flag clear; everything else becomes Ephemeral).
-            let frontier_id = from_state.block_height();
-            let sapling_downgraded = doomed_checkpoint_cutoff(
-                sap_tree.store().checkpoints.keys().copied(),
-                frontier_id,
-                sapling_cp_pos.keys().copied(),
-            )
-            .map_or(0, |cutoff| downgrade_doomed_checkpoints(&mut sapling_commitments, cutoff));
-            let orchard_downgraded = doomed_checkpoint_cutoff(
-                orch_tree.store().checkpoints.keys().copied(),
-                frontier_id,
-                orchard_cp_pos.keys().copied(),
-            )
-            .map_or(0, |cutoff| downgrade_doomed_checkpoints(&mut orchard_commitments, cutoff));
-            downgraded = sapling_downgraded + orchard_downgraded;
-
-            // ll/wallet.rs:466-481 — build subtrees (rayon, same chunk size).
-            // Built from the downgraded streams, so the per-subtree checkpoint
-            // BTreeMaps fed to insert_tree only carry surviving ids ≥ cutoff.
-            let sapling_subtrees = build_subtrees::<_, SAPLING_SHARD_HEIGHT>(
-                Position::from(from_state.final_sapling_tree().tree_size()),
-                &mut sapling_commitments,
-            );
-            let orchard_subtrees = build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(
-                Position::from(from_state.final_orchard_tree().tree_size()),
-                &mut orchard_commitments,
-            );
-
             // ll/wallet.rs:484-501 — cross-pool checkpoint reconciliation, on
-            // the FULL maps (upstream-identical). The `height > min_cp` filter
-            // in the add loops below keeps the surviving add-set identical to
-            // upstream's: with the downgrade, the post-insert min checkpoint id
-            // equals upstream's post-prune min (the cutoff computation above is
-            // that same retained-set minimum), so only ids ≥ cutoff can reach
-            // the checkpoint tables.
+            // the FULL pre-downgrade maps (upstream-identical). Computed here,
+            // before the per-pool parallel section, because each pool's
+            // ensure_checkpoints call needs the OTHER pool's cp_pos map.
+            // The `height > min_cp` filter in the add loops below keeps the
+            // surviving add-set identical to upstream's: with the downgrade, the
+            // post-insert min checkpoint id equals upstream's post-prune min (the
+            // cutoff computation above is that same retained-set minimum), so
+            // only ids ≥ cutoff can reach the checkpoint tables.
             let missing_sapling = ensure_checkpoints(
                 orchard_cp_pos.keys(),
                 &sapling_cp_pos,
@@ -770,62 +747,134 @@ pub fn sparse_put_blocks(
                 from_state.final_orchard_tree(),
             );
 
-            // ll/wallet.rs:503-537 update_tree — IN MEMORY (the substitution).
+            // ── T6.8 parallel per-pool tree work ──────────────────────────────
+            // sapling and orchard operate on completely disjoint state:
+            //   - separate SparseShardStore/ShardTree fields (sap_tree / orch_tree)
+            //   - separate commitment Vecs (sapling_commitments / orchard_commitments)
+            //   - pre-computed, pool-independent ensure-checkpoint Vecs above
+            // rayon::join uses work-stealing from the global pool; nested rayon
+            // is safe (upstream's build_subtrees already uses par_chunks internally).
+            // Each side returns Result — both results are checked after join
+            // (no unwrap/expect).
+            //
+            // Cutoff per pool, per put_blocks call: the minimum of the newest
+            // SPARSE_CHECKPOINT_WINDOW checkpoint ids that will exist at the end
+            // of this call (already-stored ids ∪ the frontier id ∪ this batch's
+            // new ids) — i.e. exactly the post-prune retained set upstream's
+            // iterative oldest-first pruning leaves behind. Every Checkpoint
+            // retention below it is doomed and gets downgraded to the residue
+            // prune_excess_checkpoints would leave anyway (Marked survives the
+            // CHECKPOINT-flag clear; everything else becomes Ephemeral).
+            let frontier_id = from_state.block_height();
+
+            // Capture immutable per-pool inputs before the split-borrow.
+            let sap_start = Position::from(from_state.final_sapling_tree().tree_size());
+            let orch_start = Position::from(from_state.final_orchard_tree().tree_size());
+            let sap_frontier = from_state.final_sapling_tree().clone();
+            let orch_frontier = from_state.final_orchard_tree().clone();
+            let frontier_checkpoint_id = frontier_id;
+
             fn map_sparse_err<E: std::fmt::Debug>(e: E) -> SqliteClientError {
                 SqliteClientError::CorruptedData(format!("sparse tree: {e:?}"))
             }
-            {
-                sap_tree
-                    .insert_frontier(
-                        from_state.final_sapling_tree().clone(),
-                        Retention::Checkpoint { id: from_state.block_height(), marking: Marking::Reference },
+
+            let (sap_result, orch_result) = rayon::join(
+                || -> Result<u64, SqliteClientError> {
+                    // Downgrade doomed checkpoints (T6.3b).
+                    let sap_downgraded = doomed_checkpoint_cutoff(
+                        sap_tree.store().checkpoints.keys().copied(),
+                        frontier_id,
+                        sapling_cp_pos.keys().copied(),
                     )
-                    .map_err(map_sparse_err)?;
-                for (subtree, checkpoints) in sapling_subtrees {
-                    sap_tree.insert_tree(subtree, checkpoints).map_err(map_sparse_err)?;
-                }
-                let min_cp = sap_tree
-                    .store()
-                    .min_checkpoint_id()
-                    .map_err(map_sparse_err)?
-                    .ok_or_else(|| SqliteClientError::CorruptedData(
-                        "no sapling checkpoint after insert_frontier".into(),
-                    ))?;
-                for (height, checkpoint) in missing_sapling {
-                    if height > min_cp {
-                        sap_tree
-                            .store_mut()
-                            .add_checkpoint(height, checkpoint)
-                            .map_err(map_sparse_err)?;
+                    .map_or(0, |cutoff| {
+                        downgrade_doomed_checkpoints(&mut sapling_commitments, cutoff)
+                    });
+
+                    // ll/wallet.rs:466-481 — build subtrees (rayon par_chunks, same chunk size).
+                    let sapling_subtrees =
+                        build_subtrees::<_, SAPLING_SHARD_HEIGHT>(sap_start, &mut sapling_commitments);
+
+                    // ll/wallet.rs:503-537 update_tree — IN MEMORY (the substitution).
+                    sap_tree
+                        .insert_frontier(
+                            sap_frontier,
+                            Retention::Checkpoint {
+                                id: frontier_checkpoint_id,
+                                marking: Marking::Reference,
+                            },
+                        )
+                        .map_err(map_sparse_err)?;
+                    for (subtree, checkpoints) in sapling_subtrees {
+                        sap_tree.insert_tree(subtree, checkpoints).map_err(map_sparse_err)?;
                     }
-                }
-            }
-            {
-                orch_tree
-                    .insert_frontier(
-                        from_state.final_orchard_tree().clone(),
-                        Retention::Checkpoint { id: from_state.block_height(), marking: Marking::Reference },
+                    let min_cp = sap_tree
+                        .store()
+                        .min_checkpoint_id()
+                        .map_err(map_sparse_err)?
+                        .ok_or_else(|| SqliteClientError::CorruptedData(
+                            "no sapling checkpoint after insert_frontier".into(),
+                        ))?;
+                    for (height, checkpoint) in missing_sapling {
+                        if height > min_cp {
+                            sap_tree
+                                .store_mut()
+                                .add_checkpoint(height, checkpoint)
+                                .map_err(map_sparse_err)?;
+                        }
+                    }
+                    Ok(sap_downgraded)
+                },
+                || -> Result<u64, SqliteClientError> {
+                    // Downgrade doomed checkpoints (T6.3b).
+                    let orch_downgraded = doomed_checkpoint_cutoff(
+                        orch_tree.store().checkpoints.keys().copied(),
+                        frontier_id,
+                        orchard_cp_pos.keys().copied(),
                     )
-                    .map_err(map_sparse_err)?;
-                for (subtree, checkpoints) in orchard_subtrees {
-                    orch_tree.insert_tree(subtree, checkpoints).map_err(map_sparse_err)?;
-                }
-                let min_cp = orch_tree
-                    .store()
-                    .min_checkpoint_id()
-                    .map_err(map_sparse_err)?
-                    .ok_or_else(|| SqliteClientError::CorruptedData(
-                        "no orchard checkpoint after insert_frontier".into(),
-                    ))?;
-                for (height, checkpoint) in missing_orchard {
-                    if height > min_cp {
-                        orch_tree
-                            .store_mut()
-                            .add_checkpoint(height, checkpoint)
-                            .map_err(map_sparse_err)?;
+                    .map_or(0, |cutoff| {
+                        downgrade_doomed_checkpoints(&mut orchard_commitments, cutoff)
+                    });
+
+                    // ll/wallet.rs:466-481 — build subtrees (rayon par_chunks, same chunk size).
+                    let orchard_subtrees =
+                        build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(orch_start, &mut orchard_commitments);
+
+                    // ll/wallet.rs:503-537 update_tree — IN MEMORY (the substitution).
+                    orch_tree
+                        .insert_frontier(
+                            orch_frontier,
+                            Retention::Checkpoint {
+                                id: frontier_checkpoint_id,
+                                marking: Marking::Reference,
+                            },
+                        )
+                        .map_err(map_sparse_err)?;
+                    for (subtree, checkpoints) in orchard_subtrees {
+                        orch_tree.insert_tree(subtree, checkpoints).map_err(map_sparse_err)?;
                     }
-                }
-            }
+                    let min_cp = orch_tree
+                        .store()
+                        .min_checkpoint_id()
+                        .map_err(map_sparse_err)?
+                        .ok_or_else(|| SqliteClientError::CorruptedData(
+                            "no orchard checkpoint after insert_frontier".into(),
+                        ))?;
+                    for (height, checkpoint) in missing_orchard {
+                        if height > min_cp {
+                            orch_tree
+                                .store_mut()
+                                .add_checkpoint(height, checkpoint)
+                                .map_err(map_sparse_err)?;
+                        }
+                    }
+                    Ok(orch_downgraded)
+                },
+            );
+            // Propagate errors from both sides after join (no unwrap/expect).
+            let sap_downgraded = sap_result?;
+            let orch_downgraded = orch_result?;
+            downgraded = sap_downgraded + orch_downgraded;
+
             tree_ms = t_tree.elapsed().as_millis();
 
             // Flush the dirty tree delta + scan-queue update in the SAME txn.
