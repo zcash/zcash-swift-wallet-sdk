@@ -56,6 +56,10 @@ enum Cmd {
         /// Pass `--sparse false` to disable (kill switch — reverts to upstream path).
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         sparse: bool,
+        /// Byte budget per fetch sub-chunk (T6.8-S adaptive split; makes dense
+        /// "sandblasting" eras traversable). Must be >= 1 MiB.
+        #[arg(long, default_value_t = slipstream_core::EngineConfig::DEFAULT_CHUNK_SPLIT_BYTES)]
+        chunk_split_bytes: usize,
     },
     /// Golden-oracle run: sync the same UFVK/birthday twice into two wallet dirs
     /// (A = upstream persistence, B = upstream until T6.3 lands --sparse-b),
@@ -190,6 +194,7 @@ fn validate_sync_args(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_sync(
     server: String,
     wallet_dir: std::path::PathBuf,
@@ -198,6 +203,7 @@ fn cmd_sync(
     streams: usize,
     chunk: u32,
     sparse: bool,
+    chunk_split_bytes: usize,
 ) {
     let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
 
@@ -216,6 +222,7 @@ fn cmd_sync(
     cfg.fetch_streams = streams;
     cfg.chunk_blocks = chunk;
     cfg.sparse_persistence = sparse;
+    cfg.chunk_split_bytes = chunk_split_bytes;
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
@@ -372,8 +379,8 @@ fn main() {
         Cmd::Fetch { server, range, streams, chunk, baseline } => {
             cmd_fetch(server, range, streams, chunk, baseline);
         }
-        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse } => {
-            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse);
+        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes } => {
+            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes);
         }
         Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, streams, chunk } => {
             cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, streams, chunk);
@@ -481,6 +488,48 @@ mod tests {
         assert!(
             matches!(cli.cmd, Cmd::Sync { sparse: false, .. }),
             "--sparse false must override the default"
+        );
+    }
+
+    #[test]
+    fn sync_chunk_split_bytes_defaults_to_engine_default() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+        ])
+        .expect("parses default");
+        assert!(
+            matches!(
+                cli.cmd,
+                Cmd::Sync {
+                    chunk_split_bytes: slipstream_core::EngineConfig::DEFAULT_CHUNK_SPLIT_BYTES,
+                    ..
+                }
+            ),
+            "default chunk_split_bytes must equal EngineConfig::DEFAULT_CHUNK_SPLIT_BYTES"
+        );
+    }
+
+    #[test]
+    fn sync_chunk_split_bytes_is_overridable() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+            "--chunk-split-bytes",
+            "2097152",
+        ])
+        .expect("parses --chunk-split-bytes");
+        assert!(
+            matches!(cli.cmd, Cmd::Sync { chunk_split_bytes: 2_097_152, .. }),
+            "--chunk-split-bytes must override the default"
         );
     }
 

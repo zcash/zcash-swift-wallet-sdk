@@ -303,6 +303,27 @@ pub mod testkit {
         chunk_size: usize,
         sparse: bool,
     ) -> Result<(), SlipstreamError> {
+        let lens: Vec<usize> = blocks.chunks(chunk_size).map(<[CompactBlock]>::len).collect();
+        scan_synthetic_windows(dir, blocks, &lens, sparse)
+    }
+
+    /// Like [`scan_synthetic`] but scans in explicit variable-length windows
+    /// (T6.8-S): each entry of `window_lens` is one `scan_cached_blocks` call,
+    /// mirroring the engine's byte-budget-split sub-chunks. `window_lens` must
+    /// sum to `blocks.len()`.
+    pub fn scan_synthetic_windows(
+        dir: &Path,
+        blocks: Vec<CompactBlock>,
+        window_lens: &[usize],
+        sparse: bool,
+    ) -> Result<(), SlipstreamError> {
+        if window_lens.iter().sum::<usize>() != blocks.len() {
+            return Err(SlipstreamError::Wallet(format!(
+                "window_lens sum {} != blocks {}",
+                window_lens.iter().sum::<usize>(),
+                blocks.len()
+            )));
+        }
         let mut sparse_state = crate::persist::SparseTreeState::default();
         let db_path = dir.join("data.db");
         let mut session = WalletSession::open(crate::Network::MainNetwork, &db_path)?;
@@ -322,9 +343,12 @@ pub mod testkit {
         let mut from_state = birthday_ts
             .to_chain_state()
             .map_err(|e| SlipstreamError::Wallet(format!("chain state: {e}")))?;
-        for window in blocks.chunks(chunk_size) {
+        let mut offset = 0usize;
+        for len in window_lens {
+            let window = &blocks[offset..offset + len];
+            offset += len;
             let (Some(first), Some(last)) = (window.first(), window.last()) else {
-                continue; // chunks() never yields empty windows
+                continue; // zero-length windows are skipped (degenerate input)
             };
             let from_height = u32::try_from(first.height)
                 .map_err(|_| SlipstreamError::Wallet("height exceeds u32".into()))?;
@@ -507,6 +531,64 @@ mod tests {
         assert!(
             report.is_clean(),
             "sparse-vs-upstream diff not clean:\n{}",
+            report.render()
+        );
+    }
+
+    /// T6.8-S hermetic identity proof for VARIABLE (byte-budget-split) chunking:
+    /// a dense ("sandblasting"-shaped) synthetic chain — every block several
+    /// times the split threshold in wire size — is split into many small
+    /// variable windows by the REAL `ChunkSplitter` (the same decisions the
+    /// fetch workers make in the spam era), then scanned through BOTH
+    /// persistence paths at those identical boundaries: A = upstream WalletDb,
+    /// B = SparseFacade (production default). A CLEAN diff proves the sparse
+    /// path stays oracle-clean under dense, tiny, variable chunking.
+    ///
+    /// Methodology note (discovered building this test): chunk boundaries ARE
+    /// observable in the wallet DB on the UPSTREAM path itself, by design —
+    /// (1) `put_blocks` prunes `nullifier_map` on every call at
+    /// fully-scanned-height − PRUNING_DEPTH (zcash_client_backend-0.23.0
+    /// data_api/ll/wallet.rs:460-463 → zcash_client_sqlite-0.21.0 lib.rs:2054),
+    /// so finer chunking prunes a rolling cache earlier; (2) shard-blob bytes
+    /// encode the insert/prune batch history. Cross-chunking byte-comparison is
+    /// therefore upstream-false; the oracle compares the two PATHS at EQUAL
+    /// boundaries (same as T6.2+ methodology and the CLI oracle, where both
+    /// runs share one config).
+    #[test]
+    fn split_chunking_matches_upstream_on_dense_chain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let da = dir.path().join("wa");
+        let db = dir.path().join("wb");
+        std::fs::create_dir_all(&da).unwrap();
+        std::fs::create_dir_all(&db).unwrap();
+        // 80 blocks × 20 sapling outputs ≈ 2.5 KB wire per block: dense-era
+        // shape relative to a 6 KiB split threshold (~2-block sub-chunks).
+        // Sized for the always-green loop: split COUNT (not absolute output
+        // volume) is what exercises the variable-boundary machinery.
+        let blocks = super::testkit::synth_blocks(80, 20);
+
+        // Derive the window lengths from the production splitter.
+        let mut lens: Vec<usize> = Vec::new();
+        let mut splitter = crate::fetch::ChunkSplitter::new(6 * 1024);
+        for b in blocks.clone() {
+            if let Some((sub, _bytes)) = splitter.push(b) {
+                lens.push(sub.len());
+            }
+        }
+        if let Some((sub, _bytes)) = splitter.finish() {
+            lens.push(sub.len());
+        }
+        assert!(lens.len() >= 30, "dense chain must split into many sub-chunks, got {}", lens.len());
+        assert_eq!(lens.iter().sum::<usize>(), blocks.len(), "no block lost by the splitter");
+
+        super::testkit::scan_synthetic_windows(&da, blocks.clone(), &lens, false)
+            .expect("upstream scan at split boundaries");
+        super::testkit::scan_synthetic_windows(&db, blocks, &lens, true)
+            .expect("sparse scan at split boundaries");
+        let report = semantic_diff(&da.join("data.db"), &db.join("data.db")).expect("diff");
+        assert!(
+            report.is_clean(),
+            "split-chunking sparse-vs-upstream diff not clean:\n{}",
             report.render()
         );
     }

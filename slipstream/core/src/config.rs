@@ -38,6 +38,15 @@ pub struct EngineConfig {
     pub chunk_blocks: u32,
     /// Upper bound for in-flight downloaded block data.
     pub memory_budget_bytes: usize,
+    /// Byte budget per emitted fetch sub-chunk (T6.8-S): each fetch worker splits
+    /// its streamed plan chunk into sub-chunks of at most ~this many (estimated
+    /// wire) bytes. Normal-era 10k-block chunks (~1–6 MB) stay single sub-chunks;
+    /// spam-era ("sandblasting", mainnet ~1.70M–2.00M: 0.3–2.5M outputs per 10k
+    /// blocks ≈ hundreds of MB) chunks split into ~250–500-block sub-chunks
+    /// automatically — density-adaptive, no hardcoded heights. Smaller values
+    /// bound memory and make fetch retry/resume granular at the cost of more
+    /// scan commits. Must be >= 1 MiB.
+    pub chunk_split_bytes: usize,
     /// When `Some(ms)`, the scan splits fetch-chunks into time-targeted sub-batches
     /// (~ms each) for finer commits and progress updates on slow devices — at the cost
     /// of one full `put_blocks` commit + shardtree checkpoint per sub-batch (measured
@@ -64,6 +73,10 @@ impl EngineConfig {
     pub const DEFAULT_FETCH_STREAMS: usize = 4;
     pub const DEFAULT_CHUNK_BLOCKS: u32 = 10_000;
     pub const DEFAULT_MEMORY_BUDGET: usize = 256 * 1024 * 1024;
+    /// 8 MiB: comfortably above a normal-era 10k-block chunk (~1–6 MB wire), so
+    /// the default path emits exactly one sub-chunk per plan chunk; a
+    /// sandblasting-era chunk (~hundreds of MB) splits into many (T6.8-S).
+    pub const DEFAULT_CHUNK_SPLIT_BYTES: usize = 8 * 1024 * 1024;
     /// Run an interleaved enhancement pass every 3 completed chunks by default (T6.1).
     pub const DEFAULT_ENHANCE_EVERY_CHUNKS: u32 = 3;
 
@@ -75,6 +88,7 @@ impl EngineConfig {
             fetch_streams: Self::DEFAULT_FETCH_STREAMS,
             chunk_blocks: Self::DEFAULT_CHUNK_BLOCKS,
             memory_budget_bytes: Self::DEFAULT_MEMORY_BUDGET,
+            chunk_split_bytes: Self::DEFAULT_CHUNK_SPLIT_BYTES,
             scan_batch_target_ms: None,
             enhance_every_chunks: Self::DEFAULT_ENHANCE_EVERY_CHUNKS,
             sparse_persistence: true,
@@ -93,6 +107,9 @@ impl EngineConfig {
         }
         if self.memory_budget_bytes < 16 * 1024 * 1024 {
             return Err(SlipstreamError::Config("memory_budget_bytes must be >= 16 MiB".into()));
+        }
+        if self.chunk_split_bytes < 1024 * 1024 {
+            return Err(SlipstreamError::Config("chunk_split_bytes must be >= 1 MiB".into()));
         }
         if let Some(ms) = self.scan_batch_target_ms
             && ms < 500
@@ -129,6 +146,22 @@ mod tests {
         assert_eq!(c.enhance_every_chunks, 3);
         // T6.6: sparse persistence defaults ON (oracle-clean, kill switch retained).
         assert!(c.sparse_persistence);
+        // T6.8-S: byte-budgeted sub-chunk splitting defaults to 8 MiB.
+        assert_eq!(c.chunk_split_bytes, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn tiny_chunk_split_bytes_rejected() {
+        let mut c = config();
+        c.chunk_split_bytes = 1024 * 1024 - 1;
+        assert!(matches!(c.validate(), Err(SlipstreamError::Config(_))));
+    }
+
+    #[test]
+    fn chunk_split_bytes_one_mib_accepted() {
+        let mut c = config();
+        c.chunk_split_bytes = 1024 * 1024;
+        assert!(c.validate().is_ok());
     }
 
     #[test]

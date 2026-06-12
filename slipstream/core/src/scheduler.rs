@@ -156,7 +156,9 @@ pub async fn run_to_completion(
         }
 
         let (tx, rx) = chunk_queue(config.memory_budget_bytes);
-        let plan = FetchPlan::new(start, end, config.chunk_blocks, config.fetch_streams);
+        let mut plan = FetchPlan::new(start, end, config.chunk_blocks, config.fetch_streams);
+        // T6.8-S: byte-budgeted sub-chunk splitting (sandblasting-era survival).
+        plan.split_bytes = config.chunk_split_bytes;
         let endpoint = config.endpoint.clone();
         // Clone the progress Arc for the fetch task so it can bump fetched_blocks.
         let fetch_progress = progress.clone();
