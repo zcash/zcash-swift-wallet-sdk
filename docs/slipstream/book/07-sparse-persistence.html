@@ -269,7 +269,26 @@ info!(downgrade_ms, build_ms, frontier_ms, insert_ms, ensure_ms, total_ms, "spar
     <p>Deferral changes timing, never content: hermetic write-behind oracles (synthetic 3×1000 chain + dense split-boundary chain) diff CLEAN against the upstream path; the darkside REAL-notes fixture oracle (write-behind vs upstream) diffs CLEAN; the mainnet tip−2000 CLI oracle with <code>--sparse-b --write-behind-b</code> reports VERDICT IDENTICAL. Overlap quality is observable per chunk as <code>persist_wait_ms</code> (0 = perfect overlap) and per pass as <code>persist_overlap_s</code> in the stage-split line; <code>scan_s</code> deliberately stays honest loop wall time.</p>
   </div>
 
-  <p>Tree-state ownership moved with the commit: under write-behind, the <code>SparseTreeState</code> lives in the persist lane and is mutated only inside deferred commits (strictly serial), so the tree insert and its flush stay together in the same transaction — the scan task never touches the tree. The flag ships <strong>off</strong> pending field validation; the Mac A/B and device runs decide the default-on flip.</p>
+  <p>Tree-state ownership moved with the commit: under write-behind, the <code>SparseTreeState</code> lives in the persist lane and is mutated only inside deferred commits (strictly serial), so the tree insert and its flush stay together in the same transaction — the scan task never touches the tree. The flag is now <strong>on</strong> by default (since T6.9 flip).</p>
+
+  <h3>Failure first: pool-queueing contention (T6.9 field finding)</h3>
+
+  <p>The first full field run with write-behind ON (iPad A10, 2026-06-13, T6.9 session) exposed a structural problem. The <code>PersistLane</code> commit runs <code>sparse_put_blocks</code>, which calls <code>rayon::join</code> for the sapling∥orchard tree pipelines, and upstream's <code>build_subtrees</code> uses <code>par_chunks</code> internally. Both of these resolved to the <strong>global rayon pool</strong> — the same pool that <code>scan_cached_blocks</code>'s <code>BatchRunners</code> (zcash_client_backend's trial-decryption) saturate with <code>spawn_fifo</code> tasks.</p>
+
+  <p>On the 4-core A10 the consequence was severe: the per-chunk tree wall time inflated ~60% (417.8&nbsp;s total persist busy vs ≈258&nbsp;s inline, smoking gun: one chunk's tree wall 12.9&nbsp;s vs per-pool sum 6.7&nbsp;s — the pool tasks were queuing behind decrypt). Depth-1 backpressure made it worse: because persist-busy > decrypt-window, the scan task spent 259&nbsp;s blocked waiting for the lane instead of overlapping. The net write-behind gain was only ~20&nbsp;s instead of the projected ~120&nbsp;s. On the 6-core iPhone the same build gained 16% — more cores = less pool pressure.</p>
+
+  <h3>The isolation fix (T6.9b)</h3>
+
+  <p>The fix is surgical: <code>PersistLane</code> now owns a <strong>dedicated <code>rayon::ThreadPool</code></strong> created at <code>open()</code> time, and the <code>submit_job</code> <code>spawn_blocking</code> closure wraps the commit with <code>lane_pool.install(|| …)</code>. Rayon's <code>install</code> sets the calling thread as a worker of <code>lane_pool</code> for the duration, so every nested rayon call — the <code>rayon::join</code> (T6.8-L3a) and <code>build_subtrees</code>' <code>par_chunks</code> — resolves to the lane's threads, never touching the global decrypt pool.</p>
+
+  <p>The constant <code>LANE_POOL_THREADS = 2</code>: 1 would collapse the intra-commit sapling∥orchard parallelism (the T6.8-L3a gain) back to serial. 2 preserves the join, while giving decrypt its own 2 cores on a 4-core A10. A third thread adds no additional parallelism inside the join (there are only 2 independent sub-tasks) and would compete with decrypt for the same cores. The LANE_POOL_THREADS doc comment in the source explains this 1-vs-2 tradeoff explicitly.</p>
+
+  <p>The inline path (<code>write_behind = false</code>) is untouched: it calls <code>sparse_put_blocks</code> directly, never concurrently with decrypt, so pool-queueing does not apply there.</p>
+
+  <div class="callout warning">
+    <span class="label">Honest physics</span>
+    <p>Total CPU is conserved on a saturated chip. The lane pool removes <em>scheduling pathology</em> (queueing and interleaving inflation) — it does not add cores. The ≈5:00–5:30 iPad projection is labeled a projection pending device re-test. On the Mac, where the global pool had 10+ threads for the commit, the change increases scan time (~5.6&nbsp;s → ~10.7–12.4&nbsp;s): the commit now runs on only 2 lane threads instead of the many-core Mac's full pool. This regression is expected, documented, and an acceptable trade for the device benefit.</p>
+  </div>
 
   <h2>The kill switch</h2>
 
@@ -289,7 +308,7 @@ info!(downgrade_ms, build_ms, frontier_ms, insert_ms, ensure_ms, total_ms, "spar
     <a href="06-scan.html">&#8592; 6. Scan Pipeline</a>
     <a href="08-scheduler.html">8. Scheduler &amp; Spend-before-Sync &#8594;</a>
   </nav>
-  <footer class="colophon">Citations as of commit b34f6679 + T6.9 session (2026-06-12) · Slipstream Book · local-only draft</footer>
+  <footer class="colophon">Citations as of commit b34f6679 + T6.9/T6.9b sessions (2026-06-12/2026-06-13) · Slipstream Book · local-only draft</footer>
 </main>
 </body>
 </html>

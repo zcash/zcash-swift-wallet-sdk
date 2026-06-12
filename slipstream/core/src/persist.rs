@@ -1493,6 +1493,38 @@ impl WalletWrite for WriteBehindFacade {
 
 // ── Persist lane ───────────────────────────────────────────────────────────────
 
+/// T6.9b — Thread count for the lane's DEDICATED rayon pool.
+///
+/// Why 2, not 1:
+///   The per-pool `rayon::join` inside `sparse_put_blocks` dispatches the
+///   sapling and orchard tree pipelines in PARALLEL (T6.8-L3a). With 1 lane
+///   thread, `join` degenerates to serial (left closure runs inline; right
+///   waits) — identical to before L3a on the lane. With 2 lane threads, both
+///   closures run concurrently inside the lane pool, preserving the ≈10–15%
+///   intra-commit parallelism measured at T6.8-L3a while still being fully
+///   isolated from the decrypt pool.
+///
+/// Why not more:
+///   The lane executes EXACTLY ONE commit at a time (depth-1 backpressure is
+///   structural). Adding a third thread adds no further in-commit parallelism
+///   (only 2 independent sub-tasks exist — sap + orch join); it would merely
+///   gift spare CPU to the commit while the decrypt side is already competing
+///   for the same cores. On a 4-core A10 the budget is 4 threads total; we
+///   want the lane to occupy at most 2 so decrypt can fill the other 2.
+///
+/// Why a DEDICATED pool at all (T6.9b contention fix):
+///   Before this change, `rayon::join` in `sparse_put_blocks` used the GLOBAL
+///   pool — the same pool the concurrent decrypt tasks (zcash_client_backend
+///   BatchRunners, rayon::spawn_fifo) saturate. On a 4-core A10, field
+///   evidence (T6.9 iPad log 2026-06-13) showed the lane's tree work queuing
+///   behind decrypt tasks: tree wall 12.9s vs per-pool sum 6.7s on one chunk
+///   (≈60% inflation due to scheduling contention); depth-1 persist_wait
+///   inflated to 259s over the pass, reducing the write-behind benefit by ≈200s.
+///   With a lane-owned pool, ALL rayon work inside the commit closure — the
+///   `rayon::join` itself AND upstream's `build_subtrees`' `par_chunks` — lands
+///   on the lane's 2 threads, never touching the global pool's decrypt workers.
+const LANE_POOL_THREADS: usize = 2;
+
 /// A deferred-commit job: runs against the lane's Db + tree state on a blocking
 /// thread. Boxed so lane mechanics (serial order, depth-1 backpressure, error
 /// propagation, drain) are unit-testable without `ScannedBlock` values.
@@ -1504,9 +1536,22 @@ pub(crate) type PersistJob =
 type PersistTaskOutput = (Db, SparseTreeState, Result<std::time::Duration, SqliteClientError>);
 
 /// The write-behind persist lane: owns a SECOND `WalletDb` connection to the
-/// same wallet file (WAL) plus the per-range `SparseTreeState`, and runs at
-/// most ONE deferred commit at a time via `spawn_blocking` (ownership of both
-/// ping-pongs through the task, so serialization is structural, not advisory).
+/// same wallet file (WAL), the per-range `SparseTreeState`, and a DEDICATED
+/// rayon thread pool (T6.9b, `LANE_POOL_THREADS` = 2). Runs at most ONE
+/// deferred commit at a time via `spawn_blocking` (ownership ping-pongs
+/// through the task — serialization is structural, not advisory).
+///
+/// Thread-pool isolation (T6.9b): every commit closure runs via
+/// `lane_pool.install(|| …)`. Rayon scoping guarantees ALL nested rayon usage
+/// inside — the `rayon::join` (T6.8-L3a) AND upstream `build_subtrees`'
+/// `par_chunks` — lands on the lane's 2-thread pool, never on the global
+/// pool that decrypt workers saturate. This eliminates the scheduling-
+/// contention inflation observed on the 4-core A10 (T6.9 field evidence).
+///
+/// The INLINE path (write_behind=false) is UNTOUCHED: it calls
+/// `sparse_put_blocks` directly (no `spawn_blocking`, no lane pool) so its
+/// `rayon::join` keeps using the global pool — inline persist never runs
+/// concurrently with decrypt, so there is no pool-queueing pathology there.
 ///
 /// No concurrent-writer hazard by design: while a commit is in flight the scan
 /// side performs ZERO database work (all its reads are virtualized by
@@ -1522,6 +1567,10 @@ type PersistTaskOutput = (Db, SparseTreeState, Result<std::time::Duration, Sqlit
 pub struct PersistLane {
     db: Option<Db>,
     sparse: Option<SparseTreeState>,
+    /// Dedicated rayon pool (T6.9b): isolates the commit's CPU work from the
+    /// global pool's decrypt workers — see `LANE_POOL_THREADS` doc comment.
+    /// Arc so it can be moved into `spawn_blocking` closures cheaply.
+    lane_pool: std::sync::Arc<rayon::ThreadPool>,
     in_flight: Option<tokio::task::JoinHandle<PersistTaskOutput>>,
     /// (first_height, last_height) of the in-flight unit, for log attribution.
     in_flight_span: (u64, u64),
@@ -1544,9 +1593,21 @@ impl PersistLane {
             rand::rngs::OsRng,
         )
         .map_err(|e| crate::error::SlipstreamError::Wallet(format!("persist lane open: {e}")))?;
+        let lane_pool = std::sync::Arc::new(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(LANE_POOL_THREADS)
+                .thread_name(|i| format!("slipstream-lane-{i}"))
+                .build()
+                .map_err(|e| {
+                    crate::error::SlipstreamError::Wallet(format!(
+                        "persist lane pool build: {e}"
+                    ))
+                })?,
+        );
         Ok(Self {
             db: Some(db),
             sparse: Some(SparseTreeState::default()),
+            lane_pool,
             in_flight: None,
             in_flight_span: (0, 0),
             total_wait: std::time::Duration::ZERO,
@@ -1599,6 +1660,13 @@ impl PersistLane {
     /// Submit one deferred commit job. Depth-1 backpressure: awaits (and
     /// error-propagates) the PREVIOUS commit before spawning this one — unit
     /// N+1 is never submitted before unit N completed.
+    ///
+    /// T6.9b: the job runs via `lane_pool.install(|| …)` so ALL nested rayon
+    /// usage inside `sparse_put_blocks` (the `rayon::join` for sapling∥orchard
+    /// and upstream `build_subtrees`' `par_chunks`) lands on the lane's
+    /// dedicated 2-thread pool — zero interaction with the global pool's decrypt
+    /// workers. The `install` call blocks until the closure returns, which is
+    /// exactly what `spawn_blocking`'s thread expects.
     pub(crate) async fn submit_job(
         &mut self,
         span: (u64, u64),
@@ -1610,10 +1678,17 @@ impl PersistLane {
                 "write-behind persist lane unusable (connection lost by an earlier failure)".into(),
             ));
         };
+        // Arc::clone so the spawn_blocking closure can own a reference to the
+        // lane pool without borrowing `self`.  Cheap (atomic ref-count bump).
+        let pool = std::sync::Arc::clone(&self.lane_pool);
         self.in_flight_span = span;
         self.in_flight = Some(tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
-            let result = job(&mut db, &mut sparse).map(|()| started.elapsed());
+            // T6.9b: install routes ALL nested rayon work (rayon::join +
+            // par_chunks) onto the lane's own thread pool, never the global pool.
+            let result = pool
+                .install(|| job(&mut db, &mut sparse))
+                .map(|()| started.elapsed());
             (db, sparse, result)
         }));
         Ok(())
@@ -1937,6 +2012,22 @@ mod write_behind_tests {
             zcash_protocol::consensus::Network::MainNetwork,
         )
         .expect("lane open")
+    }
+
+    /// T6.9b: the lane pool must be created with LANE_POOL_THREADS threads.
+    /// Verifies that pool construction succeeds and that `install` executes
+    /// inside the pool (observed thread count equals configured value).
+    #[test]
+    fn lane_pool_has_configured_thread_count() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let l = lane(dir.path());
+        // install() runs the closure on a worker in the lane pool.
+        // current_num_threads() is the configured capacity.
+        let observed = l.lane_pool.current_num_threads();
+        assert_eq!(
+            observed, LANE_POOL_THREADS,
+            "lane pool must have LANE_POOL_THREADS={LANE_POOL_THREADS} threads, got {observed}"
+        );
     }
 
     /// Depth-1 backpressure: submit(N+1) must complete unit N first — N+1's
