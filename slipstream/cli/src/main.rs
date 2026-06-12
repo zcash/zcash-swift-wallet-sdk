@@ -61,8 +61,9 @@ enum Cmd {
         #[arg(long, default_value_t = slipstream_core::EngineConfig::DEFAULT_CHUNK_SPLIT_BYTES)]
         chunk_split_bytes: usize,
         /// T6.9: depth-1 write-behind persistence pipelining (overlap chunk N's
-        /// DB commit with chunk N+1's decryption). Requires sparse. Default off.
-        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        /// DB commit with chunk N+1's decryption). Requires sparse. Default ON
+        /// since the 2026-06-12 flip; `--write-behind false` is the kill switch.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         write_behind: bool,
     },
     /// Golden-oracle run: sync the same UFVK/birthday twice into two wallet dirs
@@ -231,7 +232,9 @@ fn cmd_sync(
     cfg.chunk_blocks = chunk;
     cfg.sparse_persistence = sparse;
     cfg.chunk_split_bytes = chunk_split_bytes;
-    cfg.write_behind = write_behind;
+    // `--sparse false` (the sparse kill switch) implies write-behind off: the
+    // deferred commit runs the sparse put_blocks path, so it cannot outlive it.
+    cfg.write_behind = write_behind && sparse;
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
@@ -617,8 +620,10 @@ mod tests {
 
     // ── T6.9 write-behind flags ────────────────────────────────────────────────
 
+
     #[test]
-    fn sync_write_behind_defaults_off() {
+    fn sync_write_behind_defaults_on() {
+        // T6.9 flip (2026-06-12): default ON; `--write-behind false` is the kill switch.
         let cli = Cli::try_parse_from([
             "slipstream",
             "sync",
@@ -627,11 +632,8 @@ mod tests {
             "--wallet-dir",
             "/tmp/test-wallet",
         ])
-        .expect("parses default");
-        assert!(
-            matches!(cli.cmd, Cmd::Sync { write_behind: false, .. }),
-            "write_behind must default to false (flag-off ships first)"
-        );
+        .expect("parses without the flag");
+        assert!(matches!(cli.cmd, Cmd::Sync { write_behind: true, .. }));
     }
 
     #[test]

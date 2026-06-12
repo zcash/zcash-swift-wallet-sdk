@@ -72,8 +72,11 @@ pub struct EngineConfig {
     /// the exact `sparse_put_blocks` logic, strictly serial) runs on a persist
     /// lane OVERLAPPED with chunk N+1's decryption; the scan's DB reads are
     /// served from a pending-aware facade (see `persist::WriteBehindFacade`).
-    /// Requires `sparse_persistence` (validated). Default **false** pending
-    /// field validation; CLI `--write-behind`.
+    /// Requires `sparse_persistence` (validated). Default **true** since
+    /// 2026-06-12 (oracle-clean at all levels: hermetic + darkside real-notes +
+    /// mainnet; darkside 14/14 incl. write-behind reorg/spendability variants;
+    /// Mac A/B ~9% with flag-off path identical). CLI `--write-behind false`
+    /// is the kill switch.
     pub write_behind: bool,
 }
 
@@ -100,7 +103,7 @@ impl EngineConfig {
             scan_batch_target_ms: None,
             enhance_every_chunks: Self::DEFAULT_ENHANCE_EVERY_CHUNKS,
             sparse_persistence: true,
-            write_behind: false,
+            write_behind: true,
         }
     }
 
@@ -162,8 +165,9 @@ mod tests {
         assert!(c.sparse_persistence);
         // T6.8-S: byte-budgeted sub-chunk splitting defaults to 8 MiB.
         assert_eq!(c.chunk_split_bytes, 8 * 1024 * 1024);
-        // T6.9: write-behind pipelining defaults OFF pending field validation.
-        assert!(!c.write_behind);
+        // T6.9 flip (2026-06-12): write-behind defaults ON (oracle-clean at all
+        // levels; darkside 14/14 incl. WB variants; kill switch retained).
+        assert!(c.write_behind);
     }
 
     #[test]
