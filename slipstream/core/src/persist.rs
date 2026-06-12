@@ -531,6 +531,8 @@ pub fn sparse_put_blocks(
     let mut tree_ms = 0u128;
     let mut sap_tree_ms = 0u128;
     let mut orch_tree_ms = 0u128;
+    let mut sap_split = PoolTimers::default();
+    let mut orch_split = PoolTimers::default();
     let mut flush_ms = 0u128;
     let mut downgraded = 0u64;
 
@@ -781,9 +783,11 @@ pub fn sparse_put_blocks(
             }
 
             let (sap_result, orch_result) = rayon::join(
-                || -> Result<(u64, u128), SqliteClientError> {
+                || -> Result<(u64, PoolTimers), SqliteClientError> {
                     let t_pool = std::time::Instant::now();
+                    let mut timers = PoolTimers::default();
                     // Downgrade doomed checkpoints (T6.3b).
+                    let t = std::time::Instant::now();
                     let sap_downgraded = doomed_checkpoint_cutoff(
                         sap_tree.store().checkpoints.keys().copied(),
                         frontier_id,
@@ -792,12 +796,16 @@ pub fn sparse_put_blocks(
                     .map_or(0, |cutoff| {
                         downgrade_doomed_checkpoints(&mut sapling_commitments, cutoff)
                     });
+                    timers.downgrade_ms = t.elapsed().as_millis();
 
                     // ll/wallet.rs:466-481 — build subtrees (rayon par_chunks, same chunk size).
+                    let t = std::time::Instant::now();
                     let sapling_subtrees =
                         build_subtrees::<_, SAPLING_SHARD_HEIGHT>(sap_start, &mut sapling_commitments);
+                    timers.build_ms = t.elapsed().as_millis();
 
                     // ll/wallet.rs:503-537 update_tree — IN MEMORY (the substitution).
+                    let t = std::time::Instant::now();
                     sap_tree
                         .insert_frontier(
                             sap_frontier,
@@ -807,9 +815,13 @@ pub fn sparse_put_blocks(
                             },
                         )
                         .map_err(map_sparse_err)?;
+                    timers.frontier_ms = t.elapsed().as_millis();
+                    let t = std::time::Instant::now();
                     for (subtree, checkpoints) in sapling_subtrees {
                         sap_tree.insert_tree(subtree, checkpoints).map_err(map_sparse_err)?;
                     }
+                    timers.insert_ms = t.elapsed().as_millis();
+                    let t = std::time::Instant::now();
                     let min_cp = sap_tree
                         .store()
                         .min_checkpoint_id()
@@ -825,11 +837,15 @@ pub fn sparse_put_blocks(
                                 .map_err(map_sparse_err)?;
                         }
                     }
-                    Ok((sap_downgraded, t_pool.elapsed().as_millis()))
+                    timers.ensure_ms = t.elapsed().as_millis();
+                    timers.total_ms = t_pool.elapsed().as_millis();
+                    Ok((sap_downgraded, timers))
                 },
-                || -> Result<(u64, u128), SqliteClientError> {
+                || -> Result<(u64, PoolTimers), SqliteClientError> {
                     let t_pool = std::time::Instant::now();
+                    let mut timers = PoolTimers::default();
                     // Downgrade doomed checkpoints (T6.3b).
+                    let t = std::time::Instant::now();
                     let orch_downgraded = doomed_checkpoint_cutoff(
                         orch_tree.store().checkpoints.keys().copied(),
                         frontier_id,
@@ -838,12 +854,16 @@ pub fn sparse_put_blocks(
                     .map_or(0, |cutoff| {
                         downgrade_doomed_checkpoints(&mut orchard_commitments, cutoff)
                     });
+                    timers.downgrade_ms = t.elapsed().as_millis();
 
                     // ll/wallet.rs:466-481 — build subtrees (rayon par_chunks, same chunk size).
+                    let t = std::time::Instant::now();
                     let orchard_subtrees =
                         build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(orch_start, &mut orchard_commitments);
+                    timers.build_ms = t.elapsed().as_millis();
 
                     // ll/wallet.rs:503-537 update_tree — IN MEMORY (the substitution).
+                    let t = std::time::Instant::now();
                     orch_tree
                         .insert_frontier(
                             orch_frontier,
@@ -853,9 +873,13 @@ pub fn sparse_put_blocks(
                             },
                         )
                         .map_err(map_sparse_err)?;
+                    timers.frontier_ms = t.elapsed().as_millis();
+                    let t = std::time::Instant::now();
                     for (subtree, checkpoints) in orchard_subtrees {
                         orch_tree.insert_tree(subtree, checkpoints).map_err(map_sparse_err)?;
                     }
+                    timers.insert_ms = t.elapsed().as_millis();
+                    let t = std::time::Instant::now();
                     let min_cp = orch_tree
                         .store()
                         .min_checkpoint_id()
@@ -871,15 +895,19 @@ pub fn sparse_put_blocks(
                                 .map_err(map_sparse_err)?;
                         }
                     }
-                    Ok((orch_downgraded, t_pool.elapsed().as_millis()))
+                    timers.ensure_ms = t.elapsed().as_millis();
+                    timers.total_ms = t_pool.elapsed().as_millis();
+                    Ok((orch_downgraded, timers))
                 },
             );
             // Propagate errors from both sides after join (no unwrap/expect).
-            let (sap_downgraded, sap_ms) = sap_result?;
-            let (orch_downgraded, orch_ms) = orch_result?;
+            let (sap_downgraded, sap_timers) = sap_result?;
+            let (orch_downgraded, orch_timers) = orch_result?;
             downgraded = sap_downgraded + orch_downgraded;
-            sap_tree_ms = sap_ms;
-            orch_tree_ms = orch_ms;
+            sap_tree_ms = sap_timers.total_ms;
+            orch_tree_ms = orch_timers.total_ms;
+            sap_split = sap_timers;
+            orch_split = orch_timers;
 
             tree_ms = t_tree.elapsed().as_millis();
 
@@ -902,6 +930,26 @@ pub fn sparse_put_blocks(
     // it degenerates to serial (single-thread rayon pool) — this distinguishes
     // "lopsided pools" from "no parallelism" directly in device logs.
     info!(rows_ms, tree_ms, sap_tree_ms, orch_tree_ms, flush_ms, downgraded, "sparse put_blocks");
+    // T6.8-L3b sub-attribution: per-pool pipeline split (one line per pool, per chunk).
+    // The dominant orchard sub-bucket decides the L3b optimization target.
+    info!(
+        downgrade_ms = orch_split.downgrade_ms,
+        build_ms = orch_split.build_ms,
+        frontier_ms = orch_split.frontier_ms,
+        insert_ms = orch_split.insert_ms,
+        ensure_ms = orch_split.ensure_ms,
+        total_ms = orch_split.total_ms,
+        "sparse orchard tree split"
+    );
+    info!(
+        downgrade_ms = sap_split.downgrade_ms,
+        build_ms = sap_split.build_ms,
+        frontier_ms = sap_split.frontier_ms,
+        insert_ms = sap_split.insert_ms,
+        ensure_ms = sap_split.ensure_ms,
+        total_ms = sap_split.total_ms,
+        "sparse sapling tree split"
+    );
     Ok(())
 }
 
@@ -978,6 +1026,25 @@ fn doomed_checkpoint_cutoff(
         .rev()
         .nth(SPARSE_CHECKPOINT_WINDOW as usize - 1)
         .copied()
+}
+
+/// T6.8-L3b sub-attribution: wall-time split of one pool's in-memory tree
+/// pipeline inside its rayon::join closure. All values are milliseconds;
+/// `total_ms` is the whole-closure wall time (≈ sum of the buckets).
+#[derive(Debug, Default, Clone, Copy)]
+struct PoolTimers {
+    /// `doomed_checkpoint_cutoff` + `downgrade_doomed_checkpoints`.
+    downgrade_ms: u128,
+    /// `build_subtrees` (upstream's par_chunks subtree construction).
+    build_ms: u128,
+    /// `insert_frontier`.
+    frontier_ms: u128,
+    /// The `insert_tree` loop over built subtrees.
+    insert_ms: u128,
+    /// `min_checkpoint_id` + the missing-checkpoint add loop.
+    ensure_ms: u128,
+    /// Whole-closure wall time.
+    total_ms: u128,
 }
 
 /// T6.3b: downgrade doomed checkpoint retentions in place (ids strictly below
