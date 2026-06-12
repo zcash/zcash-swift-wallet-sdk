@@ -64,6 +64,12 @@ Readability rules (every chapter):
 - Short sections, descriptive headings, code excerpts only where they earn their place (≤15 lines, cited).
 - Chapter footer: baseline commit for citations + prev/next navigation.
 
+## Maintenance rules (user-mandated, 2026-06-12)
+
+1. **Doc-sync rule**: every engine change that alters documented behavior (a fix, a removal, a new gap, a closed gap) updates the affected chapter(s) in the same working session — the book must never describe a previous version of the engine. Chapter footers carry the citation baseline commit; bump it when a chapter is touched.
+2. **Failure-first house style**: chapters teach through the real failure → diagnosis → fix arc (the sandblasting chapter is the reference: not "do we support it" but "we failed and rose"). Keep this direction for all future chapters and revisions.
+3. **Honest-gaps completeness**: ch.19 is canonical; before any external sharing, sweep Blockers/STATE for unlisted gaps (user expects more to surface — add them as hit).
+
 ## Waves
 
 - **Wave 1 (now, parallel)**: chapters 1–4 (Agent A), 10–12 (Agent B), 13–16 (Agent C) + index + style — the audit/review core the user named.
