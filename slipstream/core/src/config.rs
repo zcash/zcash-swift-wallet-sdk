@@ -67,6 +67,14 @@ pub struct EngineConfig {
     /// retained: set `sparse_persistence = false` to revert to the upstream
     /// path if a regression is found.
     pub sparse_persistence: bool,
+    /// T6.9 L4b: depth-1 write-behind persistence pipelining. When `true`,
+    /// chunk N's database commit (rows + tree + flush, one atomic transaction —
+    /// the exact `sparse_put_blocks` logic, strictly serial) runs on a persist
+    /// lane OVERLAPPED with chunk N+1's decryption; the scan's DB reads are
+    /// served from a pending-aware facade (see `persist::WriteBehindFacade`).
+    /// Requires `sparse_persistence` (validated). Default **false** pending
+    /// field validation; CLI `--write-behind`.
+    pub write_behind: bool,
 }
 
 impl EngineConfig {
@@ -92,6 +100,7 @@ impl EngineConfig {
             scan_batch_target_ms: None,
             enhance_every_chunks: Self::DEFAULT_ENHANCE_EVERY_CHUNKS,
             sparse_persistence: true,
+            write_behind: false,
         }
     }
 
@@ -123,6 +132,11 @@ impl EngineConfig {
                 "enhance_every_chunks must be >= 1".into(),
             ));
         }
+        if self.write_behind && !self.sparse_persistence {
+            return Err(SlipstreamError::Config(
+                "write_behind requires sparse_persistence (the deferred commit runs the sparse put_blocks path)".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -148,6 +162,23 @@ mod tests {
         assert!(c.sparse_persistence);
         // T6.8-S: byte-budgeted sub-chunk splitting defaults to 8 MiB.
         assert_eq!(c.chunk_split_bytes, 8 * 1024 * 1024);
+        // T6.9: write-behind pipelining defaults OFF pending field validation.
+        assert!(!c.write_behind);
+    }
+
+    #[test]
+    fn write_behind_without_sparse_rejected() {
+        let mut c = config();
+        c.write_behind = true;
+        c.sparse_persistence = false;
+        assert!(matches!(c.validate(), Err(SlipstreamError::Config(_))));
+    }
+
+    #[test]
+    fn write_behind_with_sparse_accepted() {
+        let mut c = config();
+        c.write_behind = true;
+        assert!(c.validate().is_ok());
     }
 
     #[test]

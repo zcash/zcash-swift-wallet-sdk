@@ -170,6 +170,23 @@ const SAPLING_TREE_128607: &str = concat!(
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires local darkside lightwalletd + internet (fixture URLs)"]
 async fn sync_finds_fixture_transactions() {
+    fixture_sync_body(false, false).await;
+}
+
+/// T6.9 write-behind variant of the 2-tx fixture sync: same staging, same
+/// asserts, scanned through the write-behind pipeline (sparse facade reads
+/// virtualized + deferred commits on the persist lane). Results must be
+/// identical to the upstream variant — 2 transactions, 200000 zatoshi.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires local darkside lightwalletd + internet (fixture URLs)"]
+async fn sync_finds_fixture_transactions_write_behind() {
+    fixture_sync_body(true, true).await;
+}
+
+/// Shared body of the fixture-sync tests (T6.9 parameterization; the staging,
+/// workarounds and asserts are byte-identical to the original test — only the
+/// persistence path of the scan call varies).
+async fn fixture_sync_body(sparse: bool, write_behind: bool) {
     let ep = darkside_endpoint();
 
     // --- Set up darkside chain (mirrors FakeChainBuilder.buildChain) ---
@@ -358,9 +375,10 @@ async fn sync_finds_fixture_transactions() {
 
     let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
 
-    let scan_stats = scan_chunks_from_treestate(&mut session, scan_range_start, initial_scan_state, rx, false)
-        .await
-        .expect("scan_chunks_from_treestate");
+    let scan_stats =
+        scan_chunks_from_treestate(&mut session, scan_range_start, initial_scan_state, rx, sparse, write_behind)
+            .await
+            .expect("scan_chunks_from_treestate");
 
     let fetch_stats = fetch_task
         .await
@@ -561,7 +579,7 @@ async fn sync_enhancement_stores_raw_fields() {
 
     let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
 
-    let _scan_stats = scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, false)
+    let _scan_stats = scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, false, false)
         .await
         .expect("scan_chunks_from_treestate");
 
@@ -789,6 +807,23 @@ const SPENDABILITY_APPLY_HEIGHT: i32 = 663_250;
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires local darkside lightwalletd + internet (fixture URLs)"]
 async fn fixture_funds_are_spendable_after_full_sync() {
+    spendability_gate_body(true, false).await;
+}
+
+/// T6.9 write-behind variant of the spendability gate: identical staging and
+/// asserts, scanned through the write-behind pipeline. The gate (every zatoshi
+/// spendable via upstream's own wallet summary) must hold identically — the
+/// deferred commits change WHEN the rows/tree land, never WHAT lands.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires local darkside lightwalletd + internet (fixture URLs)"]
+async fn fixture_funds_are_spendable_after_full_sync_write_behind() {
+    spendability_gate_body(true, true).await;
+}
+
+/// Shared body of the spendability-gate tests (T6.9 parameterization; staging,
+/// workarounds and asserts identical — only the scan call's persistence path
+/// varies).
+async fn spendability_gate_body(sparse: bool, write_behind: bool) {
     let ep = darkside_endpoint();
 
     // --- Set up darkside chain (same fixture as sync_finds_fixture_transactions) ---
@@ -890,9 +925,10 @@ async fn fixture_funds_are_spendable_after_full_sync() {
 
     let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
 
-    let scan_stats = scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, true)
-        .await
-        .expect("scan_chunks_from_treestate");
+    let scan_stats =
+        scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, sparse, write_behind)
+            .await
+            .expect("scan_chunks_from_treestate");
 
     fetch_task
         .await

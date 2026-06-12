@@ -387,6 +387,103 @@ pub mod testkit {
         Ok(())
     }
 
+    /// T6.9: like [`scan_synthetic_windows`] but through the WRITE-BEHIND
+    /// pipeline — the same `WriteBehindFacade` + `PersistLane` production uses:
+    /// per window, the scan reads come from the pending-aware facade, the
+    /// commit is stashed and submitted to the lane (depth-1, strictly serial),
+    /// and the call drains the lane before returning. Used by the hermetic
+    /// write-behind oracle tests: deferral may change TIMING, never CONTENT.
+    pub async fn scan_synthetic_windows_write_behind(
+        dir: &Path,
+        blocks: Vec<CompactBlock>,
+        window_lens: &[usize],
+    ) -> Result<(), SlipstreamError> {
+        if window_lens.iter().sum::<usize>() != blocks.len() {
+            return Err(SlipstreamError::Wallet(format!(
+                "window_lens sum {} != blocks {}",
+                window_lens.iter().sum::<usize>(),
+                blocks.len()
+            )));
+        }
+        let db_path = dir.join("data.db");
+        let mut session = WalletSession::open(crate::Network::MainNetwork, &db_path)?;
+        let birthday_ts = TreeState {
+            network: "main".into(),
+            height: 1_499_999, // SYNTH_START - 1
+            hash: "0".repeat(64),
+            time: 1,
+            ..Default::default()
+        };
+        session.ensure_account(TEST_UFVK, birthday_ts.clone())?;
+        let tip = blocks.last().map(|b| b.height).unwrap_or(SYNTH_START);
+        session.update_chain_tip(tip)?;
+
+        // Seed the facade under the no-pending barrier; open the lane's own
+        // connection — exactly as scan.rs::scan_chunks does.
+        let mut facade =
+            crate::persist::WriteBehindFacade::seed(&*session.db_mut(), SYNTH_START)
+                .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
+        let mut lane =
+            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork)?;
+
+        let mut from_state = birthday_ts
+            .to_chain_state()
+            .map_err(|e| SlipstreamError::Wallet(format!("chain state: {e}")))?;
+        let mut offset = 0usize;
+        let mut result: Result<(), SlipstreamError> = Ok(());
+        for len in window_lens {
+            let window = &blocks[offset..offset + len];
+            offset += len;
+            let (Some(first), Some(last)) = (window.first(), window.last()) else {
+                continue; // zero-length windows are skipped (degenerate input)
+            };
+            let from_height = match u32::try_from(first.height) {
+                Ok(h) => h,
+                Err(_) => {
+                    result = Err(SlipstreamError::Wallet("height exceeds u32".into()));
+                    break;
+                }
+            };
+            let chunk = Chunk::from_blocks(0, window.to_vec());
+            let source = MemBlockSource::new(&chunk);
+            let network = session.network;
+            if let Err(e) = scan_cached_blocks(
+                &network,
+                &source,
+                &mut facade,
+                BlockHeight::from(from_height),
+                &from_state,
+                window.len(),
+            ) {
+                result = Err(SlipstreamError::Wallet(format!(
+                    "scan_cached_blocks (write-behind): {e}"
+                )));
+                break;
+            }
+            // Submit the deferred commit (depth-1: awaits the previous one).
+            if let Some(pending) = facade.take_stash()
+                && let Err(e) = lane.submit(pending).await
+            {
+                result = Err(e);
+                break;
+            }
+            from_state = match synth_chain_state(last) {
+                Ok(s) => s,
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            };
+        }
+        // Full barrier before returning — mirror of scan_chunks.
+        let drain_result = lane.drain().await;
+        match (result, drain_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(e), Ok(())) => Err(e),
+            (_, Err(p)) => Err(p),
+        }
+    }
+
     /// ChainState at `last` for the NEXT window: frontier rebuilt by replaying
     /// every cmu of the synthetic chain from the start through `last` (the
     /// global cmu counter makes this exact; cheap at test sizes).
@@ -589,6 +686,75 @@ mod tests {
         assert!(
             report.is_clean(),
             "split-chunking sparse-vs-upstream diff not clean:\n{}",
+            report.render()
+        );
+    }
+
+    /// T6.9 hermetic write-behind oracle: the SAME synthetic chain scanned
+    /// through the upstream path (A) and the WRITE-BEHIND pipeline (B —
+    /// pending-aware facade + persist lane, identical window boundaries) must
+    /// produce semantically identical databases. Deferral changes timing,
+    /// never content. Multi-window (3×1000) so the virtualized reads
+    /// (`block_metadata` tail continuity, running nullifier views) are
+    /// exercised at two pending boundaries while the previous commit is
+    /// potentially still in flight; the checkpoint-downgrade cutoff also fires
+    /// in every window (same shape as the sparse oracle above).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_behind_matches_upstream_on_synthetic_chain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let da = dir.path().join("wa");
+        let db = dir.path().join("wb");
+        std::fs::create_dir_all(&da).unwrap();
+        std::fs::create_dir_all(&db).unwrap();
+        let blocks = super::testkit::synth_blocks(3000, 3);
+        let lens: Vec<usize> = blocks.chunks(1000).map(<[_]>::len).collect();
+        super::testkit::scan_synthetic_windows(&da, blocks.clone(), &lens, false)
+            .expect("upstream scan");
+        super::testkit::scan_synthetic_windows_write_behind(&db, blocks, &lens)
+            .await
+            .expect("write-behind scan");
+        let report = semantic_diff(&da.join("data.db"), &db.join("data.db")).expect("diff");
+        assert!(
+            report.is_clean(),
+            "write-behind-vs-upstream diff not clean:\n{}",
+            report.render()
+        );
+    }
+
+    /// T6.9 write-behind oracle on the dense split-chunking chain (T6.8-S
+    /// boundaries): many tiny variable windows → many pending boundaries →
+    /// the depth-1 pipeline churns constantly. Final DB must still be
+    /// byte-identical to the upstream path at the same boundaries.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_behind_matches_upstream_on_dense_split_chain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let da = dir.path().join("wa");
+        let db = dir.path().join("wb");
+        std::fs::create_dir_all(&da).unwrap();
+        std::fs::create_dir_all(&db).unwrap();
+        let blocks = super::testkit::synth_blocks(80, 20);
+
+        let mut lens: Vec<usize> = Vec::new();
+        let mut splitter = crate::fetch::ChunkSplitter::new(6 * 1024);
+        for b in blocks.clone() {
+            if let Some((sub, _bytes)) = splitter.push(b) {
+                lens.push(sub.len());
+            }
+        }
+        if let Some((sub, _bytes)) = splitter.finish() {
+            lens.push(sub.len());
+        }
+        assert_eq!(lens.iter().sum::<usize>(), blocks.len(), "no block lost by the splitter");
+
+        super::testkit::scan_synthetic_windows(&da, blocks.clone(), &lens, false)
+            .expect("upstream scan at split boundaries");
+        super::testkit::scan_synthetic_windows_write_behind(&db, blocks, &lens)
+            .await
+            .expect("write-behind scan at split boundaries");
+        let report = semantic_diff(&da.join("data.db"), &db.join("data.db")).expect("diff");
+        assert!(
+            report.is_clean(),
+            "write-behind split-chunking diff not clean:\n{}",
             report.render()
         );
     }

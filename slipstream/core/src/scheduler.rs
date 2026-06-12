@@ -69,6 +69,11 @@ pub struct SyncReport {
     /// The engine's final post-loop enhancement adds its own elapsed to SyncOutcome
     /// directly; this field covers the scheduler's interleaved runs only.
     pub enhance_elapsed: Duration,
+    /// T6.9 write-behind: Σ time the scan loop was blocked awaiting deferred
+    /// commits (0 ≈ perfect overlap; always 0 with the flag off).
+    pub persist_wait_elapsed: Duration,
+    /// T6.9 write-behind: Σ wall time of the deferred commits themselves.
+    pub persist_busy_elapsed: Duration,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -292,6 +297,10 @@ pub async fn run_to_completion(
         // T6.1: interleaved-enhancement time is enhancement, not scan.
         report.scan_elapsed += scan_wall.saturating_sub(scan_stats.interleaved_enhance_elapsed);
         report.enhance_elapsed += scan_stats.interleaved_enhance_elapsed;
+        // T6.9: persist overlap accounting (scan_elapsed deliberately KEEPS the
+        // persist_wait portion — it is honest loop wall time; see engine.rs log).
+        report.persist_wait_elapsed += scan_stats.persist_wait;
+        report.persist_busy_elapsed += scan_stats.persist_busy;
         report.enhance.requests += scan_stats.interleaved_enhance.requests;
         report.enhance.txs_stored += scan_stats.interleaved_enhance.txs_stored;
         report.enhance.statuses_set += scan_stats.interleaved_enhance.statuses_set;
@@ -375,6 +384,9 @@ mod tests {
         assert_eq!(r.fetch_elapsed, Duration::ZERO);
         assert_eq!(r.scan_elapsed, Duration::ZERO);
         assert_eq!(r.enhance_elapsed, Duration::ZERO);
+        // T6.9 write-behind totals default to zero (and stay zero with the flag off).
+        assert_eq!(r.persist_wait_elapsed, Duration::ZERO);
+        assert_eq!(r.persist_busy_elapsed, Duration::ZERO);
         // F3 EnhanceStats default
         assert_eq!(r.enhance.requests, 0);
         assert_eq!(r.enhance.txs_stored, 0);

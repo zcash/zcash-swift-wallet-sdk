@@ -179,7 +179,7 @@ info!(rows_ms, tree_ms, sap_tree_ms, orch_tree_ms, flush_ms, downgraded, "sparse
 info!(downgrade_ms, build_ms, frontier_ms, insert_ms, ensure_ms, total_ms, "sparse orchard tree split");
 info!(downgrade_ms, build_ms, frontier_ms, insert_ms, ensure_ms, total_ms, "sparse sapling tree split");</code></pre>
 
-  <p>The sub-attribution finding from T6.8-L3b (STATE.md): the dominant bucket is <code>frontier_ms</code> (~33% of orchard time), which is intrinsic to the shardtree <code>merge_checked</code> function in <code>prunable.rs:277–352</code>. This function recomputes root hashes on both subtrees at every recursion level without caching, even though the results are discarded (both sides are incomplete frontier path-trees). This is a known upstream limitation; a fix requires a fork or upstream PR (recorded in the roadmap as "L4b seam-blocked").</p>
+  <p>The sub-attribution finding from T6.8-L3b (STATE.md): the dominant bucket is <code>frontier_ms</code> (~33% of orchard time), which is intrinsic to the shardtree <code>merge_checked</code> function in <code>prunable.rs:277–352</code>. This function recomputes root hashes on both subtrees at every recursion level without caching, even though the results are discarded (both sides are incomplete frontier path-trees). This is a known upstream limitation; a fix requires a fork or upstream PR (recorded in the roadmap as the seam-blocked "shardtree merge_checked waste" item — distinct from L4b, which is the write-behind pipelining shipped at T6.9 below).</p>
 
   <h2>Checkpoint-window picture: why final tables match upstream</h2>
 
@@ -242,6 +242,35 @@ info!(downgrade_ms, build_ms, frontier_ms, insert_ms, ensure_ms, total_ms, "spar
     <p>SQLite WAL mode (enabled by upstream) provides durable commits. A crash mid-transaction leaves the WAL uncommitted; on restart, the database recovers to the last committed state — which is the start of the aborted sub-chunk. The scan pipeline resumes from the point where the ChunkQueue last released a permit, which is the last sub-chunk that was scanned and flushed. No data loss; no partial commits.</p>
   </div>
 
+  <h2>Write-behind pipelining (T6.9 L4b, flag-gated)</h2>
+
+  <p>T6.7/T6.8 device attribution left a structural inefficiency on the table: per chunk, decryption and persistence are <em>serialized</em> — <code>scan_cached_blocks</code> decrypts, then calls <code>put_blocks</code>, and the scan loop cannot start chunk N+1 until chunk N's commit finished. On the iPad A10 field run that was ≈258&nbsp;s of persist (rows ≈83&nbsp;s + tree ≈175&nbsp;s) strictly serialized after ≈286&nbsp;s of decrypt+overhead. The two workloads use different resources (CPU vs SQLite I/O + tree CPU) and adjacent chunks have no data dependency that a pending-aware read view cannot satisfy — so T6.9 overlaps them with a <strong>depth-1 write-behind pipeline</strong> behind <code>EngineConfig::write_behind</code> (default <strong>off</strong>; CLI <code>--write-behind</code>).</p>
+
+  <p>The shape: when the flag is on, the scan's facade is a <code>WriteBehindFacade</code> whose <code>put_blocks</code> <em>stashes</em> the (from_state, scanned blocks) unit and returns immediately. After each scan call, the loop submits the stashed unit to a <code>PersistLane</code> — a second <code>WalletDb</code> connection to the same WAL file plus the per-range <code>SparseTreeState</code>, running at most ONE deferred commit at a time on a blocking thread. The commit body is the <em>exact</em> <code>sparse_put_blocks</code> above — rows + in-memory tree mutation + flush in one transaction; nothing about flush atomicity changes. Submitting unit N+1 first awaits unit N (depth-1 backpressure: a commit error aborts the range before another unit is ever submitted), so commits are strictly serial; only their <em>overlap with decryption</em> is new.</p>
+
+  <h3>The correctness trap: pending-aware reads</h3>
+
+  <p>With chunk N uncommitted, chunk N+1's <code>scan_cached_blocks</code> reads the wallet DB. Its complete read surface (zcash_client_backend-0.23.0 <code>data_api/chain.rs:586-664</code>) is exactly four calls, and the facade virtualizes each:</p>
+
+  <ul>
+    <li><strong><code>get_unified_full_viewing_keys</code></strong> (chain.rs:603) — never changed by <code>put_blocks</code>; served from a per-range cache.</li>
+    <li><strong><code>block_metadata(from_height − 1)</code></strong> (chain.rs:614-620) — feeds the prev-hash continuity check and prior tree sizes. With chunk N pending this row IS chunk N's last block; the facade serves <code>ScannedBlock::to_block_metadata()</code> — the identical value upstream threads between blocks <em>within</em> one call (chain.rs:653). Reorg detection at chunk boundaries is therefore preserved, not skipped.</li>
+    <li><strong><code>get_sapling_nullifiers(Unspent)</code> / <code>get_orchard_nullifiers(Unspent)</code></strong> (scanning.rs:360-368) — THE trap: a note FOUND in pending chunk N and SPENT in chunk N+1 would be silently missed if this read were stale. The facade maintains a running unspent view: seeded from the DB at range start, advanced per stashed block with upstream's own <code>update_with</code> semantics (scanning.rs:435-464) — the same in-memory threading upstream relies on for every multi-block call, extended across one call boundary.</li>
+  </ul>
+
+  <p>Every other <code>WalletRead</code>/<code>WalletWrite</code> method on the facade returns a loud error ("not part of the scan_cached_blocks read surface") — upstream read-surface drift can fail a test run but can never become a silent stale read.</p>
+
+  <h3>Barriers</h3>
+
+  <p>Range end, every error exit, and every enhancement point are <em>full barriers</em>: drain the in-flight commit, propagate its error, and only then proceed — enhancement, suggest, summary, and the reorg truncate never see a half-committed range tail. After an enhancement run (which may store fully-decrypted transactions), the facade's nullifier views are re-seeded from the now-complete DB. The two-connection design has no concurrent-writer hazard: while a commit is in flight the scan side performs zero DB work (all reads virtualized), and every other DB user runs only behind a drain.</p>
+
+  <div class="callout evidence">
+    <span class="label">Oracle-gated, like everything in this chapter</span>
+    <p>Deferral changes timing, never content: hermetic write-behind oracles (synthetic 3×1000 chain + dense split-boundary chain) diff CLEAN against the upstream path; the darkside REAL-notes fixture oracle (write-behind vs upstream) diffs CLEAN; the mainnet tip−2000 CLI oracle with <code>--sparse-b --write-behind-b</code> reports VERDICT IDENTICAL. Overlap quality is observable per chunk as <code>persist_wait_ms</code> (0 = perfect overlap) and per pass as <code>persist_overlap_s</code> in the stage-split line; <code>scan_s</code> deliberately stays honest loop wall time.</p>
+  </div>
+
+  <p>Tree-state ownership moved with the commit: under write-behind, the <code>SparseTreeState</code> lives in the persist lane and is mutated only inside deferred commits (strictly serial), so the tree insert and its flush stay together in the same transaction — the scan task never touches the tree. The flag ships <strong>off</strong> pending field validation; the Mac A/B and device runs decide the default-on flip.</p>
+
   <h2>The kill switch</h2>
 
   <p>The sparse path defaults to <code>sparse_persistence = true</code> (since T6.6, oracle-clean). The <code>EngineConfig</code> field is the kill switch: setting <code>sparse_persistence = false</code> reverts to the upstream path. The <code>SparseFacade</code> is never constructed, and <code>scan_cached_blocks</code> writes directly to <code>WalletDb</code>. The CLI <code>--sparse false</code> flag exercises this (<code>config.rs:93</code>).</p>
@@ -260,7 +289,7 @@ info!(downgrade_ms, build_ms, frontier_ms, insert_ms, ensure_ms, total_ms, "spar
     <a href="06-scan.html">&#8592; 6. Scan Pipeline</a>
     <a href="08-scheduler.html">8. Scheduler &amp; Spend-before-Sync &#8594;</a>
   </nav>
-  <footer class="colophon">Citations as of commit 7eff661e · Slipstream Book · local-only draft</footer>
+  <footer class="colophon">Citations as of commit b34f6679 + T6.9 session (2026-06-12) · Slipstream Book · local-only draft</footer>
 </main>
 </body>
 </html>

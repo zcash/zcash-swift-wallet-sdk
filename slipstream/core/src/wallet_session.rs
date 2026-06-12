@@ -119,6 +119,14 @@ impl WalletSession {
         &mut self.db
     }
 
+    /// Path of the wallet DB file — used by the write-behind test driver
+    /// (`scan_chunks_from_treestate`) to open the persist lane's second
+    /// connection. Production `scan_chunks` takes the path from `EngineConfig`.
+    #[cfg(any(test, feature = "darkside"))]
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+
     /// Pre-seed the `blocks` table with a record at `height` carrying `block_hash` and
     /// `sapling_commitment_tree_size`.
     ///

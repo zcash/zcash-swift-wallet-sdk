@@ -1188,6 +1188,459 @@ impl WalletWrite for SparseFacade<'_> {
     fn notify_address_checked(&mut self, request: TransactionsInvolvingAddress, as_of_height: BlockHeight) -> Result<(), Self::Error> { self.inner.notify_address_checked(request, as_of_height) }
 }
 
+// ── T6.9 L4b: write-behind persistence pipelining ──────────────────────────────
+//
+// Depth-1 pipeline: chunk N's commit (the EXACT `sparse_put_blocks` logic — rows
+// + in-memory tree mutation + flush, one atomic `transactionally` per put_blocks
+// call, strictly serial N before N+1) runs on a persist lane while the scan task
+// decrypts chunk N+1. With chunk N uncommitted, chunk N+1's `scan_cached_blocks`
+// reads the wallet DB — its COMPLETE read surface (recon 2026-06-12, every call
+// site cited on the methods below) is served by `WriteBehindFacade` from a
+// pending-aware merged view; every read OUTSIDE that surface fails loudly
+// (`unvirtualized`) so upstream read-surface drift can never become a silent
+// stale read. Tree-state ownership: the per-range `SparseTreeState` lives in the
+// `PersistLane` (insert + flush stay together inside each deferred commit); the
+// scan side never touches it.
+
+/// Account id alias of the production wallet DB (zcash_client_sqlite AccountUuid).
+type DbAccountId = <Db as WalletRead>::AccountId;
+
+/// One deferred persist unit: everything `sparse_put_blocks` needs, captured at
+/// `put_blocks` time. `from_state` is the server-provided treestate for this
+/// unit's lower boundary (independent of DB state — unaffected by deferral).
+pub struct PendingPersist {
+    pub from_state: ChainState,
+    pub blocks: Vec<ScannedBlock<DbAccountId>>,
+    /// First/last block height of the unit (log attribution only).
+    pub first_height: u64,
+    pub last_height: u64,
+}
+
+/// Mirror of upstream `Nullifiers::update_with` for ONE block's worth of deltas
+/// (zcash_client_backend-0.23.0/src/scanning.rs:435-464): retain-then-extend,
+/// applied per block in block order. Generic so the semantics are unit-testable
+/// without `ScannedBlock` values (which are not publicly constructible).
+pub(crate) fn apply_nullifier_delta<A: Copy, Nf: PartialEq + Copy>(
+    set: &mut Vec<(A, Nf)>,
+    spent: &[Nf],
+    found: &[(A, Nf)],
+) {
+    set.retain(|(_, nf)| !spent.contains(nf));
+    set.extend_from_slice(found);
+}
+
+fn unvirtualized(name: &str) -> SqliteClientError {
+    SqliteClientError::CorruptedData(format!(
+        "write-behind facade: `{name}` is not part of the scan_cached_blocks read surface \
+         (T6.9 recon) — refusing to serve a possibly-stale read while a commit is pending"
+    ))
+}
+
+/// Pending-aware wallet facade for the write-behind scan path. Holds NO database
+/// connection: the four reads `scan_cached_blocks` performs are served from
+/// state seeded once per range (under the no-pending barrier) and rolled forward
+/// at each `put_blocks` stash — the same in-memory threading upstream itself
+/// uses BETWEEN BLOCKS of a single call (chain.rs:652-653), extended across one
+/// call boundary.
+///
+/// Read surface of `scan_cached_blocks` (zcash_client_backend-0.23.0
+/// data_api/chain.rs:586-664), enumerated:
+/// 1. `get_unified_full_viewing_keys` — chain.rs:603-605. Never changed by
+///    `put_blocks` (accounts/UFVKs mutate only via account import/create, which
+///    cannot run during a range) → served from a per-range cache. EXACT.
+/// 2. `block_metadata(from_height - 1)` — chain.rs:614-620, consumed by
+///    `check_hash_continuity` (scanning/compact.rs:191-221: prev-height +
+///    prev-hash reorg detection) and `PositionTracker::for_compact_block`
+///    (compact.rs:400-516: prior tree sizes). With chunk N pending this row is
+///    exactly chunk N's last scanned block → served from the stashed tail via
+///    `ScannedBlock::to_block_metadata()` — the IDENTICAL value upstream threads
+///    between blocks within one call (chain.rs:653). Any other height = loud error.
+/// 3. `get_sapling_nullifiers(NullifierQuery::Unspent)` — via
+///    `Nullifiers::unspent`, scanning.rs:360-368 ← chain.rs:623. Served from a
+///    running unspent view: seeded from the DB at range start, advanced per
+///    stashed block by `apply_nullifier_delta` (upstream's own `update_with`
+///    semantics, scanning.rs:435-464 — upstream relies on this equivalence for
+///    every multi-block call; the SQLite Unspent query at
+///    zcash_client_sqlite-0.21.0 wallet/common.rs:155-189 returns the same set
+///    for committed scan output: nf NOT NULL ∧ tx mined ∧ not spent by a mined
+///    tx). A note FOUND in pending chunk N is therefore visible to chunk N+1's
+///    spend detection. Re-seeded from the DB after every enhancement barrier
+///    (enhancement may store full txs that add/spend notes).
+/// 4. `get_orchard_nullifiers(NullifierQuery::Unspent)` — same as (3),
+///    scanning.rs:366.
+///
+/// Everything else a `WalletRead`/`WalletWrite` impl must provide is NOT called
+/// by `scan_cached_blocks`; each such method returns `unvirtualized` (loud
+/// fail-fast, exercised by oracle + darkside suites) instead of an approximate
+/// or stale answer.
+pub struct WriteBehindFacade {
+    ufvks: HashMap<DbAccountId, UnifiedFullViewingKey>,
+    /// The single height `block_metadata` is allowed to answer for
+    /// (= the next scan call's `from_height - 1`).
+    prior_meta_height: BlockHeight,
+    /// The metadata at `prior_meta_height` (None = known-absent row, e.g. the
+    /// first range after birthday — upstream returns None there too).
+    prior_meta: Option<BlockMetadata>,
+    sapling_nfs: Vec<(DbAccountId, sapling::Nullifier)>,
+    orchard_nfs: Vec<(DbAccountId, orchard::note::Nullifier)>,
+    stash: Option<PendingPersist>,
+}
+
+impl WriteBehindFacade {
+    /// Seed the virtualized read state from the committed DB. MUST be called
+    /// under the no-pending barrier (range start: nothing stashed or in
+    /// flight), so the committed DB is the complete wallet state.
+    pub fn seed(db: &Db, range_start: u64) -> Result<Self, SqliteClientError> {
+        let prior_height = range_start
+            .checked_sub(1)
+            .and_then(|h| u32::try_from(h).ok())
+            .ok_or_else(|| {
+                SqliteClientError::CorruptedData(format!(
+                    "write-behind facade: invalid range_start {range_start}"
+                ))
+            })?;
+        let prior_meta_height = BlockHeight::from(prior_height);
+        Ok(Self {
+            ufvks: db.get_unified_full_viewing_keys()?,
+            prior_meta_height,
+            prior_meta: db.block_metadata(prior_meta_height)?,
+            sapling_nfs: db.get_sapling_nullifiers(NullifierQuery::Unspent)?,
+            orchard_nfs: db.get_orchard_nullifiers(NullifierQuery::Unspent)?,
+            stash: None,
+        })
+    }
+
+    /// Re-read both running nullifier views from the committed DB. MUST be
+    /// called under a drained barrier (no stash, no in-flight commit) — used
+    /// after enhancement runs, which may store fully-decrypted transactions
+    /// that add received notes or mark notes spent outside `put_blocks`.
+    /// `prior_meta` and the UFVK cache are deliberately NOT re-read:
+    /// enhancement never writes the `blocks` table or the accounts table.
+    pub fn reseed_nullifiers(&mut self, db: &Db) -> Result<(), SqliteClientError> {
+        if self.stash.is_some() {
+            return Err(SqliteClientError::CorruptedData(
+                "write-behind facade: reseed_nullifiers with an occupied stash".into(),
+            ));
+        }
+        self.sapling_nfs = db.get_sapling_nullifiers(NullifierQuery::Unspent)?;
+        self.orchard_nfs = db.get_orchard_nullifiers(NullifierQuery::Unspent)?;
+        Ok(())
+    }
+
+    /// Take the pending unit stashed by the last `put_blocks` call (if any).
+    pub fn take_stash(&mut self) -> Option<PendingPersist> {
+        self.stash.take()
+    }
+
+    #[cfg(test)]
+    fn test_new(prior_meta_height: BlockHeight, prior_meta: Option<BlockMetadata>) -> Self {
+        Self {
+            ufvks: HashMap::new(),
+            prior_meta_height,
+            prior_meta,
+            sapling_nfs: vec![],
+            orchard_nfs: vec![],
+            stash: None,
+        }
+    }
+}
+
+impl WalletRead for WriteBehindFacade {
+    type Error = SqliteClientError;
+    type AccountId = DbAccountId;
+    type Account = <Db as WalletRead>::Account;
+
+    // ── The virtualized read surface (see struct docs for citations) ──────────
+    fn get_unified_full_viewing_keys(&self) -> Result<HashMap<Self::AccountId, UnifiedFullViewingKey>, Self::Error> { Ok(self.ufvks.clone()) }
+    fn block_metadata(&self, height: BlockHeight) -> Result<Option<BlockMetadata>, Self::Error> {
+        if height == self.prior_meta_height {
+            Ok(self.prior_meta)
+        } else {
+            Err(SqliteClientError::CorruptedData(format!(
+                "write-behind facade: block_metadata({height}) outside the virtualized tail (expected {})",
+                self.prior_meta_height
+            )))
+        }
+    }
+    fn get_sapling_nullifiers(&self, query: NullifierQuery) -> Result<Vec<(Self::AccountId, sapling::Nullifier)>, Self::Error> {
+        match query {
+            NullifierQuery::Unspent => Ok(self.sapling_nfs.clone()),
+            NullifierQuery::All => Err(unvirtualized("get_sapling_nullifiers(All)")),
+        }
+    }
+    fn get_orchard_nullifiers(&self, query: NullifierQuery) -> Result<Vec<(Self::AccountId, orchard::note::Nullifier)>, Self::Error> {
+        match query {
+            NullifierQuery::Unspent => Ok(self.orchard_nfs.clone()),
+            NullifierQuery::All => Err(unvirtualized("get_orchard_nullifiers(All)")),
+        }
+    }
+
+    // ── Outside the scan read surface: fail loudly, never approximate ─────────
+    fn get_account_ids(&self) -> Result<Vec<Self::AccountId>, Self::Error> { Err(unvirtualized("get_account_ids")) }
+    fn get_account(&self, _account_id: Self::AccountId) -> Result<Option<Self::Account>, Self::Error> { Err(unvirtualized("get_account")) }
+    fn get_derived_account(&self, _derivation: &Zip32Derivation) -> Result<Option<Self::Account>, Self::Error> { Err(unvirtualized("get_derived_account")) }
+    fn validate_seed(&self, _account_id: Self::AccountId, _seed: &SecretVec<u8>) -> Result<bool, Self::Error> { Err(unvirtualized("validate_seed")) }
+    fn seed_relevance_to_derived_accounts(&self, _seed: &SecretVec<u8>) -> Result<SeedRelevance<Self::AccountId>, Self::Error> { Err(unvirtualized("seed_relevance_to_derived_accounts")) }
+    fn get_account_for_ufvk(&self, _ufvk: &UnifiedFullViewingKey) -> Result<Option<Self::Account>, Self::Error> { Err(unvirtualized("get_account_for_ufvk")) }
+    fn list_addresses(&self, _account: Self::AccountId) -> Result<Vec<AddressInfo>, Self::Error> { Err(unvirtualized("list_addresses")) }
+    fn find_account_for_address<P: zcash_protocol::consensus::Parameters>(&self, _params: &P, _address: &zcash_keys::address::Address) -> Result<Option<Self::AccountId>, FindAccountForAddressError<Self::Error>> { Err(FindAccountForAddressError::Backend(unvirtualized("find_account_for_address"))) }
+    fn get_last_generated_address_matching(&self, _account: Self::AccountId, _address_filter: UnifiedAddressRequest) -> Result<Option<UnifiedAddress>, Self::Error> { Err(unvirtualized("get_last_generated_address_matching")) }
+    fn get_account_birthday(&self, _account: Self::AccountId) -> Result<BlockHeight, Self::Error> { Err(unvirtualized("get_account_birthday")) }
+    fn get_wallet_birthday(&self) -> Result<Option<BlockHeight>, Self::Error> { Err(unvirtualized("get_wallet_birthday")) }
+    fn get_wallet_summary(&self, _confirmations_policy: ConfirmationsPolicy) -> Result<Option<WalletSummary<Self::AccountId>>, Self::Error> { Err(unvirtualized("get_wallet_summary")) }
+    fn chain_height(&self) -> Result<Option<BlockHeight>, Self::Error> { Err(unvirtualized("chain_height")) }
+    fn get_block_hash(&self, _block_height: BlockHeight) -> Result<Option<BlockHash>, Self::Error> { Err(unvirtualized("get_block_hash")) }
+    fn block_fully_scanned(&self) -> Result<Option<BlockMetadata>, Self::Error> { Err(unvirtualized("block_fully_scanned")) }
+    fn get_max_height_hash(&self) -> Result<Option<(BlockHeight, BlockHash)>, Self::Error> { Err(unvirtualized("get_max_height_hash")) }
+    fn block_max_scanned(&self) -> Result<Option<BlockMetadata>, Self::Error> { Err(unvirtualized("block_max_scanned")) }
+    fn suggest_scan_ranges(&self) -> Result<Vec<ScanRange>, Self::Error> { Err(unvirtualized("suggest_scan_ranges")) }
+    fn get_target_and_anchor_heights(&self, _min_confirmations: NonZeroU32) -> Result<Option<(TargetHeight, BlockHeight)>, Self::Error> { Err(unvirtualized("get_target_and_anchor_heights")) }
+    fn get_tx_height(&self, _txid: TxId) -> Result<Option<BlockHeight>, Self::Error> { Err(unvirtualized("get_tx_height")) }
+    fn get_memo(&self, _note_id: NoteId) -> Result<Option<Memo>, Self::Error> { Err(unvirtualized("get_memo")) }
+    fn get_transaction(&self, _txid: TxId) -> Result<Option<Transaction>, Self::Error> { Err(unvirtualized("get_transaction")) }
+    fn get_transparent_receivers(&self, _account: Self::AccountId, _include_change: bool, _include_standalone: bool) -> Result<HashMap<TransparentAddress, TransparentAddressMetadata>, Self::Error> { Err(unvirtualized("get_transparent_receivers")) }
+    fn get_ephemeral_transparent_receivers(&self, _account: Self::AccountId, _exposure_depth: u32, _exclude_used: bool) -> Result<HashMap<TransparentAddress, TransparentAddressMetadata>, Self::Error> { Err(unvirtualized("get_ephemeral_transparent_receivers")) }
+    fn get_transparent_balances(&self, _account: Self::AccountId, _target_height: TargetHeight, _confirmations_policy: ConfirmationsPolicy) -> Result<TransparentBalances, Self::Error> { Err(unvirtualized("get_transparent_balances")) }
+    fn get_transparent_address_metadata(&self, _account: Self::AccountId, _address: &TransparentAddress) -> Result<Option<TransparentAddressMetadata>, Self::Error> { Err(unvirtualized("get_transparent_address_metadata")) }
+    fn utxo_query_height(&self, _account: Self::AccountId) -> Result<BlockHeight, Self::Error> { Err(unvirtualized("utxo_query_height")) }
+    fn transaction_data_requests(&self) -> Result<Vec<TransactionDataRequest>, Self::Error> { Err(unvirtualized("transaction_data_requests")) }
+    fn get_received_outputs(&self, _txid: TxId, _target_height: TargetHeight, _confirmations_policy: ConfirmationsPolicy) -> Result<Vec<ReceivedTransactionOutput>, Self::Error> { Err(unvirtualized("get_received_outputs")) }
+}
+
+impl WalletWrite for WriteBehindFacade {
+    type UtxoRef = <Db as WalletWrite>::UtxoRef;
+
+    // THE INTERCEPT: stash instead of committing; advance the virtualized reads.
+    fn put_blocks(&mut self, from_state: &ChainState, blocks: Vec<ScannedBlock<Self::AccountId>>) -> Result<(), Self::Error> {
+        // Depth-1 invariant FIRST: an occupied stash means the scan loop failed
+        // to submit the previous unit — a loop bug, never tolerated silently.
+        if self.stash.is_some() {
+            return Err(SqliteClientError::CorruptedData(
+                "write-behind facade: put_blocks with an occupied stash — depth-1 invariant violated".into(),
+            ));
+        }
+        // Upstream parity: empty input is a no-op (ll/wallet.rs:245-247).
+        let (Some(first), Some(last)) = (blocks.first(), blocks.last()) else {
+            return Ok(());
+        };
+        let first_height = u64::from(u32::from(first.height()));
+        let last_height = u64::from(u32::from(last.height()));
+
+        // Advance the virtualized prior-block metadata to this unit's tail —
+        // identical to upstream's intra-call threading (chain.rs:653).
+        self.prior_meta_height = last.height();
+        self.prior_meta = Some(last.to_block_metadata());
+
+        // Advance both running nullifier views per block, in block order
+        // (upstream update_with parity: retain spends, then extend with found
+        // notes whose nullifiers are known — scanning.rs:435-464).
+        for b in &blocks {
+            let sap_spent: Vec<sapling::Nullifier> = b
+                .transactions()
+                .iter()
+                .flat_map(|tx| tx.sapling_spends().iter().map(|s| *s.nf()))
+                .collect();
+            let sap_found: Vec<(Self::AccountId, sapling::Nullifier)> = b
+                .transactions()
+                .iter()
+                .flat_map(|tx| tx.sapling_outputs().iter().filter_map(|o| o.nf().map(|nf| (*o.account_id(), *nf))))
+                .collect();
+            apply_nullifier_delta(&mut self.sapling_nfs, &sap_spent, &sap_found);
+
+            let orch_spent: Vec<orchard::note::Nullifier> = b
+                .transactions()
+                .iter()
+                .flat_map(|tx| tx.orchard_spends().iter().map(|s| *s.nf()))
+                .collect();
+            let orch_found: Vec<(Self::AccountId, orchard::note::Nullifier)> = b
+                .transactions()
+                .iter()
+                .flat_map(|tx| tx.orchard_outputs().iter().filter_map(|o| o.nf().map(|nf| (*o.account_id(), *nf))))
+                .collect();
+            apply_nullifier_delta(&mut self.orchard_nfs, &orch_spent, &orch_found);
+        }
+
+        self.stash = Some(PendingPersist {
+            from_state: from_state.clone(),
+            blocks,
+            first_height,
+            last_height,
+        });
+        Ok(())
+    }
+
+    // ── Outside the scan write surface: fail loudly ────────────────────────────
+    fn create_account(&mut self, _account_name: &str, _seed: &SecretVec<u8>, _birthday: &AccountBirthday, _key_source: Option<&str>) -> Result<(Self::AccountId, UnifiedSpendingKey), Self::Error> { Err(unvirtualized("create_account")) }
+    fn import_account_hd(&mut self, _account_name: &str, _seed: &SecretVec<u8>, _account_index: zip32::AccountId, _birthday: &AccountBirthday, _key_source: Option<&str>) -> Result<(Self::Account, UnifiedSpendingKey), Self::Error> { Err(unvirtualized("import_account_hd")) }
+    fn import_account_ufvk(&mut self, _account_name: &str, _unified_key: &UnifiedFullViewingKey, _birthday: &AccountBirthday, _purpose: AccountPurpose, _key_source: Option<&str>) -> Result<Self::Account, Self::Error> { Err(unvirtualized("import_account_ufvk")) }
+    fn delete_account(&mut self, _account: Self::AccountId) -> Result<(), Self::Error> { Err(unvirtualized("delete_account")) }
+    fn get_next_available_address(&mut self, _account: Self::AccountId, _request: UnifiedAddressRequest) -> Result<Option<(UnifiedAddress, DiversifierIndex)>, Self::Error> { Err(unvirtualized("get_next_available_address")) }
+    fn get_address_for_index(&mut self, _account: Self::AccountId, _diversifier_index: DiversifierIndex, _request: UnifiedAddressRequest) -> Result<Option<UnifiedAddress>, Self::Error> { Err(unvirtualized("get_address_for_index")) }
+    fn update_chain_tip(&mut self, _tip_height: BlockHeight) -> Result<(), Self::Error> { Err(unvirtualized("update_chain_tip")) }
+    fn put_received_transparent_utxo(&mut self, _output: &WalletTransparentOutput) -> Result<Self::UtxoRef, Self::Error> { Err(unvirtualized("put_received_transparent_utxo")) }
+    fn store_decrypted_tx(&mut self, _received_tx: DecryptedTransaction<Transaction, Self::AccountId>) -> Result<(), Self::Error> { Err(unvirtualized("store_decrypted_tx")) }
+    fn set_tx_trust(&mut self, _txid: TxId, _trusted: bool) -> Result<(), Self::Error> { Err(unvirtualized("set_tx_trust")) }
+    fn store_transactions_to_be_sent(&mut self, _transactions: &[SentTransaction<Self::AccountId>]) -> Result<(), Self::Error> { Err(unvirtualized("store_transactions_to_be_sent")) }
+    fn truncate_to_height(&mut self, _max_height: BlockHeight) -> Result<BlockHeight, Self::Error> { Err(unvirtualized("truncate_to_height")) }
+    fn truncate_to_chain_state(&mut self, _chain_state: ChainState) -> Result<(), Self::Error> { Err(unvirtualized("truncate_to_chain_state")) }
+    fn rewind_to_height(&mut self, _max_height: BlockHeight) -> Result<BlockHeight, Self::Error> { Err(unvirtualized("rewind_to_height")) }
+    fn reserve_next_n_ephemeral_addresses(&mut self, _account_id: Self::AccountId, _n: usize) -> Result<Vec<(TransparentAddress, TransparentAddressMetadata)>, Self::Error> { Err(unvirtualized("reserve_next_n_ephemeral_addresses")) }
+    fn set_transaction_status(&mut self, _txid: TxId, _status: TransactionStatus) -> Result<(), Self::Error> { Err(unvirtualized("set_transaction_status")) }
+    fn schedule_next_check(&mut self, _address: &TransparentAddress, _offset_seconds: u32) -> Result<Option<SystemTime>, Self::Error> { Err(unvirtualized("schedule_next_check")) }
+    fn mark_transparent_addresses_exposed(&mut self, _exposures: &[(TransparentAddress, BlockHeight)]) -> Result<(), Self::Error> { Err(unvirtualized("mark_transparent_addresses_exposed")) }
+    fn notify_address_checked(&mut self, _request: TransactionsInvolvingAddress, _as_of_height: BlockHeight) -> Result<(), Self::Error> { Err(unvirtualized("notify_address_checked")) }
+}
+
+// ── Persist lane ───────────────────────────────────────────────────────────────
+
+/// A deferred-commit job: runs against the lane's Db + tree state on a blocking
+/// thread. Boxed so lane mechanics (serial order, depth-1 backpressure, error
+/// propagation, drain) are unit-testable without `ScannedBlock` values.
+pub(crate) type PersistJob =
+    Box<dyn FnOnce(&mut Db, &mut SparseTreeState) -> Result<(), SqliteClientError> + Send>;
+
+/// What a finished commit task hands back: lane ownership (Db + tree state)
+/// plus the commit's wall time (or its error).
+type PersistTaskOutput = (Db, SparseTreeState, Result<std::time::Duration, SqliteClientError>);
+
+/// The write-behind persist lane: owns a SECOND `WalletDb` connection to the
+/// same wallet file (WAL) plus the per-range `SparseTreeState`, and runs at
+/// most ONE deferred commit at a time via `spawn_blocking` (ownership of both
+/// ping-pongs through the task, so serialization is structural, not advisory).
+///
+/// No concurrent-writer hazard by design: while a commit is in flight the scan
+/// side performs ZERO database work (all its reads are virtualized by
+/// `WriteBehindFacade`), and every other DB user (enhancement, reorg truncate,
+/// suggest, summary) runs only behind a `drain()` barrier.
+///
+/// Failure semantics: a commit error is returned by the NEXT `submit` (or by
+/// `drain`), always BEFORE another unit is submitted — the range aborts with
+/// the last successful commit fully durable (atomic per-unit transactions).
+/// A panic inside a commit task loses the lane connection (`db: None`); any
+/// further use errors loudly and the pass fails — the wallet file itself stays
+/// consistent (SQLite rolls back the open transaction when the connection drops).
+pub struct PersistLane {
+    db: Option<Db>,
+    sparse: Option<SparseTreeState>,
+    in_flight: Option<tokio::task::JoinHandle<PersistTaskOutput>>,
+    /// (first_height, last_height) of the in-flight unit, for log attribution.
+    in_flight_span: (u64, u64),
+    /// Σ scan-side blocked time across all awaits (0 ≈ perfect overlap).
+    total_wait: std::time::Duration,
+    /// Σ commit wall time measured inside the deferred closures.
+    total_busy: std::time::Duration,
+}
+
+impl PersistLane {
+    /// Open the lane's own connection to the (already-migrated) wallet file.
+    pub fn open(
+        wallet_db_path: &std::path::Path,
+        network: zcash_protocol::consensus::Network,
+    ) -> Result<Self, crate::error::SlipstreamError> {
+        let db = zcash_client_sqlite::WalletDb::for_path(
+            wallet_db_path,
+            network,
+            zcash_client_sqlite::util::SystemClock,
+            rand::rngs::OsRng,
+        )
+        .map_err(|e| crate::error::SlipstreamError::Wallet(format!("persist lane open: {e}")))?;
+        Ok(Self {
+            db: Some(db),
+            sparse: Some(SparseTreeState::default()),
+            in_flight: None,
+            in_flight_span: (0, 0),
+            total_wait: std::time::Duration::ZERO,
+            total_busy: std::time::Duration::ZERO,
+        })
+    }
+
+    pub fn total_wait(&self) -> std::time::Duration {
+        self.total_wait
+    }
+
+    pub fn total_busy(&self) -> std::time::Duration {
+        self.total_busy
+    }
+
+    /// Await the in-flight commit, if any (the full barrier when called alone —
+    /// see `drain`). Accounts `persist_wait` (scan-side blocked time) and
+    /// `persist_busy` (commit wall time), restores Db + tree ownership to the
+    /// lane, and propagates the commit's error.
+    async fn await_in_flight(&mut self) -> Result<(), crate::error::SlipstreamError> {
+        if let Some(handle) = self.in_flight.take() {
+            let (first_height, last_height) = self.in_flight_span;
+            let waited = std::time::Instant::now();
+            let (db, sparse, result) = handle.await.map_err(|e| {
+                crate::error::SlipstreamError::Wallet(format!(
+                    "write-behind persist task died (panic/cancel): {e}"
+                ))
+            })?;
+            let persist_wait_ms = waited.elapsed().as_millis();
+            self.total_wait += waited.elapsed();
+            self.db = Some(db);
+            self.sparse = Some(sparse);
+            let busy = result.map_err(|e| {
+                crate::error::SlipstreamError::Wallet(format!(
+                    "write-behind deferred put_blocks [{first_height}..={last_height}]: {e}"
+                ))
+            })?;
+            self.total_busy += busy;
+            info!(
+                persist_wait_ms,
+                persist_busy_ms = busy.as_millis(),
+                first_height,
+                last_height,
+                "write-behind persist awaited"
+            );
+        }
+        Ok(())
+    }
+
+    /// Submit one deferred commit job. Depth-1 backpressure: awaits (and
+    /// error-propagates) the PREVIOUS commit before spawning this one — unit
+    /// N+1 is never submitted before unit N completed.
+    pub(crate) async fn submit_job(
+        &mut self,
+        span: (u64, u64),
+        job: PersistJob,
+    ) -> Result<(), crate::error::SlipstreamError> {
+        self.await_in_flight().await?;
+        let (Some(mut db), Some(mut sparse)) = (self.db.take(), self.sparse.take()) else {
+            return Err(crate::error::SlipstreamError::Wallet(
+                "write-behind persist lane unusable (connection lost by an earlier failure)".into(),
+            ));
+        };
+        self.in_flight_span = span;
+        self.in_flight = Some(tokio::task::spawn_blocking(move || {
+            let started = std::time::Instant::now();
+            let result = job(&mut db, &mut sparse).map(|()| started.elapsed());
+            (db, sparse, result)
+        }));
+        Ok(())
+    }
+
+    /// Submit one pending scan unit: the deferred commit runs the EXACT
+    /// `sparse_put_blocks` logic (rows + tree + flush in one transaction).
+    pub async fn submit(&mut self, pending: PendingPersist) -> Result<(), crate::error::SlipstreamError> {
+        let span = (pending.first_height, pending.last_height);
+        self.submit_job(
+            span,
+            Box::new(move |db, sparse| {
+                sparse_put_blocks(db, sparse, &pending.from_state, pending.blocks)
+            }),
+        )
+        .await
+    }
+
+    /// Full barrier: wait for the in-flight commit (if any) and propagate its
+    /// error. After `drain` returns Ok, every submitted unit is durably
+    /// committed — required before enhancement, reorg recovery, suggest,
+    /// summary, and at range end.
+    pub async fn drain(&mut self) -> Result<(), crate::error::SlipstreamError> {
+        self.await_in_flight().await
+    }
+}
+
 // ── Contract tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1329,5 +1782,298 @@ mod store_tests {
         assert_eq!(map.len(), 2);
         assert_eq!(map.get(&h(7)), Some(&Position::from(101u64)));
         assert_eq!(map.get(&h(8)), Some(&Position::from(103u64)));
+    }
+}
+
+// ── T6.9 write-behind tests ────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod write_behind_tests {
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+    use incrementalmerkletree::frontier::Frontier;
+
+    // ── apply_nullifier_delta: upstream update_with parity (scanning.rs:435-464) ──
+
+    #[test]
+    fn nullifier_delta_removes_spent_and_adds_found() {
+        let mut set: Vec<(u32, [u8; 4])> = vec![(1, *b"aaaa"), (1, *b"bbbb")];
+        // Block: spends "aaaa", finds "cccc".
+        apply_nullifier_delta(&mut set, &[*b"aaaa"], &[(1, *b"cccc")]);
+        assert_eq!(set, vec![(1, *b"bbbb"), (1, *b"cccc")]);
+    }
+
+    /// THE pending-spend case: a note FOUND in (pending) chunk N must be
+    /// spendable-detectable in chunk N+1 — its nullifier enters the view at the
+    /// stash of N (found), and the spend in N+1 removes it.
+    #[test]
+    fn nullifier_found_in_pending_block_is_visible_then_spendable() {
+        let mut set: Vec<(u32, [u8; 4])> = vec![];
+        // Chunk N stash: note found.
+        apply_nullifier_delta(&mut set, &[], &[(7, *b"note")]);
+        assert_eq!(set, vec![(7, *b"note")], "found note must enter the unspent view");
+        // Chunk N+1 stash: the same nullifier spent.
+        apply_nullifier_delta(&mut set, &[*b"note"], &[]);
+        assert!(set.is_empty(), "spent note must leave the unspent view");
+    }
+
+    /// Per-block ordering parity: retain happens BEFORE extend within one block,
+    /// so a found-then-spent sequence across two block deltas behaves like
+    /// upstream's per-block update_with stream.
+    #[test]
+    fn nullifier_delta_is_retain_then_extend_per_block() {
+        let mut set: Vec<(u32, [u8; 4])> = vec![(1, *b"xxxx")];
+        // Same block spends "xxxx" and finds "xxxx" again (degenerate, but
+        // order-defining): retain removes first, extend re-adds.
+        apply_nullifier_delta(&mut set, &[*b"xxxx"], &[(1, *b"xxxx")]);
+        assert_eq!(set, vec![(1, *b"xxxx")]);
+    }
+
+    // ── WriteBehindFacade virtualized reads ────────────────────────────────────
+
+    fn test_meta(height: u32) -> BlockMetadata {
+        BlockMetadata::from_parts(
+            BlockHeight::from(height),
+            BlockHash([0xAB; 32]),
+            Some(123),
+            Some(45),
+        )
+    }
+
+    #[test]
+    fn facade_block_metadata_serves_the_virtualized_tail_only() {
+        let f = WriteBehindFacade::test_new(BlockHeight::from(999u32), Some(test_meta(999)));
+        let got = f.block_metadata(BlockHeight::from(999u32)).expect("tail height must serve");
+        let got = got.expect("metadata present");
+        assert_eq!(got.block_height(), BlockHeight::from(999u32));
+        assert_eq!(got.block_hash(), BlockHash([0xAB; 32]));
+        assert_eq!(got.sapling_tree_size(), Some(123));
+        assert_eq!(got.orchard_tree_size(), Some(45));
+        // Any other height is a loud error, never a stale read.
+        let err = f.block_metadata(BlockHeight::from(998u32)).unwrap_err();
+        assert!(err.to_string().contains("outside the virtualized tail"), "got: {err}");
+    }
+
+    #[test]
+    fn facade_block_metadata_known_absent_returns_none() {
+        // Fresh wallet, first range: the seeded row at range_start-1 may be
+        // absent — upstream returns None there and skips the continuity check.
+        let f = WriteBehindFacade::test_new(BlockHeight::from(500u32), None);
+        let got = f.block_metadata(BlockHeight::from(500u32)).expect("seeded height");
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn facade_unspent_nullifiers_serve_the_running_view_and_all_is_loud() {
+        let f = WriteBehindFacade::test_new(BlockHeight::from(1u32), None);
+        assert!(f.get_sapling_nullifiers(NullifierQuery::Unspent).expect("unspent").is_empty());
+        assert!(f.get_orchard_nullifiers(NullifierQuery::Unspent).expect("unspent").is_empty());
+        let err = f.get_sapling_nullifiers(NullifierQuery::All).unwrap_err();
+        assert!(err.to_string().contains("not part of the scan_cached_blocks read surface"));
+    }
+
+    #[test]
+    fn facade_ufvk_cache_is_served() {
+        let f = WriteBehindFacade::test_new(BlockHeight::from(1u32), None);
+        assert!(f.get_unified_full_viewing_keys().expect("cached").is_empty());
+    }
+
+    #[test]
+    fn facade_reads_outside_the_surface_fail_loudly() {
+        let f = WriteBehindFacade::test_new(BlockHeight::from(1u32), None);
+        let err = f.chain_height().unwrap_err();
+        assert!(err.to_string().contains("not part of the scan_cached_blocks read surface"));
+        let err = f.get_max_height_hash().unwrap_err();
+        assert!(err.to_string().contains("get_max_height_hash"));
+        let err = f.suggest_scan_ranges().unwrap_err();
+        assert!(err.to_string().contains("suggest_scan_ranges"));
+    }
+
+    fn empty_chain_state(height: u32) -> ChainState {
+        ChainState::new(
+            BlockHeight::from(height),
+            BlockHash([0u8; 32]),
+            Frontier::empty(),
+            Frontier::empty(),
+        )
+    }
+
+    #[test]
+    fn facade_put_blocks_rejects_occupied_stash() {
+        let mut f = WriteBehindFacade::test_new(BlockHeight::from(1u32), None);
+        // Occupy the stash (empty blocks Vec — ScannedBlock is not publicly
+        // constructible; the guard fires before the empty-input early return).
+        f.stash = Some(PendingPersist {
+            from_state: empty_chain_state(1),
+            blocks: vec![],
+            first_height: 2,
+            last_height: 2,
+        });
+        let err = f.put_blocks(&empty_chain_state(1), vec![]).unwrap_err();
+        assert!(err.to_string().contains("depth-1 invariant violated"), "got: {err}");
+        // Draining the stash restores put_blocks (empty input = upstream no-op).
+        assert!(f.take_stash().is_some());
+        f.put_blocks(&empty_chain_state(1), vec![]).expect("empty input is a no-op");
+        assert!(f.take_stash().is_none(), "empty input must not stash");
+    }
+
+    #[test]
+    fn facade_writes_outside_put_blocks_fail_loudly() {
+        let mut f = WriteBehindFacade::test_new(BlockHeight::from(1u32), None);
+        let err = WalletWrite::update_chain_tip(&mut f, BlockHeight::from(5u32)).unwrap_err();
+        assert!(err.to_string().contains("update_chain_tip"));
+        let err = f.truncate_to_height(BlockHeight::from(5u32)).unwrap_err();
+        assert!(err.to_string().contains("truncate_to_height"));
+    }
+
+    // ── PersistLane: serial order, depth-1 backpressure, errors, drain ─────────
+
+    fn lane(dir: &std::path::Path) -> PersistLane {
+        PersistLane::open(
+            &dir.join("lane.db"),
+            zcash_protocol::consensus::Network::MainNetwork,
+        )
+        .expect("lane open")
+    }
+
+    /// Depth-1 backpressure: submit(N+1) must complete unit N first — N+1's
+    /// job can never start before N's job finished.
+    #[tokio::test]
+    async fn lane_submit_awaits_previous_before_spawning_next() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lane = lane(dir.path());
+        let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(vec![]));
+
+        let l1 = Arc::clone(&log);
+        lane.submit_job(
+            (1, 1),
+            Box::new(move |_db, _sparse| {
+                l1.lock().expect("lock").push("job1-start");
+                std::thread::sleep(Duration::from_millis(150));
+                l1.lock().expect("lock").push("job1-end");
+                Ok(())
+            }),
+        )
+        .await
+        .expect("submit 1");
+
+        let submitted = Instant::now();
+        let l2 = Arc::clone(&log);
+        lane.submit_job(
+            (2, 2),
+            Box::new(move |_db, _sparse| {
+                l2.lock().expect("lock").push("job2-start");
+                Ok(())
+            }),
+        )
+        .await
+        .expect("submit 2");
+        // submit(2) returned only after job1 completed (≥150ms blocked).
+        assert!(
+            submitted.elapsed() >= Duration::from_millis(140),
+            "submit must block on the previous unit (depth-1), elapsed {:?}",
+            submitted.elapsed()
+        );
+        lane.drain().await.expect("drain");
+
+        let order = log.lock().expect("lock").clone();
+        assert_eq!(order, vec!["job1-start", "job1-end", "job2-start"], "strictly serial");
+        assert!(lane.total_wait() >= Duration::from_millis(140), "wait accounted");
+        assert!(lane.total_busy() >= Duration::from_millis(140), "busy accounted");
+    }
+
+    /// A failed commit aborts the pipeline: the NEXT submit returns the error
+    /// and never spawns its own job.
+    #[tokio::test]
+    async fn lane_error_propagates_before_next_submit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lane = lane(dir.path());
+        let ran2 = Arc::new(Mutex::new(false));
+
+        lane.submit_job(
+            (10, 19),
+            Box::new(|_db, _sparse| {
+                Err(SqliteClientError::CorruptedData("synthetic commit failure".into()))
+            }),
+        )
+        .await
+        .expect("submit of the failing unit itself succeeds");
+
+        let r2 = Arc::clone(&ran2);
+        let err = lane
+            .submit_job(
+                (20, 29),
+                Box::new(move |_db, _sparse| {
+                    *r2.lock().expect("lock") = true;
+                    Ok(())
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("synthetic commit failure"), "got: {err}");
+        assert!(err.to_string().contains("10..=19"), "error names the failed unit: {err}");
+        assert!(!*ran2.lock().expect("lock"), "unit N+1 must never run after N failed");
+        lane.drain().await.expect("drain after error is a no-op (lane restored)");
+    }
+
+    /// drain() is the full barrier: it returns only after the in-flight commit
+    /// finished, and propagates its error.
+    #[tokio::test]
+    async fn lane_drain_awaits_in_flight_and_propagates_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lane = lane(dir.path());
+        let done = Arc::new(Mutex::new(false));
+        let d = Arc::clone(&done);
+        lane.submit_job(
+            (1, 5),
+            Box::new(move |_db, _sparse| {
+                std::thread::sleep(Duration::from_millis(120));
+                *d.lock().expect("lock") = true;
+                Ok(())
+            }),
+        )
+        .await
+        .expect("submit");
+        lane.drain().await.expect("drain");
+        assert!(*done.lock().expect("lock"), "drain returned before the commit finished");
+
+        // Error path.
+        lane.submit_job(
+            (6, 9),
+            Box::new(|_db, _sparse| Err(SqliteClientError::CorruptedData("late failure".into()))),
+        )
+        .await
+        .expect("submit");
+        let err = lane.drain().await.unwrap_err();
+        assert!(err.to_string().contains("late failure"));
+    }
+
+    #[tokio::test]
+    async fn lane_drain_when_idle_is_ok() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lane = lane(dir.path());
+        lane.drain().await.expect("idle drain");
+        assert_eq!(lane.total_wait(), Duration::ZERO);
+    }
+
+    /// A panicking commit task surfaces as an error and poisons the lane
+    /// (connection moved into the dead task) — further submits fail loudly.
+    #[tokio::test]
+    async fn lane_panic_is_an_error_and_poisons_the_lane() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut lane = lane(dir.path());
+        lane.submit_job((1, 1), Box::new(|_db, _sparse| panic!("synthetic panic")))
+            .await
+            .expect("submit");
+        let err = lane.drain().await.unwrap_err();
+        assert!(err.to_string().contains("persist task died"), "got: {err}");
+        let err = lane
+            .submit_job((2, 2), Box::new(|_db, _sparse| Ok(())))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("lane unusable"), "got: {err}");
     }
 }

@@ -60,6 +60,10 @@ enum Cmd {
         /// "sandblasting" eras traversable). Must be >= 1 MiB.
         #[arg(long, default_value_t = slipstream_core::EngineConfig::DEFAULT_CHUNK_SPLIT_BYTES)]
         chunk_split_bytes: usize,
+        /// T6.9: depth-1 write-behind persistence pipelining (overlap chunk N's
+        /// DB commit with chunk N+1's decryption). Requires sparse. Default off.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        write_behind: bool,
     },
     /// Golden-oracle run: sync the same UFVK/birthday twice into two wallet dirs
     /// (A = upstream persistence, B = upstream until T6.3 lands --sparse-b),
@@ -80,6 +84,9 @@ enum Cmd {
         /// Run B with sparse persistence (T6.3+).
         #[arg(long, default_value_t = false)]
         sparse_b: bool,
+        /// T6.9: run B with write-behind pipelining as well (requires --sparse-b).
+        #[arg(long, default_value_t = false)]
+        write_behind_b: bool,
         #[arg(long, default_value_t = 4, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         streams: usize,
         #[arg(long, default_value_t = 10_000)]
@@ -204,6 +211,7 @@ fn cmd_sync(
     chunk: u32,
     sparse: bool,
     chunk_split_bytes: usize,
+    write_behind: bool,
 ) {
     let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
 
@@ -223,6 +231,7 @@ fn cmd_sync(
     cfg.chunk_blocks = chunk;
     cfg.sparse_persistence = sparse;
     cfg.chunk_split_bytes = chunk_split_bytes;
+    cfg.write_behind = write_behind;
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
@@ -293,6 +302,17 @@ fn cmd_sync(
                     outcome.enhance_elapsed.as_secs_f64(),
                     outcome.bound(),
                 );
+                // T6.9 write-behind overlap quality (only printed when active).
+                let pw = outcome.report.persist_wait_elapsed.as_secs_f64();
+                let pb = outcome.report.persist_busy_elapsed.as_secs_f64();
+                if pb > 0.0 {
+                    println!(
+                        "write-behind: persist busy {:.1}s | wait {:.1}s | overlap won {:.1}s",
+                        pb,
+                        pw,
+                        (pb - pw).max(0.0),
+                    );
+                }
                 // Reorg summary (only if any recoveries occurred).
                 if outcome.report.reorgs_recovered > 0 {
                     println!("reorgs: {} recovered", outcome.report.reorgs_recovered);
@@ -314,17 +334,22 @@ fn cmd_oracle(
     ufvk: String,
     birthday: u64,
     sparse_b: bool,
+    write_behind_b: bool,
     streams: usize,
     chunk: u32,
 ) {
     let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+    if write_behind_b && !sparse_b {
+        eprintln!("error: --write-behind-b requires --sparse-b");
+        std::process::exit(2);
+    }
     for d in [&wallet_a, &wallet_b] {
         if d.join("data.db").exists() {
             eprintln!("error: {} already contains data.db — oracle needs fresh wallets", d.display());
             std::process::exit(2);
         }
     }
-    let mk_cfg = |dir: &std::path::Path, sparse: bool| {
+    let mk_cfg = |dir: &std::path::Path, sparse: bool, write_behind: bool| {
         let mut cfg = slipstream_core::EngineConfig::new(
             slipstream_core::Network::MainNetwork,
             dir.join("data.db"),
@@ -333,15 +358,16 @@ fn cmd_oracle(
         cfg.fetch_streams = streams;
         cfg.chunk_blocks = chunk;
         cfg.sparse_persistence = sparse;
+        cfg.write_behind = write_behind;
         cfg
     };
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let verdict = rt.block_on(async {
         println!("oracle: run A (upstream persistence) …");
-        let a = slipstream_core::engine::sync_once(&mk_cfg(&wallet_a, false), Some((ufvk.as_str(), birthday)), None).await?;
+        let a = slipstream_core::engine::sync_once(&mk_cfg(&wallet_a, false, false), Some((ufvk.as_str(), birthday)), None).await?;
         println!("oracle: run A done — tip {} in {:.1?}", a.chain_tip, a.elapsed);
-        println!("oracle: run B (sparse_b={sparse_b}) …");
-        let b = slipstream_core::engine::sync_once(&mk_cfg(&wallet_b, sparse_b), Some((ufvk.as_str(), birthday)), None).await?;
+        println!("oracle: run B (sparse_b={sparse_b} write_behind_b={write_behind_b}) …");
+        let b = slipstream_core::engine::sync_once(&mk_cfg(&wallet_b, sparse_b, write_behind_b), Some((ufvk.as_str(), birthday)), None).await?;
         println!("oracle: run B done — tip {} in {:.1?}", b.chain_tip, b.elapsed);
         if a.chain_tip != b.chain_tip {
             eprintln!("oracle: TIP SKEW (A={} B={}) — rerun when the chain is quiet", a.chain_tip, b.chain_tip);
@@ -379,11 +405,11 @@ fn main() {
         Cmd::Fetch { server, range, streams, chunk, baseline } => {
             cmd_fetch(server, range, streams, chunk, baseline);
         }
-        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes } => {
-            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes);
+        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind } => {
+            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind);
         }
-        Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, streams, chunk } => {
-            cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, streams, chunk);
+        Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, streams, chunk } => {
+            cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, streams, chunk);
         }
     }
 }
@@ -586,6 +612,81 @@ mod tests {
             "1500000",
         ])
         .expect("parses");
-        assert!(matches!(cli.cmd, Cmd::Oracle { .. }));
+        assert!(matches!(cli.cmd, Cmd::Oracle { write_behind_b: false, .. }));
+    }
+
+    // ── T6.9 write-behind flags ────────────────────────────────────────────────
+
+    #[test]
+    fn sync_write_behind_defaults_off() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+        ])
+        .expect("parses default");
+        assert!(
+            matches!(cli.cmd, Cmd::Sync { write_behind: false, .. }),
+            "write_behind must default to false (flag-off ships first)"
+        );
+    }
+
+    #[test]
+    fn sync_write_behind_bare_flag_enables() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+            "--write-behind",
+        ])
+        .expect("parses bare --write-behind");
+        assert!(matches!(cli.cmd, Cmd::Sync { write_behind: true, .. }));
+    }
+
+    #[test]
+    fn sync_write_behind_explicit_false_accepted() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+            "--write-behind",
+            "false",
+        ])
+        .expect("parses --write-behind false");
+        assert!(matches!(cli.cmd, Cmd::Sync { write_behind: false, .. }));
+    }
+
+    #[test]
+    fn oracle_write_behind_b_parses() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "oracle",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-a",
+            "/tmp/oa",
+            "--wallet-b",
+            "/tmp/ob",
+            "--ufvk",
+            "uview1someufvk",
+            "--birthday",
+            "1500000",
+            "--sparse-b",
+            "--write-behind-b",
+        ])
+        .expect("parses");
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Oracle { sparse_b: true, write_behind_b: true, .. }
+        ));
     }
 }

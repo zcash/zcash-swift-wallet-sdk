@@ -71,8 +71,8 @@
       </tr>
       <tr>
         <td>L4b write-behind pipelining</td>
-        <td><span style="color:#1f6feb;font-weight:700">Queued</span></td>
-        <td>Next speed lever after sandblasting acceptance; projected ~6:15–6:45 on iPad / ~60 s on iPhone</td>
+        <td><span style="color:#1a7f37;font-weight:700">Shipped (flag-off)</span></td>
+        <td>T6.9: depth-1 commit/decrypt overlap behind <code>EngineConfig::write_behind</code> (default off); oracle-clean (hermetic + darkside + mainnet IDENTICAL); Mac A/B ~9% mean gain, <code>persist_overlap_s</code> ≈ 1.05 s/50k; default-on decision waits on device field A/B</td>
       </tr>
       <tr>
         <td>shardtree <code>merge_checked</code> waste</td>
@@ -185,11 +185,11 @@
 
   <h2>19.4 Queued and parked items</h2>
 
-  <h3>L4b write-behind pipelining (QUEUED — next after sandblasting acceptance)</h3>
+  <h3>L4b write-behind pipelining (SHIPPED flag-off — T6.9, 2026-06-12)</h3>
 
-  <p>L4b is the next performance lever in the sequence. Design: overlap <code>scan_cached_blocks</code> CPU work with <code>put_blocks</code> SQLite writes by pipelining them on separate threads — scan chunk N while chunk N−1's writes complete. This requires a crash-consistency design (the tree flush must remain transactional with the row writes) before any code can be written. Projected improvement from lever-ladder analysis: ~6:15–6:45 on iPad A10, ~60 s on iPhone 16 Pro. No implementation has started.</p>
+  <p>Shipped at T6.9 behind <code>EngineConfig::write_behind</code> (default <strong>off</strong>; CLI <code>--write-behind</code>). The crash-consistency requirement was met by keeping each deferred commit the EXACT <code>sparse_put_blocks</code> transaction (rows + tree + flush atomic, strictly serial, depth-1) on a persist lane that owns the per-range tree state; the scan's four DB reads are virtualized by a pending-aware facade and every read outside that surface fails loudly. Full design and citations: chapter 7's write-behind section.</p>
 
-  <p>The task sequence (from NEXT ACTION): simulator sandblasting acceptance → iPhone acceptance → T6.9 L4b.</p>
+  <p>Evidence so far: hermetic write-behind oracles CLEAN; darkside REAL-notes fixture oracle CLEAN (+3 more write-behind darkside variants green); mainnet tip−2000 oracle VERDICT IDENTICAL with <code>--sparse-b --write-behind-b</code>; Mac 50k A/B mean 6.79 s (off) vs 6.18 s (on) with <code>persist_overlap_s</code> ≈ 1.05 s — Mac is persist-bound per chunk (commit ≈ 790 ms vs decrypt ≈ 320 ms) so depth-1 can hide only the decrypt side there; the device balance (iPad ≈ 258 s persist vs ≈ 286 s decrypt; iPhone ≈ 42 s vs ≈ 43 s) is where the lever pays. The earlier ~6:15–6:45 iPad / ~60 s iPhone numbers remain projections, not measurements. Default-on flip waits on the device field A/B.</p>
 
   <h3>L4a decrypt-kernel / column-ECDH (PARKED — user request, 2026-06-12)</h3>
 
@@ -224,7 +224,7 @@
     <a href="18-tests.html">← 18. Test &amp; Verification Matrix</a>
     <a href="20-glossary.html">20. Glossary &amp; Decision Digest →</a>
   </nav>
-  <footer class="colophon">Citations as of commit 7eff661e. All gap descriptions sourced directly from STATE.md Blockers section and decision log. No items softened.</footer>
+  <footer class="colophon">Citations as of commit b34f6679 + T6.9 session (2026-06-12). All gap descriptions sourced directly from STATE.md Blockers section and decision log. No items softened.</footer>
 </main>
 </body>
 </html>

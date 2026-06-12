@@ -110,6 +110,23 @@ pub struct ScanStats {
     pub interleaved_enhance: crate::enhance::EnhanceStats,
     /// Wall-clock spent in interleaved enhancement (excluded from scan-stage time).
     pub interleaved_enhance_elapsed: std::time::Duration,
+    /// T6.9 write-behind: total time the scan loop was BLOCKED awaiting a
+    /// previous deferred commit (Σ persist_wait; 0 ≈ perfect overlap).
+    pub persist_wait: std::time::Duration,
+    /// T6.9 write-behind: total wall time of the deferred commits themselves
+    /// (Σ persist_busy, measured inside the persist closures). The overlap won
+    /// is `persist_busy - persist_wait` (clamped at 0).
+    pub persist_busy: std::time::Duration,
+}
+
+// ── T6.9 write-behind loop state ───────────────────────────────────────────────
+
+/// Scan-side write-behind state: the pending-aware facade (virtualized reads +
+/// stash) and the persist lane (second Db connection + per-range tree state +
+/// the single in-flight deferred commit). See persist.rs T6.9 section.
+struct WriteBehind {
+    facade: crate::persist::WriteBehindFacade,
+    lane: crate::persist::PersistLane,
 }
 
 // ── Production scan driver ─────────────────────────────────────────────────────
@@ -151,15 +168,87 @@ pub async fn scan_chunks(
     session: &mut WalletSession,
     client: &mut LwdClient,
     range_start: u64,
-    mut rx: ChunkQueueReceiver,
+    rx: ChunkQueueReceiver,
     progress: Option<Arc<Progress>>,
     config: &EngineConfig,
     skipped_keys: &mut HashSet<String>,
 ) -> Result<ScanStats, SlipstreamError> {
-    let mut sparse_state = crate::persist::SparseTreeState::default();
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
     }
+
+    // ── T6.9 write-behind setup ───────────────────────────────────────────────
+    // Seed the pending-aware facade from the committed DB (no-pending barrier:
+    // nothing is stashed or in flight yet) and open the persist lane's own
+    // connection to the wallet file. `None` = today's serialized path.
+    let mut wb: Option<WriteBehind> = if config.write_behind {
+        let facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
+            .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
+        let lane = crate::persist::PersistLane::open(&config.wallet_db_path, config.network)?;
+        Some(WriteBehind { facade, lane })
+    } else {
+        None
+    };
+
+    let result =
+        scan_chunks_inner(session, client, range_start, rx, progress, config, skipped_keys, &mut wb)
+            .await;
+
+    // ── T6.9 full barrier (range end AND every error exit) ───────────────────
+    // Drain the in-flight deferred commit before anything else may touch the
+    // DB (reorg truncate, per-range enhancement, suggest, summary). Dropping
+    // the JoinHandle would NOT stop the blocking commit — it must be awaited.
+    // Precedence on double failure: the persist error wins (a failed commit is
+    // a DB-integrity signal; a ScanContinuity reorg is retried next pass).
+    if let Some(mut wb) = wb {
+        if wb.facade.take_stash().is_some() {
+            // A stashed-but-never-submitted unit only exists on error exits
+            // between scan and submit; dropping it is safe (its range is still
+            // marked unscanned — re-suggested next pass).
+            warn!("write-behind: dropping an unsubmitted pending unit on error exit");
+        }
+        let drain_result = wb.lane.drain().await;
+        return match (result, drain_result) {
+            (Ok(mut stats), Ok(())) => {
+                stats.persist_wait = wb.lane.total_wait();
+                stats.persist_busy = wb.lane.total_busy();
+                info!(
+                    blocks = stats.blocks,
+                    chunks = stats.chunks,
+                    sapling = stats.sapling_received,
+                    orchard = stats.orchard_received,
+                    persist_wait_ms = stats.persist_wait.as_millis() as u64,
+                    persist_busy_ms = stats.persist_busy.as_millis() as u64,
+                    "scan done (write-behind drained)"
+                );
+                Ok(stats)
+            }
+            (Err(scan_err), Ok(())) => Err(scan_err),
+            (scan_outcome, Err(persist_err)) => {
+                if let Err(scan_err) = scan_outcome {
+                    warn!(%scan_err, "scan error superseded by persist failure (persist precedence)");
+                }
+                Err(persist_err)
+            }
+        };
+    }
+    result
+}
+
+/// The scan loop body. Extracted so `?`-style early returns land at the
+/// write-behind barrier in [`scan_chunks`] instead of skipping it.
+#[allow(clippy::too_many_arguments)] // internal seam of scan_chunks; bundling would obscure the borrow structure
+async fn scan_chunks_inner(
+    session: &mut WalletSession,
+    client: &mut LwdClient,
+    range_start: u64,
+    mut rx: ChunkQueueReceiver,
+    progress: Option<Arc<Progress>>,
+    config: &EngineConfig,
+    skipped_keys: &mut HashSet<String>,
+    wb: &mut Option<WriteBehind>,
+) -> Result<ScanStats, SlipstreamError> {
+    let mut sparse_state = crate::persist::SparseTreeState::default();
     // Read config fields once.
     let batch_target_ms = config.scan_batch_target_ms;
     let network = config.network;
@@ -206,6 +295,8 @@ pub async fn scan_chunks(
         let mut chunk_sapling: u64 = 0;
         let mut chunk_orchard: u64 = 0;
         let mut chunk_elapsed_ms: u64 = 0;
+        // T6.9: time this chunk's submits spent blocked on previous commits.
+        let mut chunk_persist_wait_ms: u64 = 0;
 
         loop {
             // How many blocks remain in this chunk from sub_start?
@@ -256,7 +347,18 @@ pub async fn scan_chunks(
             let batch_start_time = Instant::now();
             let scan_result = tokio::task::block_in_place(|| {
                 let source = MemBlockSource::new(&chunk);
-                if config.sparse_persistence {
+                if let Some(wb) = wb.as_mut() {
+                    // T6.9 write-behind: virtualized reads + stash (no DB work
+                    // on this task; the commit is deferred to the persist lane).
+                    scan_cached_blocks(
+                        &network,
+                        &source,
+                        &mut wb.facade,
+                        BlockHeight::from(from_height),
+                        &from_state,
+                        current_batch_len,
+                    )
+                } else if config.sparse_persistence {
                     let mut facade = crate::persist::SparseFacade {
                         inner: session.db_mut(),
                         sparse: &mut sparse_state,
@@ -289,6 +391,23 @@ pub async fn scan_chunks(
                     return Err(map_scan_error(e));
                 }
             };
+
+            // ── T6.9 submit the deferred commit (depth-1) ─────────────────────
+            // Awaits the PREVIOUS unit first (error propagates here — the range
+            // aborts before another unit is ever submitted), then spawns this
+            // unit's commit so it overlaps the prefetch await + next recv +
+            // next decrypt. The wait delta is this chunk's overlap-quality cost.
+            if let Some(wb) = wb.as_mut()
+                && let Some(pending) = wb.facade.take_stash()
+            {
+                let wait_before = wb.lane.total_wait();
+                if let Err(e) = wb.lane.submit(pending).await {
+                    prefetch.abort();
+                    return Err(e);
+                }
+                chunk_persist_wait_ms +=
+                    (wb.lane.total_wait() - wait_before).as_millis() as u64;
+            }
 
             let scanned = u64::from(u32::from(summary.scanned_range().end))
                 - u64::from(u32::from(summary.scanned_range().start));
@@ -343,16 +462,37 @@ pub async fn scan_chunks(
 
         // T5.1 per-chunk info log (kept at chunk granularity — would spam on fast devices
         // if emitted per sub-batch at info level; sub-batch detail is at debug level above).
+        // T6.9: persist_wait_ms = time this chunk's submits blocked on previous deferred
+        // commits (write-behind only; 0 = perfect overlap, also 0 with the flag off).
         let len = chunk.blocks.len();
-        info!(chunk_start, chunk_end, len, outputs = chunk.outputs, chunk_elapsed_ms, "chunk scanned");
+        info!(
+            chunk_start,
+            chunk_end,
+            len,
+            outputs = chunk.outputs,
+            chunk_elapsed_ms,
+            persist_wait_ms = chunk_persist_wait_ms,
+            "chunk scanned"
+        );
 
-        drop(permit); // release byte budget only after the chunk's last sub-batch committed
+        // T6.9 note: with write-behind the last sub-batch is SUBMITTED (not yet
+        // committed) here; the permit guards the raw chunk bytes, which are
+        // dropped with this loop iteration either way — the pending unit holds
+        // only the decrypted ScannedBlocks (commitments + wallet data), bounded
+        // at depth 1.
+        drop(permit); // release byte budget after the chunk's last sub-batch was handed off
 
         // T6.1 — interleaved enhancement every K chunks. Non-fatal by design:
         // it is an optimization (progressive tx visibility); the per-range and
         // final post-loop runs are the correctness backstops. from_state
         // threading is untouched (next_state is not read or written here).
         if should_interleave_enhancement(stats.chunks, config.enhance_every_chunks) {
+            // T6.9 full barrier: enhancement reads AND writes the wallet DB —
+            // it must never see a half-committed range tail, and it must not
+            // run concurrently with a deferred commit (single-writer rule).
+            if let Some(wb) = wb.as_mut() {
+                wb.lane.drain().await?;
+            }
             let started = Instant::now();
             let mut enhance_client = client.clone();
             match run_enhancement(session, &mut enhance_client, network, progress.clone(), skipped_keys).await {
@@ -367,15 +507,28 @@ pub async fn scan_chunks(
                 }
             }
             stats.interleaved_enhance_elapsed += started.elapsed();
+            // T6.9: enhancement may have stored fully-decrypted transactions
+            // (new received notes / spends outside put_blocks) — re-seed the
+            // facade's running nullifier views from the now-complete DB.
+            // Unconditional (the non-fatal error arm may have partially written).
+            if let Some(wb) = wb.as_mut() {
+                wb.facade
+                    .reseed_nullifiers(&*session.db_mut())
+                    .map_err(|e| SlipstreamError::Wallet(format!("write-behind reseed: {e}")))?;
+            }
         }
     }
-    info!(
-        blocks = stats.blocks,
-        chunks = stats.chunks,
-        sapling = stats.sapling_received,
-        orchard = stats.orchard_received,
-        "scan done"
-    );
+    if wb.is_none() {
+        // Write-behind logs its "scan done" in scan_chunks AFTER the drain
+        // barrier (so the line means "fully committed", not "fully decrypted").
+        info!(
+            blocks = stats.blocks,
+            chunks = stats.chunks,
+            sapling = stats.sapling_received,
+            orchard = stats.orchard_received,
+            "scan done"
+        );
+    }
     Ok(stats)
 }
 
@@ -406,18 +559,76 @@ pub async fn scan_chunks(
 /// (exactly as `scan_chunks` does); one `SparseTreeState` is created for the
 /// whole call, matching the one-per-range contract. Added at T6.4 so the
 /// darkside oracle test can exercise the same sparse code-path as production.
+///
+/// `write_behind` — when `true` (requires `sparse`), use the T6.9 depth-1
+/// write-behind pipeline exactly as production `scan_chunks` does: pending-aware
+/// `WriteBehindFacade` + `PersistLane` (second connection to the session's DB
+/// file), submit-after-scan, full drain barrier at exit. Added at T6.9 so the
+/// darkside variants can exercise the write-behind path against real fixtures.
 #[cfg(any(test, feature = "darkside"))]
 pub async fn scan_chunks_from_treestate(
     session: &mut WalletSession,
     range_start: u64,
     initial_state: TreeState,
-    mut rx: ChunkQueueReceiver,
+    rx: ChunkQueueReceiver,
     sparse: bool,
+    write_behind: bool,
 ) -> Result<ScanStats, SlipstreamError> {
-    let mut sparse_state = crate::persist::SparseTreeState::default();
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
     }
+    if write_behind && !sparse {
+        return Err(SlipstreamError::Wallet(
+            "write_behind requires sparse (mirrors EngineConfig::validate)".into(),
+        ));
+    }
+    let mut wb: Option<WriteBehind> = if write_behind {
+        let facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
+            .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
+        let lane = crate::persist::PersistLane::open(session.db_path(), session.network)?;
+        Some(WriteBehind { facade, lane })
+    } else {
+        None
+    };
+
+    let result =
+        scan_chunks_from_treestate_inner(session, initial_state, rx, sparse, &mut wb).await;
+
+    // T6.9 full barrier — mirror of scan_chunks (persist error precedence).
+    if let Some(mut wb) = wb {
+        if wb.facade.take_stash().is_some() {
+            warn!("write-behind (treestate driver): dropping an unsubmitted pending unit on error exit");
+        }
+        let drain_result = wb.lane.drain().await;
+        return match (result, drain_result) {
+            (Ok(mut stats), Ok(())) => {
+                stats.persist_wait = wb.lane.total_wait();
+                stats.persist_busy = wb.lane.total_busy();
+                Ok(stats)
+            }
+            (Err(scan_err), Ok(())) => Err(scan_err),
+            (scan_outcome, Err(persist_err)) => {
+                if let Err(scan_err) = scan_outcome {
+                    warn!(%scan_err, "scan error superseded by persist failure (persist precedence)");
+                }
+                Err(persist_err)
+            }
+        };
+    }
+    result
+}
+
+/// Loop body of [`scan_chunks_from_treestate`] — extracted so early returns
+/// land at the write-behind barrier instead of skipping it.
+#[cfg(any(test, feature = "darkside"))]
+async fn scan_chunks_from_treestate_inner(
+    session: &mut WalletSession,
+    initial_state: TreeState,
+    mut rx: ChunkQueueReceiver,
+    sparse: bool,
+    wb: &mut Option<WriteBehind>,
+) -> Result<ScanStats, SlipstreamError> {
+    let mut sparse_state = crate::persist::SparseTreeState::default();
     let mut stats = ScanStats::default();
     let mut next_state = initial_state;
 
@@ -452,7 +663,17 @@ pub async fn scan_chunks_from_treestate(
             let from_height = u32::try_from(chunk_start)
                 .map_err(|_| SlipstreamError::Wallet(format!("height {chunk_start} exceeds u32")))?;
             tokio::task::block_in_place(|| {
-                if sparse {
+                if let Some(wb) = wb.as_mut() {
+                    // T6.9 write-behind: virtualized reads + stash.
+                    scan_cached_blocks(
+                        &network,
+                        &source,
+                        &mut wb.facade,
+                        BlockHeight::from(from_height),
+                        &from_state,
+                        len,
+                    )
+                } else if sparse {
                     let mut facade = crate::persist::SparseFacade {
                         inner: session.db_mut(),
                         sparse: &mut sparse_state,
@@ -479,6 +700,14 @@ pub async fn scan_chunks_from_treestate(
             .map_err(map_scan_error)?
         };
         let elapsed_ms = scan_start_t.elapsed().as_millis() as u64;
+
+        // T6.9 submit the deferred commit (depth-1; awaits the previous unit
+        // first — mirror of the production scan_chunks pipeline).
+        if let Some(wb) = wb.as_mut()
+            && let Some(pending) = wb.facade.take_stash()
+        {
+            wb.lane.submit(pending).await?;
+        }
 
         let scanned = u64::from(u32::from(summary.scanned_range().end))
             - u64::from(u32::from(summary.scanned_range().start));

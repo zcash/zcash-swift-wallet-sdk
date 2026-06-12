@@ -22,7 +22,7 @@ use crate::{
 /// tag in the log doesn't match HEAD's value, the device is running a stale
 /// XCFramework (the three-layer gotcha, consuming side). Probe a built slice with:
 /// `strings <slice>/libzcashlc.framework/libzcashlc | grep <tag>`.
-pub const ENGINE_BUILD: &str = "2026-06-13.walltime";
+pub const ENGINE_BUILD: &str = "2026-06-13.l4b-writebehind";
 
 /// Current wall-clock time as a `YYYY-MM-DD HH:MM:SSZ` UTC string.
 ///
@@ -141,6 +141,7 @@ pub async fn sync_once(
     info!(
         engine_build = ENGINE_BUILD,
         sparse = config.sparse_persistence,
+        write_behind = config.write_behind,
         started_at_utc = %wall_clock_utc(),
         "engine pass starting"
     );
@@ -212,16 +213,29 @@ pub async fn sync_once(
     // Log the stage split: total time + per-stage breakdown + bound.
     // F3: enhance_s is now the SUM of all per-range runs + the final post-loop run.
     // T6.6: sparse field added so log clearly shows which persistence path ran.
+    // T6.9 (write-behind semantics): scan_s stays the HONEST scan-loop wall time —
+    // with write_behind=true it still INCLUDES persist_wait_s (time the loop
+    // blocked on a previous deferred commit). The two added fields keep the split
+    // interpretable: persist_wait_s ≈ 0 means perfect overlap; persist_overlap_s
+    // = persist_busy − persist_wait (clamped ≥0) is the commit work that ran
+    // HIDDEN under decryption instead of serialized after it. Both are 0 with
+    // the flag off. The per-chunk rows/tree/flush attribution stays inside the
+    // deferred commit's own "sparse put_blocks" line (persist.rs), unchanged.
+    let persist_wait_s = outcome.report.persist_wait_elapsed.as_secs_f64();
+    let persist_busy_s = outcome.report.persist_busy_elapsed.as_secs_f64();
     info!(
         total_s = outcome.elapsed.as_secs_f64(),
         fetch_s = outcome.report.fetch_elapsed.as_secs_f64(),
         scan_s = outcome.report.scan_elapsed.as_secs_f64(),
         enhance_s = outcome.enhance_elapsed.as_secs_f64(),
+        persist_wait_s,
+        persist_overlap_s = (persist_busy_s - persist_wait_s).max(0.0),
         blocks = outcome.report.scan.blocks,
         bound = outcome.bound(),
         engine_build = ENGINE_BUILD,
         finished_at_utc = %wall_clock_utc(),
         sparse = config.sparse_persistence,
+        write_behind = config.write_behind,
         "sync stage split"
     );
 
