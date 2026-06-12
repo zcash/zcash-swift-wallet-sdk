@@ -4231,6 +4231,62 @@ use slipstream_core::ffi_handle::SyncState;
 // Internal event type (from slipstream-core) used by the handle's event ring.
 use slipstream_core::ffi_handle::FfiSlipstreamEvent as SlipstreamCoreEvent;
 
+// ── T6.8-H2 bounded pass-level retry (Fix B) ─────────────────────────────────
+//
+// A transient transport error (timeout/connect; is_transient==true) retries the
+// WHOLE pass up to PASS_RETRY_MAX more times with sleeping and re-entering
+// sync_once (which re-suggests from the last committed chunk — cheap because
+// suggest_scan_ranges returns only remaining unscanned ranges).
+//
+// Only TRANSIENT errors are retried; non-transient (ScanContinuity/Config/Wallet/…)
+// fail immediately.  SyncStarted fires ONCE before the loop.  SyncState stays
+// Syncing during retries (% briefly resets to 0 over the REMAINING work —
+// acceptable UX for a rare 30s-stall event; noted in STATE.md).
+//
+// Progress semantics across retries: begin_pass() at each sync_once entry resets
+// ratio counters (scanned/fetched/pass_total/range_end/spendable) — correct, since
+// the new pass re-suggests remaining ranges and the denominator recomputes from
+// scratch.  Monotonic delta counters (enhanced_txs, ranges_completed,
+// reorgs_recovered) are left untouched across retries, so progress observers see
+// continuous growth rather than resets.
+
+/// Maximum number of ADDITIONAL sync_once calls after the first failure (Fix B).
+/// Total attempts = PASS_RETRY_MAX + 1 = 3.
+const PASS_RETRY_MAX: u32 = 2;
+
+/// Sleep durations between pass-level retries.
+/// Attempt 1 (first retry): 5 s — short enough to recover quickly from a brief stall.
+/// Attempt 2+ (second retry): 15 s — longer back-off for a genuinely wedged server.
+fn pass_retry_sleep(attempt: u32) -> std::time::Duration {
+    match attempt {
+        1 => std::time::Duration::from_secs(5),
+        _ => std::time::Duration::from_secs(15),
+    }
+}
+
+/// Returns the sleep duration to wait before retry `attempt` (1-based),
+/// or `None` if the error is non-transient or all retries are exhausted.
+///
+/// Extracted as a pure function so unit tests can exercise the decision logic
+/// without running a full sync (T6.8-H2 test requirement).
+///
+/// ```
+/// use slipstream_core::error::SlipstreamError;
+/// // Transient error, first retry → Some(5s).
+/// // Non-transient error → None regardless of attempt.
+/// // Transient error at attempt > PASS_RETRY_MAX → None (exhausted).
+/// ```
+fn should_retry(
+    err: &slipstream_core::error::SlipstreamError,
+    attempt: u32,
+) -> Option<std::time::Duration> {
+    if err.is_transient() && attempt <= PASS_RETRY_MAX {
+        Some(pass_retry_sleep(attempt))
+    } else {
+        None
+    }
+}
+
 /// Opaque handle to a Slipstream engine instance.
 ///
 /// Wraps [`slipstream_core::ffi_handle::SlipstreamHandle`] as a crate-local newtype so
@@ -4452,7 +4508,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         let sup_state = std::sync::Arc::clone(&h.state);
         let sup_events = std::sync::Arc::clone(&h.events);
         let sync_body = async move {
-            // Notify SyncStarted (tag=1).
+            // Notify SyncStarted (tag=1) — emitted exactly ONCE, before any retry.
             // Use SlipstreamCoreEvent (the type stored in the handle's event ring).
             {
                 let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
@@ -4462,10 +4518,33 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                 ring.push(SlipstreamCoreEvent { tag: 1, value: 0 });
             }
 
-            // ufvk_arg owns the String; take &str reference inside the task.
-            let ufvk_ref = ufvk_arg.as_ref().map(|(s, h)| (s.as_str(), *h));
-            let result =
-                slipstream_core::engine::sync_once(&cfg, ufvk_ref, Some(progress)).await;
+            // ── Bounded pass-level retry loop (T6.8-H2 Fix B) ─────────────────
+            let mut attempt: u32 = 0;
+            let result = loop {
+                // ufvk_arg owns the String; take &str reference inside the task.
+                let ufvk_ref = ufvk_arg.as_ref().map(|(s, h)| (s.as_str(), *h));
+                let result =
+                    slipstream_core::engine::sync_once(&cfg, ufvk_ref, Some(progress.clone())).await;
+                match result {
+                    Ok(outcome) => break Ok(outcome),
+                    Err(err) => {
+                        attempt += 1;
+                        match should_retry(&err, attempt) {
+                            Some(sleep_dur) => {
+                                tracing::warn!(
+                                    %err,
+                                    attempt,
+                                    sleep_secs = sleep_dur.as_secs(),
+                                    "slipstream sync failed (transient) — retrying pass"
+                                );
+                                tokio::time::sleep(sleep_dur).await;
+                                // Continue with SyncState::Syncing (stays unchanged).
+                            }
+                            None => break Err(err),
+                        }
+                    }
+                }
+            };
 
             match result {
                 Ok(outcome) => {
@@ -4627,5 +4706,68 @@ pub unsafe extern "C" fn zcashlc_slipstream_free(handle: *mut SlipstreamHandle) 
             task.abort();
         }
         drop(h);
+    }
+}
+
+// ── T6.8-H2: should_retry unit tests ─────────────────────────────────────────
+
+#[cfg(test)]
+mod slipstream_retry_tests {
+    use super::*;
+    use slipstream_core::error::SlipstreamError;
+
+    // ── should_retry pure logic ───────────────────────────────────────────────
+
+    /// Transient error, first retry attempt → Some(5s sleep).
+    #[test]
+    fn should_retry_transient_attempt_1_returns_5s() {
+        let err = SlipstreamError::Transport("timed out after 30s".into());
+        let result = should_retry(&err, 1);
+        assert_eq!(result, Some(std::time::Duration::from_secs(5)),
+            "first transient retry must sleep 5s");
+    }
+
+    /// Transient error, second retry attempt → Some(15s sleep).
+    #[test]
+    fn should_retry_transient_attempt_2_returns_15s() {
+        let err = SlipstreamError::Transport("stream idle timeout".into());
+        let result = should_retry(&err, 2);
+        assert_eq!(result, Some(std::time::Duration::from_secs(15)),
+            "second transient retry must sleep 15s");
+    }
+
+    /// Transient error but attempt > PASS_RETRY_MAX → None (retries exhausted).
+    #[test]
+    fn should_retry_transient_exhausted_returns_none() {
+        let err = SlipstreamError::Transport("connect refused".into());
+        // PASS_RETRY_MAX = 2; attempt 3 is exhausted.
+        assert!(should_retry(&err, PASS_RETRY_MAX + 1).is_none(),
+            "exhausted retries must return None");
+    }
+
+    /// Non-transient error → None regardless of attempt.
+    #[test]
+    fn should_retry_non_transient_returns_none_always() {
+        let wallet = SlipstreamError::Wallet("scan_cached_blocks: continuity error".into());
+        assert!(should_retry(&wallet, 1).is_none(), "Wallet error must not retry");
+
+        let config = SlipstreamError::Config("bad birthday".into());
+        assert!(should_retry(&config, 1).is_none(), "Config error must not retry");
+
+        let cont = SlipstreamError::ScanContinuity { at: 663_195 };
+        assert!(should_retry(&cont, 1).is_none(), "ScanContinuity must not retry");
+
+        let misbehaving = SlipstreamError::MisbehavingServer;
+        assert!(should_retry(&misbehaving, 1).is_none(), "MisbehavingServer must not retry");
+    }
+
+    /// Pass-retry constants are self-consistent: PASS_RETRY_MAX == 2 → 3 total attempts.
+    #[test]
+    fn pass_retry_max_is_two() {
+        assert_eq!(PASS_RETRY_MAX, 2, "PASS_RETRY_MAX must be 2 (3 total attempts)");
+        // Verify pass_retry_sleep schedule matches doc comment.
+        assert_eq!(pass_retry_sleep(1), std::time::Duration::from_secs(5));
+        assert_eq!(pass_retry_sleep(2), std::time::Duration::from_secs(15));
+        assert_eq!(pass_retry_sleep(3), std::time::Duration::from_secs(15)); // default arm
     }
 }

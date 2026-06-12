@@ -23,7 +23,7 @@ use zcash_client_backend::proto::service::TreeState;
 use crate::{
     block_source::MemBlockSource,
     chunk::ChunkQueueReceiver,
-    config::EngineConfig,
+    config::{Endpoint, EngineConfig},
     enhance::run_enhancement,
     error::SlipstreamError,
     events::Progress,
@@ -163,10 +163,15 @@ pub async fn scan_chunks(
     // Read config fields once.
     let batch_target_ms = config.scan_batch_target_ms;
     let network = config.network;
+    // Clone endpoint once for use in retry-capable prefetch spawns (T6.8-H2).
+    let endpoint: Endpoint = config.endpoint.clone();
 
     let mut stats = ScanStats::default();
-    // State for the FIRST chunk: boundary just below the range.
-    let mut next_state = grpc::get_tree_state(client, range_start - 1).await?;
+    // State for the FIRST chunk: seed treestate at (range_start - 1).
+    // T6.8-H2: uses retry_get_tree_state (up to 3 attempts, reconnect on retry)
+    // instead of bare get_tree_state — a single 30s server stall was FATAL here.
+    let mut next_state =
+        grpc::retry_get_tree_state(&endpoint, range_start - 1, "initial seed").await?;
 
     // batch_len: for the adaptive path (batch_target_ms = Some), this is carried
     // across chunks and updated by the controller.  For the None path it is set to
@@ -219,10 +224,15 @@ pub async fn scan_chunks(
             // prefetch; the chunk-boundary case (current_batch_len == remaining) is
             // the degenerate single-batch path.
             //
+            // T6.8-H2: the prefetch now uses retry_get_tree_state INSIDE the spawned
+            // task so the fetch/scan overlap is preserved. The retry reconnects on each
+            // attempt — a wedged channel is abandoned rather than reused. Up to 3 total
+            // attempts: backoff 1s then 3s between attempts.
+            //
             // On scan failure, prefetch.abort() is called before returning. The to_chain_state() and height-overflow error paths return without aborting — the spawned task completes detached, which is harmless.
             let prefetch = tokio::spawn({
-                let mut c = client.clone();
-                async move { grpc::get_tree_state(&mut c, sub_end).await }
+                let ep = endpoint.clone();
+                async move { grpc::retry_get_tree_state(&ep, sub_end, "chunk-boundary prefetch").await }
             });
 
             let from_state = next_state
