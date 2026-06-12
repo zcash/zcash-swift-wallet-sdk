@@ -22,7 +22,40 @@ use crate::{
 /// tag in the log doesn't match HEAD's value, the device is running a stale
 /// XCFramework (the three-layer gotcha, consuming side). Probe a built slice with:
 /// `strings <slice>/libzcashlc.framework/libzcashlc | grep <tag>`.
-pub const ENGINE_BUILD: &str = "2026-06-13.retry1";
+pub const ENGINE_BUILD: &str = "2026-06-13.walltime";
+
+/// Current wall-clock time as a `YYYY-MM-DD HH:MM:SSZ` UTC string.
+///
+/// Logged at pass start, in the stage-split line, and on runner failure so a
+/// long-running device/simulator sync can be timed from the log alone — no need
+/// to remember when it was started. No external date dependency: civil-from-days
+/// per Howard Hinnant's algorithm, unit-tested against known epochs.
+pub fn wall_clock_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format_utc(secs)
+}
+
+/// Format a unix timestamp (seconds) as `YYYY-MM-DD HH:MM:SSZ` (UTC).
+fn format_utc(unix_secs: u64) -> String {
+    let days = (unix_secs / 86_400) as i64;
+    let rem = unix_secs % 86_400;
+    let (h, m, s) = (rem / 3_600, (rem % 3_600) / 60, rem % 60);
+    // Civil-from-days (Hinnant): days since 1970-01-01 → (y, m, d) in the
+    // proleptic Gregorian calendar.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(month <= 2);
+    format!("{y:04}-{month:02}-{d:02} {h:02}:{m:02}:{s:02}Z")
+}
 
 #[derive(Debug)]
 pub struct SyncOutcome {
@@ -105,7 +138,12 @@ pub async fn sync_once(
     }
 
     // Definitive device-log freshness marker (see ENGINE_BUILD doc).
-    info!(engine_build = ENGINE_BUILD, sparse = config.sparse_persistence, "engine pass starting");
+    info!(
+        engine_build = ENGINE_BUILD,
+        sparse = config.sparse_persistence,
+        started_at_utc = %wall_clock_utc(),
+        "engine pass starting"
+    );
 
     let mut session = WalletSession::open(config.network, &config.wallet_db_path)?;
     let mut client = grpc::connect(&config.endpoint).await?;
@@ -182,6 +220,7 @@ pub async fn sync_once(
         blocks = outcome.report.scan.blocks,
         bound = outcome.bound(),
         engine_build = ENGINE_BUILD,
+        finished_at_utc = %wall_clock_utc(),
         sparse = config.sparse_persistence,
         "sync stage split"
     );
@@ -192,6 +231,26 @@ pub async fn sync_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// format_utc against known epochs (no clock dependency).
+    #[test]
+    fn format_utc_known_values() {
+        assert_eq!(format_utc(0), "1970-01-01 00:00:00Z");
+        assert_eq!(format_utc(1_700_000_000), "2023-11-14 22:13:20Z");
+        // Leap-year day: 2024-02-29 12:00:00 UTC.
+        assert_eq!(format_utc(1_709_208_000), "2024-02-29 12:00:00Z");
+        // End-of-year boundary: 2025-12-31 23:59:59 UTC.
+        assert_eq!(format_utc(1_767_225_599), "2025-12-31 23:59:59Z");
+    }
+
+    /// wall_clock_utc returns a sane, well-formed current timestamp.
+    #[test]
+    fn wall_clock_utc_is_well_formed() {
+        let s = wall_clock_utc();
+        assert_eq!(s.len(), "2026-06-13 00:00:00Z".len());
+        assert!(s.ends_with('Z'));
+        assert!(s.starts_with("20"), "expected a 21st-century year, got {s}");
+    }
 
     /// Helper to construct a minimal SyncOutcome with specified stage durations.
     fn make_outcome(fetch_s: f64, scan_s: f64, enhance_s: f64) -> SyncOutcome {

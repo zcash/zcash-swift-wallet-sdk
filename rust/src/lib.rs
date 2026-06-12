@@ -4560,7 +4560,11 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                     });
                 }
                 Err(err) => {
-                    tracing::error!(%err, "slipstream sync failed");
+                    tracing::error!(
+                        %err,
+                        failed_at_utc = %slipstream_core::engine::wall_clock_utc(),
+                        "slipstream sync failed"
+                    );
                     *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(1);
                     let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
                     if ring.len() >= slipstream_core::ffi_handle::EVENT_RING_CAP {
