@@ -22,7 +22,7 @@ use crate::{
 /// tag in the log doesn't match HEAD's value, the device is running a stale
 /// XCFramework (the three-layer gotcha, consuming side). Probe a built slice with:
 /// `strings <slice>/libzcashlc.framework/libzcashlc | grep <tag>`.
-pub const ENGINE_BUILD: &str = "2026-06-13.l4b-lanepool";
+pub const ENGINE_BUILD: &str = "2026-06-13.l4b-lanepool2";
 
 /// Current wall-clock time as a `YYYY-MM-DD HH:MM:SSZ` UTC string.
 ///

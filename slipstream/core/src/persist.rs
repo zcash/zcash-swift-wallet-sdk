@@ -1525,6 +1525,27 @@ impl WalletWrite for WriteBehindFacade {
 ///   on the lane's 2 threads, never touching the global pool's decrypt workers.
 const LANE_POOL_THREADS: usize = 2;
 
+/// Saturation threshold for the lane-pool policy: at or below this many cores,
+/// the global rayon pool is assumed decrypt-saturated during overlap.
+const LANE_ISOLATION_MAX_CORES: usize = 4;
+
+/// T6.9b2 — saturation-aware lane-pool policy.
+///
+/// The T6.9 field data cuts both ways: on the 4-core A10 the shared global
+/// pool produced ~60% lane-busy inflation (queueing behind decrypt), so a
+/// dedicated small pool helps; but on a 10-core Mac the SAME dedicated
+/// 2-thread pool starved `build_subtrees` and DOUBLED scan_s (5.58→11.23s
+/// measured) because the global pool there has idle capacity the lane should
+/// use. Policy: isolate (Some(2)) only on low-core machines where decrypt
+/// saturates everything (≤ LANE_ISOLATION_MAX_CORES logical cores); share the
+/// global pool (None) elsewhere. A heuristic, honestly labeled: core count is
+/// a proxy for "decrypt saturates the pool", which held in every measurement
+/// to date (A10=4 pathological, iPhone 6-core and Mac 10-core healthy shared).
+fn lane_pool_policy() -> Option<usize> {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    if cores <= LANE_ISOLATION_MAX_CORES { Some(LANE_POOL_THREADS) } else { None }
+}
+
 /// A deferred-commit job: runs against the lane's Db + tree state on a blocking
 /// thread. Boxed so lane mechanics (serial order, depth-1 backpressure, error
 /// propagation, drain) are unit-testable without `ScannedBlock` values.
@@ -1567,10 +1588,11 @@ type PersistTaskOutput = (Db, SparseTreeState, Result<std::time::Duration, Sqlit
 pub struct PersistLane {
     db: Option<Db>,
     sparse: Option<SparseTreeState>,
-    /// Dedicated rayon pool (T6.9b): isolates the commit's CPU work from the
-    /// global pool's decrypt workers — see `LANE_POOL_THREADS` doc comment.
+    /// Dedicated rayon pool (T6.9b), present only when `lane_pool_policy()`
+    /// says to isolate (low-core saturated machines). `None` = commits use the
+    /// global pool (measured-best on ≥6-core machines — see T6.9b2 policy doc).
     /// Arc so it can be moved into `spawn_blocking` closures cheaply.
-    lane_pool: std::sync::Arc<rayon::ThreadPool>,
+    lane_pool: Option<std::sync::Arc<rayon::ThreadPool>>,
     in_flight: Option<tokio::task::JoinHandle<PersistTaskOutput>>,
     /// (first_height, last_height) of the in-flight unit, for log attribution.
     in_flight_span: (u64, u64),
@@ -1593,17 +1615,7 @@ impl PersistLane {
             rand::rngs::OsRng,
         )
         .map_err(|e| crate::error::SlipstreamError::Wallet(format!("persist lane open: {e}")))?;
-        let lane_pool = std::sync::Arc::new(
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(LANE_POOL_THREADS)
-                .thread_name(|i| format!("slipstream-lane-{i}"))
-                .build()
-                .map_err(|e| {
-                    crate::error::SlipstreamError::Wallet(format!(
-                        "persist lane pool build: {e}"
-                    ))
-                })?,
-        );
+        let lane_pool = Self::build_lane_pool(lane_pool_policy())?;
         Ok(Self {
             db: Some(db),
             sparse: Some(SparseTreeState::default()),
@@ -1613,6 +1625,27 @@ impl PersistLane {
             total_wait: std::time::Duration::ZERO,
             total_busy: std::time::Duration::ZERO,
         })
+    }
+
+    /// Build the optional dedicated lane pool per the given policy.
+    /// Factored out so tests can exercise both branches deterministically.
+    fn build_lane_pool(
+        threads: Option<usize>,
+    ) -> Result<Option<std::sync::Arc<rayon::ThreadPool>>, crate::error::SlipstreamError> {
+        match threads {
+            None => Ok(None),
+            Some(n) => Ok(Some(std::sync::Arc::new(
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(n)
+                    .thread_name(|i| format!("slipstream-lane-{i}"))
+                    .build()
+                    .map_err(|e| {
+                        crate::error::SlipstreamError::Wallet(format!(
+                            "persist lane pool build: {e}"
+                        ))
+                    })?,
+            ))),
+        }
     }
 
     pub fn total_wait(&self) -> std::time::Duration {
@@ -1680,15 +1713,19 @@ impl PersistLane {
         };
         // Arc::clone so the spawn_blocking closure can own a reference to the
         // lane pool without borrowing `self`.  Cheap (atomic ref-count bump).
-        let pool = std::sync::Arc::clone(&self.lane_pool);
+        let pool = self.lane_pool.clone();
         self.in_flight_span = span;
         self.in_flight = Some(tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
-            // T6.9b: install routes ALL nested rayon work (rayon::join +
-            // par_chunks) onto the lane's own thread pool, never the global pool.
-            let result = pool
-                .install(|| job(&mut db, &mut sparse))
-                .map(|()| started.elapsed());
+            // T6.9b2 policy: with an isolated pool, install routes ALL nested
+            // rayon work (rayon::join + par_chunks) onto the lane's own
+            // threads (saturated low-core machines); without one, the job uses
+            // the global pool (measured-best on ≥6-core machines).
+            let result = match pool {
+                Some(p) => p.install(|| job(&mut db, &mut sparse)),
+                None => job(&mut db, &mut sparse),
+            }
+            .map(|()| started.elapsed());
             (db, sparse, result)
         }));
         Ok(())
@@ -2018,16 +2055,22 @@ mod write_behind_tests {
     /// Verifies that pool construction succeeds and that `install` executes
     /// inside the pool (observed thread count equals configured value).
     #[test]
-    fn lane_pool_has_configured_thread_count() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let l = lane(dir.path());
-        // install() runs the closure on a worker in the lane pool.
-        // current_num_threads() is the configured capacity.
-        let observed = l.lane_pool.current_num_threads();
+    fn lane_pool_policy_branches() {
+        // T6.9b2: both policy branches construct correctly.
+        let isolated = PersistLane::build_lane_pool(Some(LANE_POOL_THREADS))
+            .expect("isolated pool builds");
+        let observed = isolated.expect("Some pool").current_num_threads();
         assert_eq!(
             observed, LANE_POOL_THREADS,
-            "lane pool must have LANE_POOL_THREADS={LANE_POOL_THREADS} threads, got {observed}"
+            "isolated lane pool must have LANE_POOL_THREADS={LANE_POOL_THREADS} threads, got {observed}"
         );
+        let shared = PersistLane::build_lane_pool(None).expect("shared-policy builds");
+        assert!(shared.is_none(), "None policy must mean global-pool sharing");
+        // The runtime policy returns one of the two valid shapes for THIS machine
+        // (None on ≥ 6-core machines: shared global pool).
+        if let Some(n) = lane_pool_policy() {
+            assert_eq!(n, LANE_POOL_THREADS);
+        }
     }
 
     /// Depth-1 backpressure: submit(N+1) must complete unit N first — N+1's
