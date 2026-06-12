@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>19 · Known Gaps &amp; Roadmap — The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part V — Evidence &amp; Process</p>
+  <h1>19. Known Gaps &amp; Roadmap</h1>
+  <p class="meta">Part V — Evidence &amp; Process &nbsp;·&nbsp; estimated reading time: 16 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>This is the canonical list of what Slipstream does not yet do, why each item matters, what the current mitigation is (if any), and what the planned fix looks like. Nothing is softened. Items come directly from the STATE.md Blockers section, the decision log, and the PLAN.md honesty register. A status column uses four values: <strong>Open</strong> (no mitigation, user-visible impact), <strong>Mitigated</strong> (partial — the problem is bounded but not solved), <strong>Queued</strong> (design decided, next in sequence), and <strong>Parked</strong> (deferred by user request, revisit planned).</p>
+  </div>
+
+  <h2>19.1 Status table</h2>
+
+  <table>
+    <thead>
+      <tr><th>Gap</th><th>Status</th><th>User-visible impact</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Mempool detection missing (P8 GAP 1)</td>
+        <td><span style="color:#b54708;font-weight:700">Open</span></td>
+        <td>Incoming transactions not visible until mined AND a new sync pass runs</td>
+      </tr>
+      <tr>
+        <td>No periodic tip-following (P8 GAP 2)</td>
+        <td><span style="color:#b54708;font-weight:700">Open</span></td>
+        <td>A wallet open in the foreground sees no new blocks after the initial sync completes</td>
+      </tr>
+      <tr>
+        <td>A10-class spam-era memory tuning</td>
+        <td><span style="color:#b54708;font-weight:700">Open</span></td>
+        <td>Old-wallet restores (birthday &lt; ~1.7M) may crash (jetsam) on 2 GB devices crossing the 2022 spam era</td>
+      </tr>
+      <tr>
+        <td>Tor not wired into Slipstream paths</td>
+        <td><span style="color:#b54708;font-weight:700">Open</span></td>
+        <td>Slipstream fetch/scan/enhance uses direct TLS even when the old SDK's Tor paths are enabled</td>
+      </tr>
+      <tr>
+        <td><code>TransactionsInvolvingAddress</code> skip</td>
+        <td><span style="color:#b54708;font-weight:700">Open</span></td>
+        <td>Enhancement requests with open-ended block ranges are silently skipped; transparent address history may be incomplete</td>
+      </tr>
+      <tr>
+        <td>Transparent address privacy leakage</td>
+        <td><span style="color:#1a2333">Inherent (ch. 15)</span></td>
+        <td>The gRPC protocol requires querying transparent addresses by address string; the server learns which transparent addresses belong to the wallet</td>
+      </tr>
+      <tr>
+        <td><code>startFailed(.rustSlipstreamNotOpen)</code> launch wart</td>
+        <td><span style="color:#1a7f37;font-weight:700">Mitigated</span></td>
+        <td>Zodl emits this error at app launch if <code>start()</code> is called before <code>prepare()</code> completes; self-recovers</td>
+      </tr>
+      <tr>
+        <td>L2 row batching seam-blocked</td>
+        <td><span style="color:#6e7781;font-weight:700">Mitigated</span></td>
+        <td>Raw-SQL multi-row INSERT cannot be injected into the live transaction from outside <code>zcash_client_sqlite</code> 0.21; the estimated ~8–80 s device speedup is blocked pending upstream API change</td>
+      </tr>
+      <tr>
+        <td>L4a decrypt-kernel (column-ECDH)</td>
+        <td><span style="color:#6e7781;font-weight:700">Parked</span></td>
+        <td>The ~53% decrypt+overhead bucket (≈286 s on iPad T6.7) is the Zkool-class lever; parked by user request — revisit after L4b</td>
+      </tr>
+      <tr>
+        <td>L4b write-behind pipelining</td>
+        <td><span style="color:#1f6feb;font-weight:700">Queued</span></td>
+        <td>Next speed lever after sandblasting acceptance; projected ~6:15–6:45 on iPad / ~60 s on iPhone</td>
+      </tr>
+      <tr>
+        <td>shardtree <code>merge_checked</code> waste</td>
+        <td><span style="color:#6e7781;font-weight:700">Parked</span></td>
+        <td><code>prunable.rs:277-352</code> recomputes root hashes on both sides at every recursion level without caching; contributes ~33% of per-chunk tree time; requires upstream shardtree fork</td>
+      </tr>
+      <tr>
+        <td>darkside ≥v0.5 retirement items</td>
+        <td><span style="color:#6e7781;font-weight:700">Mitigated</span></td>
+        <td>Current lightwalletd v0.4.9 lacks <code>GetTreeState</code>/<code>GetSubtreeRoots</code>; the workarounds (<code>scan_chunks_from_treestate</code>, <code>seed_block_metadata</code>, <code>SAPLING_TREE_128607</code>) will be retired when darkside upgrades to ≥v0.5 / zaino</td>
+      </tr>
+      <tr>
+        <td>Flag / productization decisions</td>
+        <td><span style="color:#b54708;font-weight:700">Open</span></td>
+        <td><code>useSlipstreamSynchronizer.enabledByDefault=true</code> must be reverted to <code>false</code> after final device sign-off; M1 revert note active in Zodl's WalletConfig.swift</td>
+      </tr>
+      <tr>
+        <td>iPhone &lt;73 s goal still open</td>
+        <td><span style="color:#b54708;font-weight:700">Open</span></td>
+        <td>Current best: 1:35 (90 s) on iPhone 16 Pro for 269k blocks. Goal (Zkool parity): &lt;73 s</td>
+      </tr>
+      <tr>
+        <td>Mainnet-seed differential parity (G3)</td>
+        <td><span style="color:#6e7781;font-weight:700">Mitigated</span></td>
+        <td>Oracle parity confirmed on darkside fixtures and TEST_UFVK empty wallet; a real UFVK+birthday with known tx history has not been run through the differential oracle; needs-user</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>19.2 Open gaps — user-visible today</h2>
+
+  <h3>Mempool detection missing (P8 GAP 1)</h3>
+
+  <div class="callout warning">
+    <span class="label">User-reported, 2026-06-12</span>
+    <p>Sending ZEC from a non-Slipstream wallet to a Slipstream wallet shows <em>no</em> incoming transaction until the transaction mines AND a new sync pass starts. The old SDK has integrated mempool monitoring via lightwalletd's <code>GetMempoolStream</code> RPC, with decryption via <code>decrypt_and_store_transaction</code>.</p>
+  </div>
+
+  <p><strong>Why it matters:</strong> For interactive use — especially receiving payments — the absence of pending-transaction state is a significant UX regression vs. the old SDK. A user who sends ZEC to a Slipstream wallet sees nothing until the next full sync pass completes.</p>
+
+  <p><strong>Current mitigation:</strong> None. The engine is single-shot and does not monitor the mempool at any point.</p>
+
+  <p><strong>Planned fix shape:</strong> Engine-level mempool stream while at tip: stream <code>GetMempoolStream</code>, decrypt+store via <code>decrypt_and_store_transaction</code>, emit <code>foundTransactions</code>. Pairs with GAP 2 (both are "engine only syncs once" symptoms). Targeted for P8.</p>
+
+  <h3>No periodic tip-following (P8 GAP 2)</h3>
+
+  <div class="callout warning">
+    <span class="label">User-reported, 2026-06-12</span>
+    <p>The FFI runner is single-shot per <code>start()</code> call: one <code>sync_once</code>, then <code>SyncState::Done</code> until the app lifecycle triggers another <code>start()</code>. A wallet open in the foreground after an initial sync sees no new blocks arrive. The old SDK re-synced continuously on a timer.</p>
+  </div>
+
+  <p><strong>Why it matters:</strong> Any wallet sitting at the home screen after an initial restore stops tracking the chain. New blocks — and any ZEC received — will not appear until the app is backgrounded and re-foregrounded (triggering a new lifecycle start).</p>
+
+  <p><strong>Current mitigation:</strong> The pass-level bounded retry (PASS_RETRY_MAX=2, T6.8-H2) handles transient stalls within a pass, but does NOT implement periodic tip-following. <code>begin_pass()</code> (T5.6 review) already makes repeated passes counter-safe — the structure is ready; the trigger is missing.</p>
+
+  <p><strong>Planned fix shape:</strong> Engine-level re-arm loop: sleep ~20–30 s at <code>SyncState::Done</code>, call <code>sync_once</code> again (cheap passes at tip: <code>suggest_scan_ranges</code> returns a tiny or empty range). Alternatively, a Swift-side restart-on-Done timer. Targeted for P8.</p>
+
+  <h3>A10-class spam-era memory tuning</h3>
+
+  <div class="callout warning">
+    <span class="label">Recorded in Blockers, 2026-06-12 (T6.8-S)</span>
+    <p>Mac RSS grew from 1.31 GB to 1.84 GB traversing the spam era (mainnet ~1.70M–2.00M) with default budgets. iPhone 16 Pro (8 GB RAM) is expected to survive. iPad A10 6th Gen (2 GB RAM, shared with GPU) will NOT without tuning.</p>
+  </div>
+
+  <p><strong>Why it matters:</strong> Old wallets — anyone who set a birthday before ~1.7M — cannot restore on A10-class devices without a jetsam kill. This is the most common iOS device class in the Zodl user base.</p>
+
+  <p><strong>Current mitigation:</strong> The sandblasting era is traversable on Mac-class hardware (T6.8-S). A10-class is untested. CLI override: <code>--chunk-split-bytes</code> and <code>--memory-budget-bytes</code>.</p>
+
+  <p><strong>Planned fix shape:</strong> Per-device-class configuration: smaller <code>memory_budget_bytes</code> (e.g. 64 MB) and <code>chunk_split_bytes</code> (e.g. 4 MiB) for A10-class. Consider range segmentation so the sparse tree state resets periodically, bounding in-memory accumulator size across a 1.5M-block historic range.</p>
+
+  <h3>Tor not wired into Slipstream paths</h3>
+
+  <div class="callout warning">
+    <span class="label">Documented in ch. 15 (Privacy), PLAN.md honesty register</span>
+    <p>All Slipstream fetch, scan, and enhance traffic uses direct TLS to lightwalletd. The old SDK has Tor integration for some flows (GetBlock, GetTransaction, certain enhancement queries). Slipstream does not use these paths.</p>
+  </div>
+
+  <p><strong>Why it matters:</strong> Users who enable Tor in Zodl expect all wallet network traffic to route through Tor. Slipstream's direct-TLS sync reveals the user's IP address and query patterns to the lightwalletd operator. This is the same leakage class as the old SDK without Tor enabled — but it is a regression from the Tor-enabled old SDK.</p>
+
+  <p><strong>Current mitigation:</strong> None for Slipstream paths. The old SDK's Tor paths are intact and available if the user reverts to the old synchronizer.</p>
+
+  <p><strong>Planned fix shape:</strong> P8 T8.x — route tonic connections through the arti channel already wired in the libzcashlc FFI boundary for the old SDK's Tor client. The arti client is already present as a dependency; the grpc <code>connect()</code> call needs an arti-backed transport channel variant.</p>
+
+  <h3>TransactionsInvolvingAddress skip (completeness gap)</h3>
+
+  <div class="callout warning">
+    <span class="label">Enhancement path — open-ended skip documented in enhance.rs</span>
+    <p>Enhancement requests of type <code>TransactionsInvolvingAddress</code> with an open-ended block range (no <code>block_range_end</code>) are skipped silently with a <code>warn!</code> log. The transparent-address history query (<code>GetTaddressTxids</code>) would need an explicit range; the open-ended form does not map cleanly to the gRPC API.</p>
+  </div>
+
+  <p><strong>Why it matters:</strong> Transparent address history may be incomplete in edge cases where the upstream WalletDb generates open-ended TransactionsInvolvingAddress requests. For most wallets using shielded addresses primarily, this is not observed in practice.</p>
+
+  <p><strong>Current mitigation:</strong> Skips are deduplicated (per-run HashSet, T4.6) so each unique address+range combination produces only one warning. The final enhancement backstop runs post-loop.</p>
+
+  <p><strong>Planned fix shape:</strong> Supply a concrete block range (e.g., birthday..current tip) for any open-ended request. Requires verifying that the upstream data_api generates these requests in a form where a closed range is semantically equivalent. Targeted for P8.</p>
+
+  <h2>19.3 Mitigated gaps</h2>
+
+  <h3>startFailed(.rustSlipstreamNotOpen) launch wart</h3>
+
+  <p>Zodl observed <code>synchronizerStartFailed(.rustSlipstreamNotOpen)</code> at app launch in T5.5 testing. The cause: some call path invoked <code>start()</code> before <code>prepare()</code> completed, hitting the FFI guard that requires an open handle. The error is benign — the app self-recovers when <code>prepare()</code> subsequently opens the handle and the lifecycle triggers another <code>start()</code>. Recorded for investigation of the Zodl initialization sequencing; low priority.</p>
+
+  <h3>L2 row batching seam-blocked (upstream API)</h3>
+
+  <p><code>zcash_client_sqlite</code> 0.21's <code>WalletDb::transactionally</code> closure receives a private <code>conn: C</code> field (no public accessor) wrapping a <code>rusqlite::Transaction</code>. The L2 optimization — batching multiple <code>put_blocks</code> rows into a single multi-row SQL <code>INSERT</code> — requires access to the raw transaction handle to inject custom SQL. The seam is confirmed blocked (Decision Log 2026-06-12, T6.8-L3a gate 4). Estimated speedup: ~8–40 s on iPhone, ~40–80 s on iPad per truth-table attribution. Resolution requires either an upstream API change to publicize the transaction handle or a vendored fork of <code>zcash_client_sqlite</code>.</p>
+
+  <h3>darkside ≥v0.5 retirement items</h3>
+
+  <p>The current darkside lightwalletd (v0.4.9 in <code>Tests/lightwalletd/</code>) does not implement <code>GetTreeState</code> or <code>GetSubtreeRoots</code>. Slipstream works around this via: <code>scan_chunks_from_treestate</code> (accepts a synthesized <code>ChainState</code> instead of fetching one), <code>seed_block_metadata</code> (injects a 663149 block record with a fetched <code>prev_hash</code>), and a hardcoded <code>SAPLING_TREE_128607</code> frontier. All three workarounds exist only in the darkside test path and do not affect production. When darkside upgrades to ≥v0.5 or zaino, these workarounds can be retired and the tests can use the real treestate RPC path.</p>
+
+  <h2>19.4 Queued and parked items</h2>
+
+  <h3>L4b write-behind pipelining (QUEUED — next after sandblasting acceptance)</h3>
+
+  <p>L4b is the next performance lever in the sequence. Design: overlap <code>scan_cached_blocks</code> CPU work with <code>put_blocks</code> SQLite writes by pipelining them on separate threads — scan chunk N while chunk N−1's writes complete. This requires a crash-consistency design (the tree flush must remain transactional with the row writes) before any code can be written. Projected improvement from lever-ladder analysis: ~6:15–6:45 on iPad A10, ~60 s on iPhone 16 Pro. No implementation has started.</p>
+
+  <p>The task sequence (from NEXT ACTION): simulator sandblasting acceptance → iPhone acceptance → T6.9 L4b.</p>
+
+  <h3>L4a decrypt-kernel / column-ECDH (PARKED — user request, 2026-06-12)</h3>
+
+  <p>L4a is the Zkool-class lever: a column-oriented batched ECDH kernel that would replace the current per-note trial-decryption path (≈53% of device scan time / ≈286 s on iPad A10 T6.7). Parked at the user's request; the user asked to focus on L4b write-behind pipelining first. When revisited, L4a needs its own golden-oracle harness (the existing oracle compares output to the upstream <code>scan_cached_blocks</code> path; a custom kernel that produces different intermediate representations needs an equivalent correctness gate before any code ships).</p>
+
+  <h3>shardtree merge_checked waste (PARKED — fork-tier)</h3>
+
+  <p>The <code>merge_checked</code> function in shardtree-0.6.2 (<code>prunable.rs:277-352</code>) recomputes the root hash of both merge sides at every recursion level, discarding the result via <code>.ok()</code> + vacuous <code>zip().all()</code> when either side is incomplete — which is always true for the frontier path-tree. This contributes ~33% of per-chunk orchard tree time (~100–204 ms/chunk, proved by the T6.8-L3b tail-chunk measurement). The fix requires patching or forking <code>shardtree</code> (the same seam class as the L2 row-batching block). Parked pending upstream engagement or a deliberate fork decision.</p>
+
+  <h3>Flag and productization decisions</h3>
+
+  <div class="callout warning">
+    <span class="label">Action required before any public release</span>
+    <ul>
+      <li><code>WalletConfig.FeatureFlag.useSlipstreamSynchronizer.enabledByDefault = true</code> must be reverted to <code>false</code> in Zodl's <code>WalletConfig.swift</code> after the user gives final sign-off. The TODO marker is in place. Local-only mode means this has not been pushed anywhere; the risk is a release build accidentally shipping with Slipstream enabled before the team is ready.</li>
+      <li>The LOCAL-ONLY designation (D9) means no pushes, no remote issues, no PRs to any remote repository. All commits carry the <code>[#1755]</code> tag as a local-only marker. A real public issue must be created if/when the user lifts the LOCAL-ONLY restriction.</li>
+      <li>Android path (P7): decoupled by user decision 2026-06-11. The <code>slipstream-core</code> crate is platform-neutral and designed to slot into an Android Rust backend. A uniffi or JNI binding layer is the integration task; no work has started.</li>
+    </ul>
+  </div>
+
+  <h2>19.5 Inherent limitations (not gaps)</h2>
+
+  <p>These items are architectural constraints, not missing features. They are documented here for completeness.</p>
+
+  <ul>
+    <li><strong>Server trust:</strong> Slipstream trusts the server's treestate values until the scan itself verifies them through continuity checks. A malicious server can attempt to mislead the engine (see ch. 14 for the threat model and ch. 10 for the three detection layers). This is the same trust model as the old SDK and all lightwalletd-based wallets.</li>
+    <li><strong>Transparent address leakage:</strong> Querying transparent address history via <code>GetTaddressTxids</code> reveals transparent addresses to the server. This is inherent to the protocol and documented in ch. 15. It is not a Slipstream-specific regression — the old SDK has the same leakage.</li>
+    <li><strong>No telemetry:</strong> No analytics, crash reports, or telemetry of any kind are collected or transmitted. The engine emits structured logs via <code>tracing</code> to the device's <code>os_log</code> subsystem only.</li>
+  </ul>
+
+  <nav class="book">
+    <a href="18-tests.html">← 18. Test &amp; Verification Matrix</a>
+    <a href="20-glossary.html">20. Glossary &amp; Decision Digest →</a>
+  </nav>
+  <footer class="colophon">Citations as of commit 7eff661e. All gap descriptions sourced directly from STATE.md Blockers section and decision log. No items softened.</footer>
+</main>
+</body>
+</html>

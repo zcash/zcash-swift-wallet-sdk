@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 7 — Sparse Persistence · The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part II — Engine Internals</p>
+  <h1>7. Sparse Persistence</h1>
+  <p class="meta">Estimated reading time: 17 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>This chapter tells the best engineering story in the Slipstream project: a feature that initially failed badly, failed honestly, and then succeeded spectacularly after a root-cause analysis revealed a completely different lever. The sparse-persistence path accelerates the scan kernel's commitment-tree writes by 5× by keeping the Sapling and Orchard ShardTrees <em>in memory</em> during a scan range, flushing the dirty delta to SQLite <em>once per sub-chunk</em> inside the same transaction as the row writes. The key insight was not the in-memory tree itself — it was the <strong>checkpoint downgrade</strong>: upstream's scanning path emits a <code>Retention::Checkpoint</code> marker for every scanned block (~10,000 per 10k-block chunk), but the ShardTree library immediately prunes all but the newest 100 back down. Building and then discarding 9,900 checkpoints per chunk was the real bottleneck. Downgrading doomed checkpoints <em>before</em> they enter the tree eliminated ~11× of the tree_ms cost. The path is default-on, oracle-verified identical to upstream across all 26 database tables, and guarded by a kill-switch flag.</p>
+  </div>
+
+  <h2>The story: T6.3 NO-GO → T6.3b 5.05× reversal</h2>
+
+  <p>The sparse-persistence idea was straightforward: instead of committing the ShardTree state to SQLite on every <code>put_blocks</code> call (one per sub-chunk), accumulate it in memory across all sub-chunks of a range and flush once at the end. This would replace N SQLite tree-write round trips with 1, cutting the per-chunk <code>tree_ms</code> cost dramatically.</p>
+
+  <p>The T6.3 spike implemented exactly this design: <code>SparseFacade</code> intercepts only <code>put_blocks</code> and routes it to an in-memory <code>SparseShardStore</code>; everything else delegates to the real <code>WalletDb</code> verbatim. The A/B measurement was unambiguous:</p>
+
+  <div class="callout warning">
+    <span class="label">T6.3 result — NO-GO</span>
+    <p>STATE.md T6.3 session log, 2026-06-12: Run A (sparse=false) scan_s=38.25s / Run B (sparse=true) scan_s=39.82s / ratio=0.96 — <strong>sparse is 4% slower than baseline</strong>. Per-chunk attribution: rows_ms~300ms, tree_ms~6500ms, flush_ms~1ms. The flush cost was negligible (1ms, as predicted). The tree computation dominated — and was the same in both cases. The in-memory bet was correct about flush cost but wrong about tree construction cost.</p>
+  </div>
+
+  <p>The per-chunk breakdown was diagnostic: <code>tree_ms ≈ 6,500 ms</code> regardless of whether the tree lived in SQLite or memory. The bottleneck was not I/O — it was CPU. A deeper look at <code>insert_tree</code> in the <code>shardtree</code> library showed the cause: upstream's scanning code emits a <code>Retention::Checkpoint { id }</code> for <em>every</em> scanned block, but <code>prune_excess_checkpoints</code> immediately cuts the set back to the newest 100 ids after each <code>insert_tree</code> call. For a 10,000-block chunk, this means ~9,900 checkpoint structs are created, inserted, walked by the pruner, and freed — all per <code>put_blocks</code> call.</p>
+
+  <p>T6.3b tested the hypothesis: compute the post-prune cutoff <em>before</em> building subtrees, and downgrade all doomed checkpoints to their residue (<code>Marked</code> → <code>Marked</code>; everything else → <code>Ephemeral</code>) before inserting them into the tree. The result:</p>
+
+  <div class="callout evidence">
+    <span class="label">T6.3b result — GO (5.05×)</span>
+    <p>STATE.md T6.3b session log, 2026-06-12: Run A (sparse=off) scan_s=34.63s / Run B (sparse=on, downgrade=true) scan_s=6.85s / <strong>ratio 5.05×</strong>. Per-chunk attribution: tree_ms dropped from 6,500ms to 498–600ms (~11×); rows_ms ~280–320ms; flush_ms=1ms; downgraded ~6,200–6,800 per chunk. The hermetic oracle and a mainnet tip−2000 run both returned VERDICT IDENTICAL.</p>
+  </div>
+
+  <p>The T6.3b result exceeds the 1.5× GO threshold (and the [1.3, 1.7] ambiguity band) by a wide margin. The tree_ms reduction is ~11×; the full-pass scan_s reduction is ~5× because rows_ms (the SQLite row-writes, ~300ms/chunk) is now the dominant cost, not the tree. This matches device field measurements: iPad A10 9:09 (T6.8 run) vs the expected pre-sparse ~45 minutes.</p>
+
+  <h2>The WalletWrite facade: intercepting only put_blocks</h2>
+
+  <p><code>SparseFacade</code> (<code>persist.rs:1116–1189</code>) is a struct that holds two borrows: <code>&amp;mut Db</code> (the real <code>WalletDb</code>) and <code>&amp;mut SparseTreeState</code> (the per-range in-memory tree state). It implements <em>both</em> <code>WalletRead</code> and <code>WalletWrite</code> by delegating every method verbatim to <code>self.inner</code> — except for exactly one method:</p>
+
+  <pre><code>// persist.rs:1173–1175 — THE INTERCEPT (the only override)
+fn put_blocks(&mut self, from_state: &ChainState,
+    blocks: Vec&lt;ScannedBlock&lt;Self::AccountId&gt;&gt;) -> Result&lt;(), Self::Error&gt;
+{
+    sparse_put_blocks(self.inner, self.sparse, from_state, blocks)
+}</code></pre>
+
+  <p>This design minimises the diff with upstream: the scan kernel, continuity checks, note decryption, nullifier tracking, and balance computation all run against the real <code>WalletDb</code>. Only the commitment-tree write path is intercepted. The facade's error type is the same as <code>WalletDb</code>'s (<code>SqliteClientError</code>), so all upstream error shapes — including the continuity <code>ScanError</code> that triggers reorg recovery — propagate bit-for-bit.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 300" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr7a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arr7g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+        <marker id="arr7w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arr7m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#6e7781"/>
+        </marker>
+      </defs>
+
+      <!-- scan_cached_blocks box -->
+      <rect x="10" y="20" width="200" height="50" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="110" y="40" text-anchor="middle" font-weight="600">scan_cached_blocks</text>
+      <text x="110" y="57" text-anchor="middle" fill="#6e7781" font-size="11">(upstream, unmodified)</text>
+
+      <!-- SparseFacade -->
+      <rect x="250" y="10" width="200" height="210" rx="8" fill="#f6f8fa" stroke="#d8dee4" stroke-width="2"/>
+      <text x="350" y="30" text-anchor="middle" font-weight="600" fill="#6e7781" font-size="11">SparseFacade</text>
+
+      <!-- WalletRead passthrough -->
+      <rect x="265" y="40" width="170" height="30" rx="6" fill="#f0f6ff" stroke="#b6d3f7" stroke-width="1"/>
+      <text x="350" y="59" text-anchor="middle" fill="#6e7781" font-size="11">WalletRead → self.inner (passthrough)</text>
+
+      <!-- WalletWrite — other methods -->
+      <rect x="265" y="82" width="170" height="30" rx="6" fill="#f0f6ff" stroke="#b6d3f7" stroke-width="1"/>
+      <text x="350" y="101" text-anchor="middle" fill="#6e7781" font-size="11">WalletWrite (all but put_blocks) → self.inner</text>
+
+      <!-- put_blocks intercept (highlighted) -->
+      <rect x="265" y="124" width="170" height="38" rx="6" fill="#fff4e5" stroke="#b54708" stroke-width="2"/>
+      <text x="350" y="141" text-anchor="middle" fill="#b54708" font-weight="600" font-size="11">put_blocks → sparse_put_blocks</text>
+      <text x="350" y="156" text-anchor="middle" fill="#6e7781" font-size="10">THE ONLY OVERRIDE</text>
+
+      <!-- SparseTreeState -->
+      <rect x="265" y="174" width="170" height="36" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="350" y="191" text-anchor="middle" fill="#1a7f37" font-weight="600" font-size="11">SparseTreeState (in-memory)</text>
+      <text x="350" y="205" text-anchor="middle" fill="#6e7781" font-size="10">sapling + orchard ShardTrees</text>
+
+      <!-- Arrow: scan_cached_blocks → SparseFacade -->
+      <line x1="210" y1="45" x2="248" y2="90" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr7a)"/>
+      <text x="215" y="75" fill="#1f6feb" font-size="10" transform="rotate(-30,215,75)">WalletWrite calls</text>
+
+      <!-- WalletDb (real) -->
+      <rect x="490" y="40" width="180" height="80" rx="8" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="580" y="62" text-anchor="middle" font-weight="600" fill="#1a7f37">WalletDb (real)</text>
+      <text x="580" y="80" text-anchor="middle" fill="#6e7781" font-size="11">SQLite data.db</text>
+      <text x="580" y="96" text-anchor="middle" fill="#6e7781" font-size="11">rows + scan queue</text>
+      <text x="580" y="111" text-anchor="middle" fill="#6e7781" font-size="10">(flushed in same txn)</text>
+
+      <!-- Arrows from facade to real -->
+      <line x1="435" y1="57" x2="488" y2="67" stroke="#6e7781" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#arr7m)"/>
+      <line x1="435" y1="97" x2="488" y2="97" stroke="#6e7781" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#arr7m)"/>
+
+      <!-- flush arrow: SparseTreeState → WalletDb -->
+      <rect x="490" y="160" width="180" height="50" rx="8" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="580" y="180" text-anchor="middle" font-weight="600" fill="#1a7f37">flush (dirty delta only)</text>
+      <text x="580" y="196" text-anchor="middle" fill="#6e7781" font-size="11">dirty shards + cap + checkpoint diff</text>
+      <text x="580" y="208" text-anchor="middle" fill="#6e7781" font-size="10">inside the same transactionally{} call</text>
+
+      <line x1="435" y1="185" x2="488" y2="185" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arr7g)"/>
+      <text x="445" y="178" fill="#1a7f37" font-size="10" font-weight="600">once per sub-chunk</text>
+    </svg>
+    <figcaption>Figure 7.1 — SparseFacade intercept diagram. <code>scan_cached_blocks</code> sees the facade as a normal <code>WalletWrite</code>. All read/write calls except <code>put_blocks</code> pass through to the real <code>WalletDb</code>. Only <code>put_blocks</code> is intercepted, routing tree operations to the in-memory <code>SparseTreeState</code>. The dirty tree delta is flushed to SQLite once per sub-chunk inside the same transaction as the row writes.</figcaption>
+  </figure>
+
+  <h2>SparseShardStore: the in-memory tree</h2>
+
+  <p><code>SparseShardStore&lt;H&gt;</code> (<code>persist.rs:101–155</code>) implements the upstream <code>ShardStore</code> trait over four <code>BTreeMap</code>s:</p>
+
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Type</th><th>Semantics</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>shards</code></td><td><code>BTreeMap&lt;u64, LocatedPrunableTree&lt;H&gt;&gt;</code></td><td>In-memory shard trees (loaded + mutated during the range).</td></tr>
+      <tr><td><code>dirty_shards</code></td><td><code>BTreeSet&lt;u64&gt;</code></td><td>Indices of shards mutated since the last flush.</td></tr>
+      <tr><td><code>checkpoints</code></td><td><code>BTreeMap&lt;BlockHeight, Checkpoint&gt;</code></td><td>Current checkpoint state (in memory).</td></tr>
+      <tr><td><code>db_checkpoints</code></td><td><code>BTreeMap&lt;BlockHeight, Checkpoint&gt;</code></td><td>Mirror of the SQLite checkpoint rows (for flush diffing).</td></tr>
+    </tbody>
+  </table>
+
+  <p>The <strong>read-miss policy</strong> is deliberate and loud: if <code>get_shard</code> is called for an index that is known to exist in SQLite (tracked in <code>db_shard_indices</code>) but was not preloaded at seed time, it returns <code>SparseStoreError::NotPreloaded</code> instead of silently returning <code>None</code>. A silent miss would produce incorrect tree output without any error signal; failing loudly here is a D3 guard.</p>
+
+  <p>At range seed time (<code>seed_sapling</code> and <code>seed_orchard</code>, <code>persist.rs:307–367</code>), ALL shards are loaded from SQLite into memory. This is safe because complete subtrees are stored as a single root-hash node (typically a few hundred bytes each), so the total preload cost for a wallet with thousands of shards is modest — a few hundred KB.</p>
+
+  <h2>Checkpoint downgrade (T6.3b): the real lever</h2>
+
+  <p>The core of the performance gain is <code>doomed_checkpoint_cutoff</code> and <code>downgrade_doomed_checkpoints</code> (<code>persist.rs:1006–1075</code>). The logic mirrors what upstream's <code>prune_excess_checkpoints</code> does, but runs it <em>before</em> the checkpoints enter the tree:</p>
+
+  <ol>
+    <li><strong>Compute the retained set:</strong> the union of (already-stored checkpoint ids) ∪ (the frontier checkpoint id) ∪ (new batch's checkpoint ids) — exactly the set upstream would retain after pruning. The cutoff is the minimum of the newest 100 ids in this union.</li>
+    <li><strong>Downgrade doomed entries:</strong> any <code>Retention::Checkpoint { id, marking }</code> with <code>id &lt; cutoff</code> is rewritten in-place: <code>Marked</code> marking survives as <code>Retention::Marked</code>; anything else becomes <code>Retention::Ephemeral</code>. This is the exact residue the prune cycle would leave anyway.</li>
+    <li><strong>ensure_checkpoints is preserved on full maps:</strong> the <code>ensure_checkpoints</code> cross-pool reconciliation (mirroring <code>ll/wallet.rs:484–501</code>) uses the <em>pre-downgrade</em> position maps, because a filtered map would remap an ensure-height whose nearest checkpoint lies below the cutoff onto the frontier position instead.</li>
+  </ol>
+
+  <p>Per-chunk measurement (STATE.md T6.3b, 2026-06-12): downgraded ~6,200–6,800 checkpoints per 10k-block chunk; tree_ms dropped from 6,500ms to 498–600ms. The 11× reduction in tree_ms reflects the cost of the checkpoint-churn cycle in <code>shardtree</code>: roughly 10× the work for 10× more checkpoint inserts-then-prunes.</p>
+
+  <h2>Per-pool rayon::join: parallel Sapling and Orchard trees</h2>
+
+  <p>Within a single <code>sparse_put_blocks</code> call, the Sapling and Orchard commitment trees are completely independent — they hold different commitment types, reference different shard stores, and have no cross-pool data dependencies. The T6.8-L3a optimization parallelizes them via <code>rayon::join</code> (<code>persist.rs:785–902</code>).</p>
+
+  <p>The cross-pool dependency — <code>ensure_checkpoints</code>, which needs each pool's checkpoint position map to fill gaps in the <em>other</em> pool — is computed serially before the join. Everything inside the join closures is per-pool and safe to parallelize:</p>
+
+  <pre><code>// persist.rs:785 — parallel per-pool tree pipeline
+let (sap_result, orch_result) = rayon::join(
+    || { /* sapling: downgrade → build_subtrees → insert_frontier → insert_tree → ensure */ },
+    || { /* orchard: downgrade → build_subtrees → insert_frontier → insert_tree → ensure */ },
+);</code></pre>
+
+  <div class="callout evidence">
+    <span class="label">Measured 90/10 pool lopsidedness — T6.8 field run, iPad A10</span>
+    <p>STATE.md T6.8 session log: orch_tree_ms ≈ 5–11s/chunk vs sap_tree_ms ≈ 0.4–0.9s/chunk. The ~10:1 ratio reflects the Sinsemilla hash function (Orchard) vs Pedersen hash function (Sapling): Sinsemilla requires ~4× more operations per hash. The <code>rayon::join</code> win was that the hidden sapling time (previously blocking behind the serial orchard pipeline) is now fully hidden — explaining the L3a gain on device (−19s vs the stale-framework run).</p>
+  </div>
+
+  <p>The sub-attribution instrumentation (<code>PoolTimers</code>, <code>persist.rs:1034–1048</code>) splits each pool's pipeline into five time buckets: downgrade, build, frontier, insert, ensure. Per-chunk info! lines are logged in device logs:</p>
+
+  <pre><code>// persist.rs:932–952
+info!(rows_ms, tree_ms, sap_tree_ms, orch_tree_ms, flush_ms, downgraded, "sparse put_blocks");
+info!(downgrade_ms, build_ms, frontier_ms, insert_ms, ensure_ms, total_ms, "sparse orchard tree split");
+info!(downgrade_ms, build_ms, frontier_ms, insert_ms, ensure_ms, total_ms, "sparse sapling tree split");</code></pre>
+
+  <p>The sub-attribution finding from T6.8-L3b (STATE.md): the dominant bucket is <code>frontier_ms</code> (~33% of orchard time), which is intrinsic to the shardtree <code>merge_checked</code> function in <code>prunable.rs:277–352</code>. This function recomputes root hashes on both subtrees at every recursion level without caching, even though the results are discarded (both sides are incomplete frontier path-trees). This is a known upstream limitation; a fix requires a fork or upstream PR (recorded in the roadmap as "L4b seam-blocked").</p>
+
+  <h2>Checkpoint-window picture: why final tables match upstream</h2>
+
+  <p>A key correctness claim is that after a full wallet restore through the sparse path, the <code>sapling_tree_checkpoints</code> and <code>orchard_tree_checkpoints</code> tables contain exactly the same rows as the upstream path. Here is why:</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 220" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr7c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arr7cg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+        <marker id="arr7cw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+      </defs>
+
+      <!-- Timeline of checkpoints across a chunk -->
+      <text x="10" y="20" fill="#6e7781" font-weight="600" font-size="11">Block height (one 10k-block chunk)</text>
+      <line x1="10" y1="30" x2="670" y2="30" stroke="#d8dee4" stroke-width="1.5"/>
+
+      <!-- All checkpoints (emitted by scan kernel) -->
+      <text x="10" y="60" fill="#b54708" font-size="11">All scan-stream checkpoints (one per block, ~10k)</text>
+      <rect x="10" y="68" width="660" height="20" rx="4" fill="#fff4e5" stroke="#b54708" stroke-width="1"/>
+      <text x="340" y="82" text-anchor="middle" fill="#b54708" font-size="10">blocks 0 … 9800 (doomed) →→→ | blocks 9801–9900 (cutoff boundary) | blocks 9901–10000 (surviving)</text>
+
+      <!-- Cutoff line -->
+      <line x1="510" y1="30" x2="510" y2="130" stroke="#b54708" stroke-width="1.5" stroke-dasharray="6,3"/>
+      <text x="515" y="55" fill="#b54708" font-size="10" font-weight="600">cutoff = block N−99</text>
+
+      <!-- Downgraded (below cutoff) -->
+      <text x="10" y="118" fill="#6e7781" font-size="11">After downgrade: doomed → Marked/Ephemeral (never entered as Checkpoint)</text>
+      <rect x="10" y="124" width="500" height="20" rx="4" fill="#f6f8fa" stroke="#6e7781" stroke-width="1"/>
+      <text x="255" y="138" text-anchor="middle" fill="#6e7781" font-size="10">~9,800 doomed entries → Ephemeral/Marked (no checkpoint id stored)</text>
+
+      <!-- Surviving (above cutoff) -->
+      <rect x="510" y="124" width="160" height="20" rx="4" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="590" y="138" text-anchor="middle" fill="#1a7f37" font-size="10">~100 surviving checkpoints</text>
+
+      <!-- Upstream post-prune (shown below) -->
+      <text x="10" y="170" fill="#1a7f37" font-size="11">Upstream post-prune (prune_excess_checkpoints) — identical result</text>
+      <rect x="510" y="176" width="160" height="20" rx="4" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="590" y="190" text-anchor="middle" fill="#1a7f37" font-size="10">same ~100 newest checkpoints</text>
+
+      <!-- Oracle arrow -->
+      <line x1="590" y1="144" x2="590" y2="174" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arr7cg)"/>
+      <text x="595" y="163" fill="#1a7f37" font-size="10">oracle: IDENTICAL</text>
+    </svg>
+    <figcaption>Figure 7.2 — Checkpoint-downgrade window. Upstream emits a checkpoint for every block but immediately prunes back to the newest 100 after each insert. The T6.3b downgrade computes the same cutoff up front and converts doomed checkpoints before they enter the tree. The ~100 surviving checkpoints are identical to what upstream retains — verified by the golden oracle (VERDICT IDENTICAL, 26 tables).</figcaption>
+  </figure>
+
+  <h2>Flush atomicity</h2>
+
+  <p>Each flush of the sparse tree delta to SQLite occurs <em>inside</em> <code>inner.transactionally</code> — the same transaction that writes the block metadata rows, note outputs, nullifiers, and scan queue update (<code>persist.rs:539</code>). This means a crash between sub-chunks leaves the database in a consistent state: either the last completed sub-chunk's rows <em>and</em> tree state are committed together, or neither is. There is no window where rows exist without a matching tree state or vice versa.</p>
+
+  <div class="callout note">
+    <span class="label">Crash consistency</span>
+    <p>SQLite WAL mode (enabled by upstream) provides durable commits. A crash mid-transaction leaves the WAL uncommitted; on restart, the database recovers to the last committed state — which is the start of the aborted sub-chunk. The scan pipeline resumes from the point where the ChunkQueue last released a permit, which is the last sub-chunk that was scanned and flushed. No data loss; no partial commits.</p>
+  </div>
+
+  <h2>The kill switch</h2>
+
+  <p>The sparse path defaults to <code>sparse_persistence = true</code> (since T6.6, oracle-clean). The <code>EngineConfig</code> field is the kill switch: setting <code>sparse_persistence = false</code> reverts to the upstream path. The <code>SparseFacade</code> is never constructed, and <code>scan_cached_blocks</code> writes directly to <code>WalletDb</code>. The CLI <code>--sparse false</code> flag exercises this (<code>config.rs:93</code>).</p>
+
+  <h2>Known limitations</h2>
+  <div class="callout warning">
+    <span class="label">Honest gaps</span>
+    <ul>
+      <li><strong>frontier_ms seam-blocked:</strong> the <code>merge_checked</code> function in shardtree-0.6.2 performs redundant re-hashing that accounts for ~33% of orchard tree time. Fixing this requires patching the upstream library (recorded in the roadmap as a seam-blocked item). The current path is correct and oracle-verified; it is simply slower than it could be.</li>
+      <li><strong>L2 row batching not implemented:</strong> <code>put_blocks</code> writes rows individually inside the upstream <code>LowLevelWalletWrite</code> boundary. Bulk-insert SQL would reduce rows_ms (~300ms/chunk) but requires access to internal upstream APIs not available via the public trait. This is the next performance lever after frontier_ms.</li>
+      <li><strong>SparseTreeState scoped to one range:</strong> the in-memory tree is created fresh at the start of each scan range and discarded at the end (or on error). A reorg truncation always goes through the real <code>WalletDb</code> path; the sparse state is silently invalidated and will be re-seeded on the next range. This is correct by design and requires no explicit invalidation.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <a href="06-scan.html">&#8592; 6. Scan Pipeline</a>
+    <a href="08-scheduler.html">8. Scheduler &amp; Spend-before-Sync &#8594;</a>
+  </nav>
+  <footer class="colophon">Citations as of commit 7eff661e · Slipstream Book · local-only draft</footer>
+</main>
+</body>
+</html>

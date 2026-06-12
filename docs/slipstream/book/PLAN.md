@@ -76,6 +76,6 @@ Readability rules (every chapter):
 - [x] Wave 1: ch 1–4 (2026-06-12; 5 figures, citations verified at ad755e08)
 - [x] Wave 1: ch 10–12 (2026-06-12; 5 figures)
 - [x] Wave 1: ch 13–16 (2026-06-12; 5 figures + 15 tables; declined-claims lists kept in session records)
-- [ ] Wave 2: ch 5–9
-- [ ] Wave 2: ch 17–20
-- [ ] Final cross-read (terminology/citation consistency, nav links, honest-gaps list identical everywhere)
+- [x] Wave 2: ch 5–9 (2026-06-12; 7 figures; citations at 7eff661e)
+- [x] Wave 2: ch 17–20 (2026-06-12; gate pyramid + stage-split anatomy figures; 15-item gap status table; 26-term glossary + D1–D9 digest)
+- [x] Final cross-read pass 1 (nav chain complete 01→20→index, seam links fixed, TOC fully lit; deeper terminology/consistency read remains a standing item before any external review)

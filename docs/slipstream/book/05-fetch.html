@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 5 — Fetch Pipeline · The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part II — Engine Internals</p>
+  <h1>5. Fetch Pipeline</h1>
+  <p class="meta">Estimated reading time: 14 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>The fetch pipeline downloads compact blocks in parallel using <strong>K=4 workers</strong>, each claiming consecutive plan chunks from an atomic counter. Each plan chunk is split on-the-fly into byte-budgeted <strong>sub-chunks</strong> (≤8 MiB wire bytes each) by a <code>ChunkSplitter</code>. Sub-chunks are tagged with a <code>(plan_index, sub_index, is_last)</code> ordering key and reassembled in strict order by a reorder stage that feeds the <strong>ChunkQueue</strong> — a Tokio semaphore providing byte-budget backpressure between fetch and scan. An <strong>AheadGate</strong> prevents non-floor workers from parking hundreds of megabytes of spam-era data in the reorder buffer simultaneously. Transport errors trigger a <strong>resume-from-height retry</strong>: the cursor advances only past successfully emitted sub-chunks, so double-scan is structurally impossible. The sandblasting era is handled here — see chapter 11 for the full denial-of-service story.</p>
+  </div>
+
+  <h2>The claim-based worker model</h2>
+
+  <p>The range for a given scan pass is divided into <em>plan chunks</em> of <code>chunk_blocks</code> blocks each (default 10,000). A shared <code>Arc&lt;AtomicU64&gt;</code> counter named <code>next</code> acts as a work queue: each worker calls <code>fetch_add(1, Relaxed)</code> to claim the next unclaimed plan index. This avoids any scheduler or message-passing overhead — workers claim work as fast as they finish, naturally balancing load.</p>
+
+  <pre><code>// fetch.rs:416 — each worker's main loop
+let index = next.fetch_add(1, Ordering::Relaxed);
+if index >= plan.chunk_count() {
+    return Ok(()); // no more work
+}
+let (s, e) = plan.chunk_range(index);</code></pre>
+
+  <p>Each plan chunk owns an independent gRPC <code>GetBlockRange</code> stream (<code>fetch.rs:379–403</code>). Workers reconnect on retry (a fresh <code>grpc::connect</code> call), so a poisoned channel from a prior error is abandoned rather than reused.</p>
+
+  <h2>Plan chunks vs sub-chunks: the <code>ChunkSplitter</code></h2>
+
+  <p>A <em>plan chunk</em> is a 10,000-block unit determined by the fetch plan. A <em>sub-chunk</em> is the unit actually sent to the reorder stage and ultimately to the <code>ChunkQueue</code>. In normal-era operation (blocks outside the 2022 spam band), one plan chunk produces exactly one sub-chunk — behaviour is identical to a pre-split engine. In the sandblasting era, a plan chunk may produce up to 131 sub-chunks (observed in the field; see chapter 11).</p>
+
+  <p>The <code>ChunkSplitter</code> (<code>fetch.rs:137–169</code>) is a streaming accumulator. It receives blocks one at a time from the gRPC stream and yields a completed sub-chunk whenever adding the next block would push the accumulated wire size past <code>split_bytes</code> (default 8 MiB; configurable via <code>EngineConfig::chunk_split_bytes</code>):</p>
+
+  <pre><code>// fetch.rs:150–163 — the split decision
+pub(crate) fn push(&mut self, block: CompactBlock) -> Option<(Vec<CompactBlock>, usize)> {
+    let block_bytes = Message::encoded_len(&block);
+    let completed = if !self.acc.is_empty() && self.acc_bytes + block_bytes > self.split_bytes
+    {
+        let blocks = std::mem::take(&mut self.acc);
+        let bytes = std::mem::replace(&mut self.acc_bytes, 0);
+        Some((blocks, bytes))
+    } else { None };
+    self.acc.push(block);
+    self.acc_bytes += block_bytes;
+    completed
+}</code></pre>
+
+  <p>Two invariants are guaranteed by construction: the splitter never yields an empty sub-chunk, and a single block larger than the budget forms its own sub-chunk rather than causing an infinite loop (the condition requires the accumulator to be non-empty before splitting).</p>
+
+  <h2>The <code>(plan_index, sub_index, is_last)</code> ordering key</h2>
+
+  <p>The reorder stage must release sub-chunks in strict order across potentially out-of-order workers. The key is a triple rather than a single integer:</p>
+
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Semantics</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>plan_index</code></td><td>Index of the plan chunk (0-based, from the atomic counter).</td></tr>
+      <tr><td><code>sub_index</code></td><td>Index of this sub-chunk within its plan chunk. Dense from 0; <strong>survives retries</strong> — a resumed attempt continues the sequence from where it left off, never repeating an index.</td></tr>
+      <tr><td><code>is_last</code></td><td>Marks the final sub-chunk of a plan chunk. The reorder stage advances to plan chunk N+1 only after it has seen N's <code>is_last</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <p>The <code>sub_index</code> surviving retries is load-bearing: if a worker fails after emitting 8 sub-chunks, reconnects, and resumes from the next height, sub-chunk 8 is tagged with <code>sub_index=8</code>, not 0. The reorder stage therefore sees a dense, gapless sequence and can validate it without special-casing retries.</p>
+
+  <h2>The reorder stage and ChunkQueue</h2>
+
+  <p>After all workers have pushed their sub-chunks into the channel (<code>mpsc::channel</code> capacity = number of workers), the <code>release_ordered</code> function (<code>fetch.rs:487–541</code>) drains them in strict <code>(plan_index, sub_index)</code> order using a <code>BTreeMap&lt;(u64, u64), SubChunk&gt;</code> as a pending buffer. Continuity is verified by the <code>Continuity</code> checker (from <code>verify.rs</code>) across every sub-chunk seam, including across sub-chunk boundaries within the same plan chunk and across plan-chunk boundaries.</p>
+
+  <p>Each released sub-chunk is sent to the <code>ChunkQueueSender</code> (<code>chunk.rs:76–94</code>), which acquires a Tokio semaphore permit proportional to the chunk's estimated wire bytes before enqueuing. The semaphore's budget is <code>EngineConfig::memory_budget_bytes</code> (default 256 MiB). The scanner holds the permit until the chunk's last sub-batch is committed (<code>scan.rs:349</code>: <code>drop(permit)</code> after the final sub-batch of the chunk), so the budget covers bytes that are queued <em>and</em> bytes that are actively being processed:</p>
+
+  <div class="callout note">
+    <span class="label">Backpressure semantics</span>
+    <p>The byte budget covers both enqueued bytes and in-flight bytes (the scanner holds the permit until the chunk is fully committed). An oversized chunk that exceeds the entire budget is clamped to the full budget rather than deadlocking (<code>chunk.rs:81</code>: <code>min(self.budget_bytes)</code>). This means memory is bounded by the budget plus one scan-in-progress chunk — never unbounded.</p>
+  </div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 390" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr5a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arr5w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arr5g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- Plan chunk source -->
+      <rect x="10" y="10" width="660" height="38" rx="8" fill="#fff4e5" stroke="#b54708" stroke-width="1.5"/>
+      <text x="340" y="25" text-anchor="middle" font-weight="600" fill="#b54708">atomic work counter — next.fetch_add(1)</text>
+      <text x="340" y="43" text-anchor="middle" fill="#6e7781" font-size="11">workers race to claim plan chunk indices 0, 1, 2, … N</text>
+
+      <!-- Workers row -->
+      <rect x="10" y="68" width="148" height="48" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="84" y="87" text-anchor="middle" font-weight="600">Worker 0 (floor)</text>
+      <text x="84" y="104" text-anchor="middle" fill="#6e7781" font-size="11">plan 0 · unthrottled</text>
+
+      <rect x="174" y="68" width="148" height="48" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="248" y="87" text-anchor="middle" font-weight="600">Worker 1</text>
+      <text x="248" y="104" text-anchor="middle" fill="#6e7781" font-size="11">plan 1 · AheadGate</text>
+
+      <rect x="338" y="68" width="148" height="48" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="412" y="87" text-anchor="middle" font-weight="600">Worker 2</text>
+      <text x="412" y="104" text-anchor="middle" fill="#6e7781" font-size="11">plan 2 · AheadGate</text>
+
+      <rect x="502" y="68" width="168" height="48" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="586" y="87" text-anchor="middle" font-weight="600">Worker 3</text>
+      <text x="586" y="104" text-anchor="middle" fill="#6e7781" font-size="11">plan 3 · AheadGate</text>
+
+      <!-- ChunkSplitter + sub-chunks row -->
+      <line x1="84" y1="116" x2="84" y2="140" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr5a)"/>
+      <line x1="248" y1="116" x2="248" y2="140" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr5a)"/>
+      <line x1="412" y1="116" x2="412" y2="140" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr5a)"/>
+      <line x1="586" y1="116" x2="586" y2="140" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr5a)"/>
+
+      <rect x="10" y="140" width="660" height="36" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="340" y="155" text-anchor="middle" font-weight="600">ChunkSplitter — (plan_index, sub_index, is_last) sub-chunks</text>
+      <text x="340" y="170" text-anchor="middle" fill="#6e7781" font-size="11">floor worker streams unthrottled · ahead workers acquire AheadGate permits (8 × split_bytes cap)</text>
+
+      <!-- mpsc channel -->
+      <line x1="340" y1="176" x2="340" y2="200" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr5a)"/>
+
+      <rect x="10" y="200" width="660" height="36" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="340" y="216" text-anchor="middle" font-weight="600">mpsc channel — sub-chunks arrive out of plan order</text>
+      <text x="340" y="231" text-anchor="middle" fill="#6e7781" font-size="11">capacity = K workers · worker 0 may finish plan 0 before worker 1 finishes plan 1</text>
+
+      <!-- Reorder stage -->
+      <line x1="340" y1="236" x2="340" y2="258" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr5a)"/>
+
+      <rect x="10" y="258" width="660" height="46" rx="8" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="340" y="275" text-anchor="middle" font-weight="600" fill="#1a7f37">release_ordered — BTreeMap pending buffer</text>
+      <text x="340" y="291" text-anchor="middle" fill="#6e7781" font-size="11">releases strictly in (plan_index, sub_index) order · Continuity.verify_blocks() at every seam</text>
+      <text x="340" y="303" text-anchor="middle" fill="#6e7781" font-size="10">AheadGate permits dropped here → ahead budget freed → blocked ahead workers unblock</text>
+
+      <!-- ChunkQueue -->
+      <line x1="340" y1="304" x2="340" y2="328" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arr5g)"/>
+
+      <rect x="10" y="328" width="660" height="36" rx="8" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="340" y="344" text-anchor="middle" font-weight="600" fill="#1a7f37">ChunkQueue (256 MiB Tokio semaphore) — byte-budget backpressure</text>
+      <text x="340" y="360" text-anchor="middle" fill="#6e7781" font-size="11">scanner drains; permit released after each chunk's last sub-batch commits</text>
+
+      <!-- Retry annotation -->
+      <rect x="430" y="140" width="240" height="42" rx="8" fill="#fff4e5" stroke="#b54708" stroke-width="1"/>
+      <text x="550" y="157" text-anchor="middle" fill="#b54708" font-size="11" font-weight="600">on error: resume_from = last_emitted + 1</text>
+      <text x="550" y="174" text-anchor="middle" fill="#6e7781" font-size="10">sub_index continues · no heights re-sent · double-scan impossible</text>
+    </svg>
+    <figcaption>Figure 5.1 — Fetch worker/claim/reorder pipeline. Workers race to claim plan indices from an atomic counter. Each produces sub-chunks via ChunkSplitter. The reorder stage collects them (potentially out of order) and releases in strict (plan_index, sub_index) sequence into the byte-budgeted ChunkQueue. AheadGate ensures ahead workers cannot park more than ~64 MiB in the reorder buffer simultaneously.</figcaption>
+  </figure>
+
+  <h2>AheadGate: bounding the reorder buffer</h2>
+
+  <p>Without admission control, K−1 workers could each be streaming a spam-era plan chunk simultaneously (each several hundred MB to over a GB), parking all of it in the reorder buffer while the floor worker (plan 0) is being drained. On four workers this represents up to 3 GB in memory — well past device jetsam limits on A10-class iPhones.</p>
+
+  <p>The <code>AheadGate</code> (<code>fetch.rs:193–229</code>) solves this with a Tokio semaphore of capacity <code>8 × split_bytes</code> (= 64 MiB by default). The <strong>floor</strong> plan chunk — the one currently being released by the reorder stage — streams unthrottled and is exempt from the budget. All other ("ahead") workers must acquire byte-unit permits before emitting a sub-chunk; if the budget is spent, they pause until the reorder stage drains buffered sub-chunks and drops their permits.</p>
+
+  <div class="callout note">
+    <span class="label">Deadlock analysis</span>
+    <p>The AheadGate is deadlock-free by design: the floor never waits on the budget; a blocked worker re-checks whether it has <em>become</em> the floor every 100 ms (<code>AHEAD_POLL</code>); and the budget is freed exactly when the reorder stage drains sub-chunks, which happens immediately after the scanner consumes from the ChunkQueue. The single-semaphore design avoids any cross-lock ordering.</p>
+  </div>
+
+  <p>In normal-era operation (one sub-chunk per plan chunk, each ~1–6 MB), the 64 MiB budget admits at least 8 sub-chunks in parallel — no throttling occurs and the AheadGate adds no latency.</p>
+
+  <h2>Deadlines: per-sub-chunk, not per-plan-chunk</h2>
+
+  <p>The <code>chunk_timeout</code> (default 120 seconds) now bounds the accumulation of <em>one sub-chunk</em>, not the entire plan chunk. The deadline is measured from the last time a sub-chunk was emitted; it resets on every successful emission (<code>fetch.rs:366</code>: <code>last_progress = tokio::time::Instant::now()</code>).</p>
+
+  <p>This is the key fix for the sandblasting era (chapter 11): a plan chunk that contains 2.5 million outputs across 10,000 blocks takes far longer than 120 seconds to download, but it emits sub-chunks continuously — each sub-chunk resets the deadline. Only a <em>genuinely stalled stream</em> (no messages for 30 seconds, via <code>grpc::STREAM_IDLE_TIMEOUT</code>) times out.</p>
+
+  <p>An additional per-message idle timeout inside <code>next_with_idle_timeout</code> (in <code>grpc.rs</code>) ensures that a server that accepts the request but silently stops sending is detected within 30 seconds rather than waiting for the per-sub-chunk progress deadline.</p>
+
+  <h2>Resume-from-height retry: double-scan impossibility</h2>
+
+  <p>When a plan chunk's download fails partway through, the <code>PlanChunkCursor</code> tracks the last height successfully emitted. On retry, the worker opens a new gRPC stream starting at <code>resume_from</code> (the height after the last emitted sub-chunk's last block).</p>
+
+  <p>The cursor only advances on a <em>successful send</em> into the mpsc channel (<code>fetch.rs:289–293</code>). A failed send does not advance <code>resume_from</code>. Already-emitted sub-chunks are never re-sent to the reorder stage — their heights have already been released to the ChunkQueue and consumed by the scanner. The reorder stage also verifies continuity via <code>Continuity.verify_blocks()</code> at every sub-chunk seam; a duplicate height would produce a <code>Discontinuity</code> error. Double-scan is therefore structurally impossible: no code path can cause a height to enter the ChunkQueue twice.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 280" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr5b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arr5bw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arr5bg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- Budget gauge on left -->
+      <rect x="10" y="10" width="140" height="200" rx="8" fill="#f6f8fa" stroke="#d8dee4" stroke-width="1.5"/>
+      <text x="80" y="28" text-anchor="middle" fill="#6e7781" font-weight="600" font-size="11">AheadGate budget</text>
+      <text x="80" y="44" text-anchor="middle" fill="#6e7781" font-size="10">8 × 8 MiB = 64 MiB cap</text>
+      <!-- Full budget bar -->
+      <rect x="30" y="55" width="100" height="140" rx="4" fill="#f0f6ff" stroke="#b6d3f7" stroke-width="1"/>
+      <!-- "Used" fill (say 3 slots used out of 8) -->
+      <rect x="30" y="115" width="100" height="80" rx="4" fill="#1f6feb" opacity="0.3"/>
+      <text x="80" y="108" text-anchor="middle" fill="#1a7f37" font-size="10" font-weight="600">free</text>
+      <text x="80" y="165" text-anchor="middle" fill="#1f6feb" font-size="10" font-weight="600">ahead-used</text>
+      <!-- Arrow: "draining ChunkQueue releases budget" -->
+      <line x1="150" y1="175" x2="195" y2="175" stroke="#1a7f37" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr5bg)"/>
+      <text x="155" y="168" fill="#1a7f37" font-size="9">drain → free</text>
+
+      <!-- Backpressure diagram main body -->
+      <!-- ChunkQueue (right side) -->
+      <rect x="200" y="20" width="460" height="52" rx="8" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="430" y="38" text-anchor="middle" font-weight="600" fill="#1a7f37">ChunkQueue (256 MiB Tokio semaphore)</text>
+      <text x="430" y="54" text-anchor="middle" fill="#6e7781" font-size="11">scanner holds permit until chunk committed · dropping permit frees budget</text>
+
+      <!-- Scanner -->
+      <rect x="240" y="88" width="380" height="34" rx="8" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="430" y="102" text-anchor="middle" font-weight="600" fill="#1a7f37">scanner — scan_cached_blocks (block_in_place)</text>
+      <text x="430" y="116" text-anchor="middle" fill="#6e7781" font-size="11">one call per sub-chunk · drop(permit) after last sub-batch</text>
+
+      <!-- Arrow queue → scanner -->
+      <line x1="430" y1="72" x2="430" y2="86" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arr5bg)"/>
+      <!-- Arrow scanner → budget released -->
+      <line x1="220" y1="105" x2="155" y2="175" stroke="#1a7f37" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr5bg)"/>
+
+      <!-- AheadGate pausing an ahead worker -->
+      <rect x="200" y="150" width="460" height="38" rx="8" fill="#fff4e5" stroke="#b54708" stroke-width="1.5"/>
+      <text x="430" y="167" text-anchor="middle" fill="#b54708" font-weight="600">ahead worker paused — budget exhausted</text>
+      <text x="430" y="183" text-anchor="middle" fill="#6e7781" font-size="11">wakes every 100 ms to re-check floor; unblocks if floor advances past its plan_index</text>
+
+      <!-- Labels -->
+      <text x="200" y="220" fill="#1f6feb" font-weight="600" font-size="11">Slow scanner → backpressure propagates to fetch workers</text>
+      <text x="200" y="235" fill="#1a7f37" font-weight="600" font-size="11">Fast scanner → full pipeline throughput; budget rarely limits</text>
+      <text x="200" y="250" fill="#b54708" font-weight="600" font-size="11">Spam-era plan chunk → ahead worker parks at most 8×8=64 MiB while floor drains</text>
+    </svg>
+    <figcaption>Figure 5.2 — Backpressure and budget flow. The ChunkQueue semaphore (256 MiB) back-pressures the reorder stage. The AheadGate (64 MiB) back-pressures ahead workers relative to the floor. Both budgets are released by the scanner when chunks are committed, completing a two-stage memory bound.</figcaption>
+  </figure>
+
+  <h2>The retry loop: zero-progress counting</h2>
+
+  <p>Each worker tracks how many consecutive <em>zero-progress</em> attempts it has made per plan chunk. An attempt is "zero-progress" if no sub-chunk was emitted. If a transport error occurs mid-stream after emitting sub-chunks, the attempt resets the counter (since <code>emitted_this_attempt = true</code>) and the worker gets a fresh budget of <code>retries_per_chunk</code> (default 3) zero-progress retries. This means a very large spam-era chunk that loses its connection repeatedly can still complete as long as it makes forward progress on each attempt; only a permanently stalled server exhausts the budget.</p>
+
+  <p>Backoff between attempts is exponential with a cap: <code>250ms × 2^attempt</code>, bounded to prevent overflow (<code>fetch.rs:459–463</code>). The worker reconnects on every retry (new <code>grpc::connect</code> call) so stale channels are never reused.</p>
+
+  <h2>Cross-references</h2>
+  <ul>
+    <li>Chapter 11 — Sandblasting Era: the spam-era density numbers and the Mac acceptance run.</li>
+    <li>Chapter 12 — Resilience: how transport errors map to retry layers (stream → pass).</li>
+    <li>Chapter 6 — Scan Pipeline: how the ChunkQueue receiver feeds <code>scan_cached_blocks</code> one sub-chunk at a time.</li>
+  </ul>
+
+  <h2>Known limitations</h2>
+  <div class="callout warning">
+    <span class="label">Honest gaps</span>
+    <ul>
+      <li><strong>No server-authenticated block hashes at download time:</strong> the reorder stage verifies prev-hash continuity (sequential linkage), but the cryptographic commitment to the server's data is only verified by the scan kernel (<code>scan_cached_blocks</code>). A compromised lightwalletd can serve internally-consistent but fabricated blocks; the trust model is documented in chapter 14.</li>
+      <li><strong>Backpressure latency on spam-era transitions:</strong> when the first spam-era plan chunk arrives, the AheadGate may briefly throttle workers 1–3 while worker 0 drains. This is expected and correct; it manifests as a momentary slowdown at height ~1,700,000 during a full wallet restore.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <a href="04-integration.html">&#8592; 4. Integration Guide</a>
+    <a href="06-scan.html">6. Scan Pipeline &#8594;</a>
+  </nav>
+  <footer class="colophon">Citations as of commit 7eff661e · Slipstream Book · local-only draft</footer>
+</main>
+</body>
+</html>

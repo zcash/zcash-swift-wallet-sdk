@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 6 — Scan Pipeline · The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part II — Engine Internals</p>
+  <h1>6. Scan Pipeline</h1>
+  <p class="meta">Estimated reading time: 12 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>The scan pipeline drains the ChunkQueue one sub-chunk at a time, passing each to the upstream <code>scan_cached_blocks</code> kernel via a thin <strong>MemBlockSource</strong> adapter. Each scan call requires a server-side treestate at the chunk boundary; the pipeline <strong>prefetches</strong> the next boundary's treestate concurrently with the blocking scan, hiding network latency. Prefetches use <strong>transient-error retries</strong> (up to 3 attempts, reconnect on each) to survive the stall pattern observed in the field. <strong>Sub-batching</strong> (opt-in) splits a chunk into time-targeted pieces for slow devices but defaults off because the fixed overhead exceeds gains on modern hardware. An <strong>enhancement interleave</strong> fires every K completed chunks (default K=3) to surface transactions progressively. Continuity errors (reorgs) are mapped to a structured <code>ScanContinuity</code> error that the scheduler recovers from without losing context.</p>
+  </div>
+
+  <h2>One-chunk-per-<code>scan_cached_blocks</code>: the memory rule</h2>
+
+  <p>Each call to <code>scan_cached_blocks</code> processes exactly one sub-chunk from the ChunkQueue. This one-to-one mapping is the fundamental memory bound of the scan pipeline: the engine never holds more than one chunk's worth of decoded block data in the scan kernel simultaneously. The scanner holds the chunk's <code>ChunkPermit</code> (and therefore its byte-budget allocation) for the duration of the call, releasing it only after the final sub-batch of that chunk has been committed to the database (<code>scan.rs:349</code>).</p>
+
+  <p>The corollary is that the scan pipeline and the fetch pipeline share exactly the ChunkQueue's byte budget (256 MiB). If the scanner falls behind, the ChunkQueue fills up and the fetch workers stall at the <code>ChunkQueueSender::send</code> semaphore — natural backpressure, no explicit coordination needed.</p>
+
+  <h2>MemBlockSource</h2>
+
+  <p><code>scan_cached_blocks</code> requires a <code>BlockSource</code> trait implementation to provide blocks. Slipstream's implementation is <code>MemBlockSource</code> (<code>block_source.rs</code>): a thin wrapper around an in-memory <code>Chunk</code> that serves each block on demand. It holds a reference to the chunk, not a copy — no additional allocation is required. The wrapper satisfies the upstream API contract exactly; the scan kernel sees the same interface it would from a SQLite-backed block cache in the old SDK.</p>
+
+  <h2>Treestate threading: the <code>from_state</code> invariant</h2>
+
+  <p><code>scan_cached_blocks</code> requires a <code>ChainState</code> (the server's view of the Sapling and Orchard commitment trees at the block immediately before the scan range) that satisfies:</p>
+
+  <pre><code>from_state.height() + 1 == from_height</code></pre>
+
+  <p>Slipstream maintains this invariant at every scan call boundary. The initial seed is fetched at <code>range_start - 1</code> before the first chunk. At each subsequent boundary (whether a sub-batch boundary within a chunk or a whole-chunk boundary), the state is fetched as the <em>end height of the previous batch</em> and becomes the <code>from_state</code> for the next call. The proof, from <code>scan.rs:246–258</code>:</p>
+
+  <ul>
+    <li>For the first sub-batch of the first chunk: <code>next_state</code> was fetched at <code>range_start − 1</code>; <code>sub_start = chunk_start = range_start</code>. Height matches: <code>(range_start − 1) + 1 = range_start</code>.</li>
+    <li>For any subsequent sub-batch: <code>next_state</code> was fetched at <code>sub_end</code> of the previous sub-batch; new <code>sub_start = prev sub_end + 1</code>. Height matches: <code>sub_end + 1 = sub_start</code>.</li>
+    <li>For the first sub-batch of subsequent chunks: <code>next_state</code> was fetched at the previous chunk's end height; <code>chunk_start = prev_chunk_end + 1</code>. Height matches.</li>
+  </ul>
+
+  <h2>Prefetch overlap: hiding treestate latency</h2>
+
+  <p>Fetching a treestate from lightwalletd takes 100–500 ms on a mobile connection (the call goes to the same server handling block downloads). Without prefetching, the scan pipeline would stall at every chunk boundary waiting for the next <code>GetTreeState</code> call to complete.</p>
+
+  <p>The prefetch pattern spawns a Tokio task for the <em>next</em> boundary's treestate before entering the blocking scan call, then awaits the result after the scan returns. On fast hardware where the scan takes longer than the treestate fetch (the common case), the prefetch completes before the scan does — zero latency added at the boundary. On slow hardware where the prefetch outlasts the scan, the pipeline waits only for the difference:</p>
+
+  <pre><code>// scan.rs:233–236 — spawn the prefetch before the blocking scan
+let prefetch = tokio::spawn({
+    let ep = endpoint.clone();
+    async move { grpc::retry_get_tree_state(&ep, sub_end, "chunk-boundary prefetch").await }
+});
+// ... blocking scan runs here (block_in_place) ...
+// scan.rs:310–311 — await the prefetch result after the scan
+let fetched = prefetch
+    .await
+    .map_err(|e| SlipstreamError::Transport(format!("prefetch task: {e}")))??;
+next_state = fetched;</code></pre>
+
+  <p>On scan failure, <code>prefetch.abort()</code> is called before returning (<code>scan.rs:288</code>) — the detached task would complete harmlessly either way, but aborting it avoids a wasted gRPC call.</p>
+
+  <h2>Treestate retry (T6.8-H2)</h2>
+
+  <p>A field failure (2026-06-12, STATE.md T6.8-H2 session log) showed the engine dying after a successful scan because the prefetch for the <em>next</em> boundary timed out in exactly 30 seconds with no retries: <code>transport: get_tree_state: timed out after 30s</code>. The fix uses <code>grpc::retry_get_tree_state</code> in both the initial seed and the per-boundary prefetch spawns — up to 3 total attempts with 1 s then 3 s backoff, reconnecting on each attempt (<code>scan.rs:169</code> and <code>scan.rs:235</code>). Non-transient errors (decode failures, protocol errors) propagate immediately without retrying.</p>
+
+  <div class="callout evidence">
+    <span class="label">Field evidence — T6.8-H2 failure, 2026-06-12</span>
+    <p>A real wallet restore reached chunk 3,361,166 (scanned cleanly in 3.77 s), then the chunk-boundary treestate prefetch timed out after 30 s with a single attempt. The sync died at 6.1% with no recovery. After shipping retry_get_tree_state, the mainnet tip−2000 oracle run (STATE.md T6.8-H2 session log) passed cleanly with VERDICT IDENTICAL across all 26 tables.</p>
+  </div>
+
+  <h2>Sub-batching: opt-in and why it defaults off</h2>
+
+  <p>Sub-batching (<code>EngineConfig::scan_batch_target_ms</code>) splits each chunk's scan into time-targeted pieces via a proportional controller (<code>scan.rs:52–64</code>). The default is <code>None</code> (off). The performance history explains why:</p>
+
+  <table>
+    <thead>
+      <tr><th>Device</th><th>Effect of sub-batching</th><th>Verdict</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>A10 iPad (field)</td><td>Each sub-batch boundary pays ~1.5–2s of fixed <code>put_blocks</code> overhead (a fresh checkpoint set + tree commit per sub-batch). Splitting a 10k-block chunk into 3–4 sub-batches adds 4–6s per chunk vs a single call.</td><td>No gain; net loss.</td></tr>
+      <tr><td>M-series Mac (bench)</td><td>Sub-batches complete instantly at the default 3s target; the controller immediately returns <code>max = chunk_len</code>. Equivalent to no sub-batching.</td><td>No effect.</td></tr>
+    </tbody>
+  </table>
+
+  <p>Sub-batching was designed for a time before the sparse-persistence path (chapter 7) reduced the per-chunk tree cost by ~5×. With sparse trees, each chunk already commits quickly enough that sub-batching's "finer progress updates" benefit does not compensate for its overhead. It remains available as an explicit opt-in for use cases where extremely slow scan devices need sub-second DB commits.</p>
+
+  <div class="callout note">
+    <span class="label">Evidence basis</span>
+    <p>The A10 field observation is from STATE.md T5.2 session notes (2026-06-11): "each sub-batch pays ~1.5–2s fixed cost (put_blocks shardtree overhead, measured on A10 iPad)". The controller unit tests in <code>scan.rs:517–608</code> cover the proportional rule and its edge cases but do not validate device-specific performance.</p>
+  </div>
+
+  <h2>Per-K-chunk enhancement interleave (T6.1)</h2>
+
+  <p>Enhancement (fetching full transaction data) normally runs at range boundaries and at the end of the pass. Waiting for a large range to complete before surfacing transactions can mean several minutes of "scanning" with no transaction visibility. The interleave fires <code>run_enhancement</code> every K completed chunks (default K=3, configured via <code>EngineConfig::enhance_every_chunks</code>):</p>
+
+  <pre><code>// scan.rs:355–370 — interleave cadence check
+if should_interleave_enhancement(stats.chunks, config.enhance_every_chunks) {
+    let started = Instant::now();
+    let mut enhance_client = client.clone();
+    match run_enhancement(session, &mut enhance_client, network, ...).await {
+        Ok(es) => { stats.interleaved_enhance.txs_stored += es.txs_stored; ... }
+        Err(err) => { warn!(%err, "interleaved enhancement failed — continuing scan"); }
+    }
+    stats.interleaved_enhance_elapsed += started.elapsed();
+}</code></pre>
+
+  <p>Two design choices are load-bearing:</p>
+  <ol>
+    <li><strong>Non-fatal:</strong> a failed interleaved run logs a warning and continues scanning. The per-range and final post-loop enhancement runs are the correctness backstops. An interleaved transport failure must not abort a multi-minute restore.</li>
+    <li><strong>Elapsed excluded from scan time:</strong> <code>stats.interleaved_enhance_elapsed</code> is subtracted from the scan-stage wall time in the scheduler's report (<code>scheduler.rs:293</code>). Stage-split logging in the CLI and device logs therefore attributes enhancement time to the enhance stage, not the scan stage.</li>
+  </ol>
+
+  <p>The <code>should_interleave_enhancement</code> helper (<code>scan.rs:71–73</code>) is a pure function: it returns <code>true</code> when <code>chunks_done &gt; 0</code> and <code>chunks_done % every == 0</code>. Never fires before the first chunk completes.</p>
+
+  <h2>Continuity error mapping</h2>
+
+  <p>When <code>scan_cached_blocks</code> returns a <code>ChainError::Scan(err)</code> where <code>err.is_continuity_error()</code>, it means the blocks being scanned do not continue from the wallet's current chain tip — a reorg has occurred. The <code>map_scan_error</code> function (<code>scan.rs:87–99</code>) converts this to a structured <code>SlipstreamError::ScanContinuity { at }</code>, where <code>at</code> is the block height of the continuity break.</p>
+
+  <p>The scheduler receives this error, truncates the wallet to <code>at.saturating_sub(10)</code>, and re-suggests scan ranges — exactly mirroring the upstream recovery path. For the full reorg story, see chapter 10.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 300" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr6a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arr6g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+        <marker id="arr6w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arr6m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#6e7781"/>
+        </marker>
+      </defs>
+
+      <!-- Timeline header -->
+      <text x="30" y="20" fill="#6e7781" font-weight="600" font-size="11">Time →</text>
+      <line x1="30" y1="28" x2="660" y2="28" stroke="#d8dee4" stroke-width="1.5"/>
+
+      <!-- Chunk N row -->
+      <text x="10" y="64" fill="#6e7781" font-size="11" font-weight="600">recv</text>
+      <rect x="40" y="48" width="100" height="28" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="90" y="66" text-anchor="middle" fill="#1a2333" font-size="11">recv chunk N</text>
+
+      <!-- blocking scan -->
+      <text x="10" y="114" fill="#1a7f37" font-size="11" font-weight="600">scan</text>
+      <rect x="150" y="98" width="200" height="28" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="250" y="116" text-anchor="middle" fill="#1a2333" font-size="11">scan_cached_blocks (block_in_place)</text>
+
+      <!-- prefetch for N+1, overlapping the scan -->
+      <text x="10" y="164" fill="#6e7781" font-size="11" font-weight="600">prefetch</text>
+      <rect x="150" y="148" width="120" height="28" rx="6" fill="#f6f8fa" stroke="#6e7781" stroke-width="1.5"/>
+      <text x="210" y="166" text-anchor="middle" fill="#6e7781" font-size="11">GetTreeState(N) ×retry</text>
+
+      <!-- Arrow: recv → scan and prefetch -->
+      <line x1="140" y1="62" x2="148" y2="112" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr6a)"/>
+      <line x1="140" y1="62" x2="148" y2="162" stroke="#6e7781" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr6m)"/>
+
+      <!-- "await prefetch" after scan -->
+      <line x1="350" y1="112" x2="370" y2="162" stroke="#6e7781" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arr6m)"/>
+      <text x="355" y="145" fill="#6e7781" font-size="10" transform="rotate(-20,355,145)">await result</text>
+
+      <!-- Interleave every K chunks marker -->
+      <line x1="520" y1="30" x2="520" y2="210" stroke="#b54708" stroke-width="1" stroke-dasharray="6,3"/>
+      <text x="525" y="55" fill="#b54708" font-size="10" font-weight="600">K chunks done</text>
+      <text x="525" y="70" fill="#b54708" font-size="10">→ interleave</text>
+
+      <!-- Enhancement interleave box -->
+      <rect x="530" y="80" width="140" height="36" rx="6" fill="#fff4e5" stroke="#b54708" stroke-width="1.5"/>
+      <text x="600" y="95" text-anchor="middle" fill="#b54708" font-size="11" font-weight="600">run_enhancement()</text>
+      <text x="600" y="110" text-anchor="middle" fill="#6e7781" font-size="10">non-fatal; elapsed excluded from scan_s</text>
+
+      <!-- Chunk N+1 recv -->
+      <rect x="40" y="215" width="100" height="28" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="90" y="233" text-anchor="middle" fill="#1a2333" font-size="11">recv chunk N+1</text>
+
+      <!-- next_state arrow into chunk N+1 scan -->
+      <line x1="270" y1="176" x2="270" y2="215" stroke="#6e7781" stroke-width="1.5" marker-end="url(#arr6m)"/>
+      <text x="275" y="200" fill="#6e7781" font-size="10">next_state = fetched</text>
+
+      <!-- scan N+1 -->
+      <rect x="150" y="248" width="200" height="28" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="250" y="266" text-anchor="middle" fill="#1a2333" font-size="11">scan_cached_blocks (block_in_place)</text>
+      <line x1="140" y1="229" x2="148" y2="262" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr6a)"/>
+
+      <!-- Legend -->
+      <rect x="30" y="285" width="12" height="12" rx="2" fill="#1f6feb"/>
+      <text x="48" y="295" fill="#1a2333" font-size="10">recv/scan flow</text>
+      <rect x="160" y="285" width="12" height="12" rx="2" fill="#1a7f37"/>
+      <text x="178" y="295" fill="#1a2333" font-size="10">scan_cached_blocks (CPU-bound)</text>
+      <rect x="390" y="285" width="12" height="12" rx="2" fill="#b54708"/>
+      <text x="408" y="295" fill="#1a2333" font-size="10">per-K interleave point</text>
+    </svg>
+    <figcaption>Figure 6.1 — Scan loop timeline. Each chunk's scan (green, blocking) overlaps with the prefetch for the next boundary's treestate (grey, async). When K chunks complete, a non-fatal enhancement interleave fires (orange). next_state carries the prefetched result into the next chunk's scan.</figcaption>
+  </figure>
+
+  <h2>Known limitations</h2>
+  <div class="callout warning">
+    <span class="label">Honest gaps</span>
+    <ul>
+      <li><strong>Sub-batching overhead not re-measured since sparse path:</strong> the decision to leave sub-batching off by default was made before the 5× sparse-tree speedup (T6.3b). It is plausible that sub-batching's per-sub-batch cost is now smaller than originally measured, but no A10-device A/B has been run with sparse trees + sub-batching enabled. The default-off decision is conservative and correct.</li>
+      <li><strong>Treestate trust:</strong> server-provided treestates are used as <code>from_state</code> without independent verification before the scan. A compromised lightwalletd can provide a malicious treestate; the scan kernel will then compute incorrect note positions. This is the same trust model as the old SDK and is documented in chapter 14.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <a href="05-fetch.html">&#8592; 5. Fetch Pipeline</a>
+    <a href="07-sparse-persistence.html">7. Sparse Persistence &#8594;</a>
+  </nav>
+  <footer class="colophon">Citations as of commit 7eff661e · Slipstream Book · local-only draft</footer>
+</main>
+</body>
+</html>

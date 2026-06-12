@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 9 — Enhancement &amp; Transparent · The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part II — Engine Internals</p>
+  <h1>9. Enhancement &amp; Transparent</h1>
+  <p class="meta">Estimated reading time: 14 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>Enhancement is the process of fetching full transaction details — memos, confirmations, input/output metadata — for notes the wallet has already discovered during scan. It is architecturally separate from scan: scan identifies <em>which</em> transactions matter; enhancement fetches <em>everything</em> about them. This chapter covers the three-round <code>TransactionDataRequests</code> loop, the concurrent txid-fetch pipeline, the per-pass dedupe guard, the three interleave layers in the scheduler, transparent UTXO refresh ordering, and the documented gap in address-based enhancement.</p>
+  </div>
+
+  <h2>The three-round TransactionDataRequests loop</h2>
+
+  <p>Enhancement entry is <code>run_enhancement</code> (<code>enhance.rs:83–174</code>). It does not decide which transactions to enhance — that decision belongs to the upstream library (D2). It calls <code>wallet.transaction_data_requests()</code>, which returns a list of <code>TransactionDataRequest</code> items describing what the library needs. The engine fetches and stores the requested data, then calls <code>transaction_data_requests()</code> again. The loop runs up to three rounds:</p>
+
+  <pre><code>// enhance.rs:83–108 (simplified)
+for round in 0..3 {
+    let requests = wallet.transaction_data_requests()?;
+    if requests.is_empty() { break; }
+
+    process_txid_requests(&requests).await?;
+    process_address_requests(&requests, &mut skipped_keys).await?;
+}</code></pre>
+
+  <p>Three rounds covers the real cascading case: <em>round 1</em> fetches a transaction that introduces a new note; <em>round 2</em> fetches any follow-up requests the library generates after seeing that transaction (e.g., checking its transparent inputs); <em>round 3</em> is a safety pass for anything that cascaded from round 2. In practice most runs need only one round; the three-round cap prevents unbounded looping on pathological inputs.</p>
+
+  <h2>Concurrent txid fetches</h2>
+
+  <p>Within each round, txid requests (<code>TransactionDataRequest::GetStatus</code> and <code>::Enhancement</code>) are dispatched concurrently via <code>FuturesUnordered</code> (<code>enhance.rs:125–160</code>). Up to <code>FETCH_CONCURRENCY=8</code> in-flight gRPC calls run simultaneously. Results are processed as they complete (not in submission order), so a slow server response on one txid does not block other fetches.</p>
+
+  <p>The two txid request arms differ in what they store:</p>
+
+  <table>
+    <thead>
+      <tr><th>Request type</th><th>gRPC call</th><th>Result</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>GetStatus</code></td><td><code>GetTransaction</code></td><td>Sets transaction status only (mined height or pending); no note decryption.</td></tr>
+      <tr><td><code>Enhancement</code></td><td><code>GetTransaction</code></td><td>Full <code>decrypt_and_store_transaction</code>: memos, nullifiers, output metadata.</td></tr>
+    </tbody>
+  </table>
+
+  <p>Both arms use the same <code>GetTransaction</code> RPC. The distinction is in how the result is applied: <code>GetStatus</code> extracts only the mining height (>0 → <code>Some(height)</code>; ==0 → <code>None</code>, indicating pending), while <code>Enhancement</code> passes the full transaction bytes to the upstream <code>decrypt_and_store_transaction</code>. This respects the upstream write-path contract; Slipstream never writes transaction rows directly.</p>
+
+  <h2>Per-pass address request dedupe</h2>
+
+  <p>Address-based requests (<code>TransactionDataRequest::TransactionsInvolvingAddress</code>) trigger a <code>GetTaddressTxids</code> streaming RPC that fetches all transactions involving a transparent address in a block range. These requests can be generated repeatedly for the same address across multiple enhancement interleave calls within one sync. Without a dedupe guard, the engine would issue duplicate RPCs on every interleave call — wasting bandwidth and causing duplicate row inserts.</p>
+
+  <p>The guard is a <code>HashSet&lt;String&gt;</code> called <code>skipped_keys</code> (<code>enhance.rs:262–272</code>), scoped to one <code>run_enhancement</code> call. The key is the transparent address string. Before issuing a <code>GetTaddressTxids</code> RPC, the engine checks whether the address is already in <code>skipped_keys</code>; if so, the request is skipped entirely. After processing, the address is inserted into <code>skipped_keys</code>.</p>
+
+  <div class="callout note">
+    <span class="label">T4.6 fix context</span>
+    <p>The dedupe guard was added in the T4.6 session (STATE.md) after observing address requests re-queued on every interleave call for wallets with high transparent activity. The fix reduced unnecessary RPC traffic from O(interleave_calls × addresses) to O(addresses) per sync, while preserving the semantic that every address is fetched at least once per enhancement call.</p>
+  </div>
+
+  <h2>Three skip guards on address requests</h2>
+
+  <p>Before any address RPC, the engine applies three guards in order (<code>enhance.rs:265–285</code>):</p>
+
+  <ol>
+    <li><strong>Missing <code>blockRangeEnd</code>:</strong> if the request has no upper block bound, it cannot be safely issued (open-ended scan would walk the entire chain). Skip and document as a gap — see below.</li>
+    <li><strong>Missing <code>requestAt</code>:</strong> if the request has no anchor block height, the engine has no anchor for the treestate and cannot issue the request safely.</li>
+    <li><strong>Status already <code>Unspent</code>:</strong> if the UTXO is already marked as unspent (fully processed), the request is redundant.</li>
+  </ol>
+
+  <h2>The open-ended address skip: a documented completeness gap</h2>
+
+  <p>When <code>blockRangeEnd</code> is absent from a <code>TransactionsInvolvingAddress</code> request, the engine logs a warning and skips the request. It does not issue a best-effort open-ended RPC because such a request would walk the entire chain and bypass the byte-budget and deadline mechanisms that bound all other network calls.</p>
+
+  <div class="callout warning">
+    <span class="label">Documented completeness gap</span>
+    <p>Slipstream does not currently handle open-ended <code>TransactionsInvolvingAddress</code> requests. Wallets with transparent activity <em>after</em> the scan tip may not have all transparent transactions enhanced until a subsequent sync that covers those blocks. This is a known gap; it does not affect shielded balance correctness. The privacy note: issuing open-ended address queries to the server would reveal more of the wallet's address history than bounded queries; the conservative skip also limits privacy leakage. See chapter 15 for the privacy model, and chapter 19 for the roadmap item.</p>
+  </div>
+
+  <h2>The three interleave layers</h2>
+
+  <p>Enhancement does not run only at the end of sync. It is woven through the scan pipeline at three granularities to provide timely balance updates:</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 300" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr9a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arr9g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+        <marker id="arr9w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+      </defs>
+
+      <!-- Layer labels (left column) -->
+      <text x="10" y="55" fill="#6e7781" font-weight="600" font-size="11">Layer 1: every K chunks</text>
+      <text x="10" y="57" fill="#6e7781" font-size="10" dy="13">(K=3, enhance_every_chunks, inside scan_chunks)</text>
+      <text x="10" y="135" fill="#6e7781" font-weight="600" font-size="11">Layer 2: per range</text>
+      <text x="10" y="137" fill="#6e7781" font-size="10" dy="13">(after each suggest_scan_ranges range completes)</text>
+      <text x="10" y="215" fill="#6e7781" font-weight="600" font-size="11">Layer 3: final backstop</text>
+      <text x="10" y="217" fill="#6e7781" font-size="10" dy="13">(after all ranges in the pass, run_enhancement)</text>
+
+      <!-- Chunk timeline (top lane) -->
+      <!-- chunk boxes -->
+      <rect x="220" y="30" width="50" height="35" rx="5" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="245" y="52" text-anchor="middle" fill="#1f6feb" font-size="10">chunk 1</text>
+      <rect x="280" y="30" width="50" height="35" rx="5" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="305" y="52" text-anchor="middle" fill="#1f6feb" font-size="10">chunk 2</text>
+      <rect x="340" y="30" width="50" height="35" rx="5" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="365" y="52" text-anchor="middle" fill="#1f6feb" font-size="10">chunk 3</text>
+      <!-- interleave after chunk 3 -->
+      <rect x="400" y="30" width="60" height="35" rx="5" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="430" y="48" text-anchor="middle" fill="#1a7f37" font-weight="600" font-size="10">enhance</text>
+      <text x="430" y="60" text-anchor="middle" fill="#6e7781" font-size="10">(K=3)</text>
+      <rect x="470" y="30" width="50" height="35" rx="5" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="495" y="52" text-anchor="middle" fill="#1f6feb" font-size="10">chunk 4</text>
+      <text x="535" y="47" text-anchor="middle" fill="#6e7781" font-size="10">…</text>
+      <!-- Non-fatal callout for L1 -->
+      <text x="430" y="82" text-anchor="middle" fill="#6e7781" font-size="10">non-fatal; elapsed excluded from scan_s</text>
+
+      <!-- Range timeline (middle lane) -->
+      <rect x="220" y="110" width="230" height="40" rx="5" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="335" y="135" text-anchor="middle" fill="#1f6feb" font-size="11">scan range (all chunks)</text>
+      <!-- interleave after range -->
+      <rect x="460" y="110" width="60" height="40" rx="5" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="490" y="128" text-anchor="middle" fill="#1a7f37" font-weight="600" font-size="10">enhance</text>
+      <text x="490" y="143" text-anchor="middle" fill="#6e7781" font-size="10">(per range)</text>
+      <text x="555" y="135" text-anchor="middle" fill="#6e7781" font-size="10">+ranges_completed</text>
+
+      <!-- Full pass (bottom lane) -->
+      <rect x="220" y="190" width="320" height="40" rx="5" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="380" y="215" text-anchor="middle" fill="#1f6feb" font-size="11">all ranges in pass</text>
+      <!-- backstop -->
+      <rect x="550" y="190" width="70" height="40" rx="5" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="585" y="207" text-anchor="middle" fill="#1a7f37" font-weight="600" font-size="10">enhance</text>
+      <text x="585" y="221" text-anchor="middle" fill="#6e7781" font-size="10">(backstop)</text>
+
+      <!-- Arrows showing each layer -->
+      <line x1="430" y1="67" x2="430" y2="108" stroke="#1a7f37" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#arr9g)"/>
+      <line x1="490" y1="152" x2="490" y2="188" stroke="#1a7f37" stroke-width="1" stroke-dasharray="4,2" marker-end="url(#arr9g)"/>
+
+      <!-- Accounting note -->
+      <rect x="10" y="250" width="660" height="40" rx="6" fill="#f6f8fa" stroke="#d8dee4" stroke-width="1"/>
+      <text x="340" y="266" text-anchor="middle" fill="#6e7781" font-size="11" font-weight="600">Stage-split accounting note</text>
+      <text x="340" y="282" text-anchor="middle" fill="#6e7781" font-size="10">Layer 1 (K-chunk interleave): elapsed charged to enhancement_ms, not scan_s. Layers 2–3: accounted separately. enhanced_txs is monotonic and accumulates across all three layers.</text>
+    </svg>
+    <figcaption>Figure 9.1 — Enhancement interleave layers. Layer 1 fires every K=3 completed chunks (inside <code>scan_chunks</code>); Layer 2 fires after each scan range completes (inside the scheduler range loop); Layer 3 is the final backstop after all ranges in a pass. All three are non-fatal; <code>enhanced_txs</code> accumulates monotonically across all three.</figcaption>
+  </figure>
+
+  <h3>Layer 1: every K chunks (inside scan)</h3>
+
+  <p><code>should_interleave_enhancement(chunks_done, every=3)</code> (<code>scan.rs:71–73</code>) returns true when <code>chunks_done &gt; 0 &amp;&amp; chunks_done % every == 0</code>. When true, <code>scan_chunks</code> calls <code>run_enhancement</code> before fetching the next chunk. The enhancement elapsed time is tracked separately and excluded from the <code>scan_s</code> metric reported in per-chunk logs — so benchmarks reflect net scan time and are not inflated by enhancement latency.</p>
+
+  <h3>Layer 2: per range (in scheduler)</h3>
+
+  <p>After each scan range returns, the scheduler calls <code>run_enhancement</code> (<code>scheduler.rs:325–351</code>). This ensures that notes discovered during the range are enhanced before the wallet UI reflects the completed range — the <code>ranges_completed</code> increment happens <em>after</em> the per-range enhancement call, so a snapshot taken at <code>ranges_completed == N</code> already includes the enhancement work for range N.</p>
+
+  <h3>Layer 3: final backstop (end of pass)</h3>
+
+  <p>After all ranges in a pass have been scanned, the scheduler calls <code>run_enhancement</code> once more as a backstop. This catches any requests that: (a) were generated after the last range's layer-2 call, or (b) required a cascade that didn't resolve until all ranges were complete. The backstop is also the only enhancement call for passes where the layer-1 interleave never fired (e.g., a pass that covers only one short range with two chunks).</p>
+
+  <h2>Transparent UTXO refresh ordering</h2>
+
+  <p>Transparent UTXO refresh runs <em>before</em> any shielded scanning. This ordering is an upstream contract, documented in a comment at <code>transparent.rs:53–55</code>:</p>
+
+  <pre><code>// transparent.rs:53–55 — upstream-mirroring contract
+// We do this before we perform any shielded scanning, because the note
+// commitment tree state at any given block height requires that the
+// transparent balance be up-to-date.</code></pre>
+
+  <p>The refresh call (<code>refresh_utxos</code>, <code>transparent.rs:63–155</code>) iterates over all accounts in the wallet, queries the wallet's own transparent receivers (via <code>get_transparent_receivers</code>), then calls <code>get_address_utxos</code> on the lightwalletd service for each receiver, and stores the results via <code>put_received_transparent_utxo</code>. The return value maps each <code>UtxoRef</code> to <code>()</code> — the engine does not inspect UTXO content; it delegates all semantic decisions to the upstream database layer.</p>
+
+  <p>Transparent UTXOs are not part of the commitment tree; their presence does not affect the Sapling or Orchard tree state. The ordering requirement exists because <em>subsequent shielded scanning may spend</em> transparent inputs: the upstream scanning library needs the transparent balance to be consistent before it can correctly compute the note-spending context for mixed transparent+shielded transactions.</p>
+
+  <h2>EnhanceStats: what is counted</h2>
+
+  <p><code>EnhanceStats</code> (<code>enhance.rs:41–55</code>) accumulates four counters across one <code>run_enhancement</code> call:</p>
+
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Meaning</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>requests</code></td><td>Total <code>TransactionDataRequest</code> items processed (all types, all rounds).</td></tr>
+      <tr><td><code>txs_stored</code></td><td>Full transactions stored via <code>decrypt_and_store_transaction</code>.</td></tr>
+      <tr><td><code>statuses_set</code></td><td>Transaction statuses updated (GetStatus arm results).</td></tr>
+      <tr><td><code>skipped</code></td><td>Address requests skipped by any of the three guard rules.</td></tr>
+    </tbody>
+  </table>
+
+  <p>At the end of <code>run_enhancement</code>, <code>txs_stored + statuses_set</code> is added to the global <code>Progress.enhanced_txs</code> counter (<code>enhance.rs:168–172</code>). This is the number exposed to Swift via <code>snapshot().enhanced_txs</code>.</p>
+
+  <div class="callout note">
+    <span class="label">Why enhanced_txs is monotonic, not per-pass</span>
+    <p>A caller monitoring the wallet may want to show "3 transactions synced" in a notification. If this counter reset on each pass, a caller that read the snapshot mid-sync would see an apparently smaller number after a reorg recovery. Making it a monotonic-delta (per-handle) counter ensures that callers only ever see the number go up, even across reorg recoveries and multiple passes.</p>
+  </div>
+
+  <h2>Known limitations</h2>
+  <div class="callout warning">
+    <span class="label">Honest gaps</span>
+    <ul>
+      <li><strong>Open-ended address skip:</strong> Requests without a <code>blockRangeEnd</code> are skipped. Transparent activity at heights beyond the current scan tip may not be enhanced until a subsequent sync that covers those heights. This is not a shielded correctness issue. See chapter 19 for the roadmap item and chapter 15 for the privacy implications of address queries.</li>
+      <li><strong>Three-round cap:</strong> Enhancement loops at most three rounds per invocation. A pathological wallet state that requires more than three cascade levels per range would not be fully enhanced in one interleave call. In practice, one or two rounds is the observed maximum; three is a conservatively generous bound.</li>
+      <li><strong>No mempool enhancement:</strong> <code>transaction_data_requests</code> does not return pending (unconfirmed) transactions. Outgoing spends are not enhanced until they are mined. This is a known gap shared with the old SDK path.</li>
+      <li><strong>Address stream dedupe is per-invocation:</strong> the <code>skipped_keys</code> HashSet is created fresh in each <code>run_enhancement</code> call. Across the three interleave layers in a single pass, the same address may be queried up to three times (once per layer). Within one call, it is queried at most once.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <a href="08-scheduler.html">&#8592; 8. Scheduler &amp; Spend-before-Sync</a>
+    <a href="10-reorgs.html">10. Reorg Handling &#8594;</a>
+  </nav>
+  <footer class="colophon">Citations as of commit 7eff661e · Slipstream Book · local-only draft</footer>
+</main>
+</body>
+</html>

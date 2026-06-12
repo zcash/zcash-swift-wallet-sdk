@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>17 · Performance Evidence — The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part V — Evidence &amp; Process</p>
+  <h1>17. Performance Evidence</h1>
+  <p class="meta">Part V — Evidence &amp; Process &nbsp;·&nbsp; estimated reading time: 14 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>Every performance number in this book comes from a single source: the truth table in <code>STATE.md</code>, with machine, server, range, wall-clock, and bound recorded for each row. This chapter reproduces those rows verbatim, explains how to reproduce any run with the CLI, describes the stage-split instrumentation and per-chunk attribution that make the numbers trustworthy, and recounts the stale-framework incident that added the <code>ENGINE_BUILD</code> freshness tag. It closes with a stage-split anatomy figure showing how wall-clock decomposes into fetch, scan, and enhance.</p>
+  </div>
+
+  <h2>17.1 Measurement discipline</h2>
+
+  <p>A rule that pre-dates every number in this chapter: <strong>every performance claim earns a row in the truth table</strong>. The five required columns are:</p>
+
+  <table>
+    <thead>
+      <tr><th>Column</th><th>What it records</th><th>Why it matters</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>Machine / device</strong></td><td>Hardware model or OS identifier</td><td>Mac numbers do not extrapolate to A10 devices; iPhone 16 Pro numbers do not extrapolate to A10 iPads</td></tr>
+      <tr><td><strong>Server</strong></td><td>lightwalletd endpoint (zec.rocks:443, eu.zec.rocks, etc.)</td><td>Server load and geographic latency affect fetch time; zec.rocks throttles parallel streams</td></tr>
+      <tr><td><strong>Range</strong></td><td>Birthday height, chain tip, block count</td><td>Sparse tip-area ranges are not comparable to full historic restores</td></tr>
+      <tr><td><strong>Wall-clock</strong></td><td>Total elapsed time and stage breakdown where available</td><td>Absolute time is the user-visible metric; stage split locates the bottleneck</td></tr>
+      <tr><td><strong>Bound</strong></td><td>Which stage limited throughput: <code>network</code>, <code>scan</code>, or <code>enhance</code></td><td>Without this, a fast fetch looks like a fast scan</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout note">
+    <span class="label">Benchmarks as CLI subcommands</span>
+    <p>Every performance run is reproducible via <code>slipstream-cli</code>. Two subcommands: <code>fetch --range A..B --streams K --chunk N</code> measures parallel download throughput (the G1 rows below); <code>sync --server URL --wallet-dir DIR --ufvk UFVK --birthday H</code> runs a full end-to-end sync (all later rows). Stage-split is printed in the final summary line. This design means any session can reproduce any row from the truth table — no bespoke scripts, no ad-hoc timing.</p>
+  </div>
+
+  <h3>The stale-framework incident and the ENGINE_BUILD tag</h3>
+
+  <p>On 2026-06-12, a device field run produced numbers consistent with T6.6 performance rather than the freshly-built T6.8-L3a build. The diagnosis: <code>./Scripts/rebuild-local-ffi.sh</code> replaces only one architecture slice by design. After that, other-platform Xcode builds silently reuse the old-slice copy at the top of the XCFramework. The device ran the previous engine. Nine minutes of wall-clock time — attributed to the wrong build.</p>
+
+  <p>The fix is the <code>ENGINE_BUILD</code> constant in <code>slipstream/core/src/engine.rs:25</code>:</p>
+
+  <pre><code>pub const ENGINE_BUILD: &amp;str = "2026-06-13.walltime";</code></pre>
+
+  <p>Every sync start and stage-split log line carries this tag. A device log whose tag does not match the expected value means the old binary is running — stop, run <code>./Scripts/init-local-ffi.sh</code> (all three slices), reset SPM caches in Xcode, rebuild. The freshness probe command is:</p>
+
+  <pre><code>strings &lt;slice&gt;/libzcashlc.framework/libzcashlc | grep &lt;expected-tag&gt;</code></pre>
+
+  <p>The tag is bumped on every performance-relevant engine change. It is the single check that catches stale binaries when the header looks fine.</p>
+
+  <h2>17.2 Device matrix — full history</h2>
+
+  <p>The truth table spans four measurement eras. The formal matrix (G2, 286,855-block restore) established the comparison baselines; later runs used slightly different block counts (≈269k–270k depending on the chain tip at run time). The era-of-measurement is annotated where device results differ meaningfully.</p>
+
+  <h3>G1 — Transport throughput (Mac, 2026-06-10)</h3>
+
+  <div class="callout evidence">
+    <span class="label">Measured — MacBook darwin 25.5, zec.rocks:443, 3100000..3250000 (150k blocks)</span>
+    <table>
+      <thead>
+        <tr><th>Configuration</th><th>Wall-clock</th><th>Ratio vs K=1</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>K=1 baseline</td><td>6.7 s</td><td>—</td></tr>
+        <tr><td>K=4</td><td>5.6 s</td><td>1.20×</td></tr>
+        <tr><td>K=1 baseline (chunk=5k)</td><td>9.5 s</td><td>—</td></tr>
+        <tr><td>K=4 (chunk=5k)</td><td>6.9 s</td><td>1.37×</td></tr>
+        <tr><td>K=8 (chunk=5k, best run)</td><td>4.3 s</td><td><strong>2.03×</strong></td></tr>
+        <tr><td>K=8 (chunk=5k, run 4 — peak)</td><td>5.2 s → 19.9 s baseline</td><td><strong>3.86× (best observed)</strong></td></tr>
+        <tr><td>K=4 canonical (50k, run B)</td><td>1.2 s → 3.1 s baseline</td><td><strong>2.56×</strong></td></tr>
+      </tbody>
+    </table>
+    <p>Gate G1 passed (≥2× criterion). High variance is server-side throttling; the fetcher is network-bound, not CPU-bound.</p>
+  </div>
+
+  <h3>G2 / G3 — Scan core (Mac, 2026-06-10/11)</h3>
+
+  <div class="callout evidence">
+    <span class="label">Measured — MacBook darwin 25.5, zec.rocks:443</span>
+    <table>
+      <thead>
+        <tr><th>Run</th><th>Range</th><th>Wall-clock</th><th>Bound</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>G2 50k restore (birthday=3323435)</td><td>50,001 blocks</td><td><strong>32.4 s</strong></td><td>scan</td></tr>
+        <tr><td>G2 1M restore (birthday=2373435)</td><td>1,000,002 blocks</td><td><strong>317.2 s</strong></td><td>scan</td></tr>
+        <tr><td>G3 50k full-path (tip=3373526)</td><td>50,012 blocks / 33.3 MB</td><td><strong>30.4 s</strong> (fetch 1.1 / scan 30.0 / enhance 0.0)</td><td>scan</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>M1 / T5.6 era — first device runs (2026-06-11)</h3>
+
+  <div class="callout evidence">
+    <span class="label">Measured — user device, real wallet, ~268-269k blocks, 2026-06-11</span>
+    <table>
+      <thead>
+        <tr><th>Run</th><th>Slipstream</th><th>Old SDK</th><th>Ratio</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>M1 A/B (268,855 blocks, user device)</td><td>158 s</td><td>1,710 s</td><td><strong>10.8×</strong></td></tr>
+        <tr><td>T5.6 baseline iPad A10 (269,188 blk)</td><td>1,012.8 s total (scan 1003.8 s / fetch 19.6 s / enhance 0.83 s)</td><td>—</td><td>—</td></tr>
+      </tbody>
+    </table>
+    <p>T5.6 baseline: all UX fixes live (counter progress, no-summary-while-syncing, interleaved enhancement). Scan bound confirmed.</p>
+  </div>
+
+  <h3>T6.3b / T6.6 era — sparse tree (Mac, 2026-06-11)</h3>
+
+  <div class="callout evidence">
+    <span class="label">Measured — MacBook darwin 25.5, zec.rocks:443, TEST_UFVK, ~50k blocks</span>
+    <table>
+      <thead>
+        <tr><th>Run</th><th>Sparse OFF (scan_s)</th><th>Sparse ON (scan_s)</th><th>Ratio</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>T6.3 gate (NO-GO)</td><td>38.25 s</td><td>39.82 s</td><td>0.96× — NO-GO</td></tr>
+        <tr><td>T6.3b gate (checkpoint downgrade, GO)</td><td>34.63 s</td><td>6.85 s</td><td><strong>5.05×</strong> — GO</td></tr>
+        <tr><td>T6.4 mainnet oracle run</td><td>35.4 s</td><td>8.5 s</td><td>4.2× (oracle IDENTICAL)</td></tr>
+        <tr><td>T6.6 regression (default-ON)</td><td>39.47 s</td><td>7.49 s</td><td><strong>5.27×</strong></td></tr>
+        <tr><td>T6.8-L3a parallel tree work</td><td>—</td><td>6.73 s</td><td>~10% gain vs T6.6</td></tr>
+      </tbody>
+    </table>
+    <p>Per-chunk attribution T6.6: rows_ms 148–481 / tree_ms 526–648 / flush_ms 1 / downgraded 6168–6837 per chunk. T6.3 NO-GO: sparse without checkpoint downgrade is 4% <em>slower</em> — tree CPU dominates, not I/O.</p>
+  </div>
+
+  <h3>T6.7 era — device field runs with sparse tree (2026-06-12)</h3>
+
+  <div class="callout evidence">
+    <span class="label">Measured — T6.7 device field run, d6b4472f build, eu.zec.rocks, sparse=true</span>
+    <table>
+      <thead>
+        <tr><th>Device</th><th>Range</th><th>Total wall</th><th>scan_s</th><th>fetch_s</th><th>enhance_s</th><th>vs old SDK</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>iPad A10 6th Gen</td><td>269,491 blk</td><td><strong>9:21 (554.3 s)</strong></td><td>545.0 s</td><td>19.9 s</td><td>1.13 s</td><td>6.9× (was 1:04:26)</td></tr>
+        <tr><td>iPhone 16 Pro</td><td>269,501 blk</td><td><strong>1:35 (90.3 s)</strong></td><td>85.5 s</td><td>22.0 s</td><td>1.53 s</td><td>2.19× (was 3:28)</td></tr>
+      </tbody>
+    </table>
+    <p>Zingo beaten on both devices (11:34 / 2:41). Zkool gap: iPad +28 s (8:53), iPhone +22 s (1:13). G6 goal lines not yet crossed: engine 554 s vs &lt;533 s target; 90 s vs &lt;73 s target.</p>
+  </div>
+
+  <div class="callout evidence">
+    <span class="label">T6.7b — iPad A10 with manual server selection (L1 validated by hand)</span>
+    <p>Removing AutoServerSelection's mid-sync restart cost: <strong>8:30 wall (510 s)</strong>. iPad G6 goal line crossed (510 s &lt; 533 s). Zkool beaten on iPad (8:30 &lt; 8:53). The AutoServerSelection restart costs approximately 50 s on A10; T6.8-L1 made this automatic in Zodl.</p>
+  </div>
+
+  <h3>T6.8 era — sub-attribution and sandblasting (2026-06-12)</h3>
+
+  <div class="callout evidence">
+    <span class="label">T6.8 fresh-framework device re-run (iPad A10, ENGINE_BUILD verified, auto-server, 270,109 blocks)</span>
+    <p>9:09 wall (543.7 s scan). Per-pool attribution from device log: orchard tree ≈ 175 s (32%), rows ≈ 83 s (15%), decrypt + overhead ≈ 286 s (53%). Pools 90/10 lopsided (Sinsemilla vs Pedersen hash cost). L3a parallel tree true gain: −19 s vs the stale-framework 562 s run.</p>
+  </div>
+
+  <div class="callout evidence">
+    <span class="label">T6.8-S sandblasting acceptance (Mac, 600 s timed window, birthday=1,700,000, defaults)</span>
+    <p><strong>84,964 sandblasted blocks / 671 sub-chunks / 43,212,427 outputs traversed at ≈8.9k blk/min</strong> through the exact field-failure heights (1.735–1.785M). Plan chunks split into up to 131 sub-chunks / 1,032 MB per 10k blocks. Six server EOF cuts all resume-recovered. Zero timeout loops, zero sync failures. RSS 1.31→1.84 GB (Mac; device memory tuning still open).</p>
+  </div>
+
+  <h3>Per-chunk orchard tree sub-attribution (T6.8-L3b, Mac, 2026-06-12)</h3>
+
+  <div class="callout evidence">
+    <span class="label">T6.8-L3b two runs — TEST_UFVK, birthday=3325133, ~50k blocks, zec.rocks:443</span>
+    <table>
+      <thead>
+        <tr><th>Sub-bucket</th><th>Run 1 share</th><th>Run 2 share</th><th>Nature</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>build_ms</code></td><td>≈48%</td><td>≈48%</td><td>Intrinsic Merkle hashing — irreducible without algorithm change</td></tr>
+        <tr><td><code>frontier_ms</code></td><td>≈33%</td><td>≈33%</td><td>Fixed per-chunk cost (~146–204 ms/call); shardtree-0.6.2 <code>merge_checked</code> seam-blocked</td></tr>
+        <tr><td><code>insert_ms</code></td><td>≈15%</td><td>≈15%</td><td>Actual shard inserts (checkpoint churn already removed by T6.3b)</td></tr>
+        <tr><td><code>downgrade_ms + ensure_ms</code></td><td>0%</td><td>0%</td><td>Checkpoint downgrade cost is negligible</td></tr>
+      </tbody>
+    </table>
+    <p>The tail chunk (limit=1, no output building) pays frontier_ms ≈ 146–204 ms orchard / 48 ms sapling with build=insert≈0, proving frontier is a <em>fixed</em> per-call cost, not proportional to outputs. The 4× orchard:sapling ratio matches the Sinsemilla:Pedersen per-hash cost.</p>
+  </div>
+
+  <h2>17.3 Stage-split anatomy</h2>
+
+  <p>Stage-split instrumentation was added in T5.1 (P5 phase). Every <code>sync_once</code> completion emits a structured log line:</p>
+
+  <pre><code>engine sync stage split
+    total_s=NNN fetch_s=NNN scan_s=NNN enhance_s=NNN
+    blocks=NNN sparse=true engine_build=2026-06-13.walltime</code></pre>
+
+  <p>The <code>ENGINE_BUILD</code> tag appears in <em>every</em> stage-split line. A log without the expected tag means a stale framework ran.</p>
+
+  <p>Within each scan chunk, the sparse path additionally emits per-pool attribution:</p>
+
+  <pre><code>sparse put_blocks chunk=N
+    rows_ms=NNN tree_ms=NNN flush_ms=NNN downgraded=NNNN
+sparse orchard tree split chunk=N
+    downgrade_ms=0 build_ms=NNN frontier_ms=NNN insert_ms=NNN ensure_ms=0
+sparse sapling tree split chunk=N
+    downgrade_ms=0 build_ms=NNN frontier_ms=NNN insert_ms=NNN ensure_ms=0</code></pre>
+
+  <p>The per-pool split was added in T6.8-L3b and is emitted by all production builds. Future device logs carry the device's own sub-split without any additional instrumentation.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 380" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr17" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arrg17" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+        <marker id="arrw17" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+      </defs>
+
+      <!-- Timeline axis -->
+      <line x1="40" y1="60" x2="640" y2="60" stroke="#d8dee4" stroke-width="1"/>
+      <text x="40" y="52" text-anchor="middle" fill="#6e7781" font-size="10">0 s</text>
+      <text x="640" y="52" text-anchor="middle" fill="#6e7781" font-size="10">554 s (iPad T6.7)</text>
+
+      <!-- fetch bar -->
+      <text x="28" y="88" text-anchor="end" fill="#1a2333" font-size="11" font-weight="600">Fetch</text>
+      <rect x="40" y="70" width="19.9" height="22" rx="4" fill="#1f6feb" opacity="0.8"/>
+      <text x="75" y="85" fill="#6e7781" font-size="10">19.9 s (3.6%)</text>
+
+      <!-- scan bar (total 545 s out of 554) -->
+      <text x="28" y="118" text-anchor="end" fill="#1a2333" font-size="11" font-weight="600">Scan</text>
+      <rect x="40" y="100" width="545" height="22" rx="4" fill="#1a7f37" opacity="0.8"/>
+      <!-- sub-bars inside scan -->
+      <!-- decrypt+overhead 286s = 286/545 * 545 = 286 px -->
+      <rect x="40" y="100" width="286" height="22" rx="4" fill="#1a7f37" opacity="0.9"/>
+      <!-- orchard tree 175s -->
+      <rect x="326" y="100" width="175" height="22" rx="4" fill="#1a7f37" opacity="0.5"/>
+      <!-- rows 83s -->
+      <rect x="501" y="100" width="83" height="22" rx="4" fill="#1a7f37" opacity="0.3"/>
+      <!-- labels -->
+      <text x="183" y="115" text-anchor="middle" fill="white" font-size="10" font-weight="600">decrypt + overhead 286 s (52%)</text>
+      <text x="413" y="115" text-anchor="middle" fill="#1a2333" font-size="10">orch. tree 175 s (32%)</text>
+      <text x="542" y="115" text-anchor="middle" fill="#1a2333" font-size="10">rows 83 s (15%)</text>
+
+      <!-- per-chunk tree breakdown (zoom inset) -->
+      <rect x="326" y="135" width="175" height="1" stroke="#6e7781" stroke-dasharray="3,3" fill="none"/>
+      <line x1="326" y1="135" x2="280" y2="175" stroke="#6e7781" stroke-dasharray="3,3"/>
+      <line x1="501" y1="135" x2="500" y2="175" stroke="#6e7781" stroke-dasharray="3,3"/>
+
+      <!-- inset box: per-chunk tree breakdown -->
+      <rect x="280" y="175" width="220" height="90" rx="6" fill="#effaf1" stroke="#a8dcb2" stroke-width="1"/>
+      <text x="390" y="192" text-anchor="middle" fill="#1a2333" font-size="10" font-weight="700">Orchard tree / chunk (Mac avg ~500 ms)</text>
+      <!-- build 48% of 500 = 240 px → scaled to 210 wide -->
+      <rect x="290" y="200" width="101" height="14" rx="3" fill="#1a7f37" opacity="0.7"/>
+      <text x="341" y="211" text-anchor="middle" fill="white" font-size="9">build 48%</text>
+      <!-- frontier 33% of 500 = 69px scaled -->
+      <rect x="393" y="200" width="70" height="14" rx="3" fill="#1a7f37" opacity="0.45"/>
+      <text x="428" y="211" text-anchor="middle" fill="#1a2333" font-size="9">frontier 33%</text>
+      <!-- insert 15% of 500 = 32px -->
+      <rect x="465" y="200" width="29" height="14" rx="3" fill="#1a7f37" opacity="0.25"/>
+      <text x="480" y="211" text-anchor="middle" fill="#6e7781" font-size="9">ins 15%</text>
+      <text x="390" y="235" text-anchor="middle" fill="#6e7781" font-size="9">Sinsemilla hashing · seam-blocked frontier · SQLite inserts</text>
+      <text x="390" y="248" text-anchor="middle" fill="#b54708" font-size="9">downgrade+ensure = 0% (T6.3b already removed checkpoint churn)</text>
+
+      <!-- enhance bar -->
+      <text x="28" y="148" text-anchor="end" fill="#1a2333" font-size="11" font-weight="600">Enhance</text>
+      <rect x="40" y="130" width="1.13" height="22" rx="4" fill="#b54708" opacity="0.8"/>
+      <text x="50" y="145" fill="#6e7781" font-size="10">1.13 s (&lt;1%)</text>
+
+      <!-- stage-split log line annotation -->
+      <rect x="40" y="290" width="600" height="50" rx="6" fill="#f6f8fa" stroke="#d8dee4"/>
+      <text x="55" y="310" fill="#1a2333" font-size="10" font-family="ui-monospace, 'SF Mono', Menlo, monospace">engine sync stage split  total_s=554.3 fetch_s=19.9 scan_s=545.0</text>
+      <text x="55" y="326" fill="#1a2333" font-size="10" font-family="ui-monospace, 'SF Mono', Menlo, monospace">  enhance_s=1.13 blocks=269491 sparse=true engine_build=2026-06-13.walltime</text>
+
+      <!-- walltime stamps (T6.9 preview) -->
+      <text x="40" y="360" fill="#6e7781" font-size="10">Note: started_at_utc / finished_at_utc / failed_at_utc added in ENGINE_BUILD=2026-06-13.walltime</text>
+      <text x="40" y="373" fill="#6e7781" font-size="10">for unattended run timing from the log alone.</text>
+    </svg>
+    <figcaption>Figure 17.1 — iPad A10 T6.7 stage-split anatomy (269,491 blocks, 9:21 wall-clock, eu.zec.rocks). Top: fetch∥scan∥enhance timeline. Middle: scan internals — orchard tree decomposed into build/frontier/insert buckets per T6.8-L3b sub-attribution. Bottom: the exact stage-split log line produced by the engine at run completion. Source: STATE.md truth table row T6.7.</figcaption>
+  </figure>
+
+  <h2>17.4 How to reproduce a run</h2>
+
+  <h3>Fetch benchmark (CLI)</h3>
+
+  <pre><code>cargo run -p slipstream-cli --release -- fetch \
+  --server https://zec.rocks:443 \
+  --range 3200000..3250000 \
+  --streams 4 \
+  --chunk 10000</code></pre>
+
+  <p>This reproduces the G1 canonical K=4 rows. Change <code>--streams 8</code> and <code>--chunk 5000</code> for the K=8 series. Ratio variance of ±1× is normal due to server-side throttling — record multiple runs.</p>
+
+  <h3>Full sync (CLI)</h3>
+
+  <pre><code>cargo run -p slipstream-cli --release -- sync \
+  --server https://zec.rocks:443 \
+  --wallet-dir /tmp/my-sync-wallet \
+  --ufvk &lt;TEST_UFVK&gt; \
+  --birthday 3324467 \
+  --sparse true</code></pre>
+
+  <p>The engine prints a stage-split summary at completion. Verify <code>engine_build=&lt;current-tag&gt;</code> in the output before recording numbers.</p>
+
+  <h3>Oracle A/B comparison</h3>
+
+  <pre><code>cargo run -p slipstream-cli --release -- oracle \
+  --server https://zec.rocks:443 \
+  --wallet-a /tmp/t64-oa \
+  --wallet-b /tmp/t64-ob \
+  --sparse-b \
+  --ufvk &lt;TEST_UFVK&gt; \
+  --birthday 3324435</code></pre>
+
+  <p>Runs Path A (upstream) and Path B (sparse Slipstream) against the same range, then prints <code>VERDICT IDENTICAL</code> or a diff table. The oracle CLI is the correctness gate; the performance numbers come from the <code>scan_s</code> values the same run emits.</p>
+
+  <h2>17.5 What the numbers do not prove</h2>
+
+  <div class="callout warning">
+    <span class="label">Honest limitations</span>
+    <ul>
+      <li>The iPad A10 8:30 (T6.7b) result was achieved with <em>manual server selection</em> to avoid the AutoServerSelection restart cost. The automatic-server result was 9:21. This distinction is preserved in the truth table and must not be collapsed.</li>
+      <li>All Mac numbers are on a darwin 25.5 MacBook with M-series silicon. They do not extrapolate to A10-class (2-core, 2 GB RAM) devices.</li>
+      <li>Server load on zec.rocks varies. Fetch ratios ranging from 1.06× to 3.86× in the same G1 series prove this. Any single-run fetch ratio is not a stable benchmark.</li>
+      <li>The sandblasting acceptance (8.9k blk/min) was measured on Mac. A10-class device memory budgets for the spam era (1.7M–2.0M) are an open blocker — see ch. 19.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <a href="16-exploitability.html">← 16. Exploitability Review</a>
+    <a href="18-tests.html">18. Test &amp; Verification Matrix →</a>
+  </nav>
+  <footer class="colophon">Citations as of commit 7eff661e. Performance numbers from STATE.md truth table, reproduced verbatim with era-of-measurement noted.</footer>
+</main>
+</body>
+</html>

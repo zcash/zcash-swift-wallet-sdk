@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>20 · Glossary &amp; Decision Digest — The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part V — Evidence &amp; Process</p>
+  <h1>20. Glossary &amp; Decision Digest</h1>
+  <p class="meta">Part V — Evidence &amp; Process &nbsp;·&nbsp; estimated reading time: 18 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>Two reference sections in one place. The Glossary gives the precise meaning of every term of art as used in this project — some terms have standard Zcash meanings that the engine uses differently. The Decision Digest gives D1–D9 (the locked strategic decisions) plus the major dated decisions from the STATE.md decision log, each with a one-paragraph rationale and a STATE.md date pointer.</p>
+  </div>
+
+  <h2>20.1 Glossary</h2>
+
+  <table>
+    <thead>
+      <tr><th>Term</th><th>Precise meaning as used in this project</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>AheadGate</strong></td>
+        <td>A semaphore-based admission-control structure in <code>fetch.rs</code> that limits how far non-floor fetch workers can run ahead of the reorder release point. Default budget: 8× <code>chunk_split_bytes</code> = 64 MiB. The floor plan chunk (the one currently being consumed by the scan side) is exempt and always streams freely. Without AheadGate, K−1 workers each streaming a multi-hundred-MB spam-era chunk would park hundreds of MB in the reorder buffer simultaneously. Added in T6.8-S.</td>
+      </tr>
+      <tr>
+        <td><strong>always-green</strong></td>
+        <td>The discipline that <code>cargo test -p slipstream-core -p slipstream-cli</code> and <code>swift test --filter OfflineTests</code> must pass before and after every commit on the <code>slipstream</code> branch. A commit is the unit of resumability; no commit may break the test baseline. Defined in CONVENTIONS.md.</td>
+      </tr>
+      <tr>
+        <td><strong>byte budget</strong></td>
+        <td>The memory bound placed on the in-memory chunk queue: the queue blocks producers when the total estimated byte size of queued chunks exceeds this limit. Configured via <code>EngineConfig::memory_budget_bytes</code>. Separate from the AheadGate (which bounds the reorder buffer, not the downstream queue). Both exist because the engine has two places where unbounded accumulation is possible.</td>
+      </tr>
+      <tr>
+        <td><strong>checkpoint window</strong></td>
+        <td>The set of the newest 100 distinct checkpoint IDs retained by the commitment tree after pruning. "100" comes from <code>PRUNING_DEPTH = 100</code> in <code>zcash_client_backend ll/wallet.rs:52</code>. The checkpoint window determines which blocks can serve as reorg rollback points. This definition mirrors upstream exactly.</td>
+      </tr>
+      <tr>
+        <td><strong>checkpoint downgrade</strong></td>
+        <td>The T6.3b optimization in <code>persist.rs</code> that pre-converts doomed <code>Retention::Checkpoint</code> values to <code>Marked</code> or <code>Ephemeral</code> before they enter the in-memory ShardTree, skipping the ~9,900 create-then-prune checkpoint operations per 10k-block chunk. The resulting shard blobs are byte-identical to what upstream produces after its own prune cycle — proved by the golden oracle at three scale levels.</td>
+      </tr>
+      <tr>
+        <td><strong>chunk (plan chunk)</strong></td>
+        <td>A contiguous range of blocks returned by <code>suggest_scan_ranges</code> and assigned to one fetch-worker slot by the scheduler. Default size: 10,000 blocks. A plan chunk may be split into multiple sub-chunks by the byte-budget splitter in dense eras. The Chunk struct in <code>chunk.rs</code> carries the accumulated blocks from one (plan) chunk's fetch plus its estimated byte size and continuity metadata.</td>
+      </tr>
+      <tr>
+        <td><strong>chunk index</strong></td>
+        <td>The dense sequential integer assigned to chunks as they exit the reorder buffer and enter the scan queue. Starts at 0 for the first chunk of each pass. Sub-chunks inherit the plan chunk's index; the scan side sees a flat dense stream.</td>
+      </tr>
+      <tr>
+        <td><strong>ChainState</strong></td>
+        <td>The commitment-tree frontier state returned by <code>GetTreeState</code> and accepted by <code>scan_cached_blocks</code> as its starting point for each chunk boundary. It encodes the Sapling and Orchard tree sizes and a commitment at the start height. Slipstream fetches one <code>ChainState</code> per chunk boundary via <code>get_tree_state</code> (with retry in <code>retry_get_tree_state</code> since T6.8-H2). The alternative — deriving it locally — was rejected in T2.3 because <code>zcash_client_sqlite</code> exposes no frontier read API.</td>
+      </tr>
+      <tr>
+        <td><strong>darkside</strong></td>
+        <td>A special mode of lightwalletd (invoked with <code>--darkside-very-insecure</code>) that allows a test harness to stage arbitrary blocks and transactions. Used by the 10 darkside integration tests. NOT a production path. Enabled in slipstream-core behind the <code>darkside</code> cargo feature flag; all darkside tests are <code>#[ignore]</code> so they never run in CI's plain <code>cargo test</code>.</td>
+      </tr>
+      <tr>
+        <td><strong>differ</strong></td>
+        <td>The <code>semantic_diff</code> function in <code>oracle.rs</code> that compares two wallet databases as canonical row multisets. It uses schema union (both databases contribute to the table list), column-level allowlist filtering, and canonical value encoding (NULL, integers as decimal, blobs as hex). A "VERDICT IDENTICAL" result means every non-allowlisted row in every table matches exactly.</td>
+      </tr>
+      <tr>
+        <td><strong>ENGINE_BUILD</strong></td>
+        <td>A string constant in <code>slipstream/core/src/engine.rs:25</code> (currently <code>"2026-06-13.walltime"</code>) logged at every sync start and in every stage-split line. Used to verify that the device is running the expected engine binary, not a stale XCFramework slice. Must be bumped on every performance-relevant engine change. See the stale-framework incident in ch. 17.</td>
+      </tr>
+      <tr>
+        <td><strong>frontier</strong></td>
+        <td>In the Zcash commitment tree, the path from the last committed leaf to the root. In Slipstream's context, <code>insert_frontier</code> (inside the sparse tree path in <code>persist.rs</code>) inserts the frontier annotation at the start of each chunk — the REFERENCE checkpoint that marks the boundary between "fully scanned" and "pending" in the ShardTree. This call has a fixed per-chunk cost (~100–204 ms orchard) caused by the <code>merge_checked</code> redundant-hashing issue documented in ch. 19.</td>
+      </tr>
+      <tr>
+        <td><strong>hermetic</strong></td>
+        <td>A test that runs without any external dependencies: no network, no lightwalletd, no SQLite on disk. All unit tests in <code>slipstream-core</code> and <code>slipstream-cli</code> are hermetic by default. The stress binary is also hermetic (it uses in-memory structures only). Contrasted with "darkside" (requires local lightwalletd) and "mainnet" (requires internet + public server).</td>
+      </tr>
+      <tr>
+        <td><strong>LOCAL-ONLY</strong></td>
+        <td>The user decision (2026-06-10, Decision Log) that the Slipstream branch is never pushed to any remote, no remote issues or PRs are created, and the prototype exists only on this machine. Lifted only by explicit user instruction. Commits use <code>[#1755]</code> as a local-only marker (GitHub never reuses issue numbers; #1755 was scrubbed on the remote).</td>
+      </tr>
+      <tr>
+        <td><strong>oracle</strong></td>
+        <td>The correctness verification system comprising: the differ (<code>semantic_diff</code>), the hermetic synthetic oracle tests (in <code>oracle.rs</code> and <code>persist.rs</code>), the darkside oracle tests, and the CLI <code>oracle</code> subcommand that runs Path A (upstream) vs. Path B (Slipstream sparse) and prints "VERDICT IDENTICAL" or a diff. Three scale levels: hermetic (always-green), darkside (real notes), mainnet (50k+ real blocks). See ch. 13 for the full design.</td>
+      </tr>
+      <tr>
+        <td><strong>pass</strong></td>
+        <td>One invocation of <code>sync_once</code> in the FFI runner. A pass: fetches the chain tip, runs the full <code>suggest_scan_ranges</code> → fetch∥scan → enhance cycle, then completes with <code>SyncState::Done</code> or <code>SyncState::Error</code>. Ratio-type progress counters (<code>scanned</code>, <code>fetched</code>, <code>pass_total</code>) reset at the start of each pass (via <code>begin_pass()</code>). Monotonic counters (<code>enhanced_txs</code>, <code>ranges_completed</code>, <code>reorgs_recovered</code>) persist across passes for the lifetime of the handle.</td>
+      </tr>
+      <tr>
+        <td><strong>plan chunk</strong></td>
+        <td>See "chunk (plan chunk)". The "plan" prefix distinguishes a full <code>suggest_scan_ranges</code> assignment from a sub-chunk produced by the byte-budget splitter. A plan chunk's sub-chunks share the same <code>plan_index</code>.</td>
+      </tr>
+      <tr>
+        <td><strong>range</strong></td>
+        <td>A contiguous scan assignment with an associated priority. Three priorities matter: <code>ScanPriority::ChainTip</code> (the most recent blocks, scanned first for spend-before-sync), <code>ScanPriority::Historic</code> (older ranges filled in afterwards), <code>ScanPriority::Verify</code> (continuity-check ranges at reorg boundaries, processed before all others). Priority ordering comes from <code>suggest_scan_ranges</code> — Slipstream does not decide priority, it follows the upstream scheduler.</td>
+      </tr>
+      <tr>
+        <td><strong>ratio vs delta counters</strong></td>
+        <td>The two counter classes in the progress surface (T5.5/T5.6 design). Ratio counters (<code>scanned_blocks</code>, <code>fetched_blocks</code>, <code>pass_total</code>, <code>range_end</code>, <code>spendable</code>) are used for the 0–100% progress display and reset at each <code>begin_pass()</code> so restarts show honest remaining progress. Delta counters (<code>enhanced_txs</code>, <code>ranges_completed</code>, <code>reorgs_recovered</code>) are monotonic per handle lifetime, never reset, and used by Swift's <code>lastEnhancedCount</code>-style strict-greater comparisons for events like <code>foundTransactions</code>.</td>
+      </tr>
+      <tr>
+        <td><strong>SbS (Spend-before-Sync)</strong></td>
+        <td>The scheduler strategy where <code>ChainTip</code>-priority ranges are scanned first. Because the most recent blocks are where the wallet's own notes most likely appear as spendable, scanning these before the historic backfill lets the wallet report a spendable balance much earlier than a strictly-sequential scan would allow. Implemented via upstream's <code>suggest_scan_ranges</code> priority ordering — not a Slipstream-specific feature, but central to why ChainTip ranges trigger the spendable latch.</td>
+      </tr>
+      <tr>
+        <td><strong>shard / SHARD_HEIGHT</strong></td>
+        <td>In the Zcash commitment tree, a subtree of height <code>SHARD_HEIGHT</code> that is stored as a unit. The Sapling and Orchard shard heights are defined by <code>SAPLING_SHARD_HEIGHT</code> and <code>ORCHARD_SHARD_HEIGHT</code> from <code>zcash_client_backend</code> (imported in <code>persist.rs:28</code>). The sparse tree implementation uses a <code>SparseShardStore</code> that only loads the shards needed for the current chunk rather than the full tree.</td>
+      </tr>
+      <tr>
+        <td><strong>spendable latch</strong></td>
+        <td>A flag in the progress surface (<code>FfiSlipstreamSnapshot::spendable</code>) that is set to true when a <code>ChainTip</code>-priority range completes scanning. Once set, it is never cleared within a pass. Its role: tell the Swift layer to refresh the wallet summary immediately, so the user sees their spendable balance as soon as the most-recent blocks are scanned, without waiting for the full historic backfill to complete. Implemented in <code>scheduler.rs:303-309</code>.</td>
+      </tr>
+      <tr>
+        <td><strong>SparseShardStore</strong></td>
+        <td>The in-memory <code>ShardStore</code> implementation defined in <code>persist.rs</code> (T6.3–T6.4). Instead of reading and writing every shard to SQLite on each chunk, it seeds from the current stored shards at pass start and accumulates all mutations in memory. A single transactional flush writes the changed shards at chunk commit. The "sparse" label means only shards touched by the current chunk are loaded — not the full tree.</td>
+      </tr>
+      <tr>
+        <td><strong>sub-chunk</strong></td>
+        <td>A slice of a plan chunk produced by the <code>ChunkSplitter</code> in <code>fetch.rs</code>. Sub-chunks have a maximum byte size of <code>chunk_split_bytes</code> (default 8 MiB). Each sub-chunk carries a <code>(plan_index, sub_index)</code> tuple and an <code>is_last</code> flag. The per-sub-chunk 120 s deadline replaces the old per-chunk 120 s deadline so that spam-era chunks with 1+ GB of wire data can never time out. The scan side sees sub-chunks as ordinary chunks (dense <code>Chunk.index</code>).</td>
+      </tr>
+      <tr>
+        <td><strong>three-layer gotcha</strong></td>
+        <td>The build chain: Zodl → SDK (local package) → Rust (prebuilt XCFramework). Xcode never compiles Rust; it uses the prebuilt <code>LocalPackages/libzcashlc.xcframework</code>. A Rust change that is not followed by <code>./Scripts/init-local-ffi.sh</code> + SPM cache reset + Xcode rebuild produces a device running the old binary. The <code>ENGINE_BUILD</code> tag is the detection mechanism. Defined in CONVENTIONS.md.</td>
+      </tr>
+      <tr>
+        <td><strong>treestate</strong></td>
+        <td>The server's commitment-tree state at a specific block height, returned by the <code>GetTreeState</code> gRPC RPC. Slipstream fetches one treestate at the start of each scan chunk (with retry since T6.8-H2). The treestate seeds <code>scan_cached_blocks</code>'s <code>from_state</code> parameter. The server's treestate is trusted-then-verified: the subsequent scan's continuity checks will detect any divergence between the server's claimed state and what the blocks actually produce.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>20.2 Decision Digest — D1–D9 (locked)</h2>
+
+  <p>These nine decisions were locked on 2026-06-10 and may not be re-litigated without a Decision Log entry in STATE.md. They are the architectural invariants that all subsequent design choices must respect.</p>
+
+  <table>
+    <thead>
+      <tr><th>#</th><th>Decision</th><th>Rationale (one paragraph)</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>D1</strong></td>
+        <td>Engine lives in this repo as <code>slipstream/core</code> and <code>slipstream/cli</code>. All new work lives under <code>slipstream/</code> (code) and <code>docs/slipstream/</code> (docs). Permitted exceptions: root <code>Cargo.toml</code> workspace lines, <code>CLAUDE.md</code> pointer, P4 FFI exports in <code>rust/src/lib.rs</code>, P4 Swift files under <code>Sources/ZcashLightClientKit/Slipstream/</code>.</td>
+        <td>Sharing the same repo means sharing the exact <code>zcash_client_sqlite</code> and <code>zcash_client_backend</code> crate versions — two separately-compiled static libraries including the same crate would collide in the iOS binary linker. It also reuses the XCFramework pipeline, the darkside test infrastructure, and the bundled checkpoints. The containment rule keeps old-SDK and Slipstream code unmixable, so a session working on Slipstream cannot accidentally break the old sync path. Amended 2026-06-10: includes <code>Tests/OfflineTests/Slipstream*</code> and <code>Tests/DarksideTests/Slipstream*</code> as enumerated exceptions.</td>
+      </tr>
+      <tr>
+        <td><strong>D2</strong></td>
+        <td>"Upstream brain, Slipstream body." Parallel tonic fetchers → bounded in-memory chunk queue → upstream <code>scan_cached_blocks</code> over a custom in-memory <code>BlockSource</code> → unchanged <code>data.db</code> schema.</td>
+        <td>De-risking correctness for M1 was the overriding constraint. Using upstream's audited <code>scan_cached_blocks</code> means every note scanning, nullifier computation, and balance derivation is identical to the reference implementation — no custom kernel was needed to achieve the 6.9× speedup. The architectural bottlenecks (disk cache, serial fetch, connection churn, checkpoint churn) were all in the orchestration layer, not the cryptographic primitives.</td>
+      </tr>
+      <tr>
+        <td><strong>D3</strong></td>
+        <td>The wallet data model does not change. The engine writes through <code>zcash_client_sqlite</code> into the same <code>data.db</code>; the coverage ledger is the existing scan-queue in that database.</td>
+        <td>A user constraint with correctness consequences: the upstream wallet brain (spend path, PCZT, summaries, key derivation) continues to read and write the same <code>data.db</code>. Any silent schema divergence would corrupt spend state or balances with no error surfacing at write time. The golden oracle (ch. 13) enforces this constraint mechanically — "VERDICT IDENTICAL" on every persistence change is the D3 enforcement gate.</td>
+      </tr>
+      <tr>
+        <td><strong>D4</strong></td>
+        <td>Swift seam = new <code>SlipstreamSynchronizer: Synchronizer</code> (additive file), implementing the ~10 sync members on the engine and delegating the ~40 data-model members to existing SDK components via the existing <code>DIContainer</code>.</td>
+        <td>Zodl's dependency client already parameterizes on the <code>Synchronizer</code> protocol. Implementing the same protocol means zero app-surface change — the wallet team swaps synchronizer implementations behind a compile-time flag without touching any feature code. The delegation strategy for data-model members avoids duplicating the transaction, balance, and key derivation logic that the old SDK already implements correctly.</td>
+      </tr>
+      <tr>
+        <td><strong>D5</strong></td>
+        <td>CLI-first development. Every engine capability lands and is verified in <code>slipstream-cli</code> on macOS (<code>cargo test</code> + darkside lightwalletd) before any Xcode involvement. Phases 1–3 require no Xcode at all.</td>
+        <td>macOS + cargo gives a deterministic, fast iteration loop. Xcode adds build-time indirection (SPM, XCFramework, code signing) that makes failures ambiguous. The CLI-first approach means every correctness and performance regression is surfaced by a hermetic <code>cargo test</code> invocation before the slower Xcode rebuild cycle begins. Performance benchmarks are CLI subcommands (reproducible in any session, from any machine with cargo).</td>
+      </tr>
+      <tr>
+        <td><strong>D6</strong></td>
+        <td>Engine is keyless: accepts UFVKs only; spend authority never enters the engine.</td>
+        <td>Security posture from the original design document. The engine is a scanner, not a signer. Keeping spend keys out of the Rust engine boundary means a bug in the engine cannot exfiltrate private keys. Spend authority lives entirely in the old SDK's Swift/Rust signing path, which the Slipstream engine never touches.</td>
+      </tr>
+      <tr>
+        <td><strong>D7</strong></td>
+        <td>Engine owns a multi-thread tokio runtime per instance, created at <code>zcashlc_slipstream_open</code> and live until <code>zcashlc_slipstream_free</code> drops the <code>Box&lt;SlipstreamHandle&gt;</code>. <code>stop()</code> cancels only the sync task; the runtime remains for the next <code>start()</code>.</td>
+        <td>Mirrors the <code>TorRuntime</code> precedent in <code>rust/src/lib.rs</code>. Per-start runtime creation was rejected: it would leak tasks in flight if <code>stop()</code> raced with <code>start()</code>, and would make <code>snapshot()</code>/<code>drain_events()</code> unavailable between start/stop cycles. The runtime's lifetime matches the handle's lifetime — the handle is the session. Amended 2026-06-11 (T4.1): the tokio runtime is created at open, not at start.</td>
+      </tr>
+      <tr>
+        <td><strong>D8</strong></td>
+        <td>iOS FFI is poll-based: Swift drains an event ring and reads an atomic snapshot on its own cadence. No cross-FFI progress callbacks.</td>
+        <td>Callbacks from Rust into Swift across the FFI boundary require careful lifetime management and are fragile under iOS app lifecycle events (suspend/resume, background transfer limits). The poll-based design matches existing zcashlc patterns, is restart-safe (a tick after a stop/start cycle sees a clean snapshot), and avoids the thundering-herd problem of many concurrent Rust callbacks during active sync. The 2 s poll cadence (configured in Swift) is sufficient for UX progress updates.</td>
+      </tr>
+      <tr>
+        <td><strong>D9</strong></td>
+        <td>Branch: <code>slipstream</code> off <code>main</code> in this repo; mirrored <code>slipstream</code> branch in Zodl iOS. All commits <code>[#1755] slipstream: &lt;title&gt;</code>. <code>main</code> is never broken. LOCAL-ONLY: no pushes/issues/PRs to any remote until the user lifts it.</td>
+        <td>User decision 2026-06-10. The LOCAL-ONLY clause was added because the prototype may not be ready for public scrutiny. Publishing a half-built sync engine to the upstream ZcashLightClientKit repository could confuse integrators and invite premature adoption. The <code>[#1755]</code> commit tag is a local-only marker — issue #1755 was scrubbed and closed on the remote after being created in error; GitHub never reuses issue numbers, so the tag is safe as a local identifier.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>20.3 Decision Digest — major dated decisions</h2>
+
+  <h3>Upstream-brain facade pivot (T6.0, 2026-06-11)</h3>
+  <p>The original P6 plan sketched injecting a custom <code>WalletRead+WalletWrite</code> facade at the <code>scan_block</code> level. Source recon falsified this: <code>scan_block</code> is a <code>pub(crate)</code>-level path; <code>ScannedBlock</code> and <code>Nullifiers</code> are not publicly constructible; <code>BatchRunners</code> is <code>pub(crate)</code>. The correct injection point is <code>put_blocks</code> — called once per chunk by <code>scan_cached_blocks</code> after all scanning is done, with the write-set fully constructed. The facade overrides only <code>put_blocks</code>; everything else (scan, balance, PCZT) calls through to upstream unmodified. Source: STATE.md P6 T6.0 notes.</p>
+
+  <h3>Checkpoint downgrade GO/NO-GO reversal (T6.3b, 2026-06-11)</h3>
+  <p>T6.3 measured sparse-tree persistence as 4% <em>slower</em> than the baseline (ratio 0.96, NO-GO). The root cause was incorrectly attributed to flush I/O; it was actually upstream's checkpoint-churn algorithm — one <code>Retention::Checkpoint</code> per scanned block, ~10,000 per chunk, pruned back to 100 on every <code>insert_tree</code> call. T6.3b introduced checkpoint downgrade (pre-converting doomed checkpoints before tree insertion) and measured a 5.05× speedup (GO). The identity argument required verifying that the per-pool doomed-checkpoint cutoff equals exactly the minimum of the newest-100 retained IDs (not a simpler fixed-height cutoff), that the full pre-downgrade position maps are passed to <code>ensure_checkpoints</code>, and that <code>CHECKPOINT</code> flags do not block <code>unite</code>-merging. Source: STATE.md Decision Log 2026-06-11 T6.3b entry.</p>
+
+  <h3>Counter-based progress (T5.5/T5.6, 2026-06-11)</h3>
+  <p>Early progress implementations used <code>getWalletSummary()</code> on every tick — a blocking multi-SQL call that took 10–30 s mid-scan on A10 hardware, causing the UI to show 0% for a long time then jump. The fix decoupled progress into two counter classes (ratio vs delta, D7-extended) and moved the progress computation to cheap atomics read on every 2 s tick. The <code>set_pass_total</code> design stores the complete denominator atomically (not accumulated per-range, which caused a snap-back from 100% to 60% on re-suggest). Source: STATE.md Decision Log 2026-06-11 T5.6 entry.</p>
+
+  <h3>Non-fatal interleaved enhancement (T5.6 review, 2026-06-11)</h3>
+  <p>Per-range <code>run_enhancement</code> calls in the scheduler are deliberately non-fatal: a transient gRPC stall at a range boundary produces a warning log and continues rather than aborting the pass. The rationale: the FFI runner is single-shot (<code>sync_once</code> error → state Error → sync halts until app lifecycle restarts); a transient blip at an enhancement call must not abort a 16-minute A10 restore. The final post-loop enhancement backstop is the correctness guarantee; the per-range calls are a UX optimization for progressive transaction visibility. Source: STATE.md Decision Log 2026-06-11 T5.6 review.</p>
+
+  <h3>Per-pass counter reset (T5.6 review, 2026-06-11)</h3>
+  <p>Ratio counters reset at the start of each pass via <code>begin_pass()</code>; delta counters do not. This distinction is load-bearing for interruption-resume correctness: the handle outlives passes (prepare() opens once; stop()/start() reuse it), and Swift's <code>lastEnhancedCount</code>-style comparisons use strict-greater-than against a per-handle monotonic counter. Resetting delta counters would break foundTransactions emission and boundary-summary triggers on resumed passes. Source: STATE.md Decision Log 2026-06-11 T5.6 review.</p>
+
+  <h3>Byte-budget splitting design (T6.8-S, 2026-06-12)</h3>
+  <p>The sandblasting era (mainnet ~1.70M–2.00M) carries up to 2.5M outputs per 10k blocks ≈ 1 GB wire. A density-adaptive fix was chosen over a hardcoded height threshold: the <code>ChunkSplitter</code> in <code>fetch.rs</code> emits sub-chunks of at most <code>chunk_split_bytes</code> bytes, keyed by <code>(plan_index, sub_index, is_last)</code>, with per-sub-chunk 120 s deadline reset and resume-from-height retry (already-emitted heights structurally cannot be re-sent). The hardcoded alternative was rejected because the spam era's boundaries are irregular, future chain events may create similar density elsewhere, and hardcoded heights are a maintenance liability. Source: STATE.md T6.8-S session log 2026-06-12.</p>
+
+  <h3>Retry ladder tiers (T6.8-H2, 2026-06-12)</h3>
+  <p>Three retry tiers exist at different granularities: (1) sub-chunk stream retries in the fetch path — worker reconnects and resumes from the last emitted height (T6.8-S); (2) scan-path treestate retries via <code>retry_get_tree_state</code> — 3 total attempts, reconnect on each, 1 s / 3 s backoff (T6.8-H2); (3) pass-level bounded retry in the FFI runner — <code>PASS_RETRY_MAX=2</code> (3 total attempts), 5 s / 15 s sleep, only <code>is_transient=true</code> errors (T6.8-H2). The tiers are independent and complementary: tier 1 handles fetch-path stream stalls; tier 2 handles scan-path treestate stalls within a pass; tier 3 handles pass-level failures that tiers 1–2 could not absorb. Source: STATE.md T6.8-H2 session log 2026-06-12.</p>
+
+  <h3>L2 seam confirmed blocked (T6.8-L3a gate, 2026-06-12)</h3>
+  <p>The L2 row-batching optimization (raw-SQL multi-row INSERT into the live <code>WalletDb</code> transaction) was confirmed seam-blocked by source inspection: <code>zcash_client_sqlite</code> 0.21's <code>WalletDb::transactionally</code> closure exposes a private <code>conn: C</code> field with no public accessor (<code>lib.rs:270</code>). No <code>pub fn conn()</code>, <code>pub fn raw_conn()</code>, <code>as_rusqlite()</code>, or <code>inner()</code> methods exist. Resolution requires an upstream patch or a vendored fork. The estimated speedup (~8–80 s on device) justifies pursuing upstream engagement. Source: STATE.md Decision Log 2026-06-12.</p>
+
+  <nav class="book">
+    <a href="19-gaps-roadmap.html">← 19. Known Gaps &amp; Roadmap</a>
+    <a href="index.html">Contents →</a>
+  </nav>
+  <footer class="colophon">Citations as of commit 7eff661e. Decision rationales sourced from ROADMAP.md (D1–D9) and STATE.md decision log (dated entries). Code references verified at HEAD.</footer>
+</main>
+</body>
+</html>

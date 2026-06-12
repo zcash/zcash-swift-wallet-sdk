@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>18 · Test &amp; Verification Matrix — The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part V — Evidence &amp; Process</p>
+  <h1>18. Test &amp; Verification Matrix</h1>
+  <p class="meta">Part V — Evidence &amp; Process &nbsp;·&nbsp; estimated reading time: 12 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>Slipstream maintains seven distinct test suites: slipstream-core unit tests (~119 hermetic), slipstream-cli tests (19), the stress binary (1 test, 120 joins), the hermetic oracle set (7 cases including dense/split, determinism, and mutation tests), darkside serial integration (10 named tests), OfflineTests (475 total, including 56 Slipstream-specific tests), and clippy-zero on both feature sets. This chapter gives each suite a row in the verification matrix, names exactly what failure class each suite would catch, lists the 10 darkside tests by name, gives the exact commands from CONVENTIONS.md, and explains the always-green discipline that ties commits to test state. It ends with the landmine list.</p>
+  </div>
+
+  <h2>18.1 The always-green discipline</h2>
+
+  <p>Every commit in the <code>slipstream</code> branch must contain: the work, its tests passing, and a STATE.md update. The unit of resumability is the commit — not the PR, not the day. The rule from CONVENTIONS.md:</p>
+
+  <div class="callout note">
+    <span class="label">Always-green commands (before and after every commit)</span>
+    <pre><code>cargo test -p slipstream-core -p slipstream-cli      # engine tests (fast)
+swift test --filter OfflineTests                      # old SDK untouched (CI parity)</code></pre>
+    <p>The cargo line runs before and after every commit. The Swift line is required at every phase gate and whenever a commit touches anything outside <code>slipstream/</code> + <code>docs/</code>. Pure slipstream-internal Rust commits may skip it.</p>
+  </div>
+
+  <p>Heavier checks run when the touched area demands it:</p>
+
+  <pre><code># After any Cargo/workspace/FFI change:
+./Scripts/init-local-ffi.sh --macos-only
+
+# Darkside integration — SERIAL ONLY — needs local lightwalletd:
+cargo test -p slipstream-core --features darkside \
+  -- --ignored --test-threads=1</code></pre>
+
+  <div class="callout warning">
+    <span class="label">Darkside SERIAL-only warning</span>
+    <p>The darkside lightwalletd server carries shared state. Running darkside tests in parallel causes race conditions where one test's <code>ResetDarkside</code> call interferes with another test's staged chain. Always use <code>--test-threads=1</code>. This is the most common source of spurious darkside failures in new sessions.</p>
+  </div>
+
+  <h2>18.2 Verification matrix</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Suite</th>
+        <th>Count (at HEAD)</th>
+        <th>Run command</th>
+        <th>What it gates</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>slipstream-core unit tests</strong></td>
+        <td>118 + 1 ignored (127 total including retry tests counted separately)</td>
+        <td><code>cargo test -p slipstream-core</code></td>
+        <td>Hermetic logic contracts: chunk/split ordering, fetch/reorder/continuity, oracle differ, sparse persistence, scheduler counters, retry semantics, treestate operations, event ring, FFI handle, stall watchdog helpers. State: no external dependencies.</td>
+      </tr>
+      <tr>
+        <td><strong>slipstream-cli tests</strong></td>
+        <td>19</td>
+        <td><code>cargo test -p slipstream-cli</code></td>
+        <td>CLI argument parsing correctness, validation rules (<code>--ufvk</code> requires <code>--birthday</code>, server URI format, range bounds), oracle subcommand wiring. Catches integration regressions where CLI flags stop reaching the engine.</td>
+      </tr>
+      <tr>
+        <td><strong>Stress binary</strong></td>
+        <td>1 (120 rayon joins)</td>
+        <td><code>cargo test -p slipstream-core --features darkside -- --ignored sparse_join_stress_no_deadlock_under_constrained_pools</code></td>
+        <td>Proves rayon::join inside <code>sparse_put_blocks</code> cannot deadlock or livelock under constrained thread pools (1-thread local, 2-thread local, cold-injection into 2-thread global tokio). 120 joins under watchdog-bounded timeout (240 s). This test exonerated rayon::join from causing the 3.7% freeze; it must stay green.</td>
+      </tr>
+      <tr>
+        <td><strong>Hermetic oracle set</strong></td>
+        <td>7 cases in <code>oracle.rs</code> + <code>persist.rs</code></td>
+        <td><code>cargo test -p slipstream-core</code> (included in unit run)</td>
+        <td>Correctness of the sparse persistence path against upstream at scale: <code>sparse_path_matches_upstream_on_synthetic_chain</code> (3×1000 blk, checkpoint-prune fires every chunk, cross-chunk carry), <code>split_chunking_matches_upstream_on_dense_chain</code> (dense sandblasting splitter), mutation tests (<code>identical_dbs_diff_clean</code>, <code>row_delta_is_detected</code>, <code>duplicate_row_multiplicity_is_detected</code>, <code>missing_table_is_detected</code>). Mutation tests prove the oracle itself cannot lie. See ch. 13 for the full differ design.</td>
+      </tr>
+      <tr>
+        <td><strong>Darkside serial — 10 tests</strong></td>
+        <td>10 (listed by name below)</td>
+        <td><code>cargo test -p slipstream-core --features darkside -- --ignored --test-threads=1</code></td>
+        <td>End-to-end integration with a real lightwalletd (darkside mode): block staging, sync, enhancement, reorg recovery, oracle correctness, transport robustness. Requires a running lightwalletd instance — see §18.4 below.</td>
+      </tr>
+      <tr>
+        <td><strong>OfflineTests (total SDK)</strong></td>
+        <td>475</td>
+        <td><code>swift test --filter OfflineTests</code></td>
+        <td>Old SDK untouched (CI parity); Slipstream-specific Swift tests (56 in <code>SlipstreamOfflineTests.swift</code>): progress mapping, dealloc-without-stop, wipe/switchTo, engine FFI smoke, foundTransactions logic, compose-progress formula, summary-interval selection, counter-progress, snapshot fields, stall watchdog, boundary summary, chain-tip freshness. Catches Swift seam regressions.</td>
+      </tr>
+      <tr>
+        <td><strong>clippy (both feature sets)</strong></td>
+        <td>0 warnings required</td>
+        <td><code>cargo clippy -p slipstream-core &amp;&amp; cargo clippy -p slipstream-core --features darkside</code></td>
+        <td>Lint discipline. One pre-existing <code>manual_is_multiple_of</code> warning in <code>voting/vote.rs</code> (unrelated crate, not Slipstream) is permitted; it is not in the Slipstream module path. Slipstream-path clippy must be zero.</td>
+      </tr>
+      <tr>
+        <td><strong>Mainnet tip−2000 oracle</strong></td>
+        <td>Ad-hoc, run at every phase gate</td>
+        <td><code>cargo run -p slipstream-cli --release -- oracle --server https://zec.rocks:443 --wallet-a /tmp/oracle-a --wallet-b /tmp/oracle-b --sparse-b --ufvk &lt;TEST_UFVK&gt; --birthday &lt;tip-2000&gt;</code></td>
+        <td>Real-chain correctness gate. Passed at T6.3b, T6.4, T6.5, T6.6, T6.8-L3a, T6.8-L3b, T6.8-S, T6.8-H, T6.8-H2 — 26 tables checked at each run. <strong>VERDICT IDENTICAL</strong> is required before shipping any persistence change.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>18.3 The ten darkside tests by name</h2>
+
+  <p>These tests require a locally-running lightwalletd in darkside mode (see §18.4). They are gated behind <code>#[ignore]</code> + the <code>darkside</code> feature flag so plain <code>cargo test</code> stays hermetic. At HEAD they are 10/10 serial, verified at every phase gate.</p>
+
+  <table>
+    <thead>
+      <tr><th>#</th><th>Test name</th><th>Source file</th><th>What it verifies</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td><code>live_lightd_info_smoke</code></td>
+        <td><code>src/grpc.rs</code></td>
+        <td>Basic connectivity — lightwalletd responds to <code>GetLightdInfo</code> on the darkside endpoint. If this fails, all other darkside tests will fail too.</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td><code>sparse_pipeline_matches_upstream_on_darkside_fixture</code></td>
+        <td><code>tests/darkside_oracle.rs</code></td>
+        <td>Oracle: stages the TX_MAINNET_BLOCK_URL + 663174/663188 fixtures twice; runs Path A (upstream) and Path B (sparse) and calls <code>semantic_diff</code>. Verifies sparse tree produces byte-identical output on real fixture transactions.</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td><code>truncate_rescan_oracle_is_clean</code></td>
+        <td><code>tests/darkside_oracle.rs</code></td>
+        <td>Oracle under reorg/truncate: full sync on A and B, truncate both to height 663185 (snaps to 663174 — nearest checkpoint), re-stage, re-scan from birthday, <code>semantic_diff</code> CLEAN. Proves checkpoint-downgrade survives truncate+rescan cycles.</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td><code>reorg_recovery_produces_correct_tip</code></td>
+        <td><code>tests/darkside_reorg.rs</code></td>
+        <td>Before-reorg chain at 663200 → detect ScanContinuity{at:663201} → truncate to 663191 → re-scan → assert max(block height) = 663202. Non-sparse variant.</td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td><code>reorg_recovery_produces_correct_tip_sparse</code></td>
+        <td><code>tests/darkside_reorg.rs</code></td>
+        <td>Identical flow to test 4 but with <code>sparse=true</code>. Verifies the reorg arm interacts correctly with the sparse ShardTree accumulator and checkpoint-downgrade.</td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td><code>fixture_funds_are_spendable_after_full_sync</code></td>
+        <td><code>tests/darkside_sync.rs</code></td>
+        <td>Spendability gate: after full sync of the TX_MAINNET_BLOCK_URL fixture, funds can be spent (the commitment tree is correctly built and the spent-note path is valid). This is the ultimate correctness check.</td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td><code>sync_enhancement_stores_raw_fields</code></td>
+        <td><code>tests/darkside_sync.rs</code></td>
+        <td>Enhancement correctness: after scan + enhancement, <code>txs_stored==2</code> (exact), raw IS NOT NULL for both transactions, balance==200,000 zatoshi, no duplicates. Source: BalanceTests.swift:888-889 oracle.</td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td><code>sync_finds_fixture_transactions</code></td>
+        <td><code>tests/darkside_sync.rs</code></td>
+        <td>Basic end-to-end: build darkside chain with 2 known transactions (at 663174 and 663188), sync, assert found-tx count=2 and balance=200,000 zatoshi. The G2/G3 correctness oracle.</td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td><code>parallel_fetch_5000_blocks_in_order</code></td>
+        <td><code>tests/darkside_transport.rs</code></td>
+        <td>Parallel fetch correctness: stages 5000 blocks, runs K=4 fetch, asserts blocks arrive in height order with correct prev-hash chaining. Catches reorder-buffer regressions.</td>
+      </tr>
+      <tr>
+        <td>10</td>
+        <td><code>stage_apply_and_read_tip_roundtrip</code></td>
+        <td><code>tests/darkside_transport.rs</code></td>
+        <td>Transport smoke: stage blocks 663150..=663350, apply, read latest block height, assert==663350. Verifies the gRPC staging→apply→query round-trip (and the 2 s sleep needed for darkside propagation).</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>18.4 Running the darkside suite</h2>
+
+  <p>Start lightwalletd in darkside mode in one terminal:</p>
+
+  <pre><code>Tests/lightwalletd/lightwalletd \
+  --no-tls-very-insecure \
+  --data-dir /tmp \
+  --darkside-very-insecure \
+  --log-file /dev/stdout</code></pre>
+
+  <p>Then in another terminal, run the darkside tests serially:</p>
+
+  <pre><code>cargo test -p slipstream-core \
+  --features darkside \
+  -- --ignored --test-threads=1</code></pre>
+
+  <p>The <code>--test-threads=1</code> flag is not optional. The darkside server carries global state; two tests resetting or staging simultaneously produce race conditions that look like genuine test failures.</p>
+
+  <h2>18.5 The gate pyramid</h2>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 340" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr18" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+      </defs>
+
+      <!-- Pyramid layers, bottom to top -->
+      <!-- Layer 1: every commit -->
+      <polygon points="40,310 640,310 560,250 120,250" fill="#effaf1" stroke="#a8dcb2" stroke-width="1.5"/>
+      <text x="340" y="286" text-anchor="middle" fill="#1a7f37" font-weight="700" font-size="11">Every commit</text>
+      <text x="340" y="301" text-anchor="middle" fill="#1a7f37" font-size="10">cargo test -p slipstream-core -p slipstream-cli · clippy (both feature sets) · swift test --filter OfflineTests</text>
+
+      <!-- Layer 2: every phase gate -->
+      <polygon points="120,250 560,250 490,190 190,190" fill="#f0f6ff" stroke="#b6d3f7" stroke-width="1.5"/>
+      <text x="340" y="222" text-anchor="middle" fill="#1f6feb" font-weight="700" font-size="11">Every phase gate</text>
+      <text x="340" y="237" text-anchor="middle" fill="#1f6feb" font-size="10">All unit tests + CLI · Hermetic oracle 7/7 · ./Scripts/init-local-ffi.sh · OfflineTests 475/0</text>
+
+      <!-- Layer 3: network-required -->
+      <polygon points="190,190 490,190 420,130 260,130" fill="#fff4e5" stroke="#f0c389" stroke-width="1.5"/>
+      <text x="340" y="162" text-anchor="middle" fill="#b54708" font-weight="700" font-size="11">Network-required (phase gate + any grpc/persist change)</text>
+      <text x="340" y="177" text-anchor="middle" fill="#b54708" font-size="10">Mainnet tip−2000 oracle · Stress binary (120 joins) · Server-weather probe</text>
+
+      <!-- Layer 4: darkside-required -->
+      <polygon points="260,130 420,130 370,70 310,70" fill="#ffeef0" stroke="#f5b8c2" stroke-width="1.5"/>
+      <text x="340" y="100" text-anchor="middle" fill="#cf222e" font-weight="700" font-size="11">Darkside (local lightwalletd required)</text>
+      <text x="340" y="115" text-anchor="middle" fill="#cf222e" font-size="10">10 darkside serial tests · SERIAL ONLY · --test-threads=1</text>
+
+      <!-- Labels on right side -->
+      <text x="650" y="285" fill="#1a7f37" font-size="10" font-weight="600">Fast (&lt;60 s)</text>
+      <text x="650" y="222" fill="#1f6feb" font-size="10" font-weight="600">+FFI build</text>
+      <text x="650" y="162" fill="#b54708" font-size="10" font-weight="600">+network</text>
+      <text x="650" y="100" fill="#cf222e" font-size="10" font-weight="600">+lwd</text>
+    </svg>
+    <figcaption>Figure 18.1 — Test gate pyramid. Each layer is required by everything above it. "Every commit" is the strict always-green baseline. Darkside tests sit at the apex because they require local infrastructure.</figcaption>
+  </figure>
+
+  <h2>18.6 Landmines</h2>
+
+  <p>Three known environment hazards from CONVENTIONS.md:</p>
+
+  <h3>Single-slice landmine</h3>
+  <p><code>./Scripts/rebuild-local-ffi.sh &lt;arch&gt;</code> replaces the whole local XCFramework with only one architecture slice by design (for fast iteration). After using it, other-platform builds and tests fail with "framework doesn't exist". Restore all three slices with <code>./Scripts/init-local-ffi.sh</code>. Slipstream work requires macOS (swift test), ios-sim (Zodl simulator), and ios-device (field runs). Cross-reference ch. 17 for the stale-framework incident this can cause.</p>
+
+  <h3>SPM staleness landmine</h3>
+  <p>After any local-FFI mode switch, <code>swift test</code> may fail with "package at .../LocalPackages cannot be accessed" — SPM's shared manifest cache replays a stale evaluation. Fix:</p>
+  <pre><code>rm -rf ~/Library/Caches/org.swift.swiftpm/manifests && rm -rf .build</code></pre>
+
+  <h3>Nested-framework landmine (fixed in 2026-06-11, kept for archaeology)</h3>
+  <p>An older version of <code>init-local-ffi.sh</code> used <code>cp -R</code> to install into an existing destination, which placed the new framework <em>inside</em> the old one. Stale slices at the top level were used silently. Fixed by adding <code>rm -rf</code> before install. If you ever see <code>libzcashlc.xcframework/libzcashlc.xcframework/</code> nested inside <code>LocalPackages/</code>, the layout is corrupt: <code>rm -rf LocalPackages &amp;&amp; ./Scripts/init-local-ffi.sh</code>.</p>
+
+  <nav class="book">
+    <a href="17-performance.html">← 17. Performance Evidence</a>
+    <a href="19-gaps-roadmap.html">19. Known Gaps &amp; Roadmap →</a>
+  </nav>
+  <footer class="colophon">Citations as of commit 7eff661e. Test names verified by reading <code>slipstream/core/src/*.rs</code>, <code>slipstream/core/tests/*.rs</code>, and <code>Tests/OfflineTests/SlipstreamOfflineTests.swift</code> at HEAD.</footer>
+</main>
+</body>
+</html>

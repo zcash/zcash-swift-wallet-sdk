@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 8 — Scheduler &amp; Spend-before-Sync · The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part II — Engine Internals</p>
+  <h1>8. Scheduler &amp; Spend-before-Sync</h1>
+  <p class="meta">Estimated reading time: 15 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>The scheduler is the engine's outermost loop — the layer between the FFI polling surface and the scan pipeline. Its one job is to convert a list of <em>suggested scan ranges</em> into sequential fetch+scan passes, track progress in a way that is safe to read from Swift on any thread, and signal when the wallet has reached a spendable state. The key insight is that the scheduler has almost no intelligence of its own: all decisions about what to scan, in what order, and when to stop come from <code>suggest_scan_ranges</code> inside the upstream <code>WalletDb</code> (D2 — "upstream brain, Slipstream body"). The scheduler owns only the orchestration loop, the progress counter ledger, and the reorg recovery arm.</p>
+  </div>
+
+  <h2>suggest_scan_ranges as the single brain</h2>
+
+  <p>Every iteration of the outer scheduler loop begins by calling <code>wallet.suggest_scan_ranges()</code> and scanning whatever the upstream library recommends. This is design decision D2 in full effect: the engine never maintains its own scan-range state, never decides what the next block height is, and never hard-codes the order of priority classes. If upstream changes its priority ordering, the engine automatically inherits the new behavior.</p>
+
+  <p>The library currently returns ranges in priority order: <code>ChainTip</code> first, then <code>Historic</code> in reverse-chronological order. The engine iterates through them in the order returned:</p>
+
+  <pre><code>// scheduler.rs:95–115 (simplified structure)
+loop {
+    let ranges = wallet.suggest_scan_ranges()?;
+    if ranges.is_empty() { break; }
+
+    p.begin_pass(handle);
+    let sum: u64 = ranges.iter().map(|r| r.block_span()).sum();
+    p.set_pass_total(scanned_so_far + sum);
+
+    for range in &ranges {
+        run_range(ctx, range, &p, wallet, config).await?;
+    }
+}</code></pre>
+
+  <h2>ChainTip-first SbS semantics</h2>
+
+  <p>The first range returned by <code>suggest_scan_ranges</code> (when one exists) carries <code>ScanPriority::ChainTip</code>. This is the most-recent unscanned block window. Slipstream scans it before any historic range, which means the wallet discovers the most-recent incoming notes — and therefore becomes spendable — before it finishes the historical backfill. This is the Spend-before-Sync property.</p>
+
+  <p>When the ChainTip range scan completes, the scheduler latches the spendable flag (<code>scheduler.rs:306–310</code>):</p>
+
+  <pre><code>// scheduler.rs:306–310 — spendable latch
+if range.priority == ScanPriority::ChainTip {
+    p.set_spendable(handle);
+}</code></pre>
+
+  <p><code>set_spendable</code> atomically stores <code>1</code> in <code>Progress.spendable_hint</code> and never resets to <code>0</code> (<code>events.rs:113–115</code>). Swift reads this field via <code>snapshot()</code> and propagates it to the wallet UI as the "wallet ready" signal. The field name is <code>spendable_hint</code> — "hint" because the engine cannot certify that all prior balance is recovered; it means only that the most-recent unscanned range has been scanned.</p>
+
+  <h2>Progress counters: ratio vs. monotonic-delta split</h2>
+
+  <p>The <code>Progress</code> struct (<code>events.rs:20–49</code>) holds nine <code>AtomicU64</code> fields. They divide cleanly into two groups that have different reset behaviour:</p>
+
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Kind</th><th>Semantics</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>scanned_blocks</code></td><td>ratio</td><td>Blocks scanned in current pass.</td></tr>
+      <tr><td><code>fetched_blocks</code></td><td>ratio</td><td>Blocks fetched in current pass.</td></tr>
+      <tr><td><code>pass_total_blocks</code></td><td>ratio</td><td>Total blocks in current pass denominator.</td></tr>
+      <tr><td><code>current_range_end</code></td><td>ratio</td><td>End height of the scan range currently in progress.</td></tr>
+      <tr><td><code>spendable_hint</code></td><td>latch</td><td>0 until ChainTip range completes; 1 thereafter (never resets).</td></tr>
+      <tr><td><code>enhanced_txs</code></td><td>monotonic-delta</td><td>Cumulative transactions enhanced since the sync handle was created.</td></tr>
+      <tr><td><code>ranges_completed</code></td><td>monotonic-delta</td><td>Cumulative ranges finished since the sync handle was created.</td></tr>
+      <tr><td><code>reorgs_recovered</code></td><td>monotonic-delta</td><td>Cumulative reorg recoveries since the sync handle was created.</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Why the split?</strong> A ratio counter produces a percentage for a progress bar: <code>scanned_blocks / pass_total_blocks × 100</code>. But a ratio is only meaningful within one pass — it must reset to zero when a new pass begins. A monotonic delta counter is meaningful across passes: "how many transactions have been enhanced since the sync started" should keep accumulating, not reset when the scheduler opens a new pass. Conflating the two leads to either a progress bar that jumps backwards or a transaction count that resets to zero.</p>
+
+  <p><code>begin_pass</code> (<code>events.rs:144–150</code>) resets only the ratio fields and updates the pass start timestamp; it leaves the delta counters alone:</p>
+
+  <pre><code>// events.rs:144–150 — begin_pass resets only ratio counters
+pub fn begin_pass(&self, handle: u64) {
+    self.scanned_blocks.store(0, SeqCst);
+    self.fetched_blocks.store(0, SeqCst);
+    self.pass_total_blocks.store(0, SeqCst);
+    self.current_range_end.store(0, SeqCst);
+    // enhanced_txs, ranges_completed, reorgs_recovered NOT touched
+    self.pass_start_ms.store(now_ms(), SeqCst);
+}</code></pre>
+
+  <h2>The 0→100→60% snap-back lesson</h2>
+
+  <p>An early version of the scheduler (<code>set_pass_total</code> before the T6.5 fix) used <code>fetch_add</code> to accumulate the denominator: first one range would add its block count, then a second range would add the next block count. This produced a correct final denominator — but only at the end of the pass. During the first range, the denominator was artificially small (only the first range's block count), driving the apparent percentage past 100%. When the second range started and added its block count, the percentage snapped back to a smaller number.</p>
+
+  <div class="callout warning">
+    <span class="label">Observed on user's iPad A10, pre-fix</span>
+    <p>STATE.md T6.5 session notes: a user observed a progress bar reaching "100%" before the scan visibly completed, then snapping back to 60% when the second range started. Root cause: <code>add_pass_total(first_range_blocks)</code> called at pass-begin; <code>add_pass_total(second_range_blocks)</code> called only when the second range was reached. Fix: compute the full-pass sum before the loop and call <code>set_pass_total(total)</code> (STORE semantics, not accumulate). This is why <code>set_pass_total</code> is a STORE and the function is doc-commented as a deliberate fix.</p>
+  </div>
+
+  <p>The corrected code (<code>scheduler.rs:122–132</code>) computes the denominator once per pass:</p>
+
+  <pre><code>// scheduler.rs:122–132 — whole-pass denominator (F1 fix)
+let scanned_so_far: u64 = ranges.iter()
+    .take_while(|r| r.end &lt;= already_scanned_to)
+    .map(|r| r.block_span())
+    .sum();
+let sum_remaining: u64 = ranges.iter()
+    .skip_while(|r| r.end &lt;= already_scanned_to)
+    .map(|r| r.block_span())
+    .sum();
+p.set_pass_total(scanned_so_far + sum_remaining, handle);
+// set_pass_total is STORE (overwrite), not fetch_add — prevents snap-back</code></pre>
+
+  <h2>Pass lifecycle: begin_pass and the handle-vs-pass boundary</h2>
+
+  <p>A <em>pass</em> is one iteration of the outer <code>suggest_scan_ranges</code> loop. Passes are numbered by the scheduler but not exposed to Swift. A <em>handle</em> is the caller's view: one <code>SyncHandle</code> object that persists across all passes until the sync completes or is cancelled. The distinction matters for the counters:</p>
+
+  <ul>
+    <li>Ratio counters are <em>per-pass</em>: they reset on each <code>begin_pass</code> call so the progress bar shows the current pass's progress, not the cumulative scan progress since the beginning of time.</li>
+    <li>Delta counters are <em>per-handle</em>: they accumulate across all passes so callers can detect "something happened" even across a reorg recovery that forced a new pass.</li>
+  </ul>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 380" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr8a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arr8g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+        <marker id="arr8w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+      </defs>
+
+      <!-- Handle (outer box) -->
+      <rect x="10" y="10" width="660" height="360" rx="10" fill="#f6f8fa" stroke="#d8dee4" stroke-width="2"/>
+      <text x="340" y="30" text-anchor="middle" fill="#6e7781" font-weight="600" font-size="11">SyncHandle (lifetime = one zcashlc_slipstream_start…stop)</text>
+
+      <!-- Pass 1 box -->
+      <rect x="25" y="42" width="300" height="160" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="175" y="60" text-anchor="middle" font-weight="600" fill="#1f6feb">Pass 1</text>
+      <text x="175" y="75" text-anchor="middle" fill="#6e7781" font-size="11">begin_pass → resets ratio counters</text>
+
+      <!-- Range A (ChainTip) in pass 1 -->
+      <rect x="40" y="85" width="120" height="50" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="100" y="107" text-anchor="middle" font-weight="600" fill="#1a7f37" font-size="11">ChainTip range</text>
+      <text x="100" y="122" text-anchor="middle" fill="#6e7781" font-size="10">→ set_spendable()</text>
+
+      <!-- Range B (Historic) in pass 1 -->
+      <rect x="180" y="85" width="120" height="50" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="240" y="107" text-anchor="middle" font-weight="600" fill="#1f6feb" font-size="11">Historic ranges</text>
+      <text x="240" y="122" text-anchor="middle" fill="#6e7781" font-size="10">scanned in order</text>
+
+      <line x1="160" y1="110" x2="178" y2="110" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr8a)"/>
+
+      <!-- ranges_completed label in pass 1 -->
+      <text x="175" y="155" text-anchor="middle" fill="#6e7781" font-size="10">+ranges_completed per range (monotonic, not reset)</text>
+      <text x="175" y="168" text-anchor="middle" fill="#6e7781" font-size="10">+enhanced_txs per interleave (monotonic, not reset)</text>
+      <text x="175" y="183" text-anchor="middle" fill="#6e7781" font-size="10">ratio counters (scanned, fetched, total) reset by begin_pass ↑</text>
+
+      <!-- Reorg arm (between passes) -->
+      <rect x="345" y="42" width="145" height="160" rx="8" fill="#fff4e5" stroke="#b54708" stroke-width="1.5"/>
+      <text x="418" y="60" text-anchor="middle" font-weight="600" fill="#b54708">Reorg recovery</text>
+      <text x="418" y="76" text-anchor="middle" fill="#6e7781" font-size="10">ScanContinuity{at} ↑</text>
+      <text x="418" y="92" text-anchor="middle" fill="#6e7781" font-size="10">truncate_to_height(at)</text>
+      <text x="418" y="108" text-anchor="middle" fill="#6e7781" font-size="10">jittered backoff</text>
+      <text x="418" y="124" text-anchor="middle" fill="#6e7781" font-size="10">+reorgs_recovered (monotonic)</text>
+      <text x="418" y="140" text-anchor="middle" fill="#6e7781" font-size="10">consecutive &lt;= MAX_CONSECUTIVE_REORGS=5</text>
+      <text x="418" y="156" text-anchor="middle" fill="#b54708" font-size="10">→ begin new pass on retry</text>
+      <text x="418" y="174" text-anchor="middle" fill="#6e7781" font-size="10">(cross-ref ch.10)</text>
+
+      <!-- Pass 2 box -->
+      <rect x="25" y="220" width="300" height="130" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="175" y="238" text-anchor="middle" font-weight="600" fill="#1f6feb">Pass N (after suggest returns empty)</text>
+      <text x="175" y="254" text-anchor="middle" fill="#6e7781" font-size="11">begin_pass → ratio counters reset again</text>
+      <text x="175" y="276" text-anchor="middle" fill="#6e7781" font-size="10">scanned_blocks/pass_total → progress bar updates</text>
+      <text x="175" y="292" text-anchor="middle" fill="#6e7781" font-size="10">enhanced_txs/ranges_completed still accumulate</text>
+      <text x="175" y="316" text-anchor="middle" fill="#1a7f37" font-weight="600" font-size="11">suggest returns [] → sync complete</text>
+
+      <!-- Drain + final backstop -->
+      <rect x="345" y="220" width="145" height="130" rx="8" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="418" y="238" text-anchor="middle" font-weight="600" fill="#1a7f37">Final backstop</text>
+      <text x="418" y="254" text-anchor="middle" fill="#6e7781" font-size="10">run_enhancement() after all ranges</text>
+      <text x="418" y="270" text-anchor="middle" fill="#6e7781" font-size="10">catches anything missed</text>
+      <text x="418" y="286" text-anchor="middle" fill="#6e7781" font-size="10">by interleave layers</text>
+      <text x="418" y="302" text-anchor="middle" fill="#6e7781" font-size="10">(non-fatal)</text>
+      <text x="418" y="318" text-anchor="middle" fill="#6e7781" font-size="10">(see ch.9)</text>
+
+      <!-- Legend in bottom right -->
+      <rect x="510" y="50" width="145" height="100" rx="6" fill="white" stroke="#d8dee4" stroke-width="1"/>
+      <text x="583" y="68" text-anchor="middle" font-weight="600" fill="#6e7781" font-size="10">Counter types</text>
+      <rect x="522" y="76" width="12" height="12" fill="#1f6feb" rx="2"/>
+      <text x="540" y="87" fill="#6e7781" font-size="10">ratio (per-pass, reset)</text>
+      <rect x="522" y="96" width="12" height="12" fill="#1a7f37" rx="2"/>
+      <text x="540" y="107" fill="#6e7781" font-size="10">monotonic-delta</text>
+      <text x="540" y="119" fill="#6e7781" font-size="10">(per-handle, not reset)</text>
+      <rect x="522" y="126" width="12" height="12" fill="#b54708" rx="2"/>
+      <text x="540" y="137" fill="#6e7781" font-size="10">latch (set once)</text>
+    </svg>
+    <figcaption>Figure 8.1 — Pass-lifecycle state walk. Each pass begins with <code>begin_pass</code> (resets ratio counters), scans its suggested ranges in priority order, and optionally recovers from a reorg. Delta counters (<code>enhanced_txs</code>, <code>ranges_completed</code>, <code>reorgs_recovered</code>) survive across passes; the spendable latch is set once and never reset.</figcaption>
+  </figure>
+
+  <h2>Per-range enhancement</h2>
+
+  <p>Enhancement (fetching full transaction details) runs at three interleave points within the scheduler loop (see chapter 9 for the detail). The per-range point fires after each scan range finishes (<code>scheduler.rs:325–351</code>):</p>
+
+  <pre><code>// scheduler.rs:325–351 (simplified)
+run_range(&range).await?;
+p.add_ranges_completed(1, handle);
+
+// non-fatal per-range enhancement
+if let Err(e) = run_enhancement(&mut wallet, &p, handle).await {
+    warn!(err = ?e, "per-range enhancement failed (non-fatal)");
+}</code></pre>
+
+  <p>The call is <em>non-fatal</em>: an enhancement failure (gRPC timeout, server error) is logged and counted but does not abort the scan. Enhancement state is preserved between interleave calls by the upstream <code>WalletDb</code> — the next interleave call will pick up where the last one left off. This design prevents an unstable server from blocking an otherwise healthy scan.</p>
+
+  <h2>ranges_completed as a boundary signal</h2>
+
+  <p>Swift callers use <code>snapshot().ranges_completed</code> as a "something significant happened" signal. Each time a range completes, the counter increments monotonically. A caller that caches the last-seen value can detect new completion events by comparing against the current snapshot without needing the engine to push an event. This is consistent with the D8 (poll-based) design — the engine publishes no callbacks; the Swift layer polls on a timer.</p>
+
+  <div class="callout note">
+    <span class="label">Why not expose the range count?</span>
+    <p>The total number of ranges (denominator) is not exposed directly because it changes mid-pass: <code>suggest_scan_ranges</code> is called once per pass, and a reorg recovery can produce a new pass with a different set of ranges. Exposing a denominator that can change unexpectedly would complicate the Swift UI. Instead, Swift uses <code>scanned_blocks / pass_total_blocks</code> for the progress percentage and <code>ranges_completed</code> for discrete completion events.</p>
+  </div>
+
+  <h2>Reorg recovery arm</h2>
+
+  <p>When the scan pipeline returns a <code>ScanContinuity { at }</code> error, the scheduler's reorg arm catches it (<code>scheduler.rs:207–264</code>). The mechanics are described in chapter 10; the scheduler's role is bounded:</p>
+
+  <ul>
+    <li>Increment <code>reorgs_recovered</code> (monotonic delta — persists across passes).</li>
+    <li>Apply a jittered backoff (<code>reorg_backoff_ms = consecutive * 500ms</code>, max 3s) to reduce hammering a load-balanced cluster during tip desync.</li>
+    <li>Guard against infinite loops: if <code>consecutive &gt;= MAX_CONSECUTIVE_REORGS (5)</code>, the recovery arm returns a hard error instead of retrying. This bound is a compile-time assert (<code>scheduler.rs:31–35</code>), not a runtime check.</li>
+    <li>On retry, call <code>begin_pass</code> to reset ratio counters — the progress bar should reflect the recovery pass, not the aborted pass.</li>
+  </ul>
+
+  <h2>Known limitations</h2>
+  <div class="callout warning">
+    <span class="label">Honest gaps</span>
+    <ul>
+      <li><strong>Single-shot runner:</strong> the scheduler runs to completion and exits. There is no foreground tip-following loop that polls for new blocks while the wallet is open. Post-sync balance updates require the Swift layer to re-trigger a sync call. (See ch.19 for the roadmap item.)</li>
+      <li><strong>No mempool detection:</strong> the engine does not query the mempool for pending transactions. Outgoing spends are detected only after mining. (Documented gap — ch.19.)</li>
+      <li><strong>Progress percentages are pass-scoped:</strong> a user watching the progress bar will see it reset between passes (e.g., after a reorg recovery). The "snap-back" fix (T6.5) addresses within-pass jumps, but cross-pass resets are intentional and documented — the Swift layer is expected to show a "reorg detected" message rather than trying to continue the prior percentage.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <a href="07-sparse-persistence.html">&#8592; 7. Sparse Persistence</a>
+    <a href="09-enhance-transparent.html">9. Enhancement &amp; Transparent &#8594;</a>
+  </nav>
+  <footer class="colophon">Citations as of commit 7eff661e · Slipstream Book · local-only draft</footer>
+</main>
+</body>
+</html>
