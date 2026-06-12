@@ -529,6 +529,8 @@ pub fn sparse_put_blocks(
     let t_rows = std::time::Instant::now();
     let mut rows_ms = 0u128;
     let mut tree_ms = 0u128;
+    let mut sap_tree_ms = 0u128;
+    let mut orch_tree_ms = 0u128;
     let mut flush_ms = 0u128;
     let mut downgraded = 0u64;
 
@@ -779,7 +781,8 @@ pub fn sparse_put_blocks(
             }
 
             let (sap_result, orch_result) = rayon::join(
-                || -> Result<u64, SqliteClientError> {
+                || -> Result<(u64, u128), SqliteClientError> {
+                    let t_pool = std::time::Instant::now();
                     // Downgrade doomed checkpoints (T6.3b).
                     let sap_downgraded = doomed_checkpoint_cutoff(
                         sap_tree.store().checkpoints.keys().copied(),
@@ -822,9 +825,10 @@ pub fn sparse_put_blocks(
                                 .map_err(map_sparse_err)?;
                         }
                     }
-                    Ok(sap_downgraded)
+                    Ok((sap_downgraded, t_pool.elapsed().as_millis()))
                 },
-                || -> Result<u64, SqliteClientError> {
+                || -> Result<(u64, u128), SqliteClientError> {
+                    let t_pool = std::time::Instant::now();
                     // Downgrade doomed checkpoints (T6.3b).
                     let orch_downgraded = doomed_checkpoint_cutoff(
                         orch_tree.store().checkpoints.keys().copied(),
@@ -867,13 +871,15 @@ pub fn sparse_put_blocks(
                                 .map_err(map_sparse_err)?;
                         }
                     }
-                    Ok(orch_downgraded)
+                    Ok((orch_downgraded, t_pool.elapsed().as_millis()))
                 },
             );
             // Propagate errors from both sides after join (no unwrap/expect).
-            let sap_downgraded = sap_result?;
-            let orch_downgraded = orch_result?;
+            let (sap_downgraded, sap_ms) = sap_result?;
+            let (orch_downgraded, orch_ms) = orch_result?;
             downgraded = sap_downgraded + orch_downgraded;
+            sap_tree_ms = sap_ms;
+            orch_tree_ms = orch_ms;
 
             tree_ms = t_tree.elapsed().as_millis();
 
@@ -891,7 +897,11 @@ pub fn sparse_put_blocks(
         Ok(())
     })?;
 
-    info!(rows_ms, tree_ms, flush_ms, downgraded, "sparse put_blocks");
+    // sap_tree_ms/orch_tree_ms are the per-pool closure wall times INSIDE the join:
+    // tree_ms ≈ max(sap, orch) when the join truly runs in parallel, ≈ sap + orch when
+    // it degenerates to serial (single-thread rayon pool) — this distinguishes
+    // "lopsided pools" from "no parallelism" directly in device logs.
+    info!(rows_ms, tree_ms, sap_tree_ms, orch_tree_ms, flush_ms, downgraded, "sparse put_blocks");
     Ok(())
 }
 

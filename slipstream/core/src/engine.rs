@@ -16,6 +16,14 @@ use crate::{
     wallet_session::WalletSession,
 };
 
+/// Engine build tag, logged at every sync start and in the stage-split line.
+/// BUMP THIS on every performance-relevant engine change (anything that warrants a
+/// framework rebuild) — it is the definitive freshness check for device logs: if the
+/// tag in the log doesn't match HEAD's value, the device is running a stale
+/// XCFramework (the three-layer gotcha, consuming side). Probe a built slice with:
+/// `strings <slice>/libzcashlc.framework/libzcashlc | grep <tag>`.
+pub const ENGINE_BUILD: &str = "2026-06-12.L3a-pooltimes";
+
 #[derive(Debug)]
 pub struct SyncOutcome {
     pub report: SyncReport,
@@ -96,6 +104,9 @@ pub async fn sync_once(
         p.begin_pass();
     }
 
+    // Definitive device-log freshness marker (see ENGINE_BUILD doc).
+    info!(engine_build = ENGINE_BUILD, sparse = config.sparse_persistence, "engine pass starting");
+
     let mut session = WalletSession::open(config.network, &config.wallet_db_path)?;
     let mut client = grpc::connect(&config.endpoint).await?;
 
@@ -170,6 +181,7 @@ pub async fn sync_once(
         enhance_s = outcome.enhance_elapsed.as_secs_f64(),
         blocks = outcome.report.scan.blocks,
         bound = outcome.bound(),
+        engine_build = ENGINE_BUILD,
         sparse = config.sparse_persistence,
         "sync stage split"
     );
