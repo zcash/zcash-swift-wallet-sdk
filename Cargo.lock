@@ -4372,6 +4372,7 @@ name = "slipstream-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "rand 0.8.6",
  "slipstream-core",
  "tokio",
  "tracing",

@@ -22,7 +22,7 @@ use crate::{
 /// tag in the log doesn't match HEAD's value, the device is running a stale
 /// XCFramework (the three-layer gotcha, consuming side). Probe a built slice with:
 /// `strings <slice>/libzcashlc.framework/libzcashlc | grep <tag>`.
-pub const ENGINE_BUILD: &str = "2026-06-13.l4b-lanepool2";
+pub const ENGINE_BUILD: &str = "2026-06-14.t81-follow";
 
 /// Current wall-clock time as a `YYYY-MM-DD HH:MM:SSZ` UTC string.
 ///
@@ -92,6 +92,26 @@ impl SyncOutcome {
             "enhance"
         }
     }
+}
+
+/// True when an observed server tip justifies a new follow pass (T8.1).
+///
+/// A server replying with a LOWER tip than the last synced one (load-balanced
+/// cluster lag) must NOT trigger a pass — the pass would no-op at best and
+/// fight reorg logic at worst; the next probe of a caught-up backend recovers.
+pub fn should_resync(last_synced_tip: u64, observed_tip: u64) -> bool {
+    observed_tip > last_synced_tip
+}
+
+/// One cheap tip probe (T8.1 fast path): connect + GetLatestBlock ONLY —
+/// none of the preflight work of a full pass (subtree roots, UTXO refresh).
+///
+/// Fresh connection per probe (TLS ~100-300 ms every FOLLOW_POLL; a held
+/// connection would need its own keepalive/staleness handling). All awaits
+/// carry the hardening1 deadlines (connect 10 s, unary 30 s).
+pub async fn probe_tip(config: &EngineConfig) -> Result<u64, SlipstreamError> {
+    let mut client = grpc::connect(&config.endpoint).await?;
+    grpc::get_latest_block_height(&mut client).await
 }
 
 /// One sync pass. If `ufvk` is Some and the wallet has no accounts, imports it
@@ -303,6 +323,15 @@ mod tests {
         assert_eq!(make_outcome(5.0, 5.0, 0.0).bound(), "fetch");
         // Equal scan=enhance=5s, fetch=0 → scan wins.
         assert_eq!(make_outcome(0.0, 5.0, 5.0).bound(), "scan");
+    }
+
+    /// T8.1 — the follow loop's pure re-sync decision.
+    #[test]
+    fn follow_should_resync_only_when_tip_advances() {
+        assert!(!should_resync(3_375_000, 3_374_999)); // tip behind (server lag) → no
+        assert!(!should_resync(3_375_000, 3_375_000)); // tip equal → no
+        assert!(should_resync(3_375_000, 3_375_001)); // tip advanced → yes
+        assert!(!should_resync(0, 0));
     }
 
     #[test]

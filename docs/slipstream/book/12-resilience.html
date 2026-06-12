@@ -220,13 +220,13 @@
     <p>The claim "survived 3 simultaneous stream stalls" is based on the 6 EOF cuts observed during the spam-era acceptance run: in a four-worker parallel fetch, multiple workers can encounter EOF simultaneously. All six were resolved at Layer 1 (resume-from-height) with no pass-level retry required.</p>
   </div>
 
-  <h2>The single-shot runner and its consequences</h2>
+  <h2>The follow loop (T8.1) and its consequences</h2>
 
-  <p>Slipstream's runner is single-shot: <code>sync_once</code> runs one complete pass (fetch all suggested ranges, scan, enhance), then returns. It does not poll for new blocks, follow the tip, or detect mempool transactions. This is an intentional architectural decision at commit ad755e08 (roadmap item P8).</p>
+  <p>Slipstream's runner was single-shot through T8.0: <code>sync_once</code> ran one complete pass (fetch all suggested ranges, scan, enhance), then returned. <strong>T8.1 (ENGINE_BUILD=2026-06-14.t81-follow) ships in-foreground tip-following:</strong> after each successful pass, <code>sync_body</code> now enters a jittered [10–30 s] probe loop. A cheap <code>engine::probe_tip</code> (single <code>GetLatestBlock</code>) checks whether the server tip advanced; when it does, a full keyless catch-up pass runs. The loop is cancelled by the existing <code>AbortHandle</code> on <code>stop()</code> / <code>free()</code> / <code>restart()</code>. Mempool detection (GAP 1) remains a separate T8.2 item.</p>
 
-  <div class="callout warning">
-    <span class="label">Known limitation — single-shot runner</span>
-    <p>The absence of tip-following has two observable consequences: (1) A reorg that arrives <em>after</em> a sync pass completes will only be detected at the start of the next pass, when <code>suggest_scan_ranges</code> returns Verify-priority ranges. The wallet is not updated in real time. (2) Progress percentage resets briefly to zero at the start of each Layer 3 retry (pass-level retry), because <code>begin_pass()</code> resets ratio counters. This is noted in STATE.md as acceptable UX for a rare transient event. Chapter 19 records in-foreground tip-following as roadmap item P8.</p>
+  <div class="callout info">
+    <span class="label">T8.1 shipped — follow-loop consequences</span>
+    <p>The catch-up pass has two observable UX properties: (1) A reorg that arrives <em>after</em> an initial sync will be detected on the next catch-up pass (<code>suggest_scan_ranges</code> returns Verify-priority ranges). (2) Progress percentage briefly resets to ~0 at the start of each catch-up pass (<code>begin_pass()</code> resets ratio counters — Deviation D4). Tip-gating means this flap only fires when a real block arrived; frequency ≈ mainnet block rate (~75 s). Chapter 19 records the full deviation record (D3/D4).</p>
   </div>
 
   <h2>Summary: what makes silent failure impossible</h2>

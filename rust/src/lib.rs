@@ -4250,6 +4250,56 @@ use slipstream_core::ffi_handle::FfiSlipstreamEvent as SlipstreamCoreEvent;
 // reorgs_recovered) are left untouched across retries, so progress observers see
 // continuous growth rather than resets.
 
+// ── T8.1 follow-mode cadence (jittered probe interval) ───────────────────────
+//
+// Old-SDK precedent: `ZcashSDK.defaultPollInterval = 20` (ZcashSDK.swift:98),
+// jittered `random(in: 10...30)` s (CompactBlockProcessor.swift:74-76).
+//
+// A FIXED poll cadence is a correlatable timing fingerprint across
+// users/sessions — passive network observers can detect the sync rhythm of a
+// wallet and correlate identities. Jitter in [FOLLOW_POLL_MIN_SECS,
+// FOLLOW_POLL_MAX_SECS] breaks this: the distribution is uniform random per
+// cycle, independent across handles and sessions, giving the same practical
+// "probe ~3× per 75-second mainnet block" property without a deterministic beat.
+
+/// Minimum follow-probe sleep (inclusive). Matches the old-SDK jitter floor.
+const FOLLOW_POLL_MIN_SECS: u64 = 10;
+
+/// Maximum follow-probe sleep (inclusive). Matches the old-SDK jitter ceiling.
+const FOLLOW_POLL_MAX_SECS: u64 = 30;
+
+/// Consecutive follow-iteration transient failures tolerated before the
+/// handle surfaces SyncState::Error. A probe failure is most often server
+/// weather; following must shrug it off, not die — but an UNBOUNDED silent
+/// failure loop would hide a dead server from the user forever.
+const FOLLOW_FAILURE_CAP: u32 = 8;
+
+/// Maps a uniform random sample in [0, 1) to a probe sleep duration in
+/// [FOLLOW_POLL_MIN_SECS, FOLLOW_POLL_MAX_SECS] (inclusive on both ends).
+///
+/// Pure and unit-testable: callers supply the sample (drawn from `rand`'s
+/// `thread_rng().gen::<f64>()` in the hot path) so tests can pin boundary
+/// values without real randomness.
+///
+/// Rationale for the mapping:
+///   `FOLLOW_POLL_MIN_SECS + (sample * span).floor()` gives a discrete
+///   uniform in [MIN, MIN+span-1] when span = MAX-MIN+1 = 21.  But to keep
+///   the ceiling inclusive we use `as_secs_f64()` rounding via Duration
+///   construction: the full f64 product `sample * (MAX-MIN)` mapped to
+///   [0, MAX-MIN) covers every integral second from MIN to MAX inclusive
+///   when clamped.  A simpler integer path (used by tests):
+///     secs = MIN + (sample * 21.0) as u64, clamped to [MIN, MAX].
+fn follow_poll_jitter(rng_sample: f64) -> std::time::Duration {
+    // span = MAX - MIN + 1 = 21 (number of distinct integer seconds available)
+    let span = (FOLLOW_POLL_MAX_SECS - FOLLOW_POLL_MIN_SECS + 1) as f64;
+    // Map [0,1) → [0, span) → floor → [0, span-1] as u64, then add MIN.
+    let offset = (rng_sample * span) as u64;
+    // Clamp defensively (rng_sample == 1.0 is theoretically impossible for
+    // well-formed f64 uniform [0,1) generators but guard against edge cases).
+    let secs = FOLLOW_POLL_MIN_SECS + offset.min(FOLLOW_POLL_MAX_SECS - FOLLOW_POLL_MIN_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
 /// Maximum number of ADDITIONAL sync_once calls after the first failure (Fix B).
 /// Total attempts = PASS_RETRY_MAX + 1 = 3.
 const PASS_RETRY_MAX: u32 = 2;
@@ -4365,6 +4415,66 @@ fn install_slipstream_panic_hook() {
             previous(info);
         }));
     });
+}
+
+// ── T8.1 follow-loop helpers ────────────────────────────────────────────────
+//
+// Two mechanical refactors extracted so they can be reused for both the initial
+// pass AND follow passes. No behavior change — the existing retry tests
+// (slipstream_retry_tests) continue to cover the retry semantics.
+
+/// Push a Slipstream event onto the handle's ring buffer, dropping the oldest
+/// entry when the ring is full (cap-then-push semantics, same as before T8.1).
+///
+/// Extracted to eliminate the three verbatim copies that existed in sync_body
+/// (SyncStarted / SyncDone / SyncError paths) before the follow loop existed.
+fn push_ring_event(
+    events: &std::sync::Arc<std::sync::Mutex<Vec<SlipstreamCoreEvent>>>,
+    e: SlipstreamCoreEvent,
+) {
+    let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
+    if ring.len() >= slipstream_core::ffi_handle::EVENT_RING_CAP {
+        ring.remove(0);
+    }
+    ring.push(e);
+}
+
+/// Run `sync_once` with the T6.8-H2 bounded retry ladder and return the first
+/// successful `SyncOutcome` or the last error.
+///
+/// SyncState is NOT modified by this function — the caller sets Syncing before
+/// calling and transitions Done/Error based on the result.  SyncStarted is NOT
+/// emitted here — it is the caller's responsibility (emitted once per `start()`).
+async fn run_pass_with_retry(
+    cfg: &slipstream_core::config::EngineConfig,
+    ufvk_ref: Option<(&str, u64)>,
+    progress: &std::sync::Arc<slipstream_core::events::Progress>,
+) -> Result<slipstream_core::engine::SyncOutcome, slipstream_core::error::SlipstreamError> {
+    let mut attempt: u32 = 0;
+    loop {
+        let result =
+            slipstream_core::engine::sync_once(cfg, ufvk_ref, Some(progress.clone())).await;
+        match result {
+            Ok(outcome) => return Ok(outcome),
+            Err(err) => {
+                attempt += 1;
+                match should_retry(&err, attempt) {
+                    Some(sleep_dur) => {
+                        tracing::warn!(
+                            %err,
+                            attempt,
+                            sleep_secs = sleep_dur.as_secs(),
+                            "slipstream sync failed (transient) — retrying pass"
+                        );
+                        tokio::time::sleep(sleep_dur).await;
+                        // Continue with SyncState::Syncing (stays unchanged — caller
+                        // is responsible for state transitions).
+                    }
+                    None => return Err(err),
+                }
+            }
+        }
+    }
 }
 
 /// Opens a Slipstream engine handle.
@@ -4508,57 +4618,18 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         let sup_state = std::sync::Arc::clone(&h.state);
         let sup_events = std::sync::Arc::clone(&h.events);
         let sync_body = async move {
-            // Notify SyncStarted (tag=1) — emitted exactly ONCE, before any retry.
-            // Use SlipstreamCoreEvent (the type stored in the handle's event ring).
-            {
-                let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
-                if ring.len() >= slipstream_core::ffi_handle::EVENT_RING_CAP {
-                    ring.remove(0);
-                }
-                ring.push(SlipstreamCoreEvent { tag: 1, value: 0 });
-            }
+            // Notify SyncStarted (tag=1) — emitted exactly ONCE, before any retry or
+            // follow pass. Use SlipstreamCoreEvent (the type stored in the handle's ring).
+            push_ring_event(&events, SlipstreamCoreEvent { tag: 1, value: 0 });
 
-            // ── Bounded pass-level retry loop (T6.8-H2 Fix B) ─────────────────
-            let mut attempt: u32 = 0;
-            let result = loop {
-                // ufvk_arg owns the String; take &str reference inside the task.
-                let ufvk_ref = ufvk_arg.as_ref().map(|(s, h)| (s.as_str(), *h));
-                let result =
-                    slipstream_core::engine::sync_once(&cfg, ufvk_ref, Some(progress.clone())).await;
-                match result {
-                    Ok(outcome) => break Ok(outcome),
-                    Err(err) => {
-                        attempt += 1;
-                        match should_retry(&err, attempt) {
-                            Some(sleep_dur) => {
-                                tracing::warn!(
-                                    %err,
-                                    attempt,
-                                    sleep_secs = sleep_dur.as_secs(),
-                                    "slipstream sync failed (transient) — retrying pass"
-                                );
-                                tokio::time::sleep(sleep_dur).await;
-                                // Continue with SyncState::Syncing (stays unchanged).
-                            }
-                            None => break Err(err),
-                        }
-                    }
-                }
-            };
+            // ── Initial pass: bounded retry loop (T6.8-H2 Fix B) ─────────────
+            let initial_result = run_pass_with_retry(
+                &cfg,
+                ufvk_arg.as_ref().map(|(s, h)| (s.as_str(), *h)),
+                &progress,
+            ).await;
 
-            match result {
-                Ok(outcome) => {
-                    *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Done;
-                    let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
-                    if ring.len() >= slipstream_core::ffi_handle::EVENT_RING_CAP {
-                        ring.remove(0);
-                    }
-                    // SyncDone (tag=3): value = number of transactions stored.
-                    ring.push(SlipstreamCoreEvent {
-                        tag: 3,
-                        value: outcome.enhance.txs_stored,
-                    });
-                }
+            match initial_result {
                 Err(err) => {
                     tracing::error!(
                         %err,
@@ -4566,12 +4637,100 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                         "slipstream sync failed"
                     );
                     *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(1);
-                    let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
-                    if ring.len() >= slipstream_core::ffi_handle::EVENT_RING_CAP {
-                        ring.remove(0);
+                    push_ring_event(&events, SlipstreamCoreEvent { tag: 4, value: 1 });
+                }
+                Ok(outcome) => {
+                    // Initial pass succeeded: Done + SyncDone event.
+                    *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Done;
+                    push_ring_event(&events, SlipstreamCoreEvent {
+                        tag: 3,
+                        value: outcome.enhance.txs_stored,
+                    });
+
+                    // ── T8.1 follow loop: keep tracking the chain while the app is
+                    // foregrounded. stop()/free()/restart abort this task (AbortHandle),
+                    // which cancels the sleep/probe safely (tokio::sleep is abort-safe).
+                    //
+                    // When iOS suspends the process the loop freezes with it and
+                    // resumes on foreground (documented; Zodl additionally calls
+                    // stop() on didEnterBackground → the loop usually never survives
+                    // into the background at all).
+                    //
+                    // State contract (Deviation D3): Done between passes, Syncing
+                    // during real catch-up passes. No new state code — unmodified Swift
+                    // maps unknown codes to .disconnected (SlipstreamSynchronizer.swift:
+                    // 389-394), and the B4 watchdog keys on state==1 (Syncing) with
+                    // live counter movement (which a 1-2-block follow pass provides).
+                    //
+                    // Jitter rationale: a fixed poll cadence is a correlatable timing
+                    // fingerprint across users/sessions — passive observers can detect
+                    // wallet sync rhythm. Uniform random in [FOLLOW_POLL_MIN_SECS,
+                    // FOLLOW_POLL_MAX_SECS] per cycle breaks the pattern, matching the
+                    // old-SDK's CompactBlockProcessor.swift:74-76 jitter design.
+                    let mut last_tip = outcome.chain_tip;
+                    let mut consecutive_failures: u32 = 0;
+                    loop {
+                        // Jittered sleep before each probe.
+                        let sleep_dur = follow_poll_jitter(rand::random::<f64>());
+                        tracing::debug!(sleep_secs = sleep_dur.as_secs(), last_tip, "follow: sleeping before tip probe");
+                        tokio::time::sleep(sleep_dur).await;
+
+                        // Fast-path probe: GetLatestBlock only (no subtree roots,
+                        // no UTXO refresh — those only happen in a full pass).
+                        let observed = match slipstream_core::engine::probe_tip(&cfg).await {
+                            Ok(t) => {
+                                consecutive_failures = 0;
+                                t
+                            }
+                            Err(err) if err.is_transient() => {
+                                consecutive_failures += 1;
+                                tracing::warn!(%err, consecutive_failures, "follow tip probe failed (transient)");
+                                if consecutive_failures > FOLLOW_FAILURE_CAP {
+                                    tracing::error!("follow loop giving up after repeated probe failures");
+                                    *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(1);
+                                    push_ring_event(&events, SlipstreamCoreEvent { tag: 4, value: 1 });
+                                    return;
+                                }
+                                continue;
+                            }
+                            Err(err) => {
+                                tracing::error!(%err, "follow tip probe failed (fatal)");
+                                *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(1);
+                                push_ring_event(&events, SlipstreamCoreEvent { tag: 4, value: 1 });
+                                return;
+                            }
+                        };
+
+                        if !slipstream_core::engine::should_resync(last_tip, observed) {
+                            tracing::debug!(last_tip, observed, "follow: tip unchanged, no pass needed");
+                            continue;
+                        }
+
+                        tracing::info!(last_tip, observed, "follow: tip advanced, running catch-up pass");
+
+                        // New block(s): Syncing for the pass duration, then Done.
+                        // Follow passes are ALWAYS keyless (ufvk=None) — the account
+                        // is already imported; passing Some would waste a GetTreeState
+                        // RPC on every catch-up pass (fact A of the plan recon).
+                        *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Syncing;
+                        match run_pass_with_retry(&cfg, None, &progress).await {
+                            Ok(o) => {
+                                last_tip = o.chain_tip;
+                                consecutive_failures = 0;
+                                *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Done;
+                                push_ring_event(&events, SlipstreamCoreEvent {
+                                    tag: 3,
+                                    value: o.enhance.txs_stored,
+                                });
+                            }
+                            Err(err) => {
+                                tracing::error!(%err, failed_at_utc = %slipstream_core::engine::wall_clock_utc(), "follow pass failed");
+                                *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(1);
+                                push_ring_event(&events, SlipstreamCoreEvent { tag: 4, value: 1 });
+                                return;
+                            }
+                        }
                     }
-                    // SyncError (tag=4): value = error code 1 (generic).
-                    ring.push(SlipstreamCoreEvent { tag: 4, value: 1 });
                 }
             }
         };
@@ -4773,5 +4932,68 @@ mod slipstream_retry_tests {
         assert_eq!(pass_retry_sleep(1), std::time::Duration::from_secs(5));
         assert_eq!(pass_retry_sleep(2), std::time::Duration::from_secs(15));
         assert_eq!(pass_retry_sleep(3), std::time::Duration::from_secs(15)); // default arm
+    }
+
+    // ── T8.1 follow-poll jitter tests ────────────────────────────────────────
+
+    /// Jitter bounds: minimum sample 0.0 must produce exactly FOLLOW_POLL_MIN_SECS.
+    #[test]
+    fn follow_poll_jitter_min_sample_yields_min_secs() {
+        let d = follow_poll_jitter(0.0);
+        assert_eq!(
+            d,
+            std::time::Duration::from_secs(FOLLOW_POLL_MIN_SECS),
+            "sample=0.0 must produce the minimum poll interval ({FOLLOW_POLL_MIN_SECS}s)"
+        );
+    }
+
+    /// Jitter bounds: maximum sample just below 1.0 must produce ≤ FOLLOW_POLL_MAX_SECS.
+    #[test]
+    fn follow_poll_jitter_near_max_sample_yields_at_most_max_secs() {
+        // Use 0.9999… to approach but not reach 1.0.
+        let d = follow_poll_jitter(f64::from(u32::MAX) / f64::from(u32::MAX) - f64::EPSILON * 64.0);
+        assert!(
+            d <= std::time::Duration::from_secs(FOLLOW_POLL_MAX_SECS),
+            "sample near 1.0 must not exceed max poll interval ({FOLLOW_POLL_MAX_SECS}s), got {d:?}"
+        );
+        assert!(
+            d >= std::time::Duration::from_secs(FOLLOW_POLL_MIN_SECS),
+            "sample near 1.0 must be at least min poll interval ({FOLLOW_POLL_MIN_SECS}s), got {d:?}"
+        );
+    }
+
+    /// Constants are in the old-SDK jitter band (10–30 s) and sane relative to each other.
+    #[test]
+    fn follow_poll_is_in_old_sdk_band() {
+        // Old-SDK: random(in: 10...30) s — ZcashSDK.swift:98, CompactBlockProcessor.swift:74-76.
+        assert!(
+            FOLLOW_POLL_MIN_SECS >= 10,
+            "min must be >= 10 (old-SDK floor)"
+        );
+        assert!(
+            FOLLOW_POLL_MAX_SECS <= 30,
+            "max must be <= 30 (old-SDK ceiling)"
+        );
+        assert!(
+            FOLLOW_POLL_MIN_SECS <= FOLLOW_POLL_MAX_SECS,
+            "min must be <= max"
+        );
+    }
+
+    /// Failure cap is sane (must be >= 3 to tolerate brief server weather).
+    #[test]
+    fn follow_failure_cap_is_sane() {
+        assert!(
+            FOLLOW_FAILURE_CAP >= 3,
+            "FOLLOW_FAILURE_CAP must be >= 3 to tolerate transient server weather"
+        );
+    }
+
+    /// Midpoint sample produces a value strictly between min and max.
+    #[test]
+    fn follow_poll_jitter_midpoint_is_between_bounds() {
+        let d = follow_poll_jitter(0.5);
+        assert!(d >= std::time::Duration::from_secs(FOLLOW_POLL_MIN_SECS));
+        assert!(d <= std::time::Duration::from_secs(FOLLOW_POLL_MAX_SECS));
     }
 }

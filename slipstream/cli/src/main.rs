@@ -65,6 +65,12 @@ enum Cmd {
         /// since the 2026-06-12 flip; `--write-behind false` is the kill switch.
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         write_behind: bool,
+        /// T8.1: after reaching tip, keep the wallet tracking the chain.
+        /// Probes the tip every 10–30 s (jittered); runs a full pass whenever a
+        /// new block arrives. Cancellable with Ctrl-C. Useful for Mac CLI validation
+        /// and for observing follow behaviour without a full Zodl build.
+        #[arg(long, default_value_t = false)]
+        follow: bool,
     },
     /// Golden-oracle run: sync the same UFVK/birthday twice into two wallet dirs
     /// (A = upstream persistence, B = upstream until T6.3 lands --sparse-b),
@@ -213,6 +219,7 @@ fn cmd_sync(
     sparse: bool,
     chunk_split_bytes: usize,
     write_behind: bool,
+    follow: bool,
 ) {
     let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
 
@@ -320,6 +327,70 @@ fn cmd_sync(
                 if outcome.report.reorgs_recovered > 0 {
                     println!("reorgs: {} recovered", outcome.report.reorgs_recovered);
                 }
+
+                // ── T8.1 follow loop (CLI variant) ──────────────────────────
+                // When --follow is set, keep polling the tip and running catch-up
+                // passes until Ctrl-C. The jittered sleep matches the FFI follow
+                // loop's randomised cadence (FOLLOW_POLL_MIN_SECS=10 ..
+                // FOLLOW_POLL_MAX_SECS=30), using the same range for consistency.
+                if follow {
+                    // CLI-local jitter: same [10, 30] range as the FFI loop.
+                    const FOLLOW_CLI_POLL_MIN: u64 = 10;
+                    const FOLLOW_CLI_POLL_MAX: u64 = 30;
+
+                    let mut last_tip = outcome.chain_tip;
+                    println!("follow: watching for new blocks (Ctrl-C to stop) ...");
+                    loop {
+                        // Jittered sleep.
+                        let span = (FOLLOW_CLI_POLL_MAX - FOLLOW_CLI_POLL_MIN + 1) as f64;
+                        let sample = rand::random::<f64>();
+                        let offset = (sample * span) as u64;
+                        let secs = FOLLOW_CLI_POLL_MIN
+                            + offset.min(FOLLOW_CLI_POLL_MAX - FOLLOW_CLI_POLL_MIN);
+                        println!("follow: sleeping {secs}s ...");
+                        tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+
+                        // Cheap probe.
+                        match slipstream_core::engine::probe_tip(&cfg).await {
+                            Ok(observed) => {
+                                if !slipstream_core::engine::should_resync(last_tip, observed) {
+                                    println!("follow: tip unchanged ({observed}), no pass needed");
+                                    continue;
+                                }
+                                println!(
+                                    "follow: tip advanced {last_tip} → {observed}, syncing ..."
+                                );
+                                match slipstream_core::engine::sync_once(
+                                    &cfg,
+                                    None, // keyless: account already imported
+                                    None,
+                                )
+                                .await
+                                {
+                                    Ok(fo) => {
+                                        last_tip = fo.chain_tip;
+                                        println!(
+                                            "follow pass: +{} blocks, tip={}, txs={}",
+                                            fo.report.scan.blocks,
+                                            fo.chain_tip,
+                                            fo.enhance.txs_stored
+                                        );
+                                    }
+                                    Err(e) => {
+                                        eprintln!("follow pass failed: {e}");
+                                        std::process::exit(1);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("follow probe failed: {e}");
+                                // Non-fatal for the CLI (mirrors the FFI transient tolerance):
+                                // just warn and try again next iteration.
+                                println!("follow: probe error — will retry next cycle");
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("sync failed: {e}");
@@ -408,8 +479,8 @@ fn main() {
         Cmd::Fetch { server, range, streams, chunk, baseline } => {
             cmd_fetch(server, range, streams, chunk, baseline);
         }
-        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind } => {
-            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind);
+        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, follow } => {
+            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, follow);
         }
         Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, streams, chunk } => {
             cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, streams, chunk);
@@ -690,5 +761,35 @@ mod tests {
             cli.cmd,
             Cmd::Oracle { sparse_b: true, write_behind_b: true, .. }
         ));
+    }
+
+    // ── T8.1 follow flag ──────────────────────────────────────────────────────
+
+    #[test]
+    fn sync_follow_flag_parses() {
+        // --follow defaults to false.
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+        ])
+        .expect("parses without --follow");
+        assert!(matches!(cli.cmd, Cmd::Sync { follow: false, .. }), "default must be false");
+
+        // --follow enables following.
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+            "--follow",
+        ])
+        .expect("parses --follow");
+        assert!(matches!(cli.cmd, Cmd::Sync { follow: true, .. }), "--follow must enable following");
     }
 }

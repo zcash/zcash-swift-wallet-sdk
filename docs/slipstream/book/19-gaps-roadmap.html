@@ -31,8 +31,8 @@
       </tr>
       <tr>
         <td>No periodic tip-following (P8 GAP 2)</td>
-        <td><span style="color:#b54708;font-weight:700">Open</span></td>
-        <td>A wallet open in the foreground sees no new blocks after the initial sync completes</td>
+        <td><span style="color:#27864a;font-weight:700">Mitigated/Shipped</span></td>
+        <td>T8.1 shipped: jittered [10–30s] probe loop inside sync_body; Done↔Syncing state contract; stop/background cancels via AbortHandle. Deviations: D3 (no new Following state), D4 (brief ~syncing flap per catch-up pass). [needs-user] device field confirmation pending.</td>
       </tr>
       <tr>
         <td>A10-class spam-era memory tuning</td>
@@ -120,15 +120,19 @@
   <h3>No periodic tip-following (P8 GAP 2)</h3>
 
   <div class="callout warning">
-    <span class="label">User-reported, 2026-06-12</span>
-    <p>The FFI runner is single-shot per <code>start()</code> call: one <code>sync_once</code>, then <code>SyncState::Done</code> until the app lifecycle triggers another <code>start()</code>. A wallet open in the foreground after an initial sync sees no new blocks arrive. The old SDK re-synced continuously on a timer.</p>
+    <span class="label">User-reported, 2026-06-12 — SHIPPED T8.1 (2026-06-12)</span>
+    <p>The FFI runner was single-shot per <code>start()</code> call: one <code>sync_once</code>, then <code>SyncState::Done</code> until the app lifecycle triggered another <code>start()</code>. A wallet open in the foreground after an initial sync saw no new blocks arrive. Fixed in T8.1.</p>
   </div>
 
-  <p><strong>Why it matters:</strong> Any wallet sitting at the home screen after an initial restore stops tracking the chain. New blocks — and any ZEC received — will not appear until the app is backgrounded and re-foregrounded (triggering a new lifecycle start).</p>
+  <p><strong>What was shipped (T8.1, ENGINE_BUILD=2026-06-14.t81-follow):</strong> After each successful initial/follow pass, <code>sync_body</code> now enters a jittered probe loop instead of returning. A cheap <code>engine::probe_tip</code> (single <code>GetLatestBlock</code> unary) runs every 10–30 s (uniform random per cycle — rationale: a fixed cadence is a correlatable timing fingerprint across sessions). When the server tip advances, a full keyless <code>run_pass_with_retry</code> catch-up pass runs. The loop is cancelled by the existing <code>AbortHandle</code> on <code>stop()</code>, <code>free()</code>, or <code>restart()</code> with zero new plumbing. State contract: <code>Done</code> between passes, <code>Syncing</code> during catch-up passes (no new state codes — unmodified Swift maps unknown codes to <code>.disconnected</code>, Deviation D3).</p>
 
-  <p><strong>Current mitigation:</strong> The pass-level bounded retry (PASS_RETRY_MAX=2, T6.8-H2) handles transient stalls within a pass, but does NOT implement periodic tip-following. <code>begin_pass()</code> (T5.6 review) already makes repeated passes counter-safe — the structure is ready; the trigger is missing.</p>
+  <p><strong>Deviations (honest record):</strong></p>
+  <ul>
+    <li><strong>D3</strong>: No new <code>Following</code> FFI state. Done between passes, Syncing during catch-up. Zodl shows <code>.synced</code> at tip (correct), never <code>.disconnected</code>.</li>
+    <li><strong>D4</strong>: Brief <code>.syncing</code> flap during each catch-up pass (~1-2 blocks; seconds). Tip-gating (no pass unless tip advanced) means flap frequency equals block arrival rate — same as old SDK's 10–30 s restart timer.</li>
+  </ul>
 
-  <p><strong>Planned fix shape:</strong> Engine-level re-arm loop: sleep ~20–30 s at <code>SyncState::Done</code>, call <code>sync_once</code> again (cheap passes at tip: <code>suggest_scan_ranges</code> returns a tiny or empty range). Alternatively, a Swift-side restart-on-Done timer. Targeted for P8.</p>
+  <p><strong>Remaining gap:</strong> [needs-user] device field confirmation. CLI validation: <code>cargo run -p slipstream-cli --release -- sync --server https://zec.rocks:443 --wallet-dir /tmp/t81 --follow</code> watches tip and catches the next real block.</p>
 
   <h3>A10-class spam-era memory tuning</h3>
 
