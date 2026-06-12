@@ -88,8 +88,16 @@ enum MockDbInit {
     }
 }
 
+/// Root directory for ALL test-created wallet artifacts (databases, fs caches, tor dirs,
+/// downloaded params). Deliberately NOT the user's real `~/Documents`: on macOS,
+/// `.documentDirectory` resolves there, and the timestamped per-run files created by
+/// `TestCoordinator` (`data_db_<ts>.db`, `fs_cache_<ts>`) were never cleaned up —
+/// hundreds of them accumulated in the maintainer's Documents folder. The OS purges
+/// `temporaryDirectory` periodically, so leaked per-run artifacts are self-cleaning.
 func __documentsDirectory() throws -> URL {
-    try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("ZcashSDKTests", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
 }
 
 func __dataDbURL() throws -> URL {
