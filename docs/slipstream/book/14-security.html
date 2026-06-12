@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>14 · Security Analysis — The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part IV — Trust</p>
+  <h1>14. Security Analysis</h1>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary · reading time ≈ 10 min</span>
+    <p>Slipstream's security posture rests on four pillars: TLS with webpki roots for every server connection; multi-layer continuity checks that make serving wrong blocks detectable; a Rust implementation that confines memory-unsafe code to a narrow, documented FFI boundary; and a dependency surface limited to pinned upstream zcash crates with no vendored forks. This chapter characterises the threat model, documents what the engine validates versus trusts, and tells an auditor where to start.</p>
+  </div>
+
+  <h2>14.1 Threat model</h2>
+  <table>
+    <thead><tr><th>Adversary</th><th>Capability</th><th>In scope</th></tr></thead>
+    <tbody>
+      <tr><td>Malicious or compromised lightwalletd</td><td>Serves crafted blocks, wrong tree states, withholds data, returns garbage in gRPC responses</td><td>Yes</td></tr>
+      <tr><td>On-path network attacker</td><td>Intercepts TCP, downgrades TLS, injects responses, drops packets</td><td>Yes</td></tr>
+      <tr><td>Malicious chain data</td><td>Blocks with maximally-sized outputs, adversarial compact formats, reorg sequences designed to confuse the scanner</td><td>Yes</td></tr>
+      <tr><td>Compromised device or OS</td><td>Full read/write access to device storage and memory</td><td>No — out of scope</td></tr>
+      <tr><td>Malicious app host</td><td>The iOS app embedding the SDK feeding crafted arguments to the engine</td><td>No — out of scope; the SDK trusts its caller</td></tr>
+    </tbody>
+  </table>
+  <p>The engine does <em>not</em> defend against device compromise. A device with OS-level access can read <code>data.db</code> directly or inject code into the process. Protection at that level is an iOS platform responsibility (file protection classes, Secure Enclave for keys). The engine's job is to behave correctly when the server is hostile and the network is adversarial.</p>
+
+  <h2>14.2 Trust boundaries</h2>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 220" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr14" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arrw14" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arrg14" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+      <!-- Server zone -->
+      <rect x="10" y="30" width="130" height="160" rx="8" fill="#fff4e5" stroke="#f0c389" stroke-width="1.5"/>
+      <text x="75" y="50" text-anchor="middle" fill="#b54708" font-weight="700">Server</text>
+      <text x="75" y="65" text-anchor="middle" fill="#6e7781" font-size="10">(untrusted)</text>
+      <rect x="20" y="75" width="110" height="30" rx="6" fill="none" stroke="#b54708" stroke-width="1"/>
+      <text x="75" y="95" text-anchor="middle" fill="#b54708" font-size="11">lightwalletd</text>
+      <rect x="20" y="115" width="110" height="30" rx="6" fill="none" stroke="#b54708" stroke-width="1"/>
+      <text x="75" y="135" text-anchor="middle" fill="#b54708" font-size="11">GetBlockRange</text>
+      <rect x="20" y="155" width="110" height="24" rx="6" fill="none" stroke="#b54708" stroke-width="1"/>
+      <text x="75" y="171" text-anchor="middle" fill="#b54708" font-size="11">GetTreeState etc.</text>
+
+      <!-- TLS boundary -->
+      <rect x="150" y="65" width="80" height="100" rx="8" fill="#f0f6ff" stroke="#b6d3f7" stroke-width="1.5"/>
+      <text x="190" y="105" text-anchor="middle" fill="#1f6feb" font-weight="700" font-size="11">TLS</text>
+      <text x="190" y="122" text-anchor="middle" fill="#6e7781" font-size="10">rustls</text>
+      <text x="190" y="136" text-anchor="middle" fill="#6e7781" font-size="10">webpki roots</text>
+      <text x="190" y="150" text-anchor="middle" fill="#6e7781" font-size="10">10s connect</text>
+
+      <!-- Engine zone -->
+      <rect x="240" y="20" width="250" height="180" rx="8" fill="#effaf1" stroke="#a8dcb2" stroke-width="1.5"/>
+      <text x="365" y="40" text-anchor="middle" fill="#1a7f37" font-weight="700">Engine (Rust, trusted)</text>
+
+      <rect x="250" y="50" width="110" height="28" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="305" y="68" text-anchor="middle" fill="#1a2333" font-size="11">verify.rs continuity</text>
+
+      <rect x="370" y="50" width="110" height="28" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="425" y="68" text-anchor="middle" fill="#1a2333" font-size="11">scan_cached_blocks</text>
+
+      <rect x="250" y="88" width="110" height="28" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="305" y="106" text-anchor="middle" fill="#1a2333" font-size="11">MisbehavingServer</text>
+
+      <rect x="370" y="88" width="110" height="28" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="425" y="106" text-anchor="middle" fill="#1a2333" font-size="11">deadlines + retries</text>
+
+      <rect x="250" y="126" width="230" height="28" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="365" y="144" text-anchor="middle" fill="#1a2333" font-size="11">persist.rs transactionally (atomic per chunk)</text>
+
+      <rect x="250" y="162" width="230" height="28" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="365" y="180" text-anchor="middle" fill="#1a2333" font-size="11">oracle — byte-identical output verified</text>
+
+      <!-- FFI boundary -->
+      <rect x="500" y="65" width="70" height="100" rx="8" fill="#fff4e5" stroke="#f0c389" stroke-width="1.5"/>
+      <text x="535" y="97" text-anchor="middle" fill="#b54708" font-weight="700" font-size="11">C FFI</text>
+      <text x="535" y="113" text-anchor="middle" fill="#6e7781" font-size="10">unsafe blocks</text>
+      <text x="535" y="127" text-anchor="middle" fill="#6e7781" font-size="10">slice/ptr</text>
+      <text x="535" y="141" text-anchor="middle" fill="#6e7781" font-size="10">unwrap_exc_or</text>
+      <text x="535" y="155" text-anchor="middle" fill="#6e7781" font-size="10">panic hook</text>
+
+      <!-- Device zone -->
+      <rect x="580" y="50" width="90" height="120" rx="8" fill="#f6f8fa" stroke="#d8dee4" stroke-width="1.5"/>
+      <text x="625" y="75" text-anchor="middle" fill="#1a2333" font-weight="700">Swift / iOS</text>
+      <text x="625" y="92" text-anchor="middle" fill="#6e7781" font-size="10">SlipstreamEngine</text>
+      <text x="625" y="107" text-anchor="middle" fill="#6e7781" font-size="10">poll every 2s</text>
+      <text x="625" y="122" text-anchor="middle" fill="#6e7781" font-size="10">stall watchdog</text>
+      <text x="625" y="137" text-anchor="middle" fill="#6e7781" font-size="10">120s no-progress</text>
+
+      <!-- Arrows -->
+      <line x1="140" y1="115" x2="148" y2="115" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrw14)"/>
+      <line x1="230" y1="115" x2="238" y2="115" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr14)"/>
+      <line x1="490" y1="115" x2="498" y2="115" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg14)"/>
+      <line x1="570" y1="115" x2="578" y2="115" stroke="#b54708" stroke-width="1.5" marker-end="url(#arr14)"/>
+    </svg>
+    <figcaption>Figure 14.1 — Trust boundary diagram. Server data enters the engine only through TLS; the FFI boundary is the only site of unsafe Rust code; the Swift layer polls and watches but does not trust engine state directly.</figcaption>
+  </figure>
+
+  <h2>14.3 What the engine validates</h2>
+
+  <h3>TLS transport</h3>
+  <p>Every connection to lightwalletd is opened in <code>grpc.rs</code> via tonic with <code>ClientTlsConfig::new().with_webpki_roots()</code> (line 147). This uses the <code>rustls</code> TLS implementation and the <code>webpki-roots</code> certificate bundle — the same trust roots used by the upstream <code>tor.rs</code> module. There is a 10-second connect timeout (<code>connect_timeout(Duration::from_secs(10))</code>, line 143). Plain-text connections are possible only when <code>endpoint.tls == false</code>, which is only set for local darkside tests and explicit CLI <code>--no-tls</code> usage.</p>
+  <p>A network-level downgrade attack (stripping TLS) would cause the connection to fail at the TLS handshake layer rather than silently fall back to plaintext — rustls does not implement TLS downgrade fallback.</p>
+
+  <h3>Block continuity (transport layer)</h3>
+  <p><code>verify.rs</code> implements <code>Continuity::verify_blocks</code>, which checks two invariants on every received chunk before it enters the queue:</p>
+  <ol>
+    <li>Heights are consecutive: <code>b.height == last_height + 1</code></li>
+    <li>Hash chain: <code>b.prev_hash == last_hash</code> (when both are non-empty)</li>
+  </ol>
+  <p>A gap or prev-hash mismatch produces <code>SlipstreamError::Discontinuity { at, detail }</code>, which causes the fetch task to abort and propagate the error to the scheduler. This check runs at the transport layer, before any block reaches the scanner. The prev-hash check degrades to heights-only if a server strips <code>prev_hash</code> from responses — this is noted in the code comment at <code>verify.rs:29–33</code>.</p>
+
+  <h3>Wallet-level continuity (scan layer)</h3>
+  <p>A second continuity layer operates inside <code>scan_cached_blocks</code> (upstream). When the scanner detects that a block's prev_hash does not match the last scanned block, it raises a continuity error that <code>scan.rs</code> maps to <code>SlipstreamError::ScanContinuity { at }</code>. The scheduler's recovery arm handles this structured error by truncating the wallet DB and re-queuing affected ranges — see Chapter 10.</p>
+
+  <h3>Server treestates: trusted then cross-checked</h3>
+  <p>GetTreeState responses (used for chunk-boundary frontiers and for the wallet birthday treestate) are <em>trusted at fetch time</em> — the engine does not independently verify the treestate content against any commitment it holds before scanning from it. However, they are not simply accepted without any verification:</p>
+  <ul>
+    <li>If the treestate is subtly wrong (inconsistent tree size, corrupted frontier bytes), the upstream <code>scan_cached_blocks</code> kernel will raise an error when it tries to extend the tree from an invalid frontier.</li>
+    <li>If the treestate is wrong in a way that changes the scan output, the oracle would detect the divergence — a wrong frontier produces wrong shard bytes, which differ from the upstream path's correct shards.</li>
+    <li>ScanContinuity errors triggered by a wrong treestate are non-transient (<code>is_transient() == false</code>), so they fail the pass rather than being silently retried.</li>
+  </ul>
+  <p>The precise claim: a server-controlled wrong treestate that silently produces a <em>wallet-consistent-but-factually-wrong</em> scan result (one that passes all internal checks and the oracle) cannot be ruled out from the transport layer alone. Trust in the treestate ultimately rests on TLS channel authentication and the honesty of the lightwalletd operator — the same trust assumption as the upstream SDK.</p>
+
+  <h3>MisbehavingServer error class</h3>
+  <p><code>SlipstreamError::MisbehavingServer</code> is raised in <code>transparent.rs</code> when server UTXO responses contain out-of-range values (invalid txid slice length, negative zatoshi, height overflow, unknown recipient address). This is classified as non-transient — it does not retry. The wallet records it as an error rather than silently ignoring potentially adversarial UTXO data.</p>
+
+  <h3>Deadlines and resource bounds</h3>
+  <p>Every gRPC call carries a deadline (B2, shipped in the hardening1 build). The constants from <code>grpc.rs</code>:</p>
+  <ul>
+    <li><code>UNARY_TIMEOUT = 30s</code> — hard deadline for any unary call (GetTreeState, GetTransaction, etc.)</li>
+    <li><code>STREAM_IDLE_TIMEOUT = 30s</code> — per-message deadline for streaming calls; 30 seconds of silence on an open stream is classified as a stall and raised as <code>SlipstreamError::Transport</code></li>
+    <li>Connect timeout: 10 seconds (grpc.rs line 143)</li>
+  </ul>
+  <p>These prevent a hostile server from hanging the engine indefinitely by holding an open connection without delivering data. Resource bounding is covered in detail in Chapter 16.</p>
+
+  <h2>14.4 Memory safety posture</h2>
+  <p>The entire sync engine (<code>slipstream/core/</code>) is written in Rust. The Rust type system and borrow checker enforce memory safety — there are no raw pointer dereferences, buffer overflows, or use-after-free possibilities in safe Rust code. The rayon parallel sections in <code>persist.rs</code> use Rust's data-race-free parallel iterator model; the tokio async runtime enforces send/sync bounds at compile time.</p>
+
+  <h3>Unsafe code at the FFI boundary</h3>
+  <p>Unsafe Rust is confined to the C FFI functions in <code>rust/src/lib.rs</code>. The six Slipstream FFI functions (<code>zcashlc_slipstream_open</code>, <code>_start</code>, <code>_stop</code>, <code>_snapshot</code>, <code>_drain_events</code>, <code>_free</code>) all use the established <code>unwrap_exc_or</code> / <code>catch_panic</code> pattern from the existing libzcashlc codebase. The specific unsafe operations in these functions are:</p>
+  <ul>
+    <li><strong>Pointer-to-slice conversion</strong>: <code>slice::from_raw_parts(db_data, db_data_len)</code> and equivalent for <code>server_host</code> and <code>ufvk</code> parameters — each with explicit safety contracts in the function's <code># Safety</code> doc-comment requiring non-null, valid-for-reads, alignment-1 pointers.</li>
+    <li><strong>Pointer-to-reference conversion</strong>: <code>handle.as_mut()</code> and <code>handle.as_ref()</code> on the opaque handle pointer — null-checked before use; null handle returns a default/error value rather than dereferencing.</li>
+    <li><strong>Box reconstruction</strong>: <code>Box::from_raw(handle)</code> in <code>zcashlc_slipstream_free</code> — only called when the handle is non-null, re-taking ownership of a pointer originally produced by <code>Box::into_raw</code>.</li>
+    <li><strong>Buffer write</strong>: <code>std::ptr::copy_nonoverlapping(drained.as_ptr(), *buf, to_copy)</code> in <code>drain_events</code> — guarded by the caller's safety contract that <code>buf</code> is valid for writes for <code>buf_len</code> elements.</li>
+  </ul>
+  <p>None of the <code>slipstream/core/</code> modules contain any <code>unsafe</code> blocks. All unsafe code is in <code>rust/src/lib.rs</code> at the already-audited FFI boundary used by the rest of libzcashlc.</p>
+
+  <h3>No unwrap/expect in engine core</h3>
+  <p>Per CONVENTIONS.md, <code>unwrap()</code> and <code>expect()</code> are forbidden in non-test engine code. The persist.rs rayon join closures return <code>Result</code>; both results are checked after the join via <code>sap_result?; orch_result?</code> (no unwrap). The one <code>expect("always Some")</code> in <code>build_subtrees</code> is in the hot loop that takes elements from a <code>&amp;mut [Option&lt;T&gt;]</code> slice that was populated with <code>Some</code> values on every entry — it is structurally infallible and documented as such.</p>
+
+  <h2>14.5 Panic policy</h2>
+  <p>Panics are not silently swallowed. The B1 hardening (shipped in the hardening1 build) installs a tracing panic hook in <code>install_slipstream_panic_hook()</code> at <code>zcashlc_slipstream_open</code> time. The hook calls <code>tracing::error!(panic = %info, "rust panic")</code>, which routes through the iOS logging infrastructure, then chains to the previous hook (preserving test harness hooks). The sync task is wrapped by <code>ffi_handle::spawn_supervised</code>, which inspects the <code>JoinHandle</code> and maps a panic to <code>SyncState::Error(2)</code> plus a tag=4/value=2 ring event — see Chapter 12 for the full panic containment design.</p>
+
+  <h2>14.6 Dependency surface</h2>
+  <p>The engine depends on the following upstream zcash crates, all pinned in <code>Cargo.lock</code>:</p>
+  <table>
+    <thead><tr><th>Crate</th><th>Version</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>zcash_client_backend</code></td><td>0.23.0</td><td>Scan kernel, data API traits, transaction enhancement</td></tr>
+      <tr><td><code>zcash_client_sqlite</code></td><td>0.21.0</td><td>SQLite persistence, WalletDb implementation</td></tr>
+      <tr><td><code>shardtree</code></td><td>0.6.2</td><td>Commitment tree construction and storage</td></tr>
+      <tr><td><code>tonic</code></td><td>0.14.6</td><td>gRPC transport (with rustls + webpki)</td></tr>
+    </tbody>
+  </table>
+  <p>There are no vendored forks of any zcash crate. All additions to the dependency surface require a decision-log entry per the allowlist protocol (Decision Log 2026-06-11, T6.3 entry). The <code>shardtree</code>, <code>incrementalmerkletree</code>, and <code>zip32</code> crates were promoted to direct dependencies as part of T6.3 — they were already transitive dependencies; promoting them to direct deps is transparent in the lockfile.</p>
+
+  <h2>14.7 Where an auditor should start</h2>
+  <p>For an auditor reviewing Slipstream for the first time, this is the suggested reading order by risk surface:</p>
+  <ol>
+    <li><strong>The oracle harness (<code>slipstream/core/src/oracle.rs</code>)</strong> — understand what byte-identical means and verify the mutation tests. If the oracle is trustworthy, the persistence correctness story rests on solid ground.</li>
+    <li><strong>The FFI boundary (<code>rust/src/lib.rs</code>, lines 4355–4714)</strong> — all unsafe code, the panic hook, the supervised spawn, the pointer/slice contracts.</li>
+    <li><strong>Fetch resume logic (<code>slipstream/core/src/fetch.rs</code>)</strong> — specifically the sub-chunk resume-from-height path: verify that a retried chunk cannot send blocks twice (double-scan impossibility argument).</li>
+    <li><strong>Persist transactionality (<code>slipstream/core/src/persist.rs</code>, <code>sparse_put_blocks</code>)</strong> — the <code>inner.transactionally</code> closure that wraps both the row writes and the tree flush; verify that a crash mid-write leaves the database in a state the scan queue can recover from.</li>
+    <li><strong>Error transience classification (<code>slipstream/core/src/error.rs</code>, <code>is_transient</code>)</strong> — verify that only <code>Transport</code> errors retry; all others (including <code>MisbehavingServer</code>, <code>ScanContinuity</code>, <code>Wallet</code>) are non-retrying.</li>
+  </ol>
+
+  <h2>Known limitations</h2>
+  <ul>
+    <li>The prev-hash continuity check in <code>verify.rs</code> degrades to height-only when a server omits <code>prev_hash</code> from GetBlockRange responses. This is noted in the code.</li>
+    <li>Server treestates are trusted at fetch time; there is no independent local derivation of the expected frontier. This is a protocol-inherent limitation shared with the upstream SDK.</li>
+    <li>TLS certificate revocation is not checked (webpki-roots provides root trust; CRL/OCSP checking is not wired in tonic 0.14.6).</li>
+    <li>The engine has a single retry path for transient transport errors; a persistent server that always times out can exhaust PASS_RETRY_MAX (2 retries) and leave the wallet in an error state (displayed to the user, not silent).</li>
+  </ul>
+
+  <nav class="book">
+    <a href="13-correctness-oracle.html">← 13. Correctness &amp; the Golden Oracle</a>
+    <a href="15-privacy.html">15. Privacy Analysis →</a>
+  </nav>
+
+  <footer class="colophon">Citations as of commit ad755e08. Slipstream Book · local-only draft, not for distribution.</footer>
+</main>
+</body>
+</html>

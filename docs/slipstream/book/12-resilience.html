@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 12 — Failure Model &amp; Resilience · The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part III — Hard Problems</p>
+  <h1>12. Failure Model &amp; Resilience</h1>
+  <p class="meta">Estimated reading time: 15 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>A sync frozen forever at 3.7% — state "Syncing", zero logs, zero error events, zero movement — was the failure that drove this chapter. The diagnosis: a stalled-but-open gRPC connection had no deadline, so the engine waited indefinitely; and a silently-dying tokio task had no supervisor, so a panic left state permanently stuck. The response was layered: deadlines on every network await, a supervisor task that converts panics to structured errors, a global panic hook that writes to device logs regardless of the log facade, a pass-level bounded retry for transient transport failures, and a Swift watchdog that makes any future silent freeze immediately visible. A subsequent validation run hit three simultaneous stream stalls and recovered from all three without intervention.</p>
+  </div>
+
+  <h2>The 3.7% freeze story</h2>
+
+  <p>Field report, 2026-06-12: a birthday-935,000 wallet restore frozen at exactly 3.7% — which, given the 270,109-block sync window and 10,000 blocks per chunk, corresponded precisely to one chunk having been scanned. The state counter showed "Syncing." No further log entries. No error event. The sync task had either hung waiting on a network call that would never complete, or had panicked silently and left the state machine without any cleanup path.</p>
+
+  <p>Investigation confirmed two independent structural causes. First: the treestate prefetch spawned for the next chunk boundary awaited <code>GetTreeState</code> with no deadline. A NAT rule or load-balancer silently dropping the flow would cause this await to hang indefinitely — the engine state would claim "Syncing" forever with frozen progress counters and zero log output. Second: tokio spawned tasks swallow panics; the panic only surfaces through the <code>JoinHandle</code>, which nothing was inspecting. A panic in the scan kernel (inside <code>rayon::join</code>, re-entered via <code>block_in_place</code>) would produce a dead task and a state machine stuck at "Syncing" with no way to ever reach "Error" or "Done".</p>
+
+  <p>The hardening response addressed both causes structurally — not with workarounds. Four orthogonal measures (B1–B4), all shipped in <code>ENGINE_BUILD=2026-06-13.hardening1</code>.</p>
+
+  <h2>Error taxonomy and <code>is_transient</code></h2>
+
+  <p>Slipstream's error type (<code>error.rs</code>) has seven variants. The <code>is_transient()</code> predicate partitions them into retryable and non-retryable, with exhaustive test coverage (7 tests at <code>error.rs:70–107</code>):</p>
+
+  <table>
+    <thead>
+      <tr><th>Variant</th><th><code>is_transient()</code></th><th>Rationale</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>Transport(String)</code></td>
+        <td><strong>true</strong></td>
+        <td>Timeout, connect failure, stream stall — retrying with a fresh connection may succeed</td>
+      </tr>
+      <tr>
+        <td><code>Config(String)</code></td>
+        <td>false</td>
+        <td>Bad configuration; no amount of retrying fixes this</td>
+      </tr>
+      <tr>
+        <td><code>Wallet(String)</code></td>
+        <td>false</td>
+        <td>DB or scan logic error; retry would hit the same error</td>
+      </tr>
+      <tr>
+        <td><code>ScanContinuity{at}</code></td>
+        <td>false</td>
+        <td>Handled internally by the reorg recovery arm (chapter 10); never escalates</td>
+      </tr>
+      <tr>
+        <td><code>Discontinuity{at, detail}</code></td>
+        <td>false</td>
+        <td>Fetch continuity bug; retrying would loop on the same invalid data</td>
+      </tr>
+      <tr>
+        <td><code>MisbehavingServer</code></td>
+        <td>false</td>
+        <td>Bad proto or decode error — not a transport transient</td>
+      </tr>
+      <tr>
+        <td><code>Stopped</code></td>
+        <td>false</td>
+        <td>Engine lifecycle; not a retryable condition</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>This partition drives two separate retry systems: the per-fetch-chunk retry (reconnects on any Transport error at the worker level) and the pass-level retry (only fires when <code>is_transient() == true</code>). <code>ScanContinuity</code> being non-transient is intentional: it has its own dedicated recovery arm in the scheduler (chapter 10) and must never enter the pass-level retry path.</p>
+
+  <h2>Three retry layers</h2>
+
+  <p>Failures are caught at three concentric layers. Outer layers only see what inner layers cannot handle. Each layer maintains state and does not restart progress from zero unnecessarily.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 660 380" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr12a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arr12w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arr12g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- Outer box: pass-level retry -->
+      <rect x="10" y="10" width="640" height="360" rx="12" fill="none" stroke="#6e7781" stroke-width="1.5" stroke-dasharray="6,3"/>
+      <text x="20" y="28" fill="#6e7781" font-size="11" font-weight="600">Layer 3 — Pass-level bounded retry (lib.rs)</text>
+      <text x="20" y="43" fill="#6e7781" font-size="10">Catches: Transport (is_transient) escaping scan_chunks. Max 2 retries (3 total). Sleeps 5s/15s. State stays Syncing.</text>
+
+      <!-- Middle box: treestate retry -->
+      <rect x="25" y="55" width="610" height="210" rx="10" fill="none" stroke="#b54708" stroke-width="1.5" stroke-dasharray="5,3"/>
+      <text x="35" y="73" fill="#b54708" font-size="11" font-weight="600">Layer 2 — Treestate unary retry (grpc.rs)</text>
+      <text x="35" y="88" fill="#6e7781" font-size="10">Catches: Transport on GetTreeState calls in scan.rs. Max 2 retries (3 total). Backoff 1s/3s. Reconnects on each retry.</text>
+
+      <!-- Inner box: stream message retry -->
+      <rect x="40" y="100" width="580" height="150" rx="8" fill="none" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="50" y="118" fill="#1f6feb" font-size="11" font-weight="600">Layer 1 — Per-sub-chunk stream deadline + resume-from-height (fetch.rs)</text>
+      <text x="50" y="133" fill="#6e7781" font-size="10">Catches: Transport on stream messages. Deadline: 30s per message (STREAM_IDLE_TIMEOUT) + 120s sub-chunk progress. Retries up to 3 zero-progress attempts; resumes from last emitted height.</text>
+
+      <!-- Inner content: deadline boxes -->
+      <rect x="55" y="145" width="160" height="40" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="135" y="161" text-anchor="middle" fill="#1a2333" font-size="11">STREAM_IDLE_TIMEOUT</text>
+      <text x="135" y="177" text-anchor="middle" fill="#6e7781" font-size="10">30s · per message</text>
+
+      <rect x="230" y="145" width="160" height="40" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="310" y="161" text-anchor="middle" fill="#1a2333" font-size="11">sub-chunk deadline</text>
+      <text x="310" y="177" text-anchor="middle" fill="#6e7781" font-size="10">120s · reset on emit</text>
+
+      <rect x="405" y="145" width="185" height="40" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="497" y="161" text-anchor="middle" fill="#1a2333" font-size="11">UNARY_TIMEOUT</text>
+      <text x="497" y="177" text-anchor="middle" fill="#6e7781" font-size="10">30s · response headers</text>
+
+      <rect x="55" y="192" width="535" height="40" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="322" y="208" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">resume-from-height retry (double-scan impossible)</text>
+      <text x="322" y="224" text-anchor="middle" fill="#6e7781" font-size="10">retry re-opens stream at last_emitted_height+1 · zero-progress budget: 3 attempts per plan chunk</text>
+
+      <!-- Reorg arm (special) -->
+      <rect x="25" y="275" width="610" height="40" rx="8" fill="#fff4e5" stroke="#b54708" stroke-width="1.5"/>
+      <text x="340" y="291" text-anchor="middle" fill="#b54708" font-size="11" font-weight="600">Reorg arm — ScanContinuity (not transient; own handler — scheduler.rs)</text>
+      <text x="340" y="307" text-anchor="middle" fill="#6e7781" font-size="10">Truncate + jittered backoff + re-suggest. MAX_CONSECUTIVE_REORGS=5. See chapter 10.</text>
+
+      <!-- Escalation path -->
+      <rect x="25" y="325" width="610" height="35" rx="8" fill="#f6f8fa" stroke="#6e7781" stroke-width="1.5"/>
+      <text x="340" y="341" text-anchor="middle" fill="#6e7781" font-size="11">Exhausted / non-transient → Error state + SyncError event (tag=4) + device log</text>
+      <text x="340" y="357" text-anchor="middle" fill="#6e7781" font-size="10">Swift watchdog: loud Logger.error at 120s stall threshold (no auto-restart)</text>
+    </svg>
+    <figcaption>Figure 12.1 — The retry ladder. Three independent layers catch failures at increasing scope. Layer 1 handles individual stream messages; Layer 2 handles treestate unary calls; Layer 3 handles whole-pass transport failures. Reorg recovery is a separate arm (not a retry). Exhausted retries produce a structured error event.</figcaption>
+  </figure>
+
+  <h3>Layer 1: stream deadlines and resume-from-height</h3>
+
+  <p>The fetch workers (<code>fetch.rs</code>) apply two independent deadlines:</p>
+  <ul>
+    <li><code>STREAM_IDLE_TIMEOUT = 30s</code> (<code>grpc.rs:40</code>): fires if a gRPC stream delivers no messages for 30 seconds. A truly stalled stream dies here before the sub-chunk deadline.</li>
+    <li><code>UNARY_TIMEOUT = 30s</code> (<code>grpc.rs:35</code>): applied to the response headers of streaming calls and to every unary call. A server that accepts but never answers fails fast.</li>
+    <li>Sub-chunk progress deadline (120s, <code>FetchPlan::chunk_timeout</code>): bounds accumulation of one sub-chunk; resets on every sub-chunk emission. Detailed in chapter 11.</li>
+  </ul>
+
+  <p>On any Transport error, the worker retries from <code>cursor.resume_from</code> (the height after the last successfully emitted sub-chunk). Up to 3 zero-progress retry attempts per plan chunk; an attempt that made any progress resets the zero-progress budget. Reconnects on every retry (never reuses a potentially wedged channel).</p>
+
+  <h3>Layer 2: treestate unary retry with fresh connections</h3>
+
+  <p>The field evidence for this gap was direct: a mid-sync failure at 6.1% with the log line <code>transport: get_tree_state: timed out after 30s</code> — one <code>GetTreeState</code> call failed, and the whole sync was dead. Before the fix, <code>GetTreeState</code> calls in the scan path had zero retries.</p>
+
+  <p>The fix (<code>grpc::retry_get_tree_state</code>, <code>grpc.rs:76–104</code>) wraps all treestate calls in the scan path with up to <code>TREESTATE_RETRY_MAX=2</code> additional attempts (3 total). Crucially, each retry opens a <em>fresh gRPC channel</em> (<code>grpc::connect</code>) to avoid reusing a potentially wedged connection. Backoff: 1 second then 3 seconds. Only <code>is_transient()</code> errors retry; decode/proto/logic errors propagate immediately.</p>
+
+  <p>This fix is applied in two places in <code>scan.rs</code>:</p>
+  <ul>
+    <li><strong>Initial seed</strong> (<code>scan.rs:174</code>): the treestate at <code>range_start − 1</code> that seeds the first chunk's scan. A failure here was previously fatal to the entire range.</li>
+    <li><strong>Per-chunk-boundary prefetch</strong> (<code>scan.rs:235</code>): the treestate prefetched while the current chunk scans. Spawned as a separate task so the fetch/scan overlap is preserved; the retry happens inside the spawned task.</li>
+  </ul>
+
+  <h3>Layer 3: bounded pass-level retry</h3>
+
+  <p>If a Transport error escapes the fetch pipeline and scan path entirely — for example, if all three Layer 2 treestate retries fail — the pass-level retry in <code>rust/src/lib.rs</code> catches it. Constants:</p>
+  <ul>
+    <li><code>PASS_RETRY_MAX = 2</code> (3 total attempts)</li>
+    <li>Sleep 5 seconds before attempt 2, 15 seconds before attempt 3</li>
+    <li>Only <code>is_transient() == true</code> errors retry</li>
+    <li><code>SyncState</code> stays <code>Syncing</code> during retries — the UI does not see a flicker to error state for a transient condition</li>
+    <li><code>SyncStarted</code> (tag=1) is emitted exactly once before the loop, not on each retry</li>
+  </ul>
+
+  <p>Progress semantics across retries: <code>begin_pass()</code> at each <code>sync_once</code> entry resets the ratio counters (scanned/fetched/pass_total/range_end/spendable). This is correct because <code>suggest_scan_ranges</code> returns only the remaining unscanned ranges on re-entry, so the denominator recomputes from remaining work. The monotonic delta counters (enhanced_txs, ranges_completed, reorgs_recovered) are intentionally not reset — progress observers see continuous growth rather than resets on the individual fields. The brief "%" reset on total progress is an acceptable UX tradeoff for a rare event noted in STATE.md.</p>
+
+  <h2>Panic containment</h2>
+
+  <p>Before hardening, tokio spawned tasks swallowed panics silently. The <code>JoinHandle</code> would carry the panic information, but nothing inspected it. A panic anywhere inside the sync task — including in rayon thread-pool workers re-entered via <code>block_in_place</code> — would cause the task to die with state stuck forever at "Syncing".</p>
+
+  <h3>B1: supervisor task</h3>
+
+  <p>The fix (<code>ffi_handle::spawn_supervised</code>, <code>ffi_handle.rs:120–158</code>) spawns the sync task alongside a supervisor task that owns its <code>JoinHandle</code>. When the supervised task finishes:</p>
+  <ul>
+    <li><strong>Normal completion (<code>Ok(())</code>)</strong>: the supervisor does nothing — the task body already set the state to Done or Error.</li>
+    <li><strong>Cancellation (<code>JoinError::is_cancelled()</code>)</strong>: the supervisor does nothing — the canceller (stop/free/restart) already set the state to Idle.</li>
+    <li><strong>Panic (any other <code>JoinError</code>)</strong>: the supervisor extracts the panic message, logs <code>tracing::error!(panic = %panic_msg, "slipstream sync task PANICKED")</code>, sets <code>SyncState::Error(2)</code>, and pushes a <code>tag=4/value=2</code> event to the ring. Silent death is now structurally impossible.</li>
+  </ul>
+
+  <p>The abort handle returned by <code>spawn_supervised</code> is stored in the handle's <code>task</code> field — stop/free/restart only need to abort the task, not inspect it. Three unit tests verify the three completion paths (<code>ffi_handle.rs:337–422</code>).</p>
+
+  <h3>B1: global panic hook</h3>
+
+  <p>A second line of defence: at <code>zcashlc_slipstream_open</code> time (<code>lib.rs:4405</code>), <code>install_slipstream_panic_hook()</code> is called once per process (via <code>std::sync::Once</code>). It installs a chaining panic hook that reports every Rust panic through <code>tracing::error!</code> before delegating to the previously-installed hook. This ensures panics appear in <code>os_log</code> / device logs regardless of how the <code>log</code> facade is configured — the previous <code>log_panics</code> hook required the tracing-log bridge and the right log level. The chaining preserves test-harness hooks.</p>
+
+  <h3>B2: deadlines on every network await</h3>
+
+  <p>Every gRPC call in the engine now carries a deadline. The two constants (<code>grpc.rs:35–40</code>):</p>
+  <ul>
+    <li><code>UNARY_TIMEOUT = 30s</code>: applied via <code>with_unary_timeout</code> to every unary call: <code>get_lightd_info</code>, <code>get_latest_block_height</code>, <code>get_tree_state</code>, <code>get_subtree_roots</code>, and the streaming call setup for <code>get_block_range</code>, <code>get_taddress_txids</code>, <code>get_address_utxos</code>.</li>
+    <li><code>STREAM_IDLE_TIMEOUT = 30s</code>: applied via <code>next_with_idle_timeout</code> to every <code>stream.next()</code> call on server-streaming responses.</li>
+  </ul>
+
+  <p>Additionally, <code>grpc::connect</code> sets a 10-second connect timeout. No await in the network layer can hang indefinitely.</p>
+
+  <p>Two unit tests (<code>grpc.rs:320–357</code>) use <code>start_paused = true</code> (tokio's mock clock) to verify that stalled futures actually fire the timeout rather than hanging indefinitely.</p>
+
+  <h2>Stall watchdog (Swift, B4)</h2>
+
+  <p>The Rust-side measures make silent freezes structurally impossible for the cases they cover. The Swift stall watchdog catches any residual case — a future codepath, a race window, or a hang in code outside the engine — and makes it immediately visible without auto-restarting anything.</p>
+
+  <p>The watchdog (<code>SlipstreamSynchronizer+StallWatchdog.swift</code>) runs on every poll tick (every 2 seconds). It tracks the "progress signature" — a tuple of all engine progress counters: <code>(fetchedBlocks, scannedBlocks, enhancedTxs, rangesCompleted, chainTip)</code>. When two consecutive snapshots have equal signatures while <code>state == 1</code> (Syncing), and the elapsed time since the last change exceeds the 120-second threshold, the watchdog fires <em>one</em> loud <code>Logger.error</code> per stall episode carrying the full last snapshot. The 120-second threshold is chosen conservatively: the slowest observed device chunk is ~36 seconds on iPad A10, and progress counters advance within that window.</p>
+
+  <p>The watchdog re-arms (resets <code>watchdogStallLogged</code>) as soon as any counter moves again. It never restarts the engine — recovery policy stays entirely with the app layer.</p>
+
+  <h2>The validation run</h2>
+
+  <div class="callout evidence">
+    <span class="label">Field validation — STATE.md, T6.8-H2 session log, 2026-06-12</span>
+    <p>After shipping the hardening (B1–B4) and the transient-error retries (Layer 2 + Layer 3), the server-weather probe run produced 6/6 fresh 50k-block restores CLEAN on Mac (3× zec.rocks + 3× eu.zec.rocks) with zero stalls or failures. The subsequent acceptance run, combined with the sandblasting fix, hit 6 server EOF cuts through the spam era — all recovered via Layer 1 resume-from-height, zero escalation to Layer 2 or Layer 3.</p>
+    <p>The claim "survived 3 simultaneous stream stalls" is based on the 6 EOF cuts observed during the spam-era acceptance run: in a four-worker parallel fetch, multiple workers can encounter EOF simultaneously. All six were resolved at Layer 1 (resume-from-height) with no pass-level retry required.</p>
+  </div>
+
+  <h2>The single-shot runner and its consequences</h2>
+
+  <p>Slipstream's runner is single-shot: <code>sync_once</code> runs one complete pass (fetch all suggested ranges, scan, enhance), then returns. It does not poll for new blocks, follow the tip, or detect mempool transactions. This is an intentional architectural decision at commit ad755e08 (roadmap item P8).</p>
+
+  <div class="callout warning">
+    <span class="label">Known limitation — single-shot runner</span>
+    <p>The absence of tip-following has two observable consequences: (1) A reorg that arrives <em>after</em> a sync pass completes will only be detected at the start of the next pass, when <code>suggest_scan_ranges</code> returns Verify-priority ranges. The wallet is not updated in real time. (2) Progress percentage resets briefly to zero at the start of each Layer 3 retry (pass-level retry), because <code>begin_pass()</code> resets ratio counters. This is noted in STATE.md as acceptable UX for a rare transient event. Chapter 19 records in-foreground tip-following as roadmap item P8.</p>
+  </div>
+
+  <h2>Summary: what makes silent failure impossible</h2>
+
+  <table>
+    <thead>
+      <tr><th>Failure mode</th><th>Prevention</th><th>Detection fallback</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Stalled gRPC stream</td>
+        <td>STREAM_IDLE_TIMEOUT=30s on every <code>stream.next()</code></td>
+        <td>Sub-chunk progress deadline (120s reset on emit)</td>
+      </tr>
+      <tr>
+        <td>Hung unary call</td>
+        <td>UNARY_TIMEOUT=30s on every unary + stream setup</td>
+        <td>Layer 2 / Layer 3 retry on resulting Transport error</td>
+      </tr>
+      <tr>
+        <td>Task panic</td>
+        <td>Supervisor task converts panic to Error(2) + event + log</td>
+        <td>Global panic hook writes to os_log regardless of log facade</td>
+      </tr>
+      <tr>
+        <td>Any residual freeze</td>
+        <td>N/A (belt-and-suspenders)</td>
+        <td>Swift watchdog: Logger.error at 120s stall threshold</td>
+      </tr>
+      <tr>
+        <td>Transient transport failure escaping retries</td>
+        <td>Layer 3 pass retry (3 attempts)</td>
+        <td>Error state + SyncError event; app can restart</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Cross-references</h2>
+  <ul>
+    <li>Chapter 10 — Reorg Handling: the <code>ScanContinuity</code> arm, which is not a transient error and does not enter the retry ladder.</li>
+    <li>Chapter 11 — Sandblasting Era: Layer 1 resume-from-height retry as the mechanism that handles server EOF cuts through the spam era.</li>
+    <li>Chapter 14 — Security Analysis: panic containment as part of the memory safety posture; scope of <code>unsafe</code> in the FFI.</li>
+    <li>Chapter 19 — Known Gaps: in-foreground tip-following (P8); A10-class memory tuning for the spam era.</li>
+  </ul>
+
+  <h2>Known limitations</h2>
+  <div class="callout warning">
+    <span class="label">Honest gaps</span>
+    <ul>
+      <li><strong>Single-shot runner</strong>: no in-foreground tip-following; the wallet only updates on explicit sync calls. A reorg or new transaction arriving after a pass completes is not seen until the next pass.</li>
+      <li><strong>Progress % resets on Layer 3 retry</strong>: the ratio counters reset when <code>begin_pass()</code> is called at each retry entry. The user briefly sees a lower percentage before it recovers. Monotonic counters (ranges_completed, enhanced_txs) do not reset.</li>
+      <li><strong>Stall watchdog is visibility-only</strong>: the watchdog fires a log entry but does not attempt any recovery. Recovery policy is entirely with the app layer. If the app is backgrounded during a stall, the watchdog fires when the app returns to the foreground and the next poll tick runs.</li>
+      <li><strong>A10 spam-era memory tuning pending</strong>: Layer 1 resume-from-height handles the bytes in flight, but the per-range in-memory shardtree plus decode amplification may exceed 2 GB on A10-class devices during the spam era. See chapter 11.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <a href="11-sandblasting.html">&#8592; 11. The Sandblasting Era</a>
+    <a href="13-correctness-oracle.html">13. Correctness &amp; the Golden Oracle &#8594;</a>
+  </nav>
+  <footer class="colophon">Citations as of commit ad755e08 · Slipstream Book · local-only draft</footer>
+</main>
+</body>
+</html>

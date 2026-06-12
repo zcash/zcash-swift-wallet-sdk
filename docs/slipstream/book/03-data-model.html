@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3. The Data-Model Contract — The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Chapter 3</p>
+  <h1>The Data-Model Contract</h1>
+  <p class="meta">Part I — Overview &nbsp;·&nbsp; estimated reading time: 10 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>Decision D3: Slipstream writes into the same <code>data.db</code> as the old SDK, with byte-identical rows in every table — verified by a golden-oracle harness. The only permitted non-determinism is one column (<code>accounts.uuid</code>), and that exception is grounded in the upstream source code. This contract is what makes the wallet openable by either engine, and the spend path unaffected.</p>
+  </div>
+
+  <h2>The contract (D3)</h2>
+
+  <p>Decision D3, locked in the roadmap: <em>"The wallet data model does not change. Engine writes through <code>zcash_client_sqlite</code> into the same <code>data.db</code>."</em></p>
+
+  <p>What this means in practice:</p>
+
+  <ul>
+    <li>Every table that upstream's <code>scan_cached_blocks</code> writes — <code>blocks</code>, <code>nullifier_map</code>, <code>tx_locator_map</code>, <code>sapling_tree_shards</code>, <code>sapling_tree_checkpoints</code>, <code>orchard_tree_shards</code>, <code>orchard_tree_checkpoints</code>, <code>scan_queue</code>, and all other <code>zcash_client_sqlite</code> tables — must contain exactly the same rows after a Slipstream sync as after an old-SDK sync over the same block range.</li>
+    <li>"Same rows" means same multisets: every row present in one database must be present in the other, with the same column values (except for the ALLOWLIST). Row order is not required to be identical; only set membership matters.</li>
+    <li>The schema itself is completely unchanged. Slipstream adds no new tables, no new columns, no schema version bumps.</li>
+  </ul>
+
+  <h2>Why byte-identity matters</h2>
+
+  <p>The D3 contract is not just about tidiness. It has three load-bearing consequences:</p>
+
+  <h3>1. Old-SDK openability</h3>
+
+  <p>A wallet synced with Slipstream can be opened by the old SDK without migration, because the old SDK's <code>ZcashRustBackend</code> reads from the same <code>data.db</code> schema. If the schemas diverged, the app would be locked to one engine. The D3 contract keeps the two engines interchangeable.</p>
+
+  <h3>2. The upstream brain keeps reading and writing</h3>
+
+  <p>As described in chapter 2, functions like <code>suggest_scan_ranges</code>, <code>get_wallet_summary</code>, and <code>fully_scanned_height</code> all read from <code>data.db</code>. The spend path — <code>propose_transfer</code>, PCZT construction — writes the prepared transaction back to <code>data.db</code>. If Slipstream's writes were structurally different from upstream's, these functions would read incorrect state or write conflicts. Byte-identity ensures all upstream reads remain correct.</p>
+
+  <h3>3. The spend path is untouched</h3>
+
+  <p>Note witnesses, nullifiers, and the commitment-tree frontiers that the spend path needs to construct proofs are stored in <code>data.db</code> by <code>scan_cached_blocks</code>. A wallet synced with Slipstream's sparse persistence path (chapter 7) must have exactly the same tree shard blobs as a wallet synced via the upstream path — otherwise proof construction would fail. The oracle tests verify this down to individual shard blob bytes.</p>
+
+  <h2>What "semantically identical" means</h2>
+
+  <p>The oracle in <code>slipstream/core/src/oracle.rs</code> defines the comparison precisely. Two databases are semantically identical if, for every table that appears in either schema:</p>
+
+  <ul>
+    <li>The set of column names is the same (minus ALLOWLIST columns, which are excluded from comparison).</li>
+    <li>The multiset of rows is the same — for each row in database A, an identical row exists in database B, and vice versa. Multiplicity matters: a duplicate row in A that is not in B is a difference.</li>
+    <li>Views are excluded from comparison (they are derived from the tables; if tables are identical, views are identical).</li>
+  </ul>
+
+  <p>The comparison is canonicalised by converting every cell value to a string representation and collecting the (sorted) per-table sets. This is implemented in <code>oracle.rs</code> and called by the CLI <code>oracle</code> subcommand and the darkside oracle tests.</p>
+
+  <div class="callout evidence">
+    <span class="label">Oracle verification record (STATE.md, T6.4, T6.5, T6.8-S, T6.8-H2)</span>
+    <ul>
+      <li><strong>Hermetic oracle:</strong> 3×1000 block synthetic chain with the sparse path on and off — VERDICT IDENTICAL at every run.</li>
+      <li><strong>Darkside oracle (T6.4):</strong> real-transaction fixtures; two full syncs (upstream vs sparse) — VERDICT IDENTICAL, including 2 transactions found and correct balance.</li>
+      <li><strong>Mainnet 50k oracle (multiple runs):</strong> tipmost 50,009 blocks on mainnet, 26 tables compared — VERDICT IDENTICAL. Most recently at tip 3,375,336 (T6.8-H2).</li>
+      <li><strong>Truncate-rescan oracle (T6.5):</strong> initial sync A (upstream) and B (sparse), truncate both, re-scan both from birthday — VERDICT IDENTICAL. Proves reorg/truncate compatibility.</li>
+    </ul>
+    <p>All oracle runs cite the 26-table clean set: blocks, nullifier_map, tx_locator_map, sapling_tree_shards, sapling_tree_checkpoints, orchard_tree_shards, orchard_tree_checkpoints, scan_queue, schemer_migrations, and all others.</p>
+  </div>
+
+  <h2>The ALLOWLIST — the only nondeterminism</h2>
+
+  <p>The oracle ALLOWLIST is defined in <code>oracle.rs</code> and currently contains exactly one entry:</p>
+
+  <pre><code>// slipstream/core/src/oracle.rs
+pub const ALLOWLIST: &amp;[(&amp;str, &amp;str)] = &amp;[("accounts", "uuid")];</code></pre>
+
+  <p>The <code>accounts.uuid</code> column is excluded from comparison because it is set to a fresh <code>Uuid::new_v4()</code> at account-import time. The write site is in the upstream codebase:</p>
+
+  <pre><code>// zcash_client_sqlite-0.21.0/src/wallet.rs:464
+let account_uuid = AccountUuid(Uuid::new_v4());</code></pre>
+
+  <p>This is non-deterministic by design: the UUID is an opaque stable per-account identity, not part of the scan output. Its value does not affect note scanning, balance computation, nullifier derivation, or any aspect of wallet correctness. Oracle correctness is unaffected because all scan tables remain clean.</p>
+
+  <div class="callout note">
+    <span class="label">ALLOWLIST discipline</span>
+    <p>The comment in <code>oracle.rs</code> says "Keep EMPTY until the determinism test proves a column is non-deterministic; every addition needs a Decision-Log entry citing the upstream write site." The UUID entry was discovered empirically during T6.2 baseline testing and is the only entry. Adding to the ALLOWLIST is a deliberate act requiring a Decision-Log entry — it is not done speculatively.</p>
+  </div>
+
+  <h2>How the contract is enforced: the golden oracle</h2>
+
+  <p>The oracle is not a passive report — it is a hard gate. The T6.4/T6.5 correctness pass required the following before the sparse persistence path was turned on by default:</p>
+
+  <ol>
+    <li><strong>Hermetic oracle:</strong> a fully in-process test (<code>sparse_path_matches_upstream_on_synthetic_chain</code> in <code>oracle.rs</code> test suite) that synthesises a 3×1000-block chain, scans it with both paths, and calls <code>semantic_diff</code>. This is in the standard <code>cargo test</code> suite — it runs in CI and locally.</li>
+    <li><strong>Darkside oracle:</strong> a <code>#[ignore]</code> test (<code>sparse_pipeline_matches_upstream_on_darkside_fixture</code> in <code>darkside_oracle.rs</code>) that uses a real lightwalletd darkside instance with known-transaction fixtures. Requires a running lightwalletd to execute.</li>
+    <li><strong>Mainnet oracle CLI:</strong> the <code>slipstream-cli oracle</code> subcommand syncs the same range twice (path A = upstream, path B = sparse), then calls <code>semantic_diff</code> and prints VERDICT IDENTICAL or DIFF. This is a manual gate run before each major change to the persistence path.</li>
+    <li><strong>Mutation tests:</strong> <code>identical_dbs_diff_clean</code>, <code>row_delta_is_detected</code>, <code>duplicate_row_multiplicity_is_detected</code>, <code>missing_table_is_detected</code> — these prove the oracle itself can detect deviations. Without them, a buggy oracle might report IDENTICAL for genuinely different databases.</li>
+  </ol>
+
+  <p>Chapter 13 covers the oracle in full detail. This chapter explains why it is needed.</p>
+
+  <h2>Two paths, one database</h2>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 310" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arrg4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+        <marker id="arro4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+      </defs>
+
+      <!-- Upstream path (left) -->
+      <rect x="20" y="20" width="200" height="52" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="120" y="40" text-anchor="middle" fill="#1f6feb" font-weight="600">Old SDK path</text>
+      <text x="120" y="56" text-anchor="middle" fill="#6e7781" font-size="11">scan_cached_blocks (upstream)</text>
+      <text x="120" y="68" text-anchor="middle" fill="#6e7781" font-size="11">put_blocks → SQLite directly</text>
+
+      <!-- Slipstream sparse path (right) -->
+      <rect x="480" y="20" width="200" height="52" rx="8" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="580" y="40" text-anchor="middle" fill="#1a7f37" font-weight="600">Slipstream sparse path</text>
+      <text x="580" y="56" text-anchor="middle" fill="#6e7781" font-size="11">scan_cached_blocks (same upstream)</text>
+      <text x="580" y="68" text-anchor="middle" fill="#6e7781" font-size="11">SparseFacade → in-memory tree → flush</text>
+
+      <!-- Arrow: upstream path down to data.db -->
+      <line x1="120" y1="72" x2="120" y2="165" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr4)"/>
+
+      <!-- Arrow: sparse path down to data.db -->
+      <line x1="580" y1="72" x2="580" y2="135" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg4)"/>
+
+      <!-- Checkpoint-downgrade annotation on sparse path -->
+      <rect x="460" y="90" width="240" height="40" rx="6" fill="#fcfdfe" stroke="#d8dee4" stroke-width="1"/>
+      <text x="580" y="107" text-anchor="middle" fill="#1a2333" font-size="11">checkpoint-downgrade (T6.3b):</text>
+      <text x="580" y="121" text-anchor="middle" fill="#6e7781" font-size="10">prunes doomed retentions before tree insert</text>
+
+      <!-- data.db box -->
+      <rect x="250" y="165" width="200" height="60" rx="8" fill="#fcfdfe" stroke="#1a2333" stroke-width="2"/>
+      <text x="350" y="189" text-anchor="middle" fill="#1a2333" font-weight="700" font-size="14">data.db</text>
+      <text x="350" y="207" text-anchor="middle" fill="#6e7781" font-size="11">unchanged zcash_client_sqlite schema</text>
+      <text x="350" y="219" text-anchor="middle" fill="#6e7781" font-size="11">WAL mode</text>
+
+      <!-- sparse path arrow to data.db -->
+      <line x1="580" y1="130" x2="460" y2="186" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg4)"/>
+
+      <!-- Oracle comparing the two -->
+      <rect x="230" y="255" width="240" height="44" rx="8" fill="#f0f6ff" stroke="#b6d3f7" stroke-width="1.5"/>
+      <text x="350" y="273" text-anchor="middle" fill="#1f6feb" font-weight="600">Golden Oracle</text>
+      <text x="350" y="289" text-anchor="middle" fill="#6e7781" font-size="11">semantic_diff(db_a, db_b) → VERDICT</text>
+
+      <!-- arrows from data.db to oracle -->
+      <line x1="310" y1="225" x2="310" y2="253" stroke="#6e7781" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr4)"/>
+      <line x1="390" y1="225" x2="390" y2="253" stroke="#6e7781" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arr4)"/>
+      <text x="265" y="248" fill="#6e7781" font-size="10">path A</text>
+      <text x="396" y="248" fill="#6e7781" font-size="10">path B</text>
+
+      <!-- IDENTICAL verdict annotation -->
+      <rect x="490" y="262" width="160" height="30" rx="6" fill="#effaf1" stroke="#a8dcb2" stroke-width="1.5"/>
+      <text x="570" y="277" text-anchor="middle" fill="#1a7f37" font-weight="700" font-size="12">VERDICT IDENTICAL ✓</text>
+      <text x="570" y="290" text-anchor="middle" fill="#6e7781" font-size="10">26 tables · mainnet oracle</text>
+      <line x1="470" y1="275" x2="490" y2="275" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg4)"/>
+    </svg>
+    <figcaption>Figure 3.1 — Two paths, one database. The old SDK writes <code>data.db</code> directly via upstream <code>put_blocks</code>. Slipstream's sparse path goes through an in-memory ShardTree (with checkpoint-downgrade) and flushes to the same <code>data.db</code> in a single transaction per chunk. The golden oracle verifies that both paths produce byte-identical row sets in all 26 tables.</figcaption>
+  </figure>
+
+  <h2>Migration story</h2>
+
+  <p>There is no migration. Because Slipstream writes the same schema the old SDK reads, a user switching between engines does not need to re-sync or touch their wallet files. The engine selection is purely at the Swift layer — the same <code>data.db</code> is used by both.</p>
+
+  <p>Forward compatibility also works: if a future SDK version adds a schema migration, both engines will encounter the same schema version at open time, and both will apply it (through the same upstream migration logic in <code>zcash_client_sqlite</code>).</p>
+
+  <h2>What the oracle does not prove</h2>
+
+  <div class="callout warning">
+    <span class="label">Honest limits of VERDICT IDENTICAL</span>
+    <ul>
+      <li><strong>It proves row identity, not note spendability directly.</strong> A separate spendability gate (chapter 13) is needed to confirm that found notes are actually spendable. The oracle confirms that the tree shard blobs are identical — the spendability gate confirms they are correct.</li>
+      <li><strong>The oracle runs on controlled ranges.</strong> The mainnet oracle runs over tipmost 50k blocks (recent, low-density). The sandblasting era (1.70M–2.00M blocks) has been traversed on Mac (84,964 blocks IDENTICAL), but has not yet been verified by a full-range device oracle pass.</li>
+      <li><strong>It does not cover the spend path.</strong> The oracle verifies that scanning produces identical data. It does not synthesise a spend transaction and verify the proof. The spend path correctness rests on the fact that the data it reads (witnesses, frontiers) is identical — which is what the oracle verifies.</li>
+      <li><strong>Views are excluded.</strong> The oracle compares base tables. Views (like <code>v_sapling_received_notes</code>) are derived — if tables are identical, views are identical — but they are not independently verified by the oracle.</li>
+    </ul>
+  </div>
+
+  <h2>Known limitations</h2>
+
+  <div class="callout warning">
+    <span class="label">Data-model gaps</span>
+    <ul>
+      <li><strong>At-rest encryption is app-level:</strong> Slipstream inherits the old SDK's approach — <code>data.db</code> protection is the responsibility of the application. The engine provides no additional at-rest encryption.</li>
+      <li><strong>No crash-recovery test beyond WAL semantics:</strong> Slipstream relies on SQLite's WAL mode for crash safety. The argument is that a partial write (an incomplete transaction) is rolled back on next open. There is no specific test that simulates a crash mid-chunk and verifies the database is consistent after recovery.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <span>← <a href="02-architecture.html">2. Architecture Overview</a></span>
+    <span><a href="04-integration.html">4. Integration Guide</a> →</span>
+  </nav>
+
+  <footer class="colophon">
+    Slipstream Book · Chapter 3 · Citations as of commit ad755e08 ·
+    <code>oracle.rs</code> ALLOWLIST and code: <code>slipstream/core/src/oracle.rs:27</code> ·
+    UUID write site: <code>zcash_client_sqlite-0.21.0/src/wallet.rs:464</code> (verified in cargo cache) ·
+    Oracle verdict: STATE.md truth table rows T6.4, T6.8-H2 ·
+    local-only draft, not for distribution.
+  </footer>
+</main>
+</body>
+</html>

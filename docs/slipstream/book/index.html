@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream</p>
+  <h1>The Slipstream Book</h1>
+  <p class="meta">Audit-grade documentation for the Slipstream sync engine — architecture, hard problems, correctness evidence, security &amp; privacy analysis, and the honest list of what is not done yet.</p>
+
+  <div class="callout summary">
+    <span class="label">What this is</span>
+    <p>Slipstream is a greenfield Rust sync engine for Zcash mobile wallets. It keeps the proven upstream wallet logic (<code>librustzcash</code>) as its “brain” and replaces the orchestration “body”: parallel fetching, pipelined scanning, and an in-memory commitment-tree persistence path proven byte-identical to upstream’s by a golden-oracle harness. On a 2016 iPad it took a real wallet restore from <strong>64 minutes to 8:30</strong>; every claim in this book traces to a measurement record or a line of code.</p>
+  </div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 720 290" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arrg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- lightwalletd -->
+      <rect x="10" y="105" width="110" height="56" rx="8" fill="none" stroke="#6e7781" stroke-width="1.5"/>
+      <text x="65" y="128" text-anchor="middle" fill="#1a2333" font-weight="600">lightwalletd</text>
+      <text x="65" y="146" text-anchor="middle" fill="#6e7781">gRPC · TLS</text>
+
+      <!-- fetch workers -->
+      <rect x="170" y="30" width="130" height="40" rx="8" fill="none" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="235" y="54" text-anchor="middle">fetch worker ×4</text>
+      <rect x="178" y="38" width="130" height="40" rx="8" fill="#fff" stroke="#1f6feb" stroke-width="1.5" opacity="0.7"/>
+      <rect x="186" y="46" width="130" height="40" rx="8" fill="#fff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="251" y="70" text-anchor="middle" fill="#1a2333">parallel streams</text>
+      <text x="251" y="100" text-anchor="middle" fill="#6e7781" font-size="11">byte-budgeted sub-chunks</text>
+
+      <!-- reorder buffer -->
+      <rect x="370" y="42" width="120" height="44" rx="8" fill="none" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="430" y="61" text-anchor="middle" font-weight="600">reorder buffer</text>
+      <text x="430" y="77" text-anchor="middle" fill="#6e7781" font-size="11">strict height order</text>
+
+      <!-- queue -->
+      <rect x="540" y="42" width="150" height="44" rx="8" fill="none" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="615" y="61" text-anchor="middle" font-weight="600">chunk queue</text>
+      <text x="615" y="77" text-anchor="middle" fill="#6e7781" font-size="11">memory backpressure</text>
+
+      <!-- scanner -->
+      <rect x="540" y="150" width="150" height="48" rx="8" fill="none" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="615" y="170" text-anchor="middle" font-weight="600">scan (upstream kernel)</text>
+      <text x="615" y="187" text-anchor="middle" fill="#6e7781" font-size="11">trial decryption · rayon</text>
+
+      <!-- sparse persist -->
+      <rect x="330" y="150" width="160" height="48" rx="8" fill="none" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="410" y="170" text-anchor="middle" font-weight="600">sparse persistence</text>
+      <text x="410" y="187" text-anchor="middle" fill="#6e7781" font-size="11">in-memory tree · 1 txn/chunk</text>
+
+      <!-- data.db -->
+      <rect x="120" y="150" width="150" height="48" rx="8" fill="none" stroke="#1a2333" stroke-width="1.5"/>
+      <text x="195" y="170" text-anchor="middle" font-weight="600">data.db</text>
+      <text x="195" y="187" text-anchor="middle" fill="#6e7781" font-size="11">unchanged upstream schema</text>
+
+      <!-- brain annotation -->
+      <rect x="120" y="228" width="570" height="44" rx="8" fill="#effaf1" stroke="#a8dcb2" stroke-width="1.5"/>
+      <text x="405" y="247" text-anchor="middle" fill="#1a7f37" font-weight="600">upstream “brain”: suggest_scan_ranges · scan_cached_blocks · spend path · summaries</text>
+      <text x="405" y="263" text-anchor="middle" fill="#6e7781" font-size="11">unmodified librustzcash — Slipstream replaces only the orchestration around it</text>
+
+      <!-- arrows -->
+      <line x1="120" y1="120" x2="180" y2="66" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="316" y1="66" x2="366" y2="64" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="490" y1="64" x2="536" y2="64" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="615" y1="86" x2="615" y2="146" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr)"/>
+      <line x1="536" y1="174" x2="494" y2="174" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg)"/>
+      <line x1="326" y1="174" x2="274" y2="174" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg)"/>
+      <line x1="195" y1="224" x2="195" y2="202" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg)"/>
+    </svg>
+    <figcaption>Figure 0.1 — The fetch∥scan pipeline. Fetching fully overlaps scanning; persistence commits one transaction per chunk into the unchanged upstream database.</figcaption>
+  </figure>
+
+  <h2>Contents</h2>
+  <ul class="toc">
+    <li class="part">Part I — Overview</li>
+    <li><a href="01-introduction.html">1. Introduction &amp; Motivation</a></li>
+    <li><a href="02-architecture.html">2. Architecture Overview</a></li>
+    <li><a href="03-data-model.html">3. The Data-Model Contract</a></li>
+    <li><a href="04-integration.html">4. Integration Guide</a></li>
+
+    <li class="part">Part II — Engine Internals</li>
+    <li class="pending">5. Fetch Pipeline</li>
+    <li class="pending">6. Scan Pipeline</li>
+    <li class="pending">7. Sparse Persistence</li>
+    <li class="pending">8. Scheduler &amp; Spend-before-Sync</li>
+    <li class="pending">9. Enhancement &amp; Transparent</li>
+
+    <li class="part">Part III — Hard Problems</li>
+    <li><a href="10-reorgs.html">10. Reorg Handling</a></li>
+    <li><a href="11-sandblasting.html">11. The Sandblasting Era</a></li>
+    <li><a href="12-resilience.html">12. Failure Model &amp; Resilience</a></li>
+
+    <li class="part">Part IV — Trust</li>
+    <li><a href="13-correctness-oracle.html">13. Correctness &amp; the Golden Oracle</a></li>
+    <li><a href="14-security.html">14. Security Analysis</a></li>
+    <li><a href="15-privacy.html">15. Privacy Analysis</a></li>
+    <li><a href="16-exploitability.html">16. Exploitability Review</a></li>
+
+    <li class="part">Part V — Evidence &amp; Process</li>
+    <li class="pending">17. Performance Evidence</li>
+    <li class="pending">18. Test &amp; Verification Matrix</li>
+    <li class="pending">19. Known Gaps &amp; Roadmap</li>
+    <li class="pending">20. Glossary &amp; Decision Digest</li>
+  </ul>
+
+  <div class="callout warning">
+    <span class="label">Reading honestly</span>
+    <p>This book documents gaps as plainly as achievements. Chapter 19 (and the “Known limitations” section closing most chapters) is the canonical list — including missing mempool detection, no in-foreground tip-following yet, and Tor not being wired into Slipstream’s network paths.</p>
+  </div>
+
+  <footer class="colophon">Slipstream Book · generated from the repository’s measurement records and source code · local-only draft, not for distribution.</footer>
+</main>
+</body>
+</html>

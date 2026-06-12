@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1. Introduction &amp; Motivation — The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Chapter 1</p>
+  <h1>Introduction &amp; Motivation</h1>
+  <p class="meta">Part I — Overview &nbsp;·&nbsp; estimated reading time: 8 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>Slipstream began with a single question: why does our SDK take 64 minutes for what Zingo does in 11? This chapter tells that story, shows the measured results (iPad A10: 64 min → 8:30; both Zingo reference points beaten), and explains what Slipstream is — and what it deliberately is not.</p>
+  </div>
+
+  <h2>The question that started this</h2>
+
+  <p>In June 2026, a comparative benchmark on a 2016 iPad (A10 Fusion, 6th-generation) restoring a real 8-month Zcash wallet showed starkly different numbers across wallets. The old ZcashLightClientKit took <strong>1 hour, 4 minutes, 26 seconds</strong>. Zingo took <strong>11 minutes, 34 seconds</strong>. Zkool — built on hanh's warp-lineage engine — took <strong>8 minutes, 53 seconds</strong>.</p>
+
+  <p>The same wallet, the same lightwalletd endpoint, the same Wi-Fi network. A 6.9× gap that grows on modern hardware (iPhone 16 Pro: our 16:55 vs Zingo 2:41, Zkool 1:13) is not a configuration problem. It is an architectural one.</p>
+
+  <p>That measurement triggered a systematic investigation, documented in <code>docs/SYNC_PERFORMANCE_PROPOSAL.md</code>. The root causes were clear:</p>
+
+  <ul>
+    <li>Blocks were fetched serially, one tiny batch at a time, over a fresh gRPC connection per scan round.</li>
+    <li>Fetching and scanning were sequential: the CPU sat idle while blocks downloaded, then the network sat idle while CPU scanned.</li>
+    <li>The commitment-tree persistence path wrote ~10,000 checkpoint insertions per chunk only to prune most of them immediately — burning 95% of scan time in SQLite shard operations, not in trial decryption.</li>
+    <li>On A10-class hardware, this last bottleneck meant the wallet sat scan-bound at ~1,380 blocks/second while Zkool's warp engine runs at ~4,700 blocks/second using frontier math that never touches the full tree.</li>
+  </ul>
+
+  <p>Slipstream is the answer. Not a rewrite of the wallet. Not a new file format. A replacement of the orchestration <em>around</em> the proven upstream cryptographic core.</p>
+
+  <h2>What Slipstream is NOT</h2>
+
+  <div class="callout note">
+    <span class="label">Scope</span>
+    <p>These are hard boundaries. Every claim of correctness in later chapters rests on them.</p>
+  </div>
+
+  <ul>
+    <li><strong>Not a new wallet format.</strong> Slipstream writes into the same <code>data.db</code> that <code>zcash_client_sqlite</code> manages. A wallet opened with Slipstream can be opened with the old SDK and vice versa. No migration needed; the schema is unchanged.</li>
+    <li><strong>Not a protocol change.</strong> Slipstream speaks the same <code>GetBlockRange</code> / <code>GetTreeState</code> gRPC protocol to lightwalletd. It fetches more aggressively in parallel, but the wire format is identical.</li>
+    <li><strong>Not a fork of wallet logic.</strong> Key derivation, note scanning, transaction construction, balance computation, spend paths — all of these come from the unmodified upstream <code>librustzcash</code> crates. Slipstream replaces only the orchestration around them.</li>
+    <li><strong>Not a shipping product yet.</strong> As of this writing, Slipstream is a local-only prototype behind a compile-time flag in the Zodl wallet. It has not been pushed to any remote.</li>
+  </ul>
+
+  <h2>What Slipstream is</h2>
+
+  <p>Slipstream is a new sync engine, written in Rust, that lives in the same Swift Package as the existing SDK (<code>slipstream/core/</code>) and can be swapped in transparently via a <code>SlipstreamSynchronizer</code> that implements the same <code>Synchronizer</code> protocol the app already uses. The key ideas:</p>
+
+  <ul>
+    <li><strong>Parallel fetch.</strong> Four concurrent <code>GetBlockRange</code> streams fetch blocks simultaneously from lightwalletd (vs. one serial stream). Each streamed chunk is split into byte-budgeted sub-chunks to handle density spikes (the 2022 sandblasting era reached 2.5 million outputs per 10,000 blocks).</li>
+    <li><strong>Overlapped pipeline.</strong> Fetching and scanning run in parallel. While one set of chunks is being scanned, the next set is already downloading.</li>
+    <li><strong>In-memory sparse tree.</strong> The commitment-tree (shardtree) operations run against an in-memory accumulator, flushed to SQLite in a single transaction per chunk. Checkpoint-downgrade removes the churn of ~9,900 transient checkpoint insertions per chunk, cutting scan time 5× on Mac and 1.8× on iPad A10.</li>
+    <li><strong>Upstream brain intact.</strong> <code>suggest_scan_ranges</code>, <code>scan_cached_blocks</code>, the spend path, balance computation, and summaries are all unchanged upstream code — Decision D2.</li>
+  </ul>
+
+  <h2>Headline results</h2>
+
+  <div class="callout evidence">
+    <span class="label">Measured numbers — iPad A10 6th Gen, 269,491-block restore (wallet birthday ~3,105,001), eu.zec.rocks</span>
+    <table>
+      <thead>
+        <tr>
+          <th>Engine / configuration</th>
+          <th>Wall-clock time</th>
+          <th>vs old SDK</th>
+          <th>vs Zingo</th>
+          <th>vs Zkool</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Old ZcashLightClientKit SDK</td>
+          <td><strong>1:04:26</strong></td>
+          <td>—</td>
+          <td>5.6× slower</td>
+          <td>7.3× slower</td>
+        </tr>
+        <tr>
+          <td>Zingo (reference)</td>
+          <td>11:34</td>
+          <td>5.6× faster</td>
+          <td>—</td>
+          <td>1.3× slower</td>
+        </tr>
+        <tr>
+          <td>Zkool (reference)</td>
+          <td>8:53</td>
+          <td>7.3× faster</td>
+          <td>1.3× faster</td>
+          <td>—</td>
+        </tr>
+        <tr>
+          <td>Slipstream (auto server selection)</td>
+          <td><strong>9:21</strong></td>
+          <td>6.9× faster</td>
+          <td>Beats Zingo ✓</td>
+          <td>+28s behind Zkool</td>
+        </tr>
+        <tr>
+          <td>Slipstream (manual server, L1 validated)</td>
+          <td><strong>8:30</strong></td>
+          <td>7.6× faster</td>
+          <td>Beats Zingo ✓</td>
+          <td>Beats Zkool ✓ (−23s)</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>iPhone 16 Pro (same wallet, 269,501-block restore): Slipstream 1:35 vs old SDK 16:55 (6.4×); Zingo 2:41 (Slipstream wins); Zkool 1:13 (Slipstream behind by 22s — iPhone goal open). Source: STATE.md truth table rows T6.7 and T6.7b, date 2026-06-12.</p>
+  </div>
+
+  <h2>The arc of the project</h2>
+
+  <p>The numbers above did not arrive all at once. The chart below shows how a single key measurement — the iPad A10 restore time — evolved across the project phases that are now the chapters of this book. Each drop corresponds to a concrete architectural change, recorded in the STATE.md decision log.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 280" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arrw1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arrg1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- Y axis -->
+      <line x1="80" y1="20" x2="80" y2="230" stroke="#d8dee4" stroke-width="1.5"/>
+      <!-- X axis -->
+      <line x1="80" y1="230" x2="680" y2="230" stroke="#d8dee4" stroke-width="1.5"/>
+
+      <!-- Y axis labels (times) -->
+      <text x="70" y="30" text-anchor="end" fill="#6e7781" font-size="11">64 min</text>
+      <text x="70" y="90" text-anchor="end" fill="#6e7781" font-size="11">17 min</text>
+      <text x="70" y="155" text-anchor="end" fill="#6e7781" font-size="11">9:21</text>
+      <text x="70" y="190" text-anchor="end" fill="#6e7781" font-size="11">8:30</text>
+      <text x="70" y="230" text-anchor="end" fill="#6e7781" font-size="11">0</text>
+
+      <!-- Gridlines -->
+      <line x1="80" y1="30" x2="680" y2="30" stroke="#d8dee4" stroke-width="0.75" stroke-dasharray="4,4"/>
+      <line x1="80" y1="90" x2="680" y2="90" stroke="#d8dee4" stroke-width="0.75" stroke-dasharray="4,4"/>
+      <line x1="80" y1="155" x2="680" y2="155" stroke="#d8dee4" stroke-width="0.75" stroke-dasharray="4,4"/>
+      <line x1="80" y1="190" x2="680" y2="190" stroke="#d8dee4" stroke-width="0.75" stroke-dasharray="4,4"/>
+
+      <!-- Bars -->
+      <!-- Old SDK: 64 min → y=30, height=200 -->
+      <rect x="100" y="30" width="90" height="200" rx="6" fill="#e8f0fe" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="145" y="55" text-anchor="middle" fill="#1f6feb" font-weight="600" font-size="13">1:04:26</text>
+      <text x="145" y="72" text-anchor="middle" fill="#6e7781" font-size="10">Old SDK</text>
+      <text x="145" y="85" text-anchor="middle" fill="#6e7781" font-size="10">baseline</text>
+
+      <!-- P4/P5 with parallel fetch + pipeline: 16:50 → y=90, height=140 -->
+      <rect x="230" y="90" width="90" height="140" rx="6" fill="#e8f0fe" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="275" y="108" text-anchor="middle" fill="#1f6feb" font-weight="600" font-size="13">16:50</text>
+      <text x="275" y="122" text-anchor="middle" fill="#6e7781" font-size="10">P4/P5: parallel</text>
+      <text x="275" y="135" text-anchor="middle" fill="#6e7781" font-size="10">fetch + pipeline</text>
+
+      <!-- P6 sparse (auto): 9:21 → y=155, height=75 -->
+      <rect x="360" y="155" width="90" height="75" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="405" y="173" text-anchor="middle" fill="#1a7f37" font-weight="600" font-size="13">9:21</text>
+      <text x="405" y="186" text-anchor="middle" fill="#6e7781" font-size="10">P6: sparse tree</text>
+      <text x="405" y="199" text-anchor="middle" fill="#6e7781" font-size="10">auto-server</text>
+
+      <!-- P6 manual: 8:30 → y=190, height=40 -->
+      <rect x="490" y="190" width="90" height="40" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="2"/>
+      <text x="535" y="208" text-anchor="middle" fill="#1a7f37" font-weight="700" font-size="13">8:30</text>
+      <text x="535" y="221" text-anchor="middle" fill="#6e7781" font-size="10">manual server</text>
+
+      <!-- Zkool reference line at 8:53 → y≈183 -->
+      <line x1="80" y1="183" x2="680" y2="183" stroke="#b54708" stroke-width="1.5" stroke-dasharray="6,4"/>
+      <text x="684" y="186" fill="#b54708" font-size="10">Zkool 8:53</text>
+
+      <!-- Zingo reference line at 11:34 → y≈145 -->
+      <line x1="80" y1="143" x2="680" y2="143" stroke="#6e7781" stroke-width="1" stroke-dasharray="4,4"/>
+      <text x="684" y="146" fill="#6e7781" font-size="10">Zingo 11:34</text>
+
+      <!-- X axis phase labels -->
+      <text x="145" y="248" text-anchor="middle" fill="#6e7781" font-size="11">Old SDK</text>
+      <text x="275" y="248" text-anchor="middle" fill="#6e7781" font-size="11">Phases P1–P5</text>
+      <text x="405" y="248" text-anchor="middle" fill="#6e7781" font-size="11">Phase P6 (auto)</text>
+      <text x="535" y="248" text-anchor="middle" fill="#6e7781" font-size="11">Phase P6 (manual)</text>
+    </svg>
+    <figcaption>Figure 1.1 — iPad A10 restore time across project phases (lower is better). All measurements are for the same ~269k-block wallet restore on eu.zec.rocks. Reference lines for Zingo and Zkool shown as dashed. Source: STATE.md truth table, 2026-06-12.</figcaption>
+  </figure>
+
+  <h3>Phase breakdown</h3>
+
+  <p>The progression above maps to concrete work:</p>
+
+  <ul>
+    <li><strong>P0–P1 (Foundation + Transport):</strong> workspace skeleton, K=4 parallel <code>GetBlockRange</code> streams. Fetch became network-bound rather than connection-churn-bound.</li>
+    <li><strong>P2 (Scan core):</strong> in-memory <code>BlockSource</code>, persistent WAL-mode WalletDb session, fetch∥scan pipeline. 50k blocks in 32s on Mac (G2).</li>
+    <li><strong>P3 (Completeness):</strong> enhancer (concurrent <code>get_transaction</code> → <code>decrypt_and_store</code>), transparent/UTXO refresh, event/snapshot surface. Full differential oracle parity confirmed.</li>
+    <li><strong>P4 (iOS Docking):</strong> C FFI surface, XCFramework (all three slices), <code>SlipstreamSynchronizer</code>. Real wallet restore: 158s vs 1,710s for the old SDK (10.8×) — M1 met.</li>
+    <li><strong>P5 (Performance pass):</strong> per-stage instrumentation, adaptive sub-batching, whole-pass progress denominator, per-range interleaved enhancement. iPad time recorded at 16:50 under careful field conditions.</li>
+    <li><strong>P6 (Sparse tree persistence):</strong> checkpoint-downgrade inside an in-memory ShardTree facade, oracle-clean (hermetic + darkside + mainnet IDENTICAL), default ON since T6.6. iPad 16:50 → 9:21 (auto) → 8:30 (manual-server). Sandblasting era made traversable via byte-budgeted chunk splitting (T6.8-S). Transient-error retries hardened (T6.8-H2).</li>
+  </ul>
+
+  <h2>Relationship to the old SDK</h2>
+
+  <p>Slipstream is additive. The old sync pipeline in <code>Block/CompactBlockProcessor.swift</code> is unchanged; its test suite (<code>OfflineTests</code>, 475 tests) stays green at every commit. The Swift seam is a new file, <code>Sources/ZcashLightClientKit/Slipstream/SlipstreamSynchronizer.swift</code>, that conforms to the same <code>Synchronizer</code> protocol. Zodl selects between implementations via a feature flag; no app-surface change is required.</p>
+
+  <p>The Rust engine is a new workspace member (<code>slipstream/core</code>) that shares the same pinned <code>zcash_client_sqlite</code> / <code>zcash_client_backend</code> versions as the existing <code>libzcashlc</code>. One static library, one copy of the upstream crates — no symbol collision.</p>
+
+  <h2>Known limitations</h2>
+
+  <div class="callout warning">
+    <span class="label">Current gaps (see chapter 19 for the complete list)</span>
+    <ul>
+      <li><strong>Single-shot runner:</strong> Slipstream runs one pass and stops. There is no in-foreground tip-following (continuous sync). The app is responsible for calling <code>start()</code> again when new blocks arrive.</li>
+      <li><strong>Mempool detection missing:</strong> unconfirmed transactions are not surfaced. The old SDK's mempool polling is not yet ported.</li>
+      <li><strong>Tor not wired:</strong> Slipstream's fetch/scan/enhance paths connect directly via TLS. The old SDK has Tor integration for some flows; Slipstream has none. This is a confirmed privacy gap — see chapter 15.</li>
+      <li><strong>A10 sandblasting era:</strong> the spam era (~1.70M–2.00M blocks) is now traversable on Mac (84,964 blocks / 43.2M outputs validated). Device memory budgets on A10-class hardware (2 GB) need dedicated tuning before a birthday-935000 full restore is safe on device.</li>
+      <li><strong>iPhone 16 Pro Zkool gap:</strong> Slipstream on iPhone 16 Pro is 1:35 vs Zkool's 1:13. The remaining lever is the decrypt-kernel track (L4a — the column-oriented ECDH kernel parked, awaiting a seam design).</li>
+      <li><strong>LOCAL-ONLY:</strong> this prototype has never been pushed to any remote. No public release, no Android port, no productization decision made.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <span>← <a href="index.html">Table of Contents</a></span>
+    <span><a href="02-architecture.html">2. Architecture Overview</a> →</span>
+  </nav>
+
+  <footer class="colophon">
+    Slipstream Book · Chapter 1 · Citations as of commit ad755e08 ·
+    Numbers from STATE.md truth table (rows T6.7, T6.7b, dated 2026-06-12) ·
+    local-only draft, not for distribution.
+  </footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,155 @@
+/* Slipstream Book — shared stylesheet. Self-contained, print-friendly, no JS. */
+
+:root {
+  --ink: #1a2333;
+  --paper: #ffffff;
+  --accent: #1f6feb;
+  --warm: #b54708;
+  --green: #1a7f37;
+  --muted: #6e7781;
+  --rule: #d8dee4;
+  --code-bg: #f6f8fa;
+  --note-bg: #f0f6ff;
+  --warn-bg: #fff4e5;
+  --evid-bg: #effaf1;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--paper);
+  font: 17px/1.65 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 5rem;
+}
+
+h1 { font-size: 2rem; line-height: 1.2; margin: 0 0 .25rem; }
+h2 { font-size: 1.4rem; margin-top: 2.5rem; border-bottom: 1px solid var(--rule); padding-bottom: .3rem; }
+h3 { font-size: 1.1rem; margin-top: 1.8rem; }
+
+.kicker {
+  color: var(--muted);
+  font-size: .85rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  margin-bottom: .35rem;
+}
+
+.meta { color: var(--muted); font-size: .9rem; margin-bottom: 2rem; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code {
+  font: .85em ui-monospace, "SF Mono", Menlo, monospace;
+  background: var(--code-bg);
+  padding: .1em .35em;
+  border-radius: 4px;
+}
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: .9rem 1rem;
+  overflow-x: auto;
+  font-size: .82rem;
+  line-height: 1.5;
+}
+pre code { background: none; padding: 0; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1.2rem 0;
+  font-size: .92rem;
+}
+th, td { border: 1px solid var(--rule); padding: .45rem .65rem; text-align: left; vertical-align: top; }
+th { background: var(--code-bg); }
+
+/* ── Callouts ─────────────────────────────────────────────── */
+.callout {
+  border-radius: 10px;
+  padding: .9rem 1.1rem;
+  margin: 1.3rem 0;
+  border: 1px solid var(--rule);
+}
+.callout > :first-child { margin-top: 0; }
+.callout > :last-child { margin-bottom: 0; }
+.callout .label {
+  display: block;
+  font-size: .75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  margin-bottom: .35rem;
+}
+.summary  { background: var(--note-bg); border-color: #b6d3f7; }
+.summary  .label { color: var(--accent); }
+.note     { background: var(--note-bg); border-color: #b6d3f7; }
+.note     .label { color: var(--accent); }
+.warning  { background: var(--warn-bg); border-color: #f0c389; }
+.warning  .label { color: var(--warm); }
+.evidence { background: var(--evid-bg); border-color: #a8dcb2; }
+.evidence .label { color: var(--green); }
+
+/* ── Figures & diagrams ──────────────────────────────────── */
+figure.diagram {
+  margin: 1.8rem 0;
+  padding: 1.1rem;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: #fcfdfe;
+  overflow-x: auto;
+}
+figure.diagram svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+figcaption {
+  margin-top: .75rem;
+  font-size: .85rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ── Navigation ───────────────────────────────────────────── */
+nav.book {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 3.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  font-size: .92rem;
+}
+
+footer.colophon {
+  margin-top: 2.5rem;
+  color: var(--muted);
+  font-size: .8rem;
+}
+
+/* ── TOC (index) ─────────────────────────────────────────── */
+.toc { list-style: none; padding: 0; }
+.toc li { margin: .45rem 0; }
+.toc .part {
+  margin-top: 1.6rem;
+  font-size: .8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--muted);
+}
+.toc .pending { color: var(--muted); }
+.toc .pending::after { content: " — planned (wave 2)"; font-size: .8em; }
+
+@media print {
+  body { font-size: 11pt; }
+  nav.book { display: none; }
+  figure.diagram { break-inside: avoid; }
+  .callout { break-inside: avoid; }
+}

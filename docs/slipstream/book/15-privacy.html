@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>15 · Privacy Analysis — The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part IV — Trust</p>
+  <h1>15. Privacy Analysis</h1>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary · reading time ≈ 10 min</span>
+    <p>This chapter documents, with precision grounded in the source code, exactly what the lightwalletd server learns about a wallet when Slipstream syncs. The most significant facts: the wallet's transparent addresses are sent to the server in plain text during enhancement; the wallet's transaction IDs of interest are revealed via GetTransaction; and Tor is <em>not</em> wired into Slipstream's network paths. These are not surprises — they are protocol-inherent leakages shared with the upstream SDK — but they are stated plainly here.</p>
+  </div>
+
+  <div class="callout warning">
+    <span class="label">This chapter's honesty register</span>
+    <p>Every claim in the "what the server learns" table is verified against the source code at commit ad755e08. Claims that cannot be verified from the code are marked UNVERIFIED. No claim is made about anonymity or privacy properties not supported by the code.</p>
+  </div>
+
+  <h2>15.1 What the server learns: the complete table</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Information disclosed</th>
+        <th>When / how</th>
+        <th>Inherent to protocol?</th>
+        <th>Old SDK comparison</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Connection IP address and timing</strong></td>
+        <td>Every TCP connection to lightwalletd; 4 concurrent streams during fetch (K=4 workers)</td>
+        <td>Yes — any TCP client reveals its IP</td>
+        <td>Identical class; old SDK also connects directly</td>
+      </tr>
+      <tr>
+        <td><strong>Approximate wallet birthday and sync ranges</strong></td>
+        <td>GetBlockRange requests carry <code>BlockRange { start, end }</code>; the fetch workers request consecutive plan chunks starting at the birthday height. The server observes the start height and the total range.</td>
+        <td>Yes — compact block download requires specifying a range</td>
+        <td>Identical class; old SDK's GetBlockRange calls reveal the same information</td>
+      </tr>
+      <tr>
+        <td><strong>GetTreeState heights (chunk boundaries)</strong></td>
+        <td>One GetTreeState call per chunk boundary (every 10,000 blocks by default); one additional GetTreeState at birthday−1 if the UFVK is being imported. The server observes which heights are queried.</td>
+        <td>Yes — treestate needed for scan continuity; could be reduced with local tree derivation but that requires a protocol change</td>
+        <td>Old SDK makes similar treestate calls at different granularity</td>
+      </tr>
+      <tr>
+        <td><strong>GetSubtreeRoots (generic)</strong></td>
+        <td>One GetSubtreeRoots call for Sapling and one for Orchard at the start of each sync pass. No wallet-specific information in the request.</td>
+        <td>Yes — subtree roots are needed to seed the commitment tree</td>
+        <td>Old SDK makes equivalent calls</td>
+      </tr>
+      <tr>
+        <td><strong>Wallet's transparent addresses</strong></td>
+        <td>During enhancement and UTXO refresh, <code>transparent.rs</code> calls <code>get_transparent_receivers</code> on the wallet DB and sends the resulting address strings to the server via <code>grpc::get_address_utxos</code> (GetAddressUtxos, line 107). During address enhancement, <code>enhance.rs</code> calls <code>grpc::get_taddress_txids</code> with the full <code>TransparentAddressBlockFilter { address, range }</code> (line 351). <strong>The wallet's transparent receiver addresses are disclosed to the chosen lightwalletd server.</strong></td>
+        <td>Yes — the lightwalletd transparent query API requires providing the address to look up</td>
+        <td><strong>Identical leakage class</strong>; old SDK's BlockEnhancer and UTXO refresh also send transparent addresses to the server</td>
+      </tr>
+      <tr>
+        <td><strong>Transaction IDs of interest</strong></td>
+        <td>During enhancement, <code>enhance.rs</code> processes <code>TransactionDataRequest::Enhancement(txid)</code> and <code>GetStatus(txid)</code> items by calling <code>grpc::get_transaction</code> with the specific txid (line 132, 140). The server learns which transaction IDs this wallet is interested in — i.e., which transactions involve this wallet.</td>
+        <td>Yes — fetching full transaction data requires providing the txid to the server</td>
+        <td>Identical class; old SDK's enhancement path makes the same GetTransaction calls</td>
+      </tr>
+      <tr>
+        <td><strong>Timing and footprint of 4 concurrent streams</strong></td>
+        <td>Slipstream uses K=4 parallel GetBlockRange streams by default. The server sees 4 concurrent connections from the same IP, all fetching consecutive ranges. This is a fingerprintable traffic pattern distinct from a single-stream client.</td>
+        <td>Inherent to the parallel fetch design</td>
+        <td>Old SDK uses a single stream — Slipstream's 4-stream footprint is more distinctive</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 300" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr15" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arrw15" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arrg15" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+      <!-- Device -->
+      <rect x="10" y="30" width="130" height="240" rx="8" fill="#effaf1" stroke="#a8dcb2" stroke-width="1.5"/>
+      <text x="75" y="52" text-anchor="middle" fill="#1a7f37" font-weight="700">Device</text>
+      <rect x="20" y="62" width="110" height="24" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="75" y="78" text-anchor="middle" fill="#1a2333" font-size="11">UFVK (never sent)</text>
+      <rect x="20" y="94" width="110" height="24" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="75" y="110" text-anchor="middle" fill="#1a2333" font-size="11">shielded keys (local)</text>
+      <rect x="20" y="126" width="110" height="24" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="75" y="142" text-anchor="middle" fill="#1a2333" font-size="11">balances (local)</text>
+      <rect x="20" y="158" width="110" height="24" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="75" y="174" text-anchor="middle" fill="#1a2333" font-size="11">memos (local decrypt)</text>
+      <rect x="20" y="190" width="110" height="24" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="75" y="206" text-anchor="middle" fill="#1a2333" font-size="11">note positions (local)</text>
+      <rect x="20" y="222" width="110" height="24" rx="6" fill="none" stroke="#1a7f37" stroke-width="1"/>
+      <text x="75" y="238" text-anchor="middle" fill="#1a2333" font-size="11">decrypted outputs (local)</text>
+
+      <!-- TLS label -->
+      <text x="245" y="25" text-anchor="middle" fill="#6e7781" font-size="11">TLS (all paths)</text>
+      <line x1="155" y1="20" x2="335" y2="20" stroke="#6e7781" stroke-width="1" stroke-dasharray="4,3"/>
+
+      <!-- What crosses the wire - orange (sensitive) -->
+      <!-- GetBlockRange -->
+      <rect x="155" y="50" width="170" height="24" rx="6" fill="#fff4e5" stroke="#f0c389" stroke-width="1.5"/>
+      <text x="240" y="66" text-anchor="middle" fill="#b54708" font-size="11">birthday range · GetBlockRange ×4</text>
+
+      <!-- GetTreeState -->
+      <rect x="155" y="82" width="170" height="24" rx="6" fill="#fff4e5" stroke="#f0c389" stroke-width="1.5"/>
+      <text x="240" y="98" text-anchor="middle" fill="#b54708" font-size="11">chunk heights · GetTreeState</text>
+
+      <!-- Transparent addresses — most sensitive -->
+      <rect x="155" y="114" width="170" height="36" rx="6" fill="#b54708" stroke="#b54708" stroke-width="1.5"/>
+      <text x="240" y="128" text-anchor="middle" fill="#ffffff" font-size="11" font-weight="700">transparent addresses</text>
+      <text x="240" y="143" text-anchor="middle" fill="#ffffff" font-size="10">GetAddressUtxos · GetTaddressTxids</text>
+
+      <!-- Txids -->
+      <rect x="155" y="158" width="170" height="24" rx="6" fill="#fff4e5" stroke="#f0c389" stroke-width="1.5"/>
+      <text x="240" y="174" text-anchor="middle" fill="#b54708" font-size="11">txids of interest · GetTransaction</text>
+
+      <!-- Generic / low sensitivity -->
+      <rect x="155" y="190" width="170" height="24" rx="6" fill="#f6f8fa" stroke="#d8dee4" stroke-width="1.5"/>
+      <text x="240" y="206" text-anchor="middle" fill="#6e7781" font-size="11">GetSubtreeRoots (no wallet info)</text>
+      <rect x="155" y="222" width="170" height="24" rx="6" fill="#f6f8fa" stroke="#d8dee4" stroke-width="1.5"/>
+      <text x="240" y="238" text-anchor="middle" fill="#6e7781" font-size="11">GetLatestBlock (no wallet info)</text>
+
+      <!-- Server -->
+      <rect x="340" y="30" width="130" height="240" rx="8" fill="#fff4e5" stroke="#f0c389" stroke-width="1.5"/>
+      <text x="405" y="52" text-anchor="middle" fill="#b54708" font-weight="700">lightwalletd</text>
+      <text x="405" y="68" text-anchor="middle" fill="#b54708" font-size="10">(untrusted server)</text>
+      <text x="405" y="90" text-anchor="middle" fill="#6e7781" font-size="10">learns: IP · birthday range</text>
+      <text x="405" y="106" text-anchor="middle" fill="#6e7781" font-size="10">chunk boundaries · taddr</text>
+      <text x="405" y="122" text-anchor="middle" fill="#6e7781" font-size="10">txids of interest</text>
+      <text x="405" y="138" text-anchor="middle" fill="#6e7781" font-size="10">4-stream timing fingerprint</text>
+
+      <!-- Legend -->
+      <rect x="490" y="50" width="180" height="130" rx="8" fill="#f6f8fa" stroke="#d8dee4" stroke-width="1"/>
+      <text x="580" y="70" text-anchor="middle" fill="#1a2333" font-weight="700" font-size="11">Sensitivity legend</text>
+      <rect x="500" y="80" width="14" height="14" rx="3" fill="#b54708"/>
+      <text x="520" y="91" fill="#1a2333" font-size="10">Transparent addresses (highest)</text>
+      <rect x="500" y="100" width="14" height="14" rx="3" fill="#fff4e5" stroke="#f0c389" stroke-width="1"/>
+      <text x="520" y="111" fill="#1a2333" font-size="10">Wallet-correlated metadata</text>
+      <rect x="500" y="120" width="14" height="14" rx="3" fill="#f6f8fa" stroke="#d8dee4" stroke-width="1"/>
+      <text x="520" y="131" fill="#1a2333" font-size="10">Generic (no wallet linkage)</text>
+      <rect x="500" y="140" width="14" height="14" rx="3" fill="#effaf1" stroke="#a8dcb2" stroke-width="1"/>
+      <text x="520" y="151" fill="#1a2333" font-size="10">Stays on device (never sent)</text>
+      <text x="580" y="175" text-anchor="middle" fill="#b54708" font-size="10" font-weight="600">Tor NOT wired — all paths direct TLS</text>
+
+      <!-- Arrows -->
+      <line x1="140" y1="62" x2="152" y2="62" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrw15)"/>
+      <line x1="325" y1="62" x2="338" y2="62" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrw15)"/>
+      <line x1="325" y1="94" x2="338" y2="94" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrw15)"/>
+      <line x1="325" y1="132" x2="338" y2="132" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrw15)"/>
+      <line x1="325" y1="170" x2="338" y2="170" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrw15)"/>
+      <line x1="325" y1="202" x2="338" y2="202" stroke="#6e7781" stroke-width="1.5" marker-end="url(#arr15)"/>
+      <line x1="325" y1="234" x2="338" y2="234" stroke="#6e7781" stroke-width="1.5" marker-end="url(#arr15)"/>
+    </svg>
+    <figcaption>Figure 15.1 — Data-flow privacy map. Orange flows reach the server and are correlated with this wallet. The UFVK, shielded keys, balances, memos, and note positions stay on the device. All network paths are direct TLS — Tor is not wired.</figcaption>
+  </figure>
+
+  <h2>15.2 What the server can never learn from Slipstream</h2>
+  <p>The following information is processed entirely on-device and is never transmitted to the server:</p>
+  <ul>
+    <li><strong>Spending keys and the UFVK itself.</strong> The UFVK is decoded in <code>wallet_session.rs</code> at <code>ensure_account</code> (line 75) and imported into the local SQLite database. The UFVK string is consumed within the process — it is never passed to any gRPC function. The server receives no key material of any kind.</li>
+    <li><strong>Which shielded outputs decrypted to notes belonging to this wallet.</strong> Trial decryption happens inside <code>scan_cached_blocks</code> using the viewing key that was imported locally. The server provides compact blocks (ciphertext only); the engine determines locally which ciphertexts decrypt successfully. The server cannot observe which outputs were successfully decrypted.</li>
+    <li><strong>Shielded balances.</strong> Balances are computed by the upstream wallet brain from the locally-held note records. No balance query goes to the server.</li>
+    <li><strong>Memos.</strong> Memo fields in Sapling and Orchard outputs are decrypted locally during note decryption. They are never transmitted.</li>
+    <li><strong>The wallet's spend history or internal note positions.</strong> Nullifiers and note commitment tree positions are computed and stored locally.</li>
+  </ul>
+
+  <h2>15.3 Tor status — honest gap</h2>
+  <div class="callout warning">
+    <span class="label">Tor is NOT wired into Slipstream</span>
+    <p>All of Slipstream's network paths — GetBlockRange (fetch), GetTreeState (scan boundaries), GetSubtreeRoots (engine startup), GetTransaction/GetTaddressTxids/GetAddressUtxos (enhancement and UTXO refresh) — connect directly to the lightwalletd server over TLS. There is no Tor routing for any of these calls.</p>
+    <p>The old SDK has Tor plumbing for some flows (the TorClient infrastructure is present in <code>Modules/Service/Tor/</code>). Slipstream's gRPC module (<code>grpc.rs</code>) was architected to be drop-in compatible with a Tor-backed channel (see the module comment: "produces the same client type <code>rust/src/tor.rs</code> uses... so a Tor-backed channel can be swapped in later (P8)"), but that swap has not been implemented. Integrating Tor for Slipstream's network paths is an open roadmap item.</p>
+    <p>The practical consequence is that the lightwalletd server observes the wallet's real IP address, in addition to the range and address leakages described above. A user who requires IP-level privacy must route Slipstream's connections through an external VPN or Tor proxy at the network layer — the engine itself provides no such protection.</p>
+  </div>
+
+  <h2>15.4 Data at rest</h2>
+  <p><code>data.db</code> is a standard SQLite file written to the app's document directory. At the engine level, the database is not encrypted — the engine calls <code>pragma_update_and_check(None, "journal_mode", "wal")</code> and <code>pragma_update(None, "synchronous", "NORMAL")</code> but does not set any SQLite encryption extension. Protection of the file at rest is the responsibility of the iOS platform (file protection classes) and the application layer.</p>
+  <p>On iOS, the app's documents directory uses Data Protection class <code>NSFileProtectionCompleteUntilFirstUserAuthentication</code> by default. The containing Zodl application may configure stricter protection. This is outside the scope of the engine itself.</p>
+
+  <h2>15.5 No telemetry</h2>
+  <p>The engine contains no analytics, crash reporting, or telemetry code. There are no calls to any analytics SDK, no HTTP requests to any endpoint other than the configured lightwalletd server, and no persistent identifiers (the <code>accounts.uuid</code> column is a local-only opaque identifier stored in the wallet database and never transmitted). This is verifiable by inspection: <code>grpc.rs</code> is the only file that opens outbound connections, and it contains only the lightwalletd gRPC methods.</p>
+
+  <h2>15.6 Correlation analysis and recommendations</h2>
+  <p>A lightwalletd operator who serves multiple wallet users can correlate wallets by the combination of:</p>
+  <ul>
+    <li>Source IP address</li>
+    <li>GetBlockRange start height (birthday)</li>
+    <li>GetBlockRange end height trajectory over time (sync progress)</li>
+    <li>Transparent address set (revealed during enhancement)</li>
+    <li>Transaction IDs queried via GetTransaction</li>
+  </ul>
+  <p>Users who share a lightwalletd server are distinguishable from each other by their range patterns and transparent addresses. This is a property of the lightwalletd protocol, not specific to Slipstream.</p>
+  <p>Recommendations for users and operators who want stronger privacy:</p>
+  <ul>
+    <li><strong>Server choice:</strong> use a self-operated or trusted lightwalletd. The engine is server-agnostic and accepts any compliant endpoint.</li>
+    <li><strong>Tor (future):</strong> once the P8 Tor integration is implemented, routing Slipstream's gRPC channel over Tor would hide the source IP from the lightwalletd operator.</li>
+    <li><strong>Transparent address use:</strong> wallets that use only shielded addresses leak significantly less during enhancement (no GetTaddressTxids calls, no GetAddressUtxos calls for those accounts, since <code>get_transparent_receivers</code> would return an empty set).</li>
+  </ul>
+
+  <h2>Known limitations</h2>
+  <ul>
+    <li>Tor is not wired into Slipstream's network paths (documented gap above).</li>
+    <li>The 4-stream parallel fetch creates a fingerprintable traffic pattern not present in single-stream clients. This is an inherent consequence of the parallel fetch design and is acknowledged.</li>
+    <li>The <code>TransactionsInvolvingAddress</code> open-ended range requests (those with no <code>block_range_end</code>) are currently skipped. When this skip is removed and full transparent address scanning is implemented, the set of transparent addresses and ranges sent to the server will increase.</li>
+    <li>The privacy properties described here apply to the engine's own network behaviour. Privacy properties of the application layer, user-generated data, or any other SDK components are outside the scope of this analysis.</li>
+  </ul>
+
+  <nav class="book">
+    <a href="14-security.html">← 14. Security Analysis</a>
+    <a href="16-exploitability.html">16. Exploitability Review →</a>
+  </nav>
+
+  <footer class="colophon">Citations as of commit ad755e08. Slipstream Book · local-only draft, not for distribution.</footer>
+</main>
+</body>
+</html>

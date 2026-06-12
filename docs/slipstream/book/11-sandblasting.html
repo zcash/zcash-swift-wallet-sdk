@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 11 — The Sandblasting Era · The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part III — Hard Problems</p>
+  <h1>11. The Sandblasting Era</h1>
+  <p class="meta">Estimated reading time: 14 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>In 2022, the Zcash mainnet was flooded with spam transactions that packed up to 2.5 million outputs into 10,000-block windows. A sync engine that fetches blocks in fixed-count chunks hit a wall: one chunk decoded to over 1 GB of data, its 120-second timeout could never pass, and every retry restarted from scratch. Slipstream replaced fixed-count chunking with <strong>byte-budgeted splitting</strong>: each plan chunk is divided into sub-chunks of at most 8 MiB of wire bytes, each sub-chunk gets its own timeout, and retries resume from the last completed sub-chunk rather than restarting the whole plan chunk. The field acceptance run traversed 84,964 sandblasted blocks and 43.2 million outputs at ~8.9k blocks/minute with six server EOF cuts, all resume-recovered, zero timeout loops.</p>
+  </div>
+
+  <h2>The field moment</h2>
+
+  <p>The failure appeared in a birthday-935,000 wallet restore on a Mac-class machine. The sync proceeded normally through most of the chain history, then stalled completely around heights 1,735,000–1,785,000 (plan chunk indices 80–84 of the Historic range). The device log showed one line repeating forever:</p>
+
+  <pre><code>chunk fetch timed out; retrying</code></pre>
+
+  <p>No progress. No completion. No eventual success. Just an infinite retry loop.</p>
+
+  <p>The root cause was a collision of three properties: the 2022 spam era had packed the chain with an extraordinary number of outputs per block; the fetch pipeline fetched in fixed 10,000-block plan chunks; and the 120-second whole-chunk timeout was measured against the time to download and decode the <em>entire</em> chunk — not individual sub-pieces. One 10,000-block chunk in the spam region carried <strong>2,536,689 outputs</strong> and decoded to approximately 1,032 MB of wire data. A 120-second timeout against a gigabyte of data over a real mobile network was structurally impossible to meet. And each retry restarted from the beginning of the same plan chunk, which meant no forward progress was ever made.</p>
+
+  <h2>The 2022 spam era: density numbers</h2>
+
+  <p>The Zcash network's Sapling protocol made it cheap to create outputs with minimal on-chain cost. In 2022, a spam campaign exploited this, injecting millions of outputs into consecutive blocks. The density peaked in roughly the 1.70M–2.00M block range on mainnet:</p>
+
+  <table>
+    <thead>
+      <tr><th>Chunk index</th><th>Approx. height range</th><th>Outputs in chunk</th><th>Wire size</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>normal-era reference</td><td>any outside spam band</td><td>~5,850</td><td>~1–6 MB</td></tr>
+      <tr><td>~80</td><td>~1,735,000–1,745,000</td><td>346,271</td><td>tens of MB</td></tr>
+      <tr><td>~81</td><td>~1,745,000–1,755,000</td><td>1,237,313</td><td>hundreds of MB</td></tr>
+      <tr><td>~84</td><td>~1,775,000–1,785,000</td><td>2,536,689</td><td>~1,032 MB decoded</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout evidence">
+    <span class="label">Field measurement</span>
+    <p>The 1,032 MB figure is from the Mac acceptance run (STATE.md, T6.8-S session log, 2026-06-12): a 10k-block chunk in the spam region split into up to 131 sub-chunks carrying up to 1,032 MB of plan-chunk wire data in total. This was observed at the exact heights that had been causing the infinite retry loop.</p>
+  </div>
+
+  <h2>Why fixed block-count chunking is unfixable</h2>
+
+  <p>The problem is not just that some chunks are slow to download. There are three structural failures with fixed block-count chunking against a variable-density chain:</p>
+
+  <ol>
+    <li><strong>Timeout can never pass.</strong> A 120-second timeout on a gigabyte of data over a mobile connection is not a tuning problem — it is a physical impossibility given real mobile bandwidths. Raising the timeout to 600 seconds does not help: the next spam-era run will hit a chunk that takes longer.</li>
+    <li><strong>Retries restart from scratch.</strong> When the timeout fires, the partial download is discarded. The next attempt starts from the beginning of the same plan chunk. If the chunk's size is the problem, the retry will hit the same wall. The only exit is success, and success is impossible by the above point.</li>
+    <li><strong>Single-chunk RAM.</strong> Even if the download somehow completed, decoding and holding 2.5 million outputs in RAM simultaneously exceeds the memory budget of 2 GB devices (A10-class iPhones, iPad Air 2). Device jetsam would kill the process before scanning could begin.</li>
+  </ol>
+
+  <h2>The design: byte-budgeted splitting</h2>
+
+  <p>The fix is density-adaptive chunking with no hardcoded heights. Instead of one plan chunk = one queue chunk, each plan chunk is split into sub-chunks of at most <code>chunk_split_bytes</code> bytes of estimated wire data (default 8 MiB, configurable via <code>EngineConfig::chunk_split_bytes</code> and the CLI <code>--chunk-split-bytes</code> flag).</p>
+
+  <p>Normal-era 10k-block chunks (1–6 MB) fit entirely within the 8 MiB budget and produce exactly one sub-chunk per plan chunk — identical to the pre-split behaviour. Spam-era chunks are divided into as many sub-chunks as needed to keep each below the budget.</p>
+
+  <h3>The <code>ChunkSplitter</code></h3>
+
+  <p>The <code>ChunkSplitter</code> (<code>fetch.rs:137–169</code>) is a streaming accumulator. It receives blocks one at a time from the gRPC stream and yields a completed sub-chunk whenever the next block would push the accumulated size over <code>split_bytes</code>. A single block larger than the budget forms its own sub-chunk (no infinite loop). The splitter never yields empty sub-chunks and preserves stream order.</p>
+
+  <h3>The <code>(plan_index, sub_index, is_last)</code> ordering key</h3>
+
+  <p>The reorder stage needs to release sub-chunks from multiple workers in strict order. The key is extended from a single <code>plan_index</code> to a triple <code>(plan_index, sub_index, is_last)</code>. The <code>sub_index</code> is dense from 0 and <em>survives retries</em> — if a worker resumes from height H after a partial download, its next sub-chunk carries the continuation of the pre-retry sequence. <code>is_last</code> marks the plan chunk's final sub-chunk so the reorder stage knows when to advance to the next plan index.</p>
+
+  <h3>Deadline reset on progress</h3>
+
+  <p>The 120-second deadline now bounds the accumulation of ONE sub-chunk (at most 8 MiB), not the entire plan chunk. The deadline resets whenever a sub-chunk is emitted (<code>fetch.rs:366</code>: <code>last_progress = tokio::time::Instant::now()</code>). A healthy-but-huge spam-era chunk delivers sub-chunks continuously — each sub-chunk resets the deadline, so the total stream time can far exceed 120 seconds without triggering a timeout. Only a genuinely stalled stream (no new messages for 30 seconds, via <code>grpc::STREAM_IDLE_TIMEOUT</code>) triggers an error that feeds into the resume-from-height retry.</p>
+
+  <h3>Resume-from-height retry and the double-scan impossibility argument</h3>
+
+  <p>When a plan chunk's download fails partway through, the <code>PlanChunkCursor</code> tracks the last height successfully emitted. On retry, the worker opens a new gRPC stream starting at <code>resume_from</code> (the height after the last emitted sub-chunk's last block). Already-emitted sub-chunks are never re-sent to the reorder stage — their heights have already been released to the ChunkQueue and consumed by the scanner. Double-scan is therefore <em>structurally impossible</em>: a height can only be emitted from the reorder stage once (the reorder stage verifies continuity and never re-accepts an already-seen height).</p>
+
+  <p>The resume point advances only on successful emission (the <code>emit_sub_chunk</code> function updates <code>cursor.resume_from</code> after a successful channel send — <code>fetch.rs:289</code>). A failed send does not advance the cursor.</p>
+
+  <h3>AheadGate memory bounding</h3>
+
+  <p>Without admission control, K−1 workers could each be streaming a ~300–900 MB spam-era plan chunk simultaneously, parking all of it in the reorder buffer while the floor (plan index 0) is being drained. On four fetch workers, this would be up to 3 GB in the reorder buffer — well beyond device memory.</p>
+
+  <p>The <code>AheadGate</code> (<code>fetch.rs:193–229</code>) bounds this. It allows non-floor workers to run at most <code>8 × split_bytes</code> (= 64 MiB by default) ahead of the current release floor. The floor plan chunk streams unthrottled. Workers ahead of the floor must acquire byte-unit permits before emitting a sub-chunk; if the budget is exhausted, they pause until permits are released (which happens when the reorder stage drains buffered sub-chunks into the ChunkQueue). In normal-era operation, the 64 MiB budget admits at least 8 normal-size chunks in flight — no throttling occurs.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 260" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr11a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arr11w" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arr11g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- Density timeline background areas -->
+      <!-- Normal era band -->
+      <rect x="30" y="30" width="200" height="170" rx="6" fill="#f0f6ff" opacity="0.5"/>
+      <text x="130" y="48" text-anchor="middle" fill="#1f6feb" font-size="11" font-weight="600">Normal era</text>
+      <text x="130" y="62" text-anchor="middle" fill="#6e7781" font-size="10">blocks 0–1.7M</text>
+
+      <!-- Spam era band (warm) -->
+      <rect x="240" y="30" width="200" height="170" rx="6" fill="#fff4e5" opacity="0.7"/>
+      <text x="340" y="48" text-anchor="middle" fill="#b54708" font-size="11" font-weight="600">Spam era (2022)</text>
+      <text x="340" y="62" text-anchor="middle" fill="#6e7781" font-size="10">blocks ~1.70M–2.00M</text>
+
+      <!-- Post-spam -->
+      <rect x="450" y="30" width="210" height="170" rx="6" fill="#effaf1" opacity="0.5"/>
+      <text x="555" y="48" text-anchor="middle" fill="#1a7f37" font-size="11" font-weight="600">Post-spam</text>
+      <text x="555" y="62" text-anchor="middle" fill="#6e7781" font-size="10">blocks 2.0M+</text>
+
+      <!-- Output density bars (relative heights) -->
+      <!-- Normal bars: small -->
+      <rect x="50" y="155" width="20" height="25" rx="2" fill="#1f6feb"/>
+      <rect x="80" y="152" width="20" height="28" rx="2" fill="#1f6feb"/>
+      <rect x="110" y="148" width="20" height="32" rx="2" fill="#1f6feb"/>
+      <rect x="140" y="155" width="20" height="25" rx="2" fill="#1f6feb"/>
+      <rect x="170" y="151" width="20" height="29" rx="2" fill="#1f6feb"/>
+
+      <!-- Spam bars: tall -->
+      <rect x="258" y="90" width="20" height="90" rx="2" fill="#b54708"/>
+      <rect x="288" y="70" width="20" height="110" rx="2" fill="#b54708"/>
+      <rect x="318" y="55" width="20" height="125" rx="2" fill="#b54708"/>
+      <rect x="348" y="60" width="20" height="120" rx="2" fill="#b54708"/>
+      <rect x="378" y="80" width="20" height="100" rx="2" fill="#b54708"/>
+      <rect x="408" y="95" width="20" height="85" rx="2" fill="#b54708"/>
+
+      <!-- Post-spam bars: medium -->
+      <rect x="468" y="148" width="20" height="32" rx="2" fill="#1a7f37"/>
+      <rect x="498" y="143" width="20" height="37" rx="2" fill="#1a7f37"/>
+      <rect x="528" y="151" width="20" height="29" rx="2" fill="#1a7f37"/>
+      <rect x="558" y="146" width="20" height="34" rx="2" fill="#1a7f37"/>
+      <rect x="588" y="150" width="20" height="30" rx="2" fill="#1a7f37"/>
+      <rect x="618" y="148" width="20" height="32" rx="2" fill="#1a7f37"/>
+
+      <!-- X axis -->
+      <line x1="30" y1="180" x2="660" y2="180" stroke="#d8dee4" stroke-width="1"/>
+      <text x="30" y="195" fill="#6e7781" font-size="10">block 0</text>
+      <text x="240" y="195" fill="#6e7781" font-size="10">1.7M</text>
+      <text x="440" y="195" fill="#6e7781" font-size="10">2.0M</text>
+      <text x="640" y="195" fill="#6e7781" font-size="10">tip</text>
+
+      <!-- Y axis label -->
+      <text x="15" y="135" fill="#6e7781" font-size="10" transform="rotate(-90,15,135)">outputs / 10k blocks</text>
+
+      <!-- Peak annotation -->
+      <text x="328" y="48" text-anchor="middle" fill="#b54708" font-size="11" font-weight="600">2.5M outputs</text>
+      <line x1="328" y1="51" x2="328" y2="58" stroke="#b54708" stroke-width="1"/>
+
+      <!-- Split threshold line -->
+      <line x1="30" y1="165" x2="450" y2="165" stroke="#1a7f37" stroke-width="1" stroke-dasharray="4,2"/>
+      <text x="455" y="169" fill="#1a7f37" font-size="10">8 MiB split threshold</text>
+
+      <!-- Legend -->
+      <rect x="30" y="215" width="12" height="12" rx="2" fill="#1f6feb"/>
+      <text x="48" y="225" fill="#1a2333" font-size="11">normal era (fits in one sub-chunk)</text>
+      <rect x="310" y="215" width="12" height="12" rx="2" fill="#b54708"/>
+      <text x="328" y="225" fill="#1a2333" font-size="11">spam era (up to 131 sub-chunks / plan)</text>
+    </svg>
+    <figcaption>Figure 11.1 — Density timeline: outputs per 10,000-block window across chain history. Normal-era chunks are well below the 8 MiB split threshold and produce one sub-chunk each. Spam-era chunks explode past the threshold and are split into as many sub-chunks as needed.</figcaption>
+  </figure>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 310" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr11b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arr11bw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arr11bg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- Plan chunk (top) -->
+      <rect x="30" y="20" width="620" height="38" rx="8" fill="#fff4e5" stroke="#b54708" stroke-width="1.5"/>
+      <text x="340" y="35" text-anchor="middle" font-weight="600" fill="#b54708">plan chunk (e.g. heights 1,745,000–1,755,000 · 1,237,313 outputs · ~hundreds MB)</text>
+      <text x="340" y="50" text-anchor="middle" fill="#6e7781" font-size="11">streamed from gRPC GetBlockRange by one worker</text>
+
+      <!-- Split arrow -->
+      <line x1="340" y1="58" x2="340" y2="78" stroke="#b54708" stroke-width="1.5" marker-end="url(#arr11bw)"/>
+      <text x="360" y="72" fill="#b54708" font-size="11">ChunkSplitter (8 MiB per sub)</text>
+
+      <!-- Sub-chunks row 1 -->
+      <rect x="30" y="82" width="85" height="38" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="72" y="97" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">sub 0</text>
+      <text x="72" y="112" text-anchor="middle" fill="#6e7781" font-size="10">8 MiB</text>
+
+      <rect x="125" y="82" width="85" height="38" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="167" y="97" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">sub 1</text>
+      <text x="167" y="112" text-anchor="middle" fill="#6e7781" font-size="10">8 MiB</text>
+
+      <text x="240" y="104" text-anchor="middle" fill="#6e7781" font-size="16">…</text>
+
+      <rect x="270" y="82" width="85" height="38" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="312" y="97" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">sub N</text>
+      <text x="312" y="112" text-anchor="middle" fill="#6e7781" font-size="10">≤ 8 MiB · is_last</text>
+
+      <!-- Resume cursor annotation -->
+      <rect x="415" y="78" width="250" height="50" rx="8" fill="#fff4e5" stroke="#b54708" stroke-width="1.5"/>
+      <text x="540" y="96" text-anchor="middle" fill="#b54708" font-size="11" font-weight="600">on retry: resume_from = last_emitted + 1</text>
+      <text x="540" y="112" text-anchor="middle" fill="#6e7781" font-size="10">already-released heights never re-requested</text>
+
+      <!-- Arrow from sub to resume -->
+      <line x1="356" y1="101" x2="413" y2="101" stroke="#b54708" stroke-width="1.5" stroke-dasharray="4,2" marker-end="url(#arr11bw)"/>
+
+      <!-- Reorder buffer -->
+      <rect x="30" y="152" width="620" height="44" rx="8" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="340" y="170" text-anchor="middle" font-weight="600">reorder buffer — strict (plan_index, sub_index) order</text>
+      <text x="340" y="186" text-anchor="middle" fill="#6e7781" font-size="11">continuity-verified · AheadGate bounds ahead-buffering to 8 × 8 MiB = 64 MiB</text>
+
+      <!-- Arrow subs → reorder -->
+      <line x1="72" y1="120" x2="72" y2="150" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr11b)"/>
+      <line x1="167" y1="120" x2="167" y2="150" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr11b)"/>
+      <line x1="312" y1="120" x2="312" y2="150" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr11b)"/>
+
+      <!-- Arrow reorder → chunk queue -->
+      <line x1="340" y1="196" x2="340" y2="218" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr11b)"/>
+
+      <!-- ChunkQueue -->
+      <rect x="30" y="220" width="620" height="40" rx="8" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="340" y="235" text-anchor="middle" font-weight="600" fill="#1a7f37">ChunkQueue — byte-budgeted memory backpressure</text>
+      <text x="340" y="252" text-anchor="middle" fill="#6e7781" font-size="11">scanner drains; each sub-chunk becomes one scan_cached_blocks call</text>
+
+      <!-- Arrow queue → scanner -->
+      <line x1="340" y1="260" x2="340" y2="278" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arr11bg)"/>
+
+      <!-- Scanner -->
+      <rect x="200" y="280" width="280" height="28" rx="8" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="340" y="299" text-anchor="middle" font-weight="600" fill="#1a7f37">scanner (scan_cached_blocks · one call per sub-chunk)</text>
+    </svg>
+    <figcaption>Figure 11.2 — Splitting mechanics. One plan chunk is divided into N sub-chunks by the ChunkSplitter. Sub-chunks arrive in the reorder buffer from potentially out-of-order workers and are released strictly in (plan_index, sub_index) order. On retry, the resume cursor starts at the first un-emitted height. The AheadGate caps the reorder buffer's memory.</figcaption>
+  </figure>
+
+  <h2>Acceptance evidence</h2>
+
+  <div class="callout evidence">
+    <span class="label">Mac acceptance run — STATE.md T6.8-S session log, 2026-06-12</span>
+    <p>Configuration: fresh TEST_UFVK wallet, birthday=1,700,000, server=zec.rocks, default settings (chunk_split_bytes=8 MiB), 600-second observation window.</p>
+    <ul>
+      <li><strong>84,964 sandblasted blocks</strong> traversed — through the exact field-failure region</li>
+      <li><strong>671 sub-chunks</strong> produced from those plan chunks</li>
+      <li><strong>43.2 million outputs</strong> processed</li>
+      <li><strong>~8.9k blocks/minute</strong> throughput through the spam era</li>
+      <li><strong>6 server EOF cuts</strong> — all resume-recovered, zero heights re-scanned</li>
+      <li><strong>0 timeout loops</strong>, <strong>0 failures</strong></li>
+      <li>Plan chunks split into up to 131 sub-chunks; individual plan chunk wire data up to 1,032 MB</li>
+    </ul>
+  </div>
+
+  <h2>Progress display during the spam era</h2>
+
+  <p>One known UX issue: progress percentage during the spam era shows as a very slow crawl. This is because the progress counter is block-based (blocks scanned / total blocks in pass), and a spam-era 10k-block chunk with 2.5 million outputs takes much longer to scan than a normal 10k-block chunk with 5,850 outputs — but both count as 10,000 blocks of progress. This is expected behaviour and is noted in STATE.md as a pending improvement (block-based vs. time-based progress during the spam era). The important thing is that the sync eventually completes, which it now does.</p>
+
+  <h2>Device memory caveat (A10-class)</h2>
+
+  <div class="callout warning">
+    <span class="label">Known limitation — A10-class device memory</span>
+    <p>The Mac acceptance run observed RSS growing from 1.31 GB to 1.84 GB across the spam-era window. This reflects the 256 MB wire-queue budget × decode amplification + allocator high-water mark + per-range in-memory sparse shardtree. This is within budget on Mac (16+ GB RAM) and on newer iPhones (A15+, 6 GB RAM). However, A10-class devices (2016 iPad Air / iPhone 7, 2 GB RAM) may hit jetsam during the spam era. Per STATE.md T6.8-S: "DEVICE memory budgets need spam-era tuning before A10-class devices cross 1.7M". This is a known gap recorded in the roadmap (chapter 19). The device gate was not closed at commit ad755e08.</p>
+  </div>
+
+  <h2>Why heights are not hardcoded</h2>
+
+  <p>An alternative design would be to hardcode "split at height 1,700,000" or embed a density table. This was explicitly rejected: any hardcoded height range is specific to mainnet and breaks on testnet; future spam attacks would require code changes; and the density-adaptive approach handles both without modification. The <code>chunk_split_bytes</code> parameter is the only knob needed, and it can be tuned per device class without touching the engine logic.</p>
+
+  <h2>Cross-references</h2>
+  <ul>
+    <li>Chapter 5 — Fetch Pipeline: the full fetch architecture including <code>PlanChunkCursor</code>, <code>AheadGate</code>, and <code>release_ordered</code>.</li>
+    <li>Chapter 12 — Resilience: how server EOF cuts (transport errors) are handled by the resume-from-height retry rather than escalating to the pass-level retry loop.</li>
+    <li>Chapter 16 — Exploitability Review: spam floods as DoS attack surface; sandblasting handling as the defence.</li>
+  </ul>
+
+  <h2>Known limitations</h2>
+  <div class="callout warning">
+    <span class="label">Honest gaps</span>
+    <ul>
+      <li><strong>A10-class (2 GB) device memory tuning pending</strong>: the spam-era sync is functional on Mac-class and A15+ devices but has not been validated on 2 GB devices. Chapter 19 records this as an open item.</li>
+      <li><strong>Block-based progress crawls through the spam era</strong>: progress percentage advances at the block rate, which is severely slow when each block carries tens of thousands of outputs. Expected UX for now.</li>
+      <li><strong>No pre-seeded density hints</strong>: the splitter measures density live as it streams. For a hypothetical future spam attack at new heights, the engine adapts automatically — but the first encounter of each new dense region may produce temporary backpressure while the AheadGate limits ahead-workers.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <a href="10-reorgs.html">&#8592; 10. Reorg Handling</a>
+    <a href="12-resilience.html">12. Failure Model &amp; Resilience &#8594;</a>
+  </nav>
+  <footer class="colophon">Citations as of commit ad755e08 · Slipstream Book · local-only draft</footer>
+</main>
+</body>
+</html>

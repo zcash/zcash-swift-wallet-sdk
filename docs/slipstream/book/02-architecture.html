@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2. Architecture Overview — The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Chapter 2</p>
+  <h1>Architecture Overview</h1>
+  <p class="meta">Part I — Overview &nbsp;·&nbsp; estimated reading time: 12 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>Slipstream is layered: a platform-neutral Rust engine core (<code>slipstream-core</code>) sits inside the existing <code>libzcashlc</code> XCFramework, exposed via six C FFI functions. A Swift actor wraps that surface; a Swift <code>Synchronizer</code> adapts it to the app. The critical design choice is "upstream brain, Slipstream body": all cryptographic and wallet-logic decisions are delegated to unmodified <code>librustzcash</code> crates; Slipstream owns only the orchestration — parallelism, pipelining, and persistence scheduling.</p>
+  </div>
+
+  <h2>The "upstream brain, Slipstream body" principle (D2)</h2>
+
+  <p>The most important sentence in the entire design is Decision D2, locked in the roadmap: <em>"upstream brain, Slipstream body."</em> Understanding what this means precisely is the key to understanding every correctness and security claim in this book.</p>
+
+  <p><strong>What the upstream brain owns (Slipstream never touches):</strong></p>
+
+  <ul>
+    <li><code>suggest_scan_ranges</code> — the single source of truth for which blocks to scan next. Slipstream's scheduler calls this function and obeys what it returns, in priority order. It never reorders, skips, or second-guesses the result.</li>
+    <li><code>scan_cached_blocks</code> — the upstream trial-decryption kernel. Slipstream provides blocks to it via a custom <code>MemBlockSource</code>; the kernel does all note scanning, nullifier computation, and tree insertion.</li>
+    <li><code>put_blocks</code> semantics — the data contract at the boundary of the scan kernel. Slipstream may swap the <em>implementation</em> of this trait method (the sparse path, chapter 7), but only in a way that produces byte-identical rows — oracle-verified.</li>
+    <li><code>get_wallet_summary</code>, <code>fully_scanned_height</code> — balance and progress queries. Slipstream reads these; never fakes them.</li>
+    <li>The entire spend path — <code>propose_transfer</code>, PCZT construction, proof generation. None of these are touched.</li>
+    <li>Account management (<code>import_account_ufvk</code>, <code>list_accounts</code>, <code>delete_account</code>).</li>
+  </ul>
+
+  <p><strong>What Slipstream owns:</strong></p>
+
+  <ul>
+    <li>How many <code>GetBlockRange</code> streams to open in parallel and how to split plan chunks into sub-chunks.</li>
+    <li>The ordering logic that reassembles parallel fetched chunks into a strict height-ordered queue.</li>
+    <li>The scheduling loop (when to call <code>suggest_scan_ranges</code> again, when to stop).</li>
+    <li>The <code>put_blocks</code> path (which may take the sparse in-memory tree route).</li>
+    <li>Enhancement: calling <code>transaction_data_requests</code>, dispatching <code>get_transaction</code>, and applying <code>decrypt_and_store_transaction</code>.</li>
+    <li>Transparent UTXO refresh.</li>
+    <li>The FFI polling surface visible to Swift.</li>
+  </ul>
+
+  <p>This division means an auditor verifying correctness of note scanning, nullifier derivation, or balance computation can direct all attention to the upstream <code>librustzcash</code> codebase — Slipstream adds no new cryptographic logic.</p>
+
+  <h2>Module map</h2>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 420" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arrg2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+        <marker id="arrm2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#6e7781"/>
+        </marker>
+      </defs>
+
+      <!-- ── Layer 0: App surface (Swift) ─────────────────────────────── -->
+      <rect x="10" y="10" width="680" height="52" rx="8" fill="#f0f6ff" stroke="#b6d3f7" stroke-width="1.5"/>
+      <text x="20" y="28" fill="#1f6feb" font-weight="700" font-size="11">App surface (Swift)</text>
+      <!-- SlipstreamSynchronizer box -->
+      <rect x="20" y="32" width="210" height="24" rx="6" fill="#fff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="125" y="48" text-anchor="middle" fill="#1a2333" font-size="11">SlipstreamSynchronizer</text>
+      <!-- SlipstreamEngine box -->
+      <rect x="244" y="32" width="160" height="24" rx="6" fill="#fff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="324" y="48" text-anchor="middle" fill="#1a2333" font-size="11">SlipstreamEngine (actor)</text>
+      <!-- Stall watchdog box -->
+      <rect x="418" y="32" width="170" height="24" rx="6" fill="#fff" stroke="#b54708" stroke-width="1"/>
+      <text x="503" y="48" text-anchor="middle" fill="#b54708" font-size="11">StallWatchdog (Swift)</text>
+
+      <!-- ── Layer 1: FFI boundary ─────────────────────────────────────── -->
+      <rect x="10" y="76" width="680" height="38" rx="8" fill="#fff4e5" stroke="#f0c389" stroke-width="1.5"/>
+      <text x="20" y="93" fill="#b54708" font-weight="700" font-size="11">C FFI boundary (rust/src/lib.rs)</text>
+      <text x="20" y="108" fill="#6e7781" font-size="10.5">zcashlc_slipstream_open · start · stop · snapshot · drain_events · free</text>
+
+      <!-- ── Layer 2: Engine (slipstream-core) ────────────────────────── -->
+      <rect x="10" y="128" width="680" height="168" rx="8" fill="#fcfdfe" stroke="#d8dee4" stroke-width="1.5"/>
+      <text x="20" y="145" fill="#1a2333" font-weight="700" font-size="11">slipstream-core (platform-neutral Rust)</text>
+
+      <!-- engine.rs -->
+      <rect x="20" y="150" width="100" height="32" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="70" y="163" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">engine</text>
+      <text x="70" y="176" text-anchor="middle" fill="#6e7781" font-size="10">sync_once</text>
+
+      <!-- scheduler.rs -->
+      <rect x="134" y="150" width="100" height="32" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="184" y="163" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">scheduler</text>
+      <text x="184" y="176" text-anchor="middle" fill="#6e7781" font-size="10">run_to_completion</text>
+
+      <!-- fetch.rs -->
+      <rect x="248" y="150" width="100" height="32" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="298" y="163" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">fetch</text>
+      <text x="298" y="176" text-anchor="middle" fill="#6e7781" font-size="10">K parallel streams</text>
+
+      <!-- scan.rs -->
+      <rect x="362" y="150" width="100" height="32" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1"/>
+      <text x="412" y="163" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">scan</text>
+      <text x="412" y="176" text-anchor="middle" fill="#6e7781" font-size="10">scan_cached_blocks</text>
+
+      <!-- persist.rs -->
+      <rect x="476" y="150" width="100" height="32" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1"/>
+      <text x="526" y="163" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">persist</text>
+      <text x="526" y="176" text-anchor="middle" fill="#6e7781" font-size="10">sparse put_blocks</text>
+
+      <!-- wallet_session.rs -->
+      <rect x="590" y="150" width="94" height="32" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1"/>
+      <text x="637" y="163" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">wallet_session</text>
+      <text x="637" y="176" text-anchor="middle" fill="#6e7781" font-size="10">WalletDb open</text>
+
+      <!-- grpc.rs -->
+      <rect x="20" y="200" width="100" height="32" rx="6" fill="#fff4e5" stroke="#f0c389" stroke-width="1"/>
+      <text x="70" y="213" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">grpc</text>
+      <text x="70" y="226" text-anchor="middle" fill="#6e7781" font-size="10">tonic TLS client</text>
+
+      <!-- chunk.rs + block_source.rs -->
+      <rect x="134" y="200" width="100" height="32" rx="6" fill="#fff4e5" stroke="#f0c389" stroke-width="1"/>
+      <text x="184" y="213" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">chunk / block_source</text>
+      <text x="184" y="226" text-anchor="middle" fill="#6e7781" font-size="10">queue + MemBlockSource</text>
+
+      <!-- verify.rs -->
+      <rect x="248" y="200" width="100" height="32" rx="6" fill="#fff4e5" stroke="#f0c389" stroke-width="1"/>
+      <text x="298" y="213" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">verify</text>
+      <text x="298" y="226" text-anchor="middle" fill="#6e7781" font-size="10">prev-hash continuity</text>
+
+      <!-- enhance.rs -->
+      <rect x="362" y="200" width="100" height="32" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="412" y="213" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">enhance</text>
+      <text x="412" y="226" text-anchor="middle" fill="#6e7781" font-size="10">get_transaction</text>
+
+      <!-- transparent.rs -->
+      <rect x="476" y="200" width="100" height="32" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="526" y="213" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">transparent</text>
+      <text x="526" y="226" text-anchor="middle" fill="#6e7781" font-size="10">UTXO refresh</text>
+
+      <!-- oracle.rs + ffi_handle.rs -->
+      <rect x="590" y="200" width="94" height="32" rx="6" fill="#f0f6ff" stroke="#6e7781" stroke-width="1"/>
+      <text x="637" y="213" text-anchor="middle" fill="#1a2333" font-size="11" font-weight="600">oracle / ffi_handle</text>
+      <text x="637" y="226" text-anchor="middle" fill="#6e7781" font-size="10">diff harness / ring</text>
+
+      <!-- error.rs + events.rs + config.rs -->
+      <rect x="20" y="248" width="664" height="36" rx="6" fill="#f6f8fa" stroke="#d8dee4" stroke-width="1"/>
+      <text x="352" y="264" text-anchor="middle" fill="#6e7781" font-size="11">shared domain: error · events (Progress, AtomicU64 counters) · config (EngineConfig)</text>
+      <text x="352" y="278" text-anchor="middle" fill="#6e7781" font-size="10">slipstream-cli wraps engine for Mac-side development and benchmarking (D5 CLI-first policy)</text>
+
+      <!-- ── Layer 3: upstream brain ──────────────────────────────────── -->
+      <rect x="10" y="310" width="680" height="50" rx="8" fill="#effaf1" stroke="#a8dcb2" stroke-width="1.5"/>
+      <text x="20" y="328" fill="#1a7f37" font-weight="700" font-size="11">upstream "brain" — librustzcash (zcash_client_backend + zcash_client_sqlite)</text>
+      <text x="20" y="344" fill="#6e7781" font-size="10.5">suggest_scan_ranges · scan_cached_blocks · put_blocks (data.db schema) · spend path · get_wallet_summary · import_account_ufvk</text>
+      <text x="20" y="358" fill="#6e7781" font-size="10">unmodified — same pinned crate versions as the old SDK; shared static in one binary (D1)</text>
+
+      <!-- ── Layer 4: data.db ─────────────────────────────────────────── -->
+      <rect x="10" y="374" width="680" height="36" rx="8" fill="#fcfdfe" stroke="#1a2333" stroke-width="1.5"/>
+      <text x="352" y="392" text-anchor="middle" fill="#1a2333" font-weight="600" font-size="11">data.db — unchanged zcash_client_sqlite schema (D3); openable by old SDK</text>
+      <text x="352" y="406" text-anchor="middle" fill="#6e7781" font-size="10">WAL mode; one SQLite transaction per chunk; sparse oracle verifies byte identity</text>
+    </svg>
+    <figcaption>Figure 2.1 — Module map. Layers from top: Swift app surface → C FFI boundary → slipstream-core Rust modules → upstream librustzcash (the "brain") → data.db. Colour: blue = Slipstream orchestration; green = paths that write to data.db; orange = transport/FFI boundary; grey = shared domain.</figcaption>
+  </figure>
+
+  <h3>Module responsibilities</h3>
+
+  <table>
+    <thead>
+      <tr><th>Module</th><th>Layer</th><th>Responsibility</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>engine.rs</code></td><td>Engine</td><td><code>sync_once</code> — top-level pass: preflight, chain tip, scheduler, enhancement, transparent.</td></tr>
+      <tr><td><code>scheduler.rs</code></td><td>Engine</td><td><code>run_to_completion</code> — iterates <code>suggest_scan_ranges</code>, drives fetch∥scan per range, reorg recovery.</td></tr>
+      <tr><td><code>fetch.rs</code></td><td>Transport</td><td>K parallel <code>GetBlockRange</code> workers → AheadGate → reorder buffer → ChunkQueue.</td></tr>
+      <tr><td><code>scan.rs</code></td><td>Engine</td><td>Drains ChunkQueue; calls <code>scan_cached_blocks</code> one chunk at a time; prefetches treestates.</td></tr>
+      <tr><td><code>persist.rs</code></td><td>Engine</td><td>Sparse <code>put_blocks</code> facade: in-memory ShardTree, checkpoint-downgrade, rayon per-pool parallel, single-transaction flush.</td></tr>
+      <tr><td><code>wallet_session.rs</code></td><td>Engine</td><td>Opens WalletDb once per pass; WAL mode; provides <code>suggest_scan_ranges</code>, <code>truncate_to_height</code>.</td></tr>
+      <tr><td><code>grpc.rs</code></td><td>Transport</td><td>tonic TLS client: <code>get_latest_block</code>, <code>get_block_range</code>, <code>get_tree_state</code>, <code>get_transaction</code>, <code>get_taddress_txids</code>, <code>get_address_utxos</code>.</td></tr>
+      <tr><td><code>chunk.rs</code> / <code>block_source.rs</code></td><td>Transport</td><td>Byte-budgeted <code>ChunkQueue</code>; <code>MemBlockSource</code> (upstream <code>BlockSource</code> trait over in-memory chunks).</td></tr>
+      <tr><td><code>verify.rs</code></td><td>Transport</td><td>Prev-hash continuity check across chunk seams; structured <code>Discontinuity</code> error.</td></tr>
+      <tr><td><code>enhance.rs</code></td><td>Services</td><td>Concurrent <code>transaction_data_requests</code> → <code>get_transaction</code> → <code>decrypt_and_store_transaction</code>.</td></tr>
+      <tr><td><code>transparent.rs</code></td><td>Services</td><td>Per-account UTXO refresh; mirrors upstream <code>sync.rs:475–534</code>.</td></tr>
+      <tr><td><code>oracle.rs</code></td><td>Tooling</td><td>Golden-oracle semantic diff (D3 enforcement); <code>ALLOWLIST</code> with single entry.</td></tr>
+      <tr><td><code>ffi_handle.rs</code></td><td>Surface</td><td><code>SlipstreamHandle</code>: tokio Runtime, <code>Arc&lt;Progress&gt;</code> atomics, event ring, panic supervisor.</td></tr>
+      <tr><td><code>events.rs</code> / <code>config.rs</code> / <code>error.rs</code></td><td>Shared</td><td>Domain types: <code>Progress</code> (AtomicU64 counters), <code>EngineConfig</code>, <code>SlipstreamError</code>.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>The sync-pass swimlane</h2>
+
+  <p>A single sync pass (one call to <code>sync_once</code> in <code>engine.rs</code>) proceeds through the following stages. Note that within each range loop, fetch and scan overlap.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 370" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="11.5">
+      <defs>
+        <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arrg3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+        <marker id="arrm3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#6e7781"/>
+        </marker>
+      </defs>
+
+      <!-- Swimlane labels -->
+      <rect x="0" y="0" width="110" height="370" fill="#f6f8fa" stroke="#d8dee4" stroke-width="1"/>
+      <text x="55" y="55" text-anchor="middle" fill="#1f6feb" font-weight="600" font-size="11">FFI / Swift</text>
+      <text x="55" y="140" text-anchor="middle" fill="#1a2333" font-weight="600" font-size="11">engine.rs</text>
+      <text x="55" y="220" text-anchor="middle" fill="#1f6feb" font-weight="600" font-size="11">fetch.rs</text>
+      <text x="55" y="295" text-anchor="middle" fill="#1a7f37" font-weight="600" font-size="11">scan.rs</text>
+      <text x="55" y="345" text-anchor="middle" fill="#6e7781" font-weight="600" font-size="11">persist.rs</text>
+
+      <!-- Horizontal swimlane dividers -->
+      <line x1="110" y1="75" x2="700" y2="75" stroke="#d8dee4" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="110" y1="165" x2="700" y2="165" stroke="#d8dee4" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="110" y1="255" x2="700" y2="255" stroke="#d8dee4" stroke-width="1" stroke-dasharray="3,3"/>
+      <line x1="110" y1="325" x2="700" y2="325" stroke="#d8dee4" stroke-width="1" stroke-dasharray="3,3"/>
+
+      <!-- FFI row -->
+      <rect x="118" y="30" width="100" height="34" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="168" y="46" text-anchor="middle" fill="#1a2333">start(ufvk,</text>
+      <text x="168" y="59" text-anchor="middle" fill="#1a2333">birthday)</text>
+
+      <!-- engine row: preflight + suggest + loop + enhance -->
+      <rect x="118" y="84" width="100" height="34" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="168" y="97" text-anchor="middle" fill="#1a2333">preflight</text>
+      <text x="168" y="110" text-anchor="middle" fill="#6e7781" font-size="10">chain_tip + subtree_roots</text>
+
+      <rect x="235" y="84" width="110" height="34" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="290" y="97" text-anchor="middle" fill="#1a2333">suggest_scan_ranges</text>
+      <text x="290" y="110" text-anchor="middle" fill="#6e7781" font-size="10">(upstream brain)</text>
+
+      <!-- loop bracket -->
+      <text x="362" y="98" fill="#6e7781" font-size="10">for each range:</text>
+      <rect x="361" y="80" width="327" height="230" rx="6" fill="none" stroke="#d8dee4" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+      <rect x="370" y="103" width="90" height="34" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1"/>
+      <text x="415" y="116" text-anchor="middle" fill="#1a2333">per-range</text>
+      <text x="415" y="129" text-anchor="middle" fill="#6e7781" font-size="10">enhance (non-fatal)</text>
+
+      <rect x="475" y="103" width="100" height="34" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="525" y="116" text-anchor="middle" fill="#1a2333">re-suggest</text>
+      <text x="525" y="129" text-anchor="middle" fill="#6e7781" font-size="10">until empty</text>
+
+      <!-- final enhance -->
+      <rect x="235" y="122" width="110" height="34" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1"/>
+      <text x="290" y="135" text-anchor="middle" fill="#1a2333">final enhance</text>
+      <text x="290" y="148" text-anchor="middle" fill="#6e7781" font-size="10">+ transparent UTXOs</text>
+
+      <!-- fetch row -->
+      <rect x="370" y="175" width="95" height="34" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="417" y="189" text-anchor="middle" fill="#1a2333">fetch workers ×4</text>
+      <text x="417" y="202" text-anchor="middle" fill="#6e7781" font-size="10">parallel GetBlockRange</text>
+
+      <rect x="480" y="175" width="95" height="34" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="527" y="189" text-anchor="middle" fill="#1a2333">reorder buffer</text>
+      <text x="527" y="202" text-anchor="middle" fill="#6e7781" font-size="10">strict height order</text>
+
+      <rect x="590" y="175" width="96" height="34" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="638" y="189" text-anchor="middle" fill="#1a2333">ChunkQueue</text>
+      <text x="638" y="202" text-anchor="middle" fill="#6e7781" font-size="10">byte backpressure</text>
+
+      <!-- scan row -->
+      <rect x="370" y="263" width="95" height="34" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="417" y="277" text-anchor="middle" fill="#1a2333">scan_cached_blocks</text>
+      <text x="417" y="290" text-anchor="middle" fill="#6e7781" font-size="10">one chunk at a time</text>
+
+      <rect x="480" y="263" width="95" height="34" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1"/>
+      <text x="527" y="277" text-anchor="middle" fill="#1a2333">treestate prefetch</text>
+      <text x="527" y="290" text-anchor="middle" fill="#6e7781" font-size="10">concurrent with scan</text>
+
+      <!-- persist row -->
+      <rect x="370" y="333" width="95" height="26" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1"/>
+      <text x="417" y="346" text-anchor="middle" fill="#1a2333">put_blocks</text>
+      <text x="417" y="357" text-anchor="middle" fill="#6e7781" font-size="10">sparse + 1 txn/chunk</text>
+
+      <!-- Arrows -->
+      <line x1="218" y1="47" x2="248" y2="101" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <line x1="220" y1="101" x2="233" y2="101" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <line x1="345" y1="101" x2="363" y2="101" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr3)"/>
+      <!-- fetch → scan (parallel overlap note) -->
+      <line x1="590" y1="192" x2="480" y2="270" stroke="#1a7f37" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrg3)"/>
+      <text x="545" y="238" fill="#1a7f37" font-size="10" transform="rotate(-30,545,238)">∥ overlap</text>
+      <!-- scan → persist -->
+      <line x1="417" y1="297" x2="417" y2="331" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg3)"/>
+    </svg>
+    <figcaption>Figure 2.2 — Sync-pass swimlane. Within each range loop, the fetch workers (tokio tasks) and the scan call run concurrently: the ChunkQueue provides backpressure so the fetch workers are at most <code>memory_budget_bytes / chunk_size</code> chunks ahead. Each chunk's <code>put_blocks</code> flushes the sparse in-memory tree to SQLite in a single transaction.</figcaption>
+  </figure>
+
+  <h2>Concurrency model</h2>
+
+  <p>Slipstream uses two runtimes for two different kinds of work, plus a shared-memory bridge between them.</p>
+
+  <h3>tokio — async I/O and task scheduling</h3>
+
+  <p>Each <code>SlipstreamHandle</code> owns one <code>tokio::runtime::Runtime</code> built with 4 worker threads (configured in <code>zcashlc_slipstream_open</code>, <code>rust/src/lib.rs</code>). It lives from <code>open</code> to <code>free</code> (Decision D7, deviation from the original plan of per-start creation). All network I/O — tonic gRPC streams, <code>get_tree_state</code> retries, enhancement futures — runs inside this runtime.</p>
+
+  <p>The tokio runtime is never visible to Swift. The Swift actor (<code>SlipstreamEngine</code>) serialises all calls to the six C FFI functions; the runtime's threads are internal to the Rust handle.</p>
+
+  <h3>rayon — CPU-bound tree parallelism</h3>
+
+  <p>The sparse persistence path in <code>persist.rs</code> uses <code>rayon::join</code> to process the Sapling and Orchard commitment trees in parallel for each chunk. This is the L3a optimization (T6.8-L3a). Both closures run on the rayon thread pool (the tokio worker thread calls <code>rayon::join</code> via <code>block_in_place</code>).</p>
+
+  <p>Within each per-pool tree operation, <code>rayon::par_chunks</code> is used inside <code>build_subtrees</code> (upstream code). This nesting is safe: rayon's work-stealing pool allows nested <code>par_chunks</code> on available threads.</p>
+
+  <h3>Progress — lock-free polling (D8)</h3>
+
+  <p>All progress data visible to the Swift polling layer is read from <code>Arc&lt;Progress&gt;</code> in <code>events.rs</code> — a struct of 9 <code>AtomicU64</code> fields. No lock is held to read a snapshot. The fields are written by the Rust sync task and read by the Swift polling loop (every 2 seconds) without any cross-FFI callbacks or notification mechanisms.</p>
+
+  <p>This poll-based design (Decision D8) was chosen for simplicity and restart safety: if a sync pass is cancelled and restarted, the polling loop simply continues reading from the same atomics. No callback registration / deregistration is needed, and no cross-FFI liveness issue can arise.</p>
+
+  <p>The nine fields are:</p>
+
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Semantics</th><th>Source</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>chain_tip</code></td><td>Current server-reported tip height</td><td>Set at pass start</td></tr>
+      <tr><td><code>fetched_blocks</code></td><td>Blocks downloaded this pass</td><td>Incremented by fetch workers</td></tr>
+      <tr><td><code>scanned_blocks</code></td><td>Blocks scanned this pass</td><td>Incremented per chunk in <code>scan.rs</code></td></tr>
+      <tr><td><code>enhanced_txs</code></td><td>Transactions enhanced this pass (monotonic per handle)</td><td>Incremented in <code>enhance.rs</code></td></tr>
+      <tr><td><code>current_range_end</code></td><td>End height of the range being processed</td><td>Set by scheduler per range</td></tr>
+      <tr><td><code>pass_total_blocks</code></td><td>Denominator for progress fraction (set on each re-suggest)</td><td>Set by scheduler</td></tr>
+      <tr><td><code>spendable_hint</code></td><td>Latches to 1 when a ChainTip range completes (SBS semantics)</td><td>Set by scheduler</td></tr>
+      <tr><td><code>ranges_completed</code></td><td>Completed ranges count (triggers balance fetch in Swift)</td><td>Incremented by scheduler</td></tr>
+      <tr><td><code>reorgs_recovered</code></td><td>Reorg recovery count (monotonic per handle)</td><td>Incremented by scheduler</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout note">
+    <span class="label">Note on counter resets</span>
+    <p>Progress counters are split into two classes. <em>Ratio counters</em> (<code>scanned_blocks</code>, <code>fetched_blocks</code>, <code>pass_total_blocks</code>, <code>current_range_end</code>, <code>spendable_hint</code>) are reset by <code>begin_pass()</code> at each <code>sync_once</code> entry — including on pass-level retries. <em>Delta counters</em> (<code>enhanced_txs</code>, <code>ranges_completed</code>, <code>reorgs_recovered</code>) are <em>monotonic per handle</em> and never reset within a handle's lifetime; the Swift layer detects changes by strict-greater comparisons. This split is load-bearing for interruption-resume correctness (Decision Log, 2026-06-11).</p>
+  </div>
+
+  <h3>Event ring</h3>
+
+  <p>A 64-event circular buffer in <code>ffi_handle.rs</code> carries typed events from the Rust sync task to the Swift polling loop. Tags: 1=SyncStarted, 2=SyncProgress (unused), 3=SyncDone (value = tx count), 4=SyncError (value = error code), 5=FoundTransactions. The ring is drained atomically — a single <code>Mutex&lt;Vec&gt;</code> lock covers the entire drain operation. Overflow drops the oldest event.</p>
+
+  <h3>Panic containment (B1)</h3>
+
+  <p>Tokio swallows panics inside spawned tasks — they surface only through the <code>JoinHandle</code>, which was not previously inspected. A panicking pass would die silently, leaving state stuck at "Syncing" forever (field failure 2, 2026-06-12). The fix is a supervisor task (<code>spawn_supervised</code> in <code>ffi_handle.rs</code>) that owns the sync task's <code>JoinHandle</code> and converts a panic <code>JoinError</code> into <code>SyncState::Error(2)</code> + a tag=4/value=2 event. Cancellation (from <code>stop()</code>/<code>free()</code>) is deliberately ignored — the caller already sets state.</p>
+
+  <h2>The FFI boundary</h2>
+
+  <p>Six C functions in <code>rust/src/lib.rs</code> are the entire Slipstream-to-Swift contract:</p>
+
+  <table>
+    <thead>
+      <tr><th>Function</th><th>Contract</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>zcashlc_slipstream_open</code></td><td>Allocates a <code>SlipstreamHandle</code> (tokio runtime + atomics + event ring). Returns an opaque pointer or null on failure. Installs the panic tracing hook.</td></tr>
+      <tr><td><code>zcashlc_slipstream_start</code></td><td>Cancels any in-flight task, spawns a new supervised sync task. Returns <code>true</code> on success. UFVK is optional (null = keyless/update-only). Emits SyncStarted exactly once, even across retries.</td></tr>
+      <tr><td><code>zcashlc_slipstream_stop</code></td><td>Aborts the in-flight task and sets state to Idle (non-blocking). Returns immediately. Poll <code>snapshot</code> to confirm.</td></tr>
+      <tr><td><code>zcashlc_slipstream_snapshot</code></td><td>Non-blocking point-in-time read of all <code>AtomicU64</code> progress fields + state. Zero-filled on null handle.</td></tr>
+      <tr><td><code>zcashlc_slipstream_drain_events</code></td><td>Atomically drains up to <code>buf_len</code> events into a caller-allocated buffer. Returns count drained. Drained events are removed from the ring.</td></tr>
+      <tr><td><code>zcashlc_slipstream_free</code></td><td>Aborts any in-flight task, drops the handle (drops the tokio runtime). After this call, the pointer must not be used.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Known limitations</h2>
+
+  <div class="callout warning">
+    <span class="label">Architecture-level gaps</span>
+    <ul>
+      <li><strong>Single-shot runner:</strong> <code>sync_once</code> runs one complete pass. There is no continuous background sync. The pass-level retry loop (T6.8-H2: up to 3 total attempts for transient transport errors, sleeping 5s/15s between attempts) is bounded — it does not loop indefinitely.</li>
+      <li><strong>Tor not wired:</strong> all gRPC connections in <code>grpc.rs</code> are direct TLS. The old SDK routes some flows through Tor; Slipstream has no arti integration. See chapter 15.</li>
+      <li><strong>L2 row batching seam-blocked:</strong> the <code>put_blocks</code> SQL write path inside <code>zcash_client_sqlite</code> cannot be replaced via public API without a fork or upstream PR — the performance lever for bulk-inserting rows exists but is blocked at the library boundary.</li>
+      <li><strong>L4a decrypt kernel parked:</strong> a column-oriented ECDH scan kernel would eliminate the 3–5% decryption fraction and could cut further into the tree-time overhead on modern hardware, but requires a new oracle harness (the current oracle covers the <code>scan_cached_blocks</code> output, not an alternative kernel). Deferred.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <span>← <a href="01-introduction.html">1. Introduction &amp; Motivation</a></span>
+    <span><a href="03-data-model.html">3. The Data-Model Contract</a> →</span>
+  </nav>
+
+  <footer class="colophon">
+    Slipstream Book · Chapter 2 · Citations as of commit ad755e08 ·
+    Module structures verified in <code>slipstream/core/src/lib.rs</code>,
+    <code>slipstream/core/src/ffi_handle.rs</code>, <code>rust/src/lib.rs</code>,
+    <code>slipstream/core/src/config.rs</code>, <code>slipstream/core/src/events.rs</code> ·
+    local-only draft, not for distribution.
+  </footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapter 10 — Reorg Handling · The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Part III — Hard Problems</p>
+  <h1>10. Reorg Handling</h1>
+  <p class="meta">Estimated reading time: 12 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>A chain reorganisation invalidates blocks the wallet has already scanned. Slipstream detects reorgs at three independent layers, raises a structured <code>ScanContinuity{at}</code> error, and recovers by rolling the wallet state <em>back</em> — not by recalculating it. The key insight: <strong>tree states are never recalculated on recovery; they are rolled back to a stored checkpoint.</strong> Backoff prevents a load-balanced cluster's momentary tip-desync from burning through the entire recovery budget; a hard cap of five consecutive recoveries prevents infinite ping-pong. All claims are verified against darkside hardware.</p>
+  </div>
+
+  <h2>The thing that makes reorgs tractable</h2>
+
+  <p>When a chain reorganisation happens, every block above the fork height is invalid. The wallet has already scanned some of those blocks, storing notes, nullifiers, and — most importantly — shardtree state derived from their commitments. The naïve fix would be to undo that scanning by recalculating the shardtree from scratch. That would be catastrophically slow.</p>
+
+  <p>The real fix is a rollback: <code>truncate_to_height</code> in <code>zcash_client_sqlite</code> removes all data above the rewind height <em>and rolls back the shardtree to the nearest stored checkpoint</em>. Checkpoints exist precisely as rewind anchors — one is stored per block when scanning. After truncation, the wallet is in exactly the same state it was when it last committed below the rewind height. No recalculation. No reconstruction. A pure rollback to a known-good point.</p>
+
+  <div class="callout note">
+    <span class="label">Why this matters for auditors</span>
+    <p>The correctness guarantee is: <em>post-recovery wallet state is byte-identical to what upstream's <code>sync.rs</code> would produce on the same chain.</em> This holds because Slipstream uses the same <code>truncate_to_height</code> call, the same rewind formula (<code>at − 10</code>), and the same <code>scan_cached_blocks</code> kernel for the repair scan. The golden oracle (chapter 13) verifies this end-to-end: the sparse-mode reorg test <code>truncate_rescan_oracle_is_clean</code> checks all 26 wallet tables for equivalence after a round-trip truncate and re-scan.</p>
+  </div>
+
+  <h2>Three detection layers</h2>
+
+  <p>A reorg can be detected at three points in the pipeline, operating independently.</p>
+
+  <table>
+    <thead>
+      <tr><th>Layer</th><th>Mechanism</th><th>Error produced</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Transport continuity</strong></td>
+        <td>The fetch pipeline's reorder stage (<code>release_ordered</code> in <code>fetch.rs</code>) runs a <code>Continuity</code> checker on every emitted sub-chunk. A prev-hash mismatch between consecutive blocks raises <code>SlipstreamError::Discontinuity{at}</code> immediately — before any data reaches the scanner.</td>
+        <td><code>Discontinuity{at}</code></td>
+      </tr>
+      <tr>
+        <td><strong>Wallet-level scan continuity</strong></td>
+        <td>Upstream's <code>scan_cached_blocks</code> checks that every new block's prev-hash matches what the wallet already stores, and that the shardtree size is consistent. A mismatch raises a <code>ChainError::Scan</code> with <code>is_continuity_error() == true</code>. The <code>map_scan_error</code> helper in <code>scan.rs</code> converts this to the structured <code>ScanContinuity{at}</code> variant.</td>
+        <td><code>ScanContinuity{at}</code></td>
+      </tr>
+      <tr>
+        <td><strong>Tip-priority verify ranges</strong></td>
+        <td>After each pass, <code>suggest_scan_ranges</code> may return <code>Verify</code>-priority ranges for blocks near the tip. These are scanned first (upstream contract: Verify is returned before ChainTip or Historic), re-detecting any fork that arrived since the last scan.</td>
+        <td>Detected as wallet-level scan error on the verify range</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>In practice, the wallet-level layer (layer 2) fires most often for the standard reorg scenario: the server presents a longer chain, the fetch pipeline delivers the fork blocks in height order, and <code>scan_cached_blocks</code> sees the prev-hash mismatch at the first diverging block.</p>
+
+  <h2>The structured <code>ScanContinuity{at}</code> type</h2>
+
+  <p>Where previous sync engines used untyped strings or generic scan errors, Slipstream promotes the continuity break to a first-class error variant (<code>error.rs:31</code>):</p>
+
+  <pre><code>/// Scan detected a chain continuity break (reorg) at the given height.
+/// The scheduler's recovery arm truncates the wallet DB and re-suggests ranges.
+#[error("scan continuity break at height {at}")]
+ScanContinuity { at: u32 },</code></pre>
+
+  <p>The <code>at</code> field carries the exact height where the continuity break was detected. This is the value the recovery arm uses to compute the rewind point. Having it structured means the scheduler can pattern-match on it precisely without string parsing, and tests can assert its exact value.</p>
+
+  <p>Importantly, <code>ScanContinuity</code> is <em>not</em> classified as transient (<code>error.rs:48</code>: <code>is_transient()</code> returns <code>false</code> for it). The reorg arm handles it directly in the scheduler loop — it never escalates to the pass-level retry logic (chapter 12), which is reserved for transport failures.</p>
+
+  <h2>The recovery arm — verbatim semantics</h2>
+
+  <p>When the scheduler receives a <code>ScanContinuity{at}</code> error from <code>scan_chunks</code>, it executes the recovery arm at <code>scheduler.rs:207–263</code>. The arm mirrors upstream's <code>sync.rs:404–418</code> exactly:</p>
+
+  <pre><code>// Mirror upstream rewind: err_height.saturating_sub(10)
+// (sync.rs:409: `let rewind_height = err.at_height().saturating_sub(10)`)
+let rewind_height = at.saturating_sub(10);
+
+session
+    .db_mut()
+    .truncate_to_height(BlockHeight::from(rewind_height))
+    .map_err(|e| SlipstreamError::Wallet(format!("truncate_to_height: {e}")))?;
+
+// continue → causes suggest_scan_ranges to return the repair range
+continue;</code></pre>
+
+  <p>The rewind formula subtracts 10 blocks from the detected error height — conservative buffer to ensure the fork point is below the truncation point even if detection was slightly delayed. <code>saturating_sub</code> prevents underflow at genesis-adjacent heights.</p>
+
+  <p><code>truncate_to_height</code> does three things atomically inside a single SQLite transaction:</p>
+  <ol>
+    <li>Removes all rows above <code>rewind_height</code> from the blocks, nullifier, and transaction tables.</li>
+    <li>Rolls back the Sapling and Orchard shardtrees to the nearest checkpoint at or below <code>rewind_height</code> — this is the core of why rollback is fast.</li>
+    <li>Updates the scan queue to reflect the new wallet state.</li>
+  </ol>
+
+  <p>After truncation, <code>continue</code> sends the scheduler back to the top of its loop. <code>suggest_scan_ranges</code> now sees the truncated wallet and returns a repair range covering <code>rewind_height+1</code> through the current tip. The engine fetches and scans this repair range against the <em>current</em> server treestate (fetched fresh at the start of the repair scan via <code>retry_get_tree_state</code>) — this is the "fresh server treestate re-anchoring" that makes the repair scan correct on the post-fork chain.</p>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 380" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arrw10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arrg10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- Swimlane labels -->
+      <text x="8" y="58" fill="#6e7781" font-size="11" font-weight="600" transform="rotate(-90,8,58)">FETCH</text>
+      <text x="8" y="160" fill="#6e7781" font-size="11" font-weight="600" transform="rotate(-90,8,160)">SCAN</text>
+      <text x="8" y="260" fill="#6e7781" font-size="11" font-weight="600" transform="rotate(-90,8,260)">SCHED</text>
+
+      <!-- Swimlane dividers -->
+      <line x1="22" y1="20" x2="22" y2="360" stroke="#d8dee4" stroke-width="1"/>
+      <line x1="22" y1="100" x2="690" y2="100" stroke="#d8dee4" stroke-width="1" stroke-dasharray="4,3"/>
+      <line x1="22" y1="200" x2="690" y2="200" stroke="#d8dee4" stroke-width="1" stroke-dasharray="4,3"/>
+      <line x1="22" y1="300" x2="690" y2="300" stroke="#d8dee4" stroke-width="1" stroke-dasharray="4,3"/>
+
+      <!-- Step 1: Fetch delivers fork blocks -->
+      <rect x="35" y="30" width="130" height="44" rx="8" fill="none" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="100" y="49" text-anchor="middle" font-weight="600" fill="#1a2333">fetch fork blocks</text>
+      <text x="100" y="65" text-anchor="middle" fill="#6e7781" font-size="11">prev-hash OK at L1</text>
+
+      <!-- Step 2: scan_cached_blocks -->
+      <rect x="35" y="115" width="130" height="44" rx="8" fill="none" stroke="#b54708" stroke-width="1.5"/>
+      <text x="100" y="134" text-anchor="middle" font-weight="600" fill="#b54708">scan detects</text>
+      <text x="100" y="150" text-anchor="middle" fill="#b54708" font-size="11">ScanContinuity{at}</text>
+
+      <!-- Step 3: scheduler receives error -->
+      <rect x="35" y="215" width="130" height="58" rx="8" fill="none" stroke="#b54708" stroke-width="1.5"/>
+      <text x="100" y="235" text-anchor="middle" font-weight="600" fill="#b54708">reorg arm fires</text>
+      <text x="100" y="251" text-anchor="middle" fill="#6e7781" font-size="11">rewind = at − 10</text>
+      <text x="100" y="265" text-anchor="middle" fill="#6e7781" font-size="11">truncate_to_height</text>
+
+      <!-- Backoff box -->
+      <rect x="220" y="215" width="130" height="58" rx="8" fill="none" stroke="#b54708" stroke-width="1.5"/>
+      <text x="285" y="235" text-anchor="middle" font-weight="600" fill="#b54708">jittered backoff</text>
+      <text x="285" y="251" text-anchor="middle" fill="#6e7781" font-size="11">500ms × consecutive</text>
+      <text x="285" y="265" text-anchor="middle" fill="#6e7781" font-size="11">cap 3s</text>
+
+      <!-- Step 5: re-suggest -->
+      <rect x="405" y="215" width="130" height="58" rx="8" fill="none" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="470" y="235" text-anchor="middle" font-weight="600" fill="#1a7f37">suggest_scan_ranges</text>
+      <text x="470" y="251" text-anchor="middle" fill="#6e7781" font-size="11">returns repair range</text>
+      <text x="470" y="265" text-anchor="middle" fill="#6e7781" font-size="11">[rewind+1 … tip]</text>
+
+      <!-- Step 6: fetch fresh treestate + repair scan -->
+      <rect x="35" y="315" width="240" height="44" rx="8" fill="none" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="155" y="334" text-anchor="middle" font-weight="600" fill="#1a7f37">repair scan</text>
+      <text x="155" y="350" text-anchor="middle" fill="#6e7781" font-size="11">fresh server treestate · re-anchored</text>
+
+      <!-- Success -->
+      <rect x="335" y="315" width="130" height="44" rx="8" fill="none" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="400" y="334" text-anchor="middle" font-weight="600" fill="#1a7f37">recovered tip</text>
+      <text x="400" y="350" text-anchor="middle" fill="#6e7781" font-size="11">consecutive_reorgs = 0</text>
+
+      <!-- Arrows -->
+      <line x1="100" y1="74" x2="100" y2="113" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrw10)"/>
+      <line x1="100" y1="159" x2="100" y2="213" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrw10)"/>
+      <line x1="167" y1="244" x2="218" y2="244" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrw10)"/>
+      <line x1="352" y1="244" x2="403" y2="244" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg10)"/>
+      <line x1="470" y1="275" x2="470" y2="305" stroke="#1a7f37" stroke-width="1.5"/>
+      <line x1="470" y1="305" x2="280" y2="305" stroke="#1a7f37" stroke-width="1.5"/>
+      <line x1="280" y1="305" x2="280" y2="313" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg10)"/>
+      <line x1="277" y1="337" x2="333" y2="337" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrg10)"/>
+    </svg>
+    <figcaption>Figure 10.1 — Swimlane of a reorg recovery cycle. Fetch delivers blocks; scan detects the continuity break; the scheduler truncates, backs off, re-suggests, and the repair scan re-anchors to the current server treestate.</figcaption>
+  </figure>
+
+  <h2>The checkpoint window and the sparse-mode subtlety</h2>
+
+  <p>After truncation, <code>select_truncation_height</code> finds the nearest <em>stored</em> checkpoint at or below the requested rewind height. Upstream's shardtree prunes all but the 100 newest checkpoints after each <code>insert_tree</code> call — so only the most recent ~100 block heights survive as rewind anchors. If the requested rewind height falls in a gap (no checkpoint at exactly that height), the truncation snaps to the nearest surviving checkpoint below it.</p>
+
+  <p>This is the same post-prune state that upstream's own sync produces. As the darkside test <code>truncate_rescan_oracle_is_clean</code> (T6.5) demonstrates, the wallet state after a Slipstream truncate+rescan is byte-identical across all 26 tables to what upstream produces — the checkpoint window matches because Slipstream uses the same <code>insert_tree</code> / <code>prune_excess_checkpoints</code> machinery via <code>scan_cached_blocks</code>.</p>
+
+  <div class="callout note">
+    <span class="label">Sparse-mode note</span>
+    <p>In sparse-persistence mode (default on, chapter 7), checkpoints are written to the database inside the same per-chunk transaction. The checkpoint downgrade algorithm preserves only the newest 100 checkpoint IDs before they enter the in-memory tree, which is the same set <code>prune_excess_checkpoints</code> retains. The truncation behaviour is therefore identical between sparse and non-sparse modes. The T6.5 darkside oracle test verifies this directly with sparse=true.</p>
+  </div>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 680 260" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arrfork" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a2333"/>
+        </marker>
+        <marker id="arrforkr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#b54708"/>
+        </marker>
+        <marker id="arrforkg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- Timeline labels -->
+      <text x="10" y="85" fill="#1a2333" font-size="11" font-weight="600">Canonical</text>
+      <text x="10" y="165" fill="#b54708" font-size="11" font-weight="600">Fork (invalid)</text>
+      <text x="10" y="225" fill="#1a7f37" font-size="11" font-weight="600">After recovery</text>
+
+      <!-- Canonical chain (top) -->
+      <!-- Blocks before fork -->
+      <rect x="100" y="68" width="44" height="28" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="122" y="87" text-anchor="middle" fill="#1a2333">N-20</text>
+      <rect x="155" y="68" width="44" height="28" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="177" y="87" text-anchor="middle" fill="#1a2333">N-10</text>
+      <!-- Checkpoint window annotation -->
+      <text x="150" y="110" text-anchor="middle" fill="#6e7781" font-size="10">checkpoint ✓</text>
+      <text x="122" y="110" text-anchor="middle" fill="#6e7781" font-size="10">checkpoint ✓</text>
+      <!-- Fork height -->
+      <rect x="210" y="68" width="44" height="28" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="232" y="87" text-anchor="middle" fill="#1a2333">F (fork)</text>
+      <!-- Old chain (canonical, stale) -->
+      <rect x="265" y="68" width="44" height="28" rx="6" fill="#f6f8fa" stroke="#6e7781" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="287" y="87" text-anchor="middle" fill="#6e7781">F+1</text>
+      <rect x="320" y="68" width="44" height="28" rx="6" fill="#f6f8fa" stroke="#6e7781" stroke-width="1.5" stroke-dasharray="4,2"/>
+      <text x="342" y="87" text-anchor="middle" fill="#6e7781">F+2</text>
+      <text x="290" y="110" text-anchor="middle" fill="#b54708" font-size="10">now invalid</text>
+
+      <!-- Fork branch (new chain, from server) -->
+      <rect x="265" y="148" width="44" height="28" rx="6" fill="#fff4e5" stroke="#b54708" stroke-width="1.5"/>
+      <text x="287" y="167" text-anchor="middle" fill="#b54708">F'+1</text>
+      <rect x="320" y="148" width="44" height="28" rx="6" fill="#fff4e5" stroke="#b54708" stroke-width="1.5"/>
+      <text x="342" y="167" text-anchor="middle" fill="#b54708">F'+2</text>
+      <rect x="375" y="148" width="44" height="28" rx="6" fill="#fff4e5" stroke="#b54708" stroke-width="1.5"/>
+      <text x="397" y="167" text-anchor="middle" fill="#b54708">F'+3</text>
+
+      <!-- Recovery chain -->
+      <rect x="100" y="208" width="44" height="28" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="122" y="227" text-anchor="middle" fill="#1a2333">N-20</text>
+      <rect x="155" y="208" width="44" height="28" rx="6" fill="#f0f6ff" stroke="#1f6feb" stroke-width="1.5"/>
+      <text x="177" y="227" text-anchor="middle" fill="#1a2333">N-10</text>
+      <!-- Truncation point -->
+      <rect x="210" y="208" width="44" height="28" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="232" y="227" text-anchor="middle" fill="#1a7f37">F (kept)</text>
+      <!-- Repair blocks -->
+      <rect x="265" y="208" width="44" height="28" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="287" y="227" text-anchor="middle" fill="#1a7f37">F'+1</text>
+      <rect x="320" y="208" width="44" height="28" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="342" y="227" text-anchor="middle" fill="#1a7f37">F'+2</text>
+      <rect x="375" y="208" width="44" height="28" rx="6" fill="#effaf1" stroke="#1a7f37" stroke-width="1.5"/>
+      <text x="397" y="227" text-anchor="middle" fill="#1a7f37">F'+3</text>
+
+      <!-- Annotations -->
+      <text x="232" y="140" text-anchor="middle" fill="#b54708" font-size="11" font-weight="600">truncate_to_height</text>
+      <text x="232" y="153" text-anchor="middle" fill="#b54708" font-size="10">(rewind = at − 10)</text>
+
+      <!-- Arrows: canonical chain -->
+      <line x1="144" y1="82" x2="153" y2="82" stroke="#1a2333" stroke-width="1.5" marker-end="url(#arrfork)"/>
+      <line x1="199" y1="82" x2="208" y2="82" stroke="#1a2333" stroke-width="1.5" marker-end="url(#arrfork)"/>
+      <line x1="254" y1="82" x2="263" y2="82" stroke="#6e7781" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arrfork)"/>
+      <line x1="309" y1="82" x2="318" y2="82" stroke="#6e7781" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arrfork)"/>
+
+      <!-- Fork chain arrows -->
+      <line x1="254" y1="162" x2="263" y2="162" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrforkr)"/>
+      <line x1="309" y1="162" x2="318" y2="162" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrforkr)"/>
+      <line x1="364" y1="162" x2="373" y2="162" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrforkr)"/>
+
+      <!-- Fork line from F -->
+      <line x1="232" y1="96" x2="232" y2="146" stroke="#b54708" stroke-width="1.5" stroke-dasharray="3,2"/>
+
+      <!-- Recovery arrows -->
+      <line x1="144" y1="222" x2="153" y2="222" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrforkg)"/>
+      <line x1="199" y1="222" x2="208" y2="222" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrforkg)"/>
+      <line x1="254" y1="222" x2="263" y2="222" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrforkg)"/>
+      <line x1="309" y1="222" x2="318" y2="222" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrforkg)"/>
+      <line x1="364" y1="222" x2="373" y2="222" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arrforkg)"/>
+
+      <!-- Checkpoint window bracket -->
+      <line x1="100" y1="58" x2="254" y2="58" stroke="#1f6feb" stroke-width="1" stroke-dasharray="2,2"/>
+      <text x="177" y="52" text-anchor="middle" fill="#1f6feb" font-size="10">checkpoint window (newest ~100)</text>
+    </svg>
+    <figcaption>Figure 10.2 — Chain fork and rollback. The wallet has scanned the stale blocks (F+1, F+2). Truncation to height F rolls back the shardtree to the nearest stored checkpoint (N-10 in this example), then the repair scan inserts the post-fork blocks (F'+1 … F'+3) against the fresh server treestate.</figcaption>
+  </figure>
+
+  <h2>Jittered backoff for load-balanced cluster tip-desync</h2>
+
+  <p>The field story: <code>rustSlipstreamSyncFailed(3375119)</code> — a sync failure whose associated value decoded as the chain tip at the time of failure, not an error code. The leading hypothesis was that a load-balanced cluster (zec.rocks / eu.zec.rocks each terminates a single hostname on several backends) served a transiently stale tip from one backend, causing the wallet to see a reorg that wasn't real. Without backoff, the consecutive-reorg counter would burn through the five-recovery budget against the same momentarily-stale view in rapid succession, failing the restore for a transient condition.</p>
+
+  <p>The fix (B3, hardening1, <code>scheduler.rs:47–49</code>) adds deterministic backoff before re-suggesting after any reorg truncate:</p>
+
+  <pre><code>pub(crate) fn reorg_backoff_ms(consecutive: u64) -> u64 {
+    consecutive.saturating_mul(500).min(3_000)
+}</code></pre>
+
+  <p>The schedule: 500 ms, 1000 ms, 1500 ms, 2000 ms, 2500 ms for the five possible consecutive recoveries. Total worst-case added latency across the full budget: 7.5 seconds — negligible against a multi-minute restore. The cap at 3 s prevents runaway growth if the constant is ever changed.</p>
+
+  <p>Connection freshness on retry is structural, not added: the next loop iteration creates a new scan-side gRPC client (<code>grpc::connect</code> per range) and <code>run_fetch</code> spawns new per-worker connections (<code>fetch.rs worker()</code> connects per worker, per range). No channel survives into the retry, so the retry cannot be pinned to the same stale backend.</p>
+
+  <h2><code>MAX_CONSECUTIVE_REORGS</code> cap</h2>
+
+  <p>If the server presents a genuinely adversarial chain or the database is corrupted, a naive recovery loop would cycle forever. The cap (<code>scheduler.rs:28</code>):</p>
+
+  <pre><code>const MAX_CONSECUTIVE_REORGS: u64 = 5;</code></pre>
+
+  <p>After five back-to-back <code>ScanContinuity</code> errors without a successful range completion in between, <code>run_to_completion</code> returns the last continuity error to the caller, setting the engine to the error state. The counter resets to zero on any successful range completion, so a single real reorg followed by successful recovery does not penalise future reorgs (<code>scheduler.rs:284</code>).</p>
+
+  <p>The compile-time bounds check (<code>scheduler.rs:32–35</code>) ensures the constant stays in the range [1, 10] — below 1, the first reorg is never recovered; above 10, infinite ping-pong becomes possible against a misbehaving server:</p>
+
+  <pre><code>const _: () = {
+    assert!(MAX_CONSECUTIVE_REORGS >= 1);
+    assert!(MAX_CONSECUTIVE_REORGS <= 10);
+};</code></pre>
+
+  <h2>Darkside evidence</h2>
+
+  <div class="callout evidence">
+    <span class="label">Verified against darkside hardware</span>
+    <p>Two darkside tests verify the end-to-end reorg flow. Both require a local darkside lightwalletd instance (see CLAUDE.md) and are gated behind <code>#[ignore]</code>.</p>
+    <p><strong><code>reorg_recovery_produces_correct_tip</code></strong> (<code>darkside_reorg.rs:227</code>): Stages the <code>before-reorg</code> dataset, scans to height 663200, then stages <code>after-small-reorg</code> and applies at 663202. Scanning 663201–663202 against the new chain produces <code>ScanContinuity{at: 663201}</code>. Recovery: truncate to 663191 (663201 − 10), re-scan from birthday 663150 to 663202 against the post-fork chain. Assertion: <code>max(blocks.height) == 663202</code>. The wallet recovered the correct tip.</p>
+    <p><strong><code>truncate_rescan_oracle_is_clean</code></strong> (<code>darkside_oracle.rs</code>): Performs initial full sync on both an upstream (A) and sparse (B) wallet, truncates both at height 663185, re-stages, and re-scans both from birthday. <code>semantic_diff</code> across all 26 tables produces VERDICT IDENTICAL. Confirmed: sparse-mode truncate+rescan is byte-identical to upstream.</p>
+  </div>
+
+  <h2>Cross-references</h2>
+  <ul>
+    <li>Chapter 7 — Sparse Persistence: checkpoint downgrade algorithm; post-prune checkpoint state matching upstream.</li>
+    <li>Chapter 12 — Resilience: why <code>ScanContinuity</code> is not a transient error and does not trigger the pass-level retry loop; backoff cross-reference.</li>
+    <li>Chapter 13 — Correctness Oracle: <code>truncate_rescan_oracle_is_clean</code> as the end-to-end correctness gate for the recovery path.</li>
+  </ul>
+
+  <h2>Known limitations</h2>
+  <div class="callout warning">
+    <span class="label">Honest gaps</span>
+    <ul>
+      <li>The <code>MAX_CONSECUTIVE_REORGS=5</code> cap is conservative and may surface as an error to the user in adversarial server scenarios. The app layer should present this as a recoverable error (restart the sync) rather than a permanent failure.</li>
+      <li>Tip-desync failure scenario (field failure 1) remains unconfirmed as the root cause of <code>rustSlipstreamSyncFailed(3375119)</code> — the Mac repro attempt produced 10/10 clean runs. The backoff mitigation addresses the plausible scenario regardless.</li>
+      <li>No tip-following between passes (single-shot runner, P8 gap): a reorg that occurs <em>after</em> a sync pass completes will only be detected at the start of the next pass when <code>suggest_scan_ranges</code> returns Verify-priority ranges. In-foreground tip-following is a known gap documented in chapter 19.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <a href="04-integration.html">&#8592; 4. Integration Guide</a>
+    <a href="11-sandblasting.html">11. The Sandblasting Era &#8594;</a>
+  </nav>
+  <footer class="colophon">Citations as of commit ad755e08 · Slipstream Book · local-only draft</footer>
+</main>
+</body>
+</html>

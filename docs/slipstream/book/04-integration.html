@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4. Integration Guide — The Slipstream Book</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <p class="kicker">ZcashLightClientKit · Slipstream · Chapter 4</p>
+  <h1>Integration Guide</h1>
+  <p class="meta">Part I — Overview &nbsp;·&nbsp; estimated reading time: 14 minutes</p>
+
+  <div class="callout summary">
+    <span class="label">1-minute summary</span>
+    <p>Slipstream has four integration layers: an engine-generic Rust core (<code>slipstream-core</code>), a C FFI surface (six <code>zcashlc_slipstream_*</code> functions), a Swift actor seam (<code>SlipstreamEngine</code> + <code>SlipstreamSynchronizer</code>), and app-level configuration (Zodl's server selection and retry logic). This chapter is a reference for integrators — including the Android SDK team, who would dock against the Rust core directly, and third-party wallet teams reusing the engine. Every configuration field is documented with its default, validation rule, and purpose.</p>
+  </div>
+
+  <h2>Layer overview</h2>
+
+  <figure class="diagram">
+    <svg viewBox="0 0 700 340" font-family="-apple-system, Segoe UI, Helvetica, sans-serif" font-size="12">
+      <defs>
+        <marker id="arr5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1f6feb"/>
+        </marker>
+        <marker id="arrg5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a7f37"/>
+        </marker>
+      </defs>
+
+      <!-- L4: App layer -->
+      <rect x="10" y="10" width="680" height="56" rx="8" fill="#f0f6ff" stroke="#b6d3f7" stroke-width="1.5"/>
+      <text x="20" y="28" fill="#1f6feb" font-weight="700" font-size="11">Layer 4 — App-specific (Zodl)</text>
+      <rect x="20" y="34" width="190" height="24" rx="6" fill="#fff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="115" y="50" text-anchor="middle" fill="#1a2333" font-size="11">AutoServerSelection (retryStart)</text>
+      <rect x="226" y="34" width="190" height="24" rx="6" fill="#fff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="321" y="50" text-anchor="middle" fill="#1a2333" font-size="11">WalletConfig.useSlipstreamSynchronizer</text>
+      <rect x="432" y="34" width="190" height="24" rx="6" fill="#fff" stroke="#1f6feb" stroke-width="1"/>
+      <text x="527" y="50" text-anchor="middle" fill="#1a2333" font-size="11">refreshIfEnabled() before start()</text>
+
+      <!-- L3: Swift seam -->
+      <rect x="10" y="82" width="680" height="56" rx="8" fill="#effaf1" stroke="#a8dcb2" stroke-width="1.5"/>
+      <text x="20" y="100" fill="#1a7f37" font-weight="700" font-size="11">Layer 3 — Swift seam (Sources/ZcashLightClientKit/Slipstream/)</text>
+      <rect x="20" y="106" width="200" height="24" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="1"/>
+      <text x="120" y="122" text-anchor="middle" fill="#1a2333" font-size="11">SlipstreamSynchronizer: Synchronizer</text>
+      <rect x="236" y="106" width="160" height="24" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="1"/>
+      <text x="316" y="122" text-anchor="middle" fill="#1a2333" font-size="11">SlipstreamEngine (actor)</text>
+      <rect x="412" y="106" width="260" height="24" rx="6" fill="#fff" stroke="#1a7f37" stroke-width="1"/>
+      <text x="542" y="122" text-anchor="middle" fill="#1a2333" font-size="11">SlipstreamFFI.swift · StallWatchdog · PureHelpers</text>
+
+      <!-- L2: C FFI boundary -->
+      <rect x="10" y="154" width="680" height="56" rx="8" fill="#fff4e5" stroke="#f0c389" stroke-width="1.5"/>
+      <text x="20" y="172" fill="#b54708" font-weight="700" font-size="11">Layer 2 — C FFI surface (rust/src/lib.rs)</text>
+      <text x="20" y="188" fill="#6e7781" font-size="11">zcashlc_slipstream_open · start · stop · snapshot · drain_events · free</text>
+      <text x="20" y="201" fill="#6e7781" font-size="10">cbindgen-generated header in target/Headers/zcashlc.h · opaque SlipstreamHandle pointer</text>
+
+      <!-- L1: slipstream-core -->
+      <rect x="10" y="226" width="680" height="56" rx="8" fill="#f6f8fa" stroke="#d8dee4" stroke-width="1.5"/>
+      <text x="20" y="244" fill="#1a2333" font-weight="700" font-size="11">Layer 1 — Engine (slipstream-core — platform-neutral Rust)</text>
+      <text x="20" y="260" fill="#6e7781" font-size="11">engine · scheduler · fetch · scan · persist · enhance · transparent · oracle · events · config · error</text>
+      <text x="20" y="273" fill="#6e7781" font-size="10">No platform SDK deps; exposes sync_once(config, ufvk, progress) → SyncOutcome</text>
+
+      <!-- L0: upstream librustzcash -->
+      <rect x="10" y="298" width="680" height="34" rx="8" fill="#effaf1" stroke="#a8dcb2" stroke-width="1.5"/>
+      <text x="352" y="315" text-anchor="middle" fill="#1a7f37" font-weight="700" font-size="11">Layer 0 — upstream librustzcash (zcash_client_sqlite + zcash_client_backend)</text>
+      <text x="352" y="328" text-anchor="middle" fill="#6e7781" font-size="10">same crate versions as the old SDK — one static library, no symbol collision (D1)</text>
+
+      <!-- vertical arrows -->
+      <line x1="350" y1="66" x2="350" y2="80" stroke="#1f6feb" stroke-width="1.5" marker-end="url(#arr5)"/>
+      <line x1="350" y1="138" x2="350" y2="152" stroke="#b54708" stroke-width="1.5" marker-end="url(#arr5)"/>
+      <line x1="350" y1="210" x2="350" y2="224" stroke="#6e7781" stroke-width="1.5" marker-end="url(#arr5)"/>
+      <line x1="350" y1="282" x2="350" y2="296" stroke="#1a7f37" stroke-width="1.5" marker-end="url(#arr5)"/>
+    </svg>
+    <figcaption>Figure 4.1 — Integration layer cake. An app integrates at Layer 3 (Swift) or Layer 2 (C FFI) or Layer 1 (Rust, for platforms like Android). Layer 0 is shared upstream code neither integrators nor Slipstream touch.</figcaption>
+  </figure>
+
+  <h2>Layer 1 — slipstream-core (engine-generic Rust)</h2>
+
+  <p><code>slipstream-core</code> is a platform-neutral Rust crate at <code>slipstream/core/</code>. It depends only on the same <code>zcash_client_sqlite</code> / <code>zcash_client_backend</code> versions already in the workspace. It has no iOS SDK, Android NDK, or Swift dependencies.</p>
+
+  <p>An Android SDK team or any non-iOS platform would integrate at this layer, using the crate's public async function:</p>
+
+  <pre><code>// slipstream/core/src/engine.rs — the public entry point
+pub async fn sync_once(
+    config: &amp;EngineConfig,
+    ufvk: Option&lt;(&amp;str, u64)&gt;,  // (UFVK string, birthday height), or None for keyless
+    progress: Option&lt;Arc&lt;Progress&gt;&gt;,
+) -&gt; Result&lt;SyncOutcome, SlipstreamError&gt;</code></pre>
+
+  <p>The caller needs to provide a tokio runtime, open an <code>EngineConfig</code>, and drive the retry/lifecycle loop. The iOS Swift layer does this through the six C FFI functions — Android would do equivalent work in Kotlin/JNI or via a uniffi binding over the same core (Decision P7, decoupled from this prototype — iOS is the reference implementation, per the user's 2026-06-11 decision).</p>
+
+  <h2>Layer 2 — C FFI surface</h2>
+
+  <p>The six <code>zcashlc_slipstream_*</code> functions in <code>rust/src/lib.rs</code> are the integration contract for the C/Swift boundary. They follow the exact same handle pattern as the existing <code>TorRuntime</code> FFI in the same file.</p>
+
+  <h3>Lifecycle</h3>
+
+  <pre><code>// rust/src/lib.rs — open allocates; free deallocates.
+// open → start (→ stop → start)* → free
+//          ↑                 ↑
+//      snapshot/drain may be called at any point between open and free</code></pre>
+
+  <table>
+    <thead>
+      <tr><th>Function</th><th>Parameters</th><th>Returns</th><th>Contract</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>zcashlc_slipstream_open</code></td>
+        <td><code>db_data</code> (path bytes), <code>server_host</code>, <code>server_port</code>, <code>use_tls</code>, <code>network_id</code> (1=main)</td>
+        <td><code>*mut SlipstreamHandle</code> or null on error</td>
+        <td>Allocates tokio runtime (4 workers), progress atomics, event ring. Installs panic tracing hook (B1). Must call <code>free</code> on the returned pointer eventually.</td>
+      </tr>
+      <tr>
+        <td><code>zcashlc_slipstream_start</code></td>
+        <td><code>handle</code>, <code>ufvk</code> (nullable), <code>ufvk_len</code>, <code>birthday_height</code></td>
+        <td><code>bool</code> success</td>
+        <td>Cancels any in-flight task; spawns new supervised sync task. SyncStarted (tag=1) emitted exactly once, before any pass-level retry. UFVK=null/len=0 = keyless update (account must already be imported). Can be called again after stop to restart.</td>
+      </tr>
+      <tr>
+        <td><code>zcashlc_slipstream_stop</code></td>
+        <td><code>handle</code></td>
+        <td><code>bool</code> (always true)</td>
+        <td>Aborts in-flight task; sets state to Idle. Non-blocking — returns immediately. Poll <code>snapshot</code> to confirm state transition.</td>
+      </tr>
+      <tr>
+        <td><code>zcashlc_slipstream_snapshot</code></td>
+        <td><code>handle</code> (const)</td>
+        <td><code>FfiSlipstreamSnapshot</code> (by value)</td>
+        <td>Non-blocking read of all progress atomics + state. Zero-filled on null handle. Never blocks the caller.</td>
+      </tr>
+      <tr>
+        <td><code>zcashlc_slipstream_drain_events</code></td>
+        <td><code>handle</code>, <code>buf</code> (caller-allocated array), <code>buf_len</code></td>
+        <td><code>usize</code> count drained</td>
+        <td>Atomically drains up to <code>buf_len</code> events into caller's buffer. Drained events removed from ring. Ring capacity is 64; overflow drops oldest.</td>
+      </tr>
+      <tr>
+        <td><code>zcashlc_slipstream_free</code></td>
+        <td><code>handle</code> (nullable)</td>
+        <td>void</td>
+        <td>Aborts in-flight task, drops tokio runtime. Null-safe. Pointer must not be used after this call.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Poll contract (D8)</h3>
+
+  <p>The Swift layer polls every 2 seconds. On each tick it calls <code>snapshot</code> (non-blocking, returns by value) and <code>drain_events</code> (atomically drains the ring). There are no callbacks, no cross-FFI notifications, no thread-pinning requirements on the caller side. The runtime's threads are entirely internal to the handle.</p>
+
+  <p><strong>State values in snapshot.state:</strong> 0 = Idle, 1 = Syncing, 2 = Error, 3 = Done. The transition to Done emits a SyncDone (tag=3) event before any subsequent snapshot would read Done.</p>
+
+  <p><strong>Pass-level retries:</strong> if a transient transport error occurs during a sync pass, the Rust runner retries up to 2 more times (3 total), sleeping 5s after the first failure and 15s after subsequent ones (PASS_RETRY_MAX=2, in <code>rust/src/lib.rs</code>). State stays Syncing throughout. SyncStarted is emitted once at the beginning, not at each retry. Progress counters (ratio fields) reset at each retry's <code>begin_pass()</code> — the denominator is recomputed from remaining ranges, which is correct. Delta counters (enhanced_txs, ranges_completed) are untouched.</p>
+
+  <h2>Layer 3 — Swift seam</h2>
+
+  <h3>SlipstreamSynchronizer</h3>
+
+  <p><code>SlipstreamSynchronizer</code> implements the same <code>Synchronizer</code> protocol as <code>SDKSynchronizer</code>. The app (Zodl) selects between them via a feature flag; from the app's perspective they are interchangeable.</p>
+
+  <p>The delegation split is:</p>
+
+  <table>
+    <thead>
+      <tr><th>Member category</th><th>Delegated to</th><th>Count</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Sync members (start/stop/state/events/rescan/rewind/wipe/switchTo/latestHeight)</td><td><code>SlipstreamEngine</code> + <code>lightWalletService</code></td><td>~9</td></tr>
+      <tr><td>Transaction repository (find/findSent/findReceived/findMemos/paginatedTransactions)</td><td><code>transactionRepository</code></td><td>~8</td></tr>
+      <tr><td>Rust backend (summary/addresses/accounts/PCZT/spend proposal)</td><td><code>rustBackend</code></td><td>~15</td></tr>
+      <tr><td>Transaction encoding + broadcast</td><td><code>transactionEncoder</code> + <code>broadcaster</code></td><td>~5</td></tr>
+      <tr><td>Light wallet service (UTXOs/tree state)</td><td><code>lightWalletService</code></td><td>~6</td></tr>
+      <tr><td>Checkpoints/birthday</td><td><code>checkpointSource</code></td><td>~4</td></tr>
+      <tr><td>Tor</td><td><code>torClient</code></td><td>~5</td></tr>
+    </tbody>
+  </table>
+
+  <p>All of these delegates come from the existing <code>DIContainer</code> (the same dependency-injection root as <code>SDKSynchronizer</code>). No new singletons or services are introduced. The two synchronizers can even share the same <code>data.db</code> because both read from and write to it through the same upstream <code>zcash_client_sqlite</code> layer.</p>
+
+  <h3>SlipstreamEngine</h3>
+
+  <p><code>SlipstreamEngine</code> is a Swift <code>actor</code> that serialises all calls to the C FFI functions. It mirrors the <code>TorClient</code> pattern (see <code>Tor/TorClient.swift</code>). The actor's lifecycle:</p>
+
+  <ul>
+    <li><code>open(network:)</code> — calls <code>zcashlc_slipstream_open</code>. Idempotent (no-op if already open).</li>
+    <li><code>start(ufvk:birthday:)</code> — calls <code>zcashlc_slipstream_start</code>.</li>
+    <li><code>stop()</code> — calls <code>zcashlc_slipstream_stop</code>.</li>
+    <li><code>snapshot()</code> — calls <code>zcashlc_slipstream_snapshot</code>, wraps result in <code>SlipstreamSnapshot</code>.</li>
+    <li><code>drainEvents()</code> — calls <code>zcashlc_slipstream_drain_events</code> into a fixed-size buffer.</li>
+    <li><code>close()</code> / <code>deinit</code> — calls <code>zcashlc_slipstream_free</code>.</li>
+    <li><code>reopen(server:network:)</code> — for <code>switchTo</code>: closes old handle, opens new one with updated endpoint.</li>
+  </ul>
+
+  <h3>Polling and progress mapping</h3>
+
+  <p>A 2-second polling <code>Task</code> in <code>SlipstreamSynchronizer</code> calls <code>engine.snapshot()</code> and <code>engine.drainEvents()</code> every tick. The snapshot is mapped to a <code>SynchronizerState</code> using the following rules (from <code>SlipstreamSynchronizer+PureHelpers.swift</code>):</p>
+
+  <ul>
+    <li>state=0 (Idle): <code>.unprepared</code> or <code>.prepared</code> depending on whether <code>open()</code> has been called.</li>
+    <li>state=1 (Syncing): <code>.syncing(progress, spendable)</code> where <code>progress = scannedBlocks / passTotalBlocks</code> (clamped 0–1; denominator 0 → 1.0 per upstream behaviour). <code>spendable = spendableHint == 1</code>.</li>
+    <li>state=2 (Error): <code>.stopped</code>.</li>
+    <li>state=3 (Done): <code>.synced</code> (emitted immediately; wallet summary fetched after, does not delay the .synced emission).</li>
+  </ul>
+
+  <h3>Stall watchdog (B4)</h3>
+
+  <p>A 120-second watchdog in <code>SlipstreamSynchronizer+StallWatchdog.swift</code> fires a <code>Logger.error</code> if the engine stays in state=1 (Syncing) with zero counter movement. This is the Swift-side companion to the Rust-side B1 panic supervisor. The watchdog only logs — it never restarts. The threshold (120s) is chosen to be comfortably above the worst observed legitimate counter gap (36s on iPad A10).</p>
+
+  <h2>Layer 4 — App-specific (Zodl)</h2>
+
+  <p>Zodl adds two integration touches specific to its architecture that other integrators would not necessarily replicate:</p>
+
+  <ol>
+    <li><strong>Server race-before-start:</strong> <code>await autoServerSelection.refreshIfEnabled()</code> is called <em>before</em> <code>sdkSynchronizer.start()</code> in both <code>initializeSDK</code> and <code>retryStart</code> (T6.8-L1, <code>RootInitialization.swift</code> in the Zodl repo). This ensures the best server is selected before the pass begins, eliminating the ~50s iPad restart cost of an AutoServerSelection switch mid-sync.</li>
+    <li><strong>retryStart:</strong> Zodl's foreground-resume path calls <code>retryStart</code>, which calls the SDK's <code>start()</code> again. The engine-level pass-level retry (3 total attempts for transient errors) is distinct from this app-level restart.</li>
+  </ol>
+
+  <div class="callout note">
+    <span class="label">For Android or other platform integrators</span>
+    <p>An Android integration would dock at Layer 1 (<code>slipstream-core</code> crate). The Rust crate is platform-neutral. The approach mirrors how <code>libzcashlc</code> slots into <code>zcash-android-sdk</code>'s backend-lib: compile <code>slipstream-core</code> alongside the existing Rust backend, expose it via JNI or uniffi, and drive the <code>sync_once</code> loop from a Kotlin coroutine. The iOS Swift seam in this repo is the reference implementation for that work. Uniffi bindings are the preferred shape (lower JNI boilerplate); decision is deferred to P7.</p>
+  </div>
+
+  <h2>EngineConfig reference</h2>
+
+  <p>All engine behaviour is controlled through <code>EngineConfig</code> in <code>slipstream/core/src/config.rs</code>. Fields are public; defaults are set by <code>EngineConfig::new</code>.</p>
+
+  <table>
+    <thead>
+      <tr><th>Field</th><th>Type</th><th>Default</th><th>Validation</th><th>Purpose</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>network</code></td>
+        <td><code>Network</code></td>
+        <td>Caller-supplied</td>
+        <td>—</td>
+        <td>MainNetwork or TestNetwork. Passed to all upstream API calls.</td>
+      </tr>
+      <tr>
+        <td><code>wallet_db_path</code></td>
+        <td><code>PathBuf</code></td>
+        <td>Caller-supplied</td>
+        <td>—</td>
+        <td>Path to the existing <code>data.db</code> managed by <code>zcash_client_sqlite</code>.</td>
+      </tr>
+      <tr>
+        <td><code>endpoint</code></td>
+        <td><code>Endpoint</code></td>
+        <td>Caller-supplied</td>
+        <td>host non-empty</td>
+        <td>lightwalletd server. <code>Endpoint { host, port, tls }</code> — TLS flag selects https vs http scheme.</td>
+      </tr>
+      <tr>
+        <td><code>fetch_streams</code></td>
+        <td><code>usize</code></td>
+        <td><strong>4</strong></td>
+        <td>≥ 1</td>
+        <td>Number of concurrent <code>GetBlockRange</code> sub-streams. Higher values improve throughput on fast networks but increase server-side load. zec.rocks tolerates K=4 well.</td>
+      </tr>
+      <tr>
+        <td><code>chunk_blocks</code></td>
+        <td><code>u32</code></td>
+        <td><strong>10,000</strong></td>
+        <td>≥ 100</td>
+        <td>Target blocks per in-memory chunk / per <code>scan_cached_blocks</code> call. One SQLite transaction per chunk. Larger values amortise transaction overhead; smaller values reduce peak memory and improve progress granularity.</td>
+      </tr>
+      <tr>
+        <td><code>memory_budget_bytes</code></td>
+        <td><code>usize</code></td>
+        <td><strong>256 MiB</strong></td>
+        <td>≥ 16 MiB</td>
+        <td>Maximum in-flight downloaded block data in the <code>ChunkQueue</code>. Controls the maximum number of chunks that can be prefetched ahead of the scanner. Wire data; decoded blocks occupy more memory.</td>
+      </tr>
+      <tr>
+        <td><code>chunk_split_bytes</code></td>
+        <td><code>usize</code></td>
+        <td><strong>8 MiB</strong></td>
+        <td>≥ 1 MiB</td>
+        <td>Byte budget per emitted fetch sub-chunk (T6.8-S). Normal-era 10k-block chunks (~1–6 MB wire) stay single sub-chunks. Sandblasting era chunks (~100s of MB) split into many small sub-chunks automatically — density-adaptive, no hardcoded heights. The 120s progress deadline bounds ONE sub-chunk, not the whole chunk.</td>
+      </tr>
+      <tr>
+        <td><code>scan_batch_target_ms</code></td>
+        <td><code>Option&lt;u64&gt;</code></td>
+        <td><strong>None</strong></td>
+        <td>None or ≥ 500 ms</td>
+        <td>When <code>Some(ms)</code>, splits each fetch-chunk into time-targeted scan sub-batches (~ms each) via the adaptive controller (T5.2). Costs one full <code>put_blocks</code> commit per sub-batch (~1.5–2s on A10). <code>None</code> = one <code>scan_cached_blocks</code> call per chunk (default; fastest on all hardware).</td>
+      </tr>
+      <tr>
+        <td><code>enhance_every_chunks</code></td>
+        <td><code>u32</code></td>
+        <td><strong>3</strong></td>
+        <td>≥ 1</td>
+        <td>Run an interleaved (non-fatal) enhancement pass every N completed chunks within a range scan, so found transactions surface progressively (T6.1). The per-range and final post-loop enhancement runs are unaffected backstops.</td>
+      </tr>
+      <tr>
+        <td><code>sparse_persistence</code></td>
+        <td><code>bool</code></td>
+        <td><strong>true</strong></td>
+        <td>—</td>
+        <td>Use the sparse in-memory commitment-tree path (P6). Default ON since T6.6 — oracle-clean (hermetic + darkside + mainnet IDENTICAL; reorg + truncate compatibility verified). Kill switch: set <code>false</code> to revert to the upstream path if a regression is found. The 5× Mac scan speedup comes from this flag.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="callout note">
+    <span class="label">CLI equivalents (for local benchmarking)</span>
+    <p>All EngineConfig fields are exposed as <code>slipstream-cli sync</code> flags: <code>--streams</code> (fetch_streams), <code>--chunk-blocks</code>, <code>--memory-budget</code> (bytes), <code>--chunk-split-bytes</code>, <code>--scan-batch-ms</code> (scan_batch_target_ms, None by default), <code>--enhance-every</code> (enhance_every_chunks), <code>--sparse</code>/<code>--sparse false</code> (sparse_persistence).</p>
+  </div>
+
+  <h2>ENGINE_BUILD freshness-tag discipline</h2>
+
+  <p>Every engine change that warrants a framework rebuild bumps the <code>ENGINE_BUILD</code> constant in <code>slipstream/core/src/engine.rs</code>:</p>
+
+  <pre><code>// slipstream/core/src/engine.rs:25
+pub const ENGINE_BUILD: &amp;str = "2026-06-13.walltime";</code></pre>
+
+  <p>This string is logged at every sync pass start, in the stage-split line, and at runner failure. It is the definitive freshness check for device logs: if the tag in a device log does not match the HEAD value, the device is running a stale XCFramework.</p>
+
+  <p>To probe a built slice: <code>strings &lt;slice&gt;/libzcashlc.framework/libzcashlc | grep &lt;tag&gt;</code>. If the expected tag is absent, the slice needs a rebuild via <code>./Scripts/rebuild-local-ffi.sh</code>.</p>
+
+  <p>When bumping: update the string in <code>engine.rs</code>, then run <code>./Scripts/init-local-ffi.sh</code> (full 3-slice rebuild) or the relevant <code>rebuild-local-ffi.sh &lt;target&gt;</code> for incremental development.</p>
+
+  <h2>What an Android integration would look like</h2>
+
+  <p>The <code>slipstream-core</code> crate is intentionally free of iOS/Swift platform dependencies. An Android integration follows the same layering as the current <code>libzcashlc</code> slot in <code>zcash-android-sdk</code>:</p>
+
+  <ol>
+    <li>Add <code>slipstream-core</code> as a crate dependency in the Android backend's Rust workspace.</li>
+    <li>Expose a <code>sync_once</code> wrapper via JNI or a <code>uniffi</code> binding definition (uniffi preferred — lower boilerplate; JNI acceptable as a fallback).</li>
+    <li>In Kotlin, drive the lifecycle loop: open a config, call the sync function inside a coroutine, poll a shared-state object for progress, surface events.</li>
+    <li>Handle restart/lifecycle from the Kotlin side — the Rust function is synchronous from the Android coroutine's perspective (it is an async future, but the JNI or uniffi bridge blocks the calling coroutine until the pass completes or fails).</li>
+  </ol>
+
+  <p>The iOS Swift seam in this repo is the reference implementation for that work. Every design choice — poll-based progress, separate event ring, pass-level retry, panic supervisor — was made with platform-generic constraints in mind.</p>
+
+  <h2>Known limitations</h2>
+
+  <div class="callout warning">
+    <span class="label">Integration gaps</span>
+    <ul>
+      <li><strong>No mempool detection:</strong> the engine makes no calls to <code>get_mempool_stream</code> or equivalent. Unconfirmed transactions are not surfaced via the Slipstream path.</li>
+      <li><strong>Single-shot runner:</strong> each <code>start()</code> runs one pass. There is no continuous background sync. Integrators must call <code>start()</code> again on foreground resume or when new blocks are detected.</li>
+      <li><strong>Tor NOT wired:</strong> all gRPC connections in <code>grpc.rs</code> are direct TLS. The old SDK has Tor for some lightwalletd flows; Slipstream has none. Integrators relying on Tor for privacy must be aware of this gap. See chapter 15.</li>
+      <li><strong>Transparent enhancement — open-ended requests skipped:</strong> <code>TransactionsInvolvingAddress</code> requests with no <code>blockRangeEnd</code> are skipped with a warning (documented gap in <code>enhance.rs</code>). This is protocol-inherent to the transparent address scanning design; it is not a Slipstream-specific gap.</li>
+      <li><strong>data.db at-rest protection is app-level:</strong> Slipstream does not add any encryption layer. Integrators are responsible for OS-level file protection (keychain, secure enclave, <code>NSFileProtectionComplete</code>, etc.).</li>
+      <li><strong>A10-class spam-era memory untuned:</strong> the sandblasting era (mainnet ~1.70M–2.00M) requires ~1.3–1.84 GB RSS on Mac; on A10-class devices (2 GB RAM, jetsam) this range is not yet safe. The engine is traversable from a Mac/iPhone-16-Pro perspective; device-class memory budgeting is an open task (Blockers, STATE.md).</li>
+      <li><strong>L2 row batching seam-blocked:</strong> bulk SQL insert for the <code>blocks</code> and related tables would be the next significant scan speedup, but is blocked at the <code>zcash_client_sqlite</code> public API boundary — requires upstream collaboration or a vendored fork (not taken).</li>
+      <li><strong>L4a decrypt kernel parked:</strong> a custom ECDH trial-decryption kernel is the lever to reach Zkool-class performance on modern hardware but requires a new oracle harness. Deferred.</li>
+    </ul>
+  </div>
+
+  <nav class="book">
+    <span>← <a href="03-data-model.html">3. The Data-Model Contract</a></span>
+    <span><a href="10-reorgs.html">10. Reorg Handling</a> →</span>
+  </nav>
+
+  <footer class="colophon">
+    Slipstream Book · Chapter 4 · Citations as of commit ad755e08 ·
+    EngineConfig fields: <code>slipstream/core/src/config.rs:30–95</code> ·
+    ENGINE_BUILD: <code>slipstream/core/src/engine.rs:25</code> ·
+    FFI functions: <code>rust/src/lib.rs:4393–4705</code> ·
+    Swift seam: <code>Sources/ZcashLightClientKit/Slipstream/SlipstreamSynchronizer.swift</code> ·
+    local-only draft, not for distribution.
+  </footer>
+</main>
+</body>
+</html>
