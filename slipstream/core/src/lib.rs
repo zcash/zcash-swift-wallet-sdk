@@ -15,7 +15,6 @@ pub mod grpc;
 pub mod oracle;
 pub mod persist;
 #[cfg(feature = "gpu")]
-#[allow(dead_code)] // build_subtrees_gpu et al. are wired into persist.rs in B0.3
 mod gpu_subtree;
 pub mod scan;
 pub mod scheduler;

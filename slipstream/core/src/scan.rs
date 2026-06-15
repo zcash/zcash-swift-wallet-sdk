@@ -249,6 +249,7 @@ async fn scan_chunks_inner(
     wb: &mut Option<WriteBehind>,
 ) -> Result<ScanStats, SlipstreamError> {
     let mut sparse_state = crate::persist::SparseTreeState::default();
+    sparse_state.gpu_subtree = config.gpu_subtree; // B0: route Orchard build to GPU when set
     // Read config fields once.
     let batch_target_ms = config.scan_batch_target_ms;
     let network = config.network;

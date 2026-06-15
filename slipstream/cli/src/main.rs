@@ -65,6 +65,10 @@ enum Cmd {
         /// since the 2026-06-12 flip; `--write-behind false` is the kill switch.
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         write_behind: bool,
+        /// B0 (Phase B): compute Orchard subtree combines on the GPU (requires sparse and a
+        /// build with `--features gpu`). Default off; CPU path identical when off.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        gpu_subtree: bool,
         /// T8.1: after reaching tip, keep the wallet tracking the chain.
         /// Probes the tip every 10–30 s (jittered); runs a full pass whenever a
         /// new block arrives. Cancellable with Ctrl-C. Useful for Mac CLI validation
@@ -94,6 +98,10 @@ enum Cmd {
         /// T6.9: run B with write-behind pipelining as well (requires --sparse-b).
         #[arg(long, default_value_t = false)]
         write_behind_b: bool,
+        /// B0 (Phase B): run B with the GPU Orchard subtree build (requires --sparse-b and a
+        /// build with `--features gpu`). The acceptance gate: oracle VERDICT IDENTICAL.
+        #[arg(long, default_value_t = false)]
+        gpu_subtree_b: bool,
         #[arg(long, default_value_t = 4, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         streams: usize,
         #[arg(long, default_value_t = 10_000)]
@@ -219,6 +227,7 @@ fn cmd_sync(
     sparse: bool,
     chunk_split_bytes: usize,
     write_behind: bool,
+    gpu_subtree: bool,
     follow: bool,
 ) {
     let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
@@ -242,6 +251,7 @@ fn cmd_sync(
     // `--sparse false` (the sparse kill switch) implies write-behind off: the
     // deferred commit runs the sparse put_blocks path, so it cannot outlive it.
     cfg.write_behind = write_behind && sparse;
+    cfg.gpu_subtree = gpu_subtree && sparse;
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
@@ -409,6 +419,7 @@ fn cmd_oracle(
     birthday: u64,
     sparse_b: bool,
     write_behind_b: bool,
+    gpu_subtree_b: bool,
     streams: usize,
     chunk: u32,
 ) {
@@ -423,7 +434,7 @@ fn cmd_oracle(
             std::process::exit(2);
         }
     }
-    let mk_cfg = |dir: &std::path::Path, sparse: bool, write_behind: bool| {
+    let mk_cfg = |dir: &std::path::Path, sparse: bool, write_behind: bool, gpu_subtree: bool| {
         let mut cfg = slipstream_core::EngineConfig::new(
             slipstream_core::Network::MainNetwork,
             dir.join("data.db"),
@@ -433,15 +444,16 @@ fn cmd_oracle(
         cfg.chunk_blocks = chunk;
         cfg.sparse_persistence = sparse;
         cfg.write_behind = write_behind;
+        cfg.gpu_subtree = gpu_subtree;
         cfg
     };
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let verdict = rt.block_on(async {
         println!("oracle: run A (upstream persistence) …");
-        let a = slipstream_core::engine::sync_once(&mk_cfg(&wallet_a, false, false), Some((ufvk.as_str(), birthday)), None).await?;
+        let a = slipstream_core::engine::sync_once(&mk_cfg(&wallet_a, false, false, false), Some((ufvk.as_str(), birthday)), None).await?;
         println!("oracle: run A done — tip {} in {:.1?}", a.chain_tip, a.elapsed);
-        println!("oracle: run B (sparse_b={sparse_b} write_behind_b={write_behind_b}) …");
-        let b = slipstream_core::engine::sync_once(&mk_cfg(&wallet_b, sparse_b, write_behind_b), Some((ufvk.as_str(), birthday)), None).await?;
+        println!("oracle: run B (sparse_b={sparse_b} write_behind_b={write_behind_b} gpu_subtree_b={gpu_subtree_b}) …");
+        let b = slipstream_core::engine::sync_once(&mk_cfg(&wallet_b, sparse_b, write_behind_b, gpu_subtree_b), Some((ufvk.as_str(), birthday)), None).await?;
         println!("oracle: run B done — tip {} in {:.1?}", b.chain_tip, b.elapsed);
         if a.chain_tip != b.chain_tip {
             eprintln!("oracle: TIP SKEW (A={} B={}) — rerun when the chain is quiet", a.chain_tip, b.chain_tip);
@@ -479,11 +491,11 @@ fn main() {
         Cmd::Fetch { server, range, streams, chunk, baseline } => {
             cmd_fetch(server, range, streams, chunk, baseline);
         }
-        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, follow } => {
-            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, follow);
+        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, gpu_subtree, follow } => {
+            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, gpu_subtree, follow);
         }
-        Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, streams, chunk } => {
-            cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, streams, chunk);
+        Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, gpu_subtree_b, streams, chunk } => {
+            cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, gpu_subtree_b, streams, chunk);
         }
     }
 }
@@ -761,6 +773,30 @@ mod tests {
             cli.cmd,
             Cmd::Oracle { sparse_b: true, write_behind_b: true, .. }
         ));
+    }
+
+    #[test]
+    fn gpu_subtree_flags_parse() {
+        // oracle --gpu-subtree-b (B0.4 acceptance-gate flag)
+        let cli = Cli::try_parse_from([
+            "slipstream", "oracle",
+            "--server", "http://127.0.0.1:9067",
+            "--wallet-a", "/tmp/oa", "--wallet-b", "/tmp/ob",
+            "--ufvk", "uview1someufvk", "--birthday", "1500000",
+            "--sparse-b", "--gpu-subtree-b",
+        ])
+        .expect("parses");
+        assert!(matches!(cli.cmd, Cmd::Oracle { gpu_subtree_b: true, .. }));
+
+        // sync --gpu-subtree
+        let cli = Cli::try_parse_from([
+            "slipstream", "sync",
+            "--server", "http://127.0.0.1:9067",
+            "--wallet-dir", "/tmp/w",
+            "--gpu-subtree",
+        ])
+        .expect("parses");
+        assert!(matches!(cli.cmd, Cmd::Sync { gpu_subtree: true, .. }));
     }
 
     // ── T8.1 follow flag ──────────────────────────────────────────────────────

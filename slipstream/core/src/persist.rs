@@ -302,6 +302,9 @@ type OrchardSparseTree = ShardTree<
 pub struct SparseTreeState {
     sapling: Option<SaplingSparseTree>,
     orchard: Option<OrchardSparseTree>,
+    /// B0: route the Orchard subtree build to the GPU (feature `gpu`). Default false;
+    /// set from `EngineConfig::gpu_subtree` at the scan-path construction site.
+    pub(crate) gpu_subtree: bool,
 }
 
 fn seed_sapling(db: &mut Db, _from_state: &ChainState) -> Result<SaplingSparseTree, SqliteClientError> {
@@ -520,7 +523,8 @@ pub fn sparse_put_blocks(
     if sparse.orchard.is_none() {
         sparse.orchard = Some(seed_orchard(inner, from_state)?);
     }
-    let SparseTreeState { sapling: Some(sap_tree), orchard: Some(orch_tree) } = sparse else {
+    let gpu_on = sparse.gpu_subtree;
+    let SparseTreeState { sapling: Some(sap_tree), orchard: Some(orch_tree), .. } = sparse else {
         return Err(SqliteClientError::CorruptedData(
             "sparse tree state missing after seed".into(),
         ));
@@ -859,7 +863,7 @@ pub fn sparse_put_blocks(
                     // ll/wallet.rs:466-481 — build subtrees (rayon par_chunks, same chunk size).
                     let t = std::time::Instant::now();
                     let orchard_subtrees =
-                        build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(orch_start, &mut orchard_commitments);
+                        build_orchard_subtrees(gpu_on, orch_start, &mut orchard_commitments);
                     timers.build_ms = t.elapsed().as_millis();
 
                     // ll/wallet.rs:503-537 update_tree — IN MEMORY (the substitution).
@@ -978,6 +982,31 @@ where
         })
         .map(|res| (res.subtree, res.checkpoints))
         .collect()
+}
+
+/// Orchard subtree build, routed to the GPU when `gpu` is true (feature `gpu` + the
+/// `gpu_subtree` flag); otherwise the CPU `build_subtrees`. Output is byte-identical either
+/// way (gpu_subtree.rs + the `gpu_subtree_build_matches_cpu` test + the engine oracle).
+#[cfg(feature = "gpu")]
+fn build_orchard_subtrees(
+    gpu: bool,
+    start: Position,
+    commitments: &mut [Option<(orchard::tree::MerkleHashOrchard, Retention<BlockHeight>)>],
+) -> Vec<(LocatedPrunableTree<orchard::tree::MerkleHashOrchard>, BTreeMap<BlockHeight, Position>)> {
+    if gpu {
+        crate::gpu_subtree::build_subtrees_gpu::<ORCHARD_SHARD_HEIGHT>(start, commitments)
+    } else {
+        build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(start, commitments)
+    }
+}
+
+#[cfg(not(feature = "gpu"))]
+fn build_orchard_subtrees(
+    _gpu: bool,
+    start: Position,
+    commitments: &mut [Option<(orchard::tree::MerkleHashOrchard, Retention<BlockHeight>)>],
+) -> Vec<(LocatedPrunableTree<orchard::tree::MerkleHashOrchard>, BTreeMap<BlockHeight, Position>)> {
+    build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(start, commitments)
 }
 
 /// Equivalent of ll/wallet.rs:1173-1183 `checkpoint_positions`, computed

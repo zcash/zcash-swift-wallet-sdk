@@ -78,6 +78,11 @@ pub struct EngineConfig {
     /// Mac A/B ~9% with flag-off path identical). CLI `--write-behind false`
     /// is the kill switch.
     pub write_behind: bool,
+
+    /// B0 (Phase B): compute the Orchard subtree combines on the GPU. Requires
+    /// `sparse_persistence` and the `gpu` cargo feature. Default off; the CPU path
+    /// is byte-for-byte identical when off (kill switch: `--gpu-subtree false`).
+    pub gpu_subtree: bool,
 }
 
 impl EngineConfig {
@@ -104,6 +109,7 @@ impl EngineConfig {
             enhance_every_chunks: Self::DEFAULT_ENHANCE_EVERY_CHUNKS,
             sparse_persistence: true,
             write_behind: true,
+            gpu_subtree: false,
         }
     }
 
@@ -138,6 +144,11 @@ impl EngineConfig {
         if self.write_behind && !self.sparse_persistence {
             return Err(SlipstreamError::Config(
                 "write_behind requires sparse_persistence (the deferred commit runs the sparse put_blocks path)".into(),
+            ));
+        }
+        if self.gpu_subtree && !self.sparse_persistence {
+            return Err(SlipstreamError::Config(
+                "gpu_subtree requires sparse_persistence (the GPU build replaces the sparse subtree build)".into(),
             ));
         }
         Ok(())
