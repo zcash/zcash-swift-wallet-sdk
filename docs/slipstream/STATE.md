@@ -5,7 +5,9 @@
 
 ## NEXT ACTION
 
-➡️ **PHASE B (GPU) PARKED 2026-06-15 (kept, default-off, NOT removed). NEXT SPIKE = persist-pipelining (the real ~22%, all devices).**
+➡️ **BOTH PERF SPIKES PARKED + LEARNINGS LOGGED 2026-06-15. Strategy fork open (user). See `docs/slipstream/2026-06-15-perf-spikes-learnings.md`.** GPU (Phase B) AND persist-pipelining both built, measured, FALSIFIED on modern devices (same root cause: compute-bound, `wall ≈ total_cpu_work/cores`; concurrency levers conserve work + add core contention → GPU −25% / depth-4 −26% on M4). The magnitude (12×) was the ENGINE, already shipped. Both KEPT, parked: GPU = `gpu` feature default-off (zero wgpu shipped, fully isolated); pipelining = `persist_depth` default 1 = byte-identical (live refactor, NOT feature-gated — can revert/gate for stricter isolation). **The ONLY remaining lever is WORK REDUCTION (algorithmic): fewer combines (build/retain less commitment tree) or faster decrypt (SIMD/batch) — both reduce `total_cpu_work` so they CAN lower the floor; harder + riskier + correctness-critical. DECISION (user): pursue a work-reduction spike, or stop at 12×-on-the-compute-floor (an excellent place).** Below = the parked spikes' detail (GPU matrix, pipelining R1–R3).
+
+Parked detail follows:
 
 **GPU PARK STATUS:** B0 COMPLETE (byte-identical GPU Orchard combine, mainnet VERDICT IDENTICAL, KAT 0/10k, oracles green) + v0.3 OFFLOAD toggle exists (`gpu` cargo feature default-OFF → released libzcashlc has zero wgpu; `gpu_subtree`/`ZCASH_GPU_SUBTREE` default-false; `rebuild-local-ffi.sh --gpu`). All banked, byte-identical-when-on, reusable. **Dropped/not-built: B1.2 cooperative split, ③ Sapling kernel, B1.4 scan-hook.** WHY PARK: v0.3 device matrix proved GPU-subtree is a NARROW ~1.1× win (A14/iPhone) that REGRESSES both extremes (A10 pathological; M4 −25% — combine parity 6.2s but GPU adds scan-contention), gating needs net-benefit (hard), and the combine just isn't a big enough slice of a scan/persist-bound sync. A14 v0.3 run now OPTIONAL (doesn't change park). The whole GPU detour's payoff = the measurement below.
 
