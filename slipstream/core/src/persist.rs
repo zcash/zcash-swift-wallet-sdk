@@ -57,7 +57,7 @@ use crate::wallet_session::Db;
 const MAX_CHECKPOINTS: usize = 100;
 
 /// Subtree build chunk size — mirror of ll/wallet.rs:467 CHUNK_SIZE.
-const BUILD_CHUNK_SIZE: usize = 1024;
+pub(crate) const BUILD_CHUNK_SIZE: usize = 1024;
 
 /// T6.3b checkpoint-downgrade window, mirroring upstream PRUNING_DEPTH = 100
 /// (zcash_client_backend ll/wallet.rs:52, plumbed into the trees as
@@ -956,7 +956,7 @@ pub fn sparse_put_blocks(
 // ── Replicas of upstream private helpers (public types only) ──────────────────
 
 /// Mirror of ll/wallet.rs:1146-1170 (private upstream; rebuilt on public API).
-fn build_subtrees<H, const SHARD_HEIGHT: u8>(
+pub(crate) fn build_subtrees<H, const SHARD_HEIGHT: u8>(
     start_position: Position,
     commitments: &mut [Option<(H, Retention<BlockHeight>)>],
 ) -> Vec<(LocatedPrunableTree<H>, BTreeMap<BlockHeight, Position>)>

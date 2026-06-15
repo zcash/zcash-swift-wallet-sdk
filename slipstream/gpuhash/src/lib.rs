@@ -33,6 +33,9 @@ pub struct Gpu {
 
 impl Gpu {
     /// Pick the highest-performance adapter present and open a device.
+    // No `Default`: opening a GPU device is expensive and fails when no adapter exists, so a
+    // silent `Default::default()` would be misleading. Construct explicitly via `shared()`.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         pollster::block_on(Self::new_async())
     }
