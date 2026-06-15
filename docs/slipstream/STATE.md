@@ -50,7 +50,7 @@ Phase A (bit-exact GPU Orchard Sinsemilla combine, oracle 0/10M) is DONE in the 
 | B0.2 `gpu_precompute_shard` + `GpuHashOrchard` thread-local lookup (subtree == CPU) | **done** | GPU shard == CPU `from_iter`, n∈{1,7,1k,1024,2k,5k}; convert = recursive rebuild (shardtree `map` won't map annotation `A`) |
 | B0.3 `EngineConfig.gpu_subtree` + `--gpu-subtree` + persist.rs orchard hook | **done** | feature-gated `build_orchard_subtrees(gpu_on, …)` routes Orchard build; CPU/Sapling untouched when off; validate requires `sparse_persistence`; CLI `--gpu-subtree`/`--gpu-subtree-b`; `gpu_subtree_flags_parse` |
 | B0.4 oracle VERDICT IDENTICAL tip−N + darkside CLEAN (B0 done) | **gate(2) done; gate(1) left** | darkside gpu oracle PASSED + full darkside suite green (this Mac, 2026-06-15); only the mainnet tip−N oracle (user `TEST_UFVK`) remains |
-| B1 cooperative proportional CPU+GPU split + on-device sync-time | future | own spec/plan after B0 |
+| B1 cooperative proportional CPU+GPU split + on-device sync-time | **design spec written** | `plans/2026-06-15-phase-b1-cooperative-gpu-design.md` (Approach A: measurement-gated, persist-first; full on-device ship via local-FFI; measurement-defined bar). Awaiting user spec review → then writing-plans. Parallel to B0.4 gate(1). |
 | Phase A′ GPU Sapling Pedersen/Jubjub kernel | future | Phase-A-sized; oracle vs `sapling` crate |
 | B2 wire Sapling into B0 integration + B1 scheduler | future | mechanical reuse |
 
