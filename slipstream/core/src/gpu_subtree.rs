@@ -1,4 +1,8 @@
-//! GPU-cooperative Orchard subtree build (feature `gpu`, Phase B0).
+//! GPU-OFFLOAD Orchard subtree build (feature `gpu`, Phase B0). NOTE: this is offload — the
+//! GPU computes ~all the combines and the CPU is freed (it does NOT cooperatively split the
+//! combine work CPU+GPU; that "cooperative" model was designed in B1 but never built). v0.3
+//! device matrix (2026-06-15) showed offload is a narrow ~1.1× win (A14/iPhone) that regresses
+//! both extremes (A10 weak-GPU, M4 fast-CPU −25%); the path is PARKED, default-off. See STATE.md.
 //!
 //! Strategy (lowest byte-identical risk): GPU-precompute every Sinsemilla combine the shard
 //! needs, then reuse `shardtree::LocatedTree::from_iter` VERBATIM — its retention/pruning logic
