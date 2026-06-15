@@ -1647,6 +1647,7 @@ impl PersistLane {
     pub fn open(
         wallet_db_path: &std::path::Path,
         network: zcash_protocol::consensus::Network,
+        depth: usize,
     ) -> Result<Self, crate::error::SlipstreamError> {
         let db = zcash_client_sqlite::WalletDb::for_path(
             wallet_db_path,
@@ -1663,7 +1664,7 @@ impl PersistLane {
             in_flight: None,
             in_flight_span: (0, 0),
             queue: std::collections::VecDeque::new(),
-            depth: 1,
+            depth: depth.max(1),
             total_wait: std::time::Duration::ZERO,
             total_busy: std::time::Duration::ZERO,
         })
@@ -2125,6 +2126,7 @@ mod write_behind_tests {
         PersistLane::open(
             &dir.join("lane.db"),
             zcash_protocol::consensus::Network::MainNetwork,
+            1,
         )
         .expect("lane open")
     }

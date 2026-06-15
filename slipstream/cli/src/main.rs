@@ -69,6 +69,11 @@ enum Cmd {
         /// build with `--features gpu`). Default off; CPU path identical when off.
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         gpu_subtree: bool,
+        /// Persist-pipelining: write-behind queue depth (max unpersisted units before scan
+        /// blocks). 1 = legacy depth-1; higher hides more persist behind scan (~22% on modern
+        /// devices) at the cost of RAM. The committed data.db is identical at any depth.
+        #[arg(long, default_value_t = 1, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=64))]
+        persist_depth: usize,
         /// T8.1: after reaching tip, keep the wallet tracking the chain.
         /// Probes the tip every 10–30 s (jittered); runs a full pass whenever a
         /// new block arrives. Cancellable with Ctrl-C. Useful for Mac CLI validation
@@ -102,6 +107,10 @@ enum Cmd {
         /// build with `--features gpu`). The acceptance gate: oracle VERDICT IDENTICAL.
         #[arg(long, default_value_t = false)]
         gpu_subtree_b: bool,
+        /// Run B with a deeper write-behind queue (persist-pipelining). 1 = depth-1. The oracle
+        /// proves any depth is byte-identical (VERDICT IDENTICAL vs the upstream run A).
+        #[arg(long, default_value_t = 1, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=64))]
+        persist_depth_b: usize,
         #[arg(long, default_value_t = 4, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
         streams: usize,
         #[arg(long, default_value_t = 10_000)]
@@ -241,6 +250,7 @@ fn cmd_sync(
     chunk_split_bytes: usize,
     write_behind: bool,
     gpu_subtree: bool,
+    persist_depth: usize,
     follow: bool,
 ) {
     let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
@@ -266,6 +276,7 @@ fn cmd_sync(
     // deferred commit runs the sparse put_blocks path, so it cannot outlive it.
     cfg.write_behind = write_behind && sparse;
     cfg.gpu_subtree = gpu_subtree && sparse;
+    cfg.persist_depth = persist_depth;
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
@@ -434,6 +445,7 @@ fn cmd_oracle(
     sparse_b: bool,
     write_behind_b: bool,
     gpu_subtree_b: bool,
+    persist_depth_b: usize,
     streams: usize,
     chunk: u32,
 ) {
@@ -453,7 +465,7 @@ fn cmd_oracle(
             std::process::exit(2);
         }
     }
-    let mk_cfg = |dir: &std::path::Path, sparse: bool, write_behind: bool, gpu_subtree: bool| {
+    let mk_cfg = |dir: &std::path::Path, sparse: bool, write_behind: bool, gpu_subtree: bool, persist_depth: usize| {
         let mut cfg = slipstream_core::EngineConfig::new(
             slipstream_core::Network::MainNetwork,
             dir.join("data.db"),
@@ -464,15 +476,16 @@ fn cmd_oracle(
         cfg.sparse_persistence = sparse;
         cfg.write_behind = write_behind;
         cfg.gpu_subtree = gpu_subtree;
+        cfg.persist_depth = persist_depth;
         cfg
     };
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let verdict = rt.block_on(async {
         println!("oracle: run A (upstream persistence) …");
-        let a = slipstream_core::engine::sync_once(&mk_cfg(&wallet_a, false, false, false), Some((ufvk.as_str(), birthday)), None).await?;
+        let a = slipstream_core::engine::sync_once(&mk_cfg(&wallet_a, false, false, false, 1), Some((ufvk.as_str(), birthday)), None).await?;
         println!("oracle: run A done — tip {} in {:.1?}", a.chain_tip, a.elapsed);
-        println!("oracle: run B (sparse_b={sparse_b} write_behind_b={write_behind_b} gpu_subtree_b={gpu_subtree_b}) …");
-        let b = slipstream_core::engine::sync_once(&mk_cfg(&wallet_b, sparse_b, write_behind_b, gpu_subtree_b), Some((ufvk.as_str(), birthday)), None).await?;
+        println!("oracle: run B (sparse_b={sparse_b} write_behind_b={write_behind_b} gpu_subtree_b={gpu_subtree_b} persist_depth_b={persist_depth_b}) …");
+        let b = slipstream_core::engine::sync_once(&mk_cfg(&wallet_b, sparse_b, write_behind_b, gpu_subtree_b, persist_depth_b), Some((ufvk.as_str(), birthday)), None).await?;
         println!("oracle: run B done — tip {} in {:.1?}", b.chain_tip, b.elapsed);
         if a.chain_tip != b.chain_tip {
             eprintln!("oracle: TIP SKEW (A={} B={}) — rerun when the chain is quiet", a.chain_tip, b.chain_tip);
@@ -510,11 +523,11 @@ fn main() {
         Cmd::Fetch { server, range, streams, chunk, baseline } => {
             cmd_fetch(server, range, streams, chunk, baseline);
         }
-        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, gpu_subtree, follow } => {
-            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, gpu_subtree, follow);
+        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, gpu_subtree, persist_depth, follow } => {
+            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, gpu_subtree, persist_depth, follow);
         }
-        Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, gpu_subtree_b, streams, chunk } => {
-            cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, gpu_subtree_b, streams, chunk);
+        Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, gpu_subtree_b, persist_depth_b, streams, chunk } => {
+            cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, gpu_subtree_b, persist_depth_b, streams, chunk);
         }
     }
 }
@@ -816,6 +829,35 @@ mod tests {
         ])
         .expect("parses");
         assert!(matches!(cli.cmd, Cmd::Sync { gpu_subtree: true, .. }));
+    }
+
+    #[test]
+    fn persist_depth_flags_parse() {
+        // oracle --persist-depth-b
+        let cli = Cli::try_parse_from([
+            "slipstream", "oracle",
+            "--server", "http://127.0.0.1:9067",
+            "--wallet-a", "/tmp/oa", "--wallet-b", "/tmp/ob",
+            "--ufvk", "uview1someufvk", "--birthday", "1500000",
+            "--sparse-b", "--persist-depth-b", "4",
+        ])
+        .expect("parses");
+        assert!(matches!(cli.cmd, Cmd::Oracle { persist_depth_b: 4, .. }));
+
+        // sync --persist-depth
+        let cli = Cli::try_parse_from([
+            "slipstream", "sync", "--server", "http://127.0.0.1:9067",
+            "--wallet-dir", "/tmp/w", "--persist-depth", "3",
+        ])
+        .expect("parses");
+        assert!(matches!(cli.cmd, Cmd::Sync { persist_depth: 3, .. }));
+
+        // default depth = 1
+        let cli = Cli::try_parse_from([
+            "slipstream", "sync", "--server", "http://127.0.0.1:9067", "--wallet-dir", "/tmp/w",
+        ])
+        .expect("parses");
+        assert!(matches!(cli.cmd, Cmd::Sync { persist_depth: 1, .. }), "default depth must be 1");
     }
 
     #[test]

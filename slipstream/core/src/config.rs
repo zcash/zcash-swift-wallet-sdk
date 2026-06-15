@@ -83,6 +83,14 @@ pub struct EngineConfig {
     /// `sparse_persistence` and the `gpu` cargo feature. Default off; the CPU path
     /// is byte-for-byte identical when off (kill switch: `--gpu-subtree false`).
     pub gpu_subtree: bool,
+
+    /// Persist-pipelining: max unpersisted units (in-flight + queued) before the scan
+    /// side blocks. `1` = legacy strict depth-1 backpressure (byte-for-byte identical).
+    /// Higher lets scan run further ahead so more persist hides behind scan (~22%
+    /// headroom on modern devices); cost is up to `persist_depth` buffered units in RAM.
+    /// Only affects the write-behind path; the committed `data.db` is identical at any
+    /// depth (persist stays serial + in-order). Auto-scaled per device RAM in R4.
+    pub persist_depth: usize,
 }
 
 impl EngineConfig {
@@ -110,6 +118,7 @@ impl EngineConfig {
             sparse_persistence: true,
             write_behind: true,
             gpu_subtree: false,
+            persist_depth: 1,
         }
     }
 
@@ -149,6 +158,11 @@ impl EngineConfig {
         if self.gpu_subtree && !self.sparse_persistence {
             return Err(SlipstreamError::Config(
                 "gpu_subtree requires sparse_persistence (the GPU build replaces the sparse subtree build)".into(),
+            ));
+        }
+        if self.persist_depth == 0 || self.persist_depth > 64 {
+            return Err(SlipstreamError::Config(
+                "persist_depth must be in 1..=64".into(),
             ));
         }
         Ok(())

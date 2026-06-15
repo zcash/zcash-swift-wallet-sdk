@@ -184,7 +184,7 @@ pub async fn scan_chunks(
     let mut wb: Option<WriteBehind> = if config.write_behind {
         let facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
             .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
-        let lane = crate::persist::PersistLane::open(&config.wallet_db_path, config.network)?;
+        let lane = crate::persist::PersistLane::open(&config.wallet_db_path, config.network, config.persist_depth)?;
         Some(WriteBehind { facade, lane })
     } else {
         None
@@ -597,7 +597,7 @@ pub async fn scan_chunks_from_treestate(
     let mut wb: Option<WriteBehind> = if write_behind {
         let facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
             .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
-        let lane = crate::persist::PersistLane::open(session.db_path(), session.network)?;
+        let lane = crate::persist::PersistLane::open(session.db_path(), session.network, 1)?;
         Some(WriteBehind { facade, lane })
     } else {
         None
