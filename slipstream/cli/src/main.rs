@@ -216,6 +216,19 @@ fn validate_sync_args(
     }
 }
 
+/// Guard: `--gpu-subtree[-b]` is meaningless unless the binary was built with
+/// `--features gpu`. Without it the GPU routing falls back to the CPU path — which for
+/// the oracle would be a FALSE `VERDICT IDENTICAL`. Fail loudly instead of silently.
+fn require_gpu_feature_if(requested: bool, flag: &str) {
+    if requested && !cfg!(feature = "gpu") {
+        eprintln!(
+            "error: {flag} needs a build with --features gpu (else it silently runs the CPU \
+             path — a false IDENTICAL). Rebuild, e.g.: cargo run -p slipstream-cli --features gpu -- …"
+        );
+        std::process::exit(2);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_sync(
     server: String,
@@ -248,6 +261,7 @@ fn cmd_sync(
     cfg.chunk_blocks = chunk;
     cfg.sparse_persistence = sparse;
     cfg.chunk_split_bytes = chunk_split_bytes;
+    require_gpu_feature_if(gpu_subtree, "--gpu-subtree");
     // `--sparse false` (the sparse kill switch) implies write-behind off: the
     // deferred commit runs the sparse put_blocks path, so it cannot outlive it.
     cfg.write_behind = write_behind && sparse;
@@ -428,6 +442,11 @@ fn cmd_oracle(
         eprintln!("error: --write-behind-b requires --sparse-b");
         std::process::exit(2);
     }
+    if gpu_subtree_b && !sparse_b {
+        eprintln!("error: --gpu-subtree-b requires --sparse-b");
+        std::process::exit(2);
+    }
+    require_gpu_feature_if(gpu_subtree_b, "--gpu-subtree-b");
     for d in [&wallet_a, &wallet_b] {
         if d.join("data.db").exists() {
             eprintln!("error: {} already contains data.db — oracle needs fresh wallets", d.display());
@@ -797,6 +816,21 @@ mod tests {
         ])
         .expect("parses");
         assert!(matches!(cli.cmd, Cmd::Sync { gpu_subtree: true, .. }));
+    }
+
+    #[test]
+    fn require_gpu_feature_noop_when_not_requested() {
+        // Must not exit/panic when the flag isn't set, regardless of build features.
+        require_gpu_feature_if(false, "--gpu-subtree-b");
+        require_gpu_feature_if(false, "--gpu-subtree");
+    }
+
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn require_gpu_feature_ok_when_built_with_gpu() {
+        // With the gpu feature on, requesting gpu is allowed (no exit/panic). The
+        // exit branch (requested && !feature) can only be covered by a subprocess.
+        require_gpu_feature_if(true, "--gpu-subtree-b");
     }
 
     // ── T8.1 follow flag ──────────────────────────────────────────────────────

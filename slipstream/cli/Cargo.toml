@@ -10,6 +10,12 @@ publish = false
 name = "slipstream"
 path = "src/main.rs"
 
+[features]
+# Passthrough so `cargo run -p slipstream-cli --features gpu` enables the GPU Orchard
+# subtree build in slipstream-core. Without it, --gpu-subtree / --gpu-subtree-b would
+# silently fall back to the CPU path (a false IDENTICAL); main.rs guards against that.
+gpu = ["slipstream-core/gpu"]
+
 [dependencies]
 slipstream-core = { path = "../core" }
 clap = { version = "4", features = ["derive"] }
