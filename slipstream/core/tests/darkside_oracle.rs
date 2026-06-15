@@ -118,9 +118,15 @@ async fn stage_fixture_chain(ctl: &mut DarksideCtl) {
     tokio::time::sleep(Duration::from_secs(2)).await;
 }
 
-/// Run the direct scan pipeline into `db_path` with `sparse` / `write_behind` flags.
-/// Mirrors `sync_finds_fixture_transactions` step-by-step.
-async fn run_pipeline(ep: &Endpoint, db_path: &std::path::Path, sparse: bool, write_behind: bool) {
+/// Run the direct scan pipeline into `db_path` with `sparse` / `write_behind` /
+/// `gpu_subtree` flags. Mirrors `sync_finds_fixture_transactions` step-by-step.
+async fn run_pipeline(
+    ep: &Endpoint,
+    db_path: &std::path::Path,
+    sparse: bool,
+    write_behind: bool,
+    gpu_subtree: bool,
+) {
     let mut cfg = EngineConfig::new(Network::MainNetwork, db_path.to_path_buf(), ep.clone());
     cfg.chunk_blocks = 100;
     cfg.fetch_streams = 2;
@@ -179,7 +185,7 @@ async fn run_pipeline(ep: &Endpoint, db_path: &std::path::Path, sparse: bool, wr
     let fetch_ep = ep.clone();
     let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
 
-    scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, sparse, write_behind)
+    scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, sparse, write_behind, gpu_subtree)
         .await
         .expect("scan_chunks_from_treestate");
 
@@ -212,7 +218,7 @@ async fn sparse_pipeline_matches_upstream_on_darkside_fixture() {
         let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
         stage_fixture_chain(&mut ctl).await;
     }
-    run_pipeline(&ep, &db_a, false, false).await;
+    run_pipeline(&ep, &db_a, false, false, false).await;
 
     // ── Run B: sparse path — reset + re-stage identically ────────────────────
     let dir_b = tempfile::tempdir().expect("tempdir B");
@@ -221,7 +227,7 @@ async fn sparse_pipeline_matches_upstream_on_darkside_fixture() {
         let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
         stage_fixture_chain(&mut ctl).await;
     }
-    run_pipeline(&ep, &db_b, true, false).await;
+    run_pipeline(&ep, &db_b, true, false, false).await;
 
     // ── Oracle: semantic diff ─────────────────────────────────────────────────
     let report = semantic_diff(&db_a, &db_b).expect("semantic_diff");
@@ -285,7 +291,7 @@ async fn write_behind_pipeline_matches_upstream_on_darkside_fixture() {
         let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
         stage_fixture_chain(&mut ctl).await;
     }
-    run_pipeline(&ep, &db_a, false, false).await;
+    run_pipeline(&ep, &db_a, false, false, false).await;
 
     // ── Run B: write-behind path — reset + re-stage identically ─────────────
     let dir_b = tempfile::tempdir().expect("tempdir B");
@@ -294,7 +300,7 @@ async fn write_behind_pipeline_matches_upstream_on_darkside_fixture() {
         let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
         stage_fixture_chain(&mut ctl).await;
     }
-    run_pipeline(&ep, &db_b, true, true).await;
+    run_pipeline(&ep, &db_b, true, true, false).await;
 
     // ── Oracle: semantic diff ─────────────────────────────────────────────────
     let report = semantic_diff(&db_a, &db_b).expect("semantic_diff");
@@ -336,6 +342,89 @@ async fn write_behind_pipeline_matches_upstream_on_darkside_fixture() {
     );
 }
 
+/// B0.4 GPU-SUBTREE oracle (hermetic integration smoke for `EngineConfig::gpu_subtree`).
+///
+/// Runs the direct pipeline TWICE on the identical real-note fixture chain:
+///   - Run A: upstream path (sparse=false, write_behind=false, gpu_subtree=false).
+///   - Run B: GPU subtree path (sparse=true, write_behind=false, gpu_subtree=true) —
+///     the Orchard subtree build is routed through `build_subtrees_gpu`.
+/// `semantic_diff(A, B)` must be CLEAN and wallet B must still find the fixture's
+/// notes, proving that turning on `gpu_subtree` end-to-end (config → SparseTreeState
+/// → persist build-site → GPU hash crate, with wgpu linked into the test binary)
+/// neither breaks a real sync nor changes the resulting data.db.
+///
+/// SCOPE / HONEST LIMITATION: this fixture is mainnet blocks ~663174/663188, which
+/// are PRE-NU5 — the Orchard commitment tree is EMPTY for the whole chain, so this
+/// oracle does NOT exercise real Orchard Sinsemilla combines on the GPU (the GPU
+/// precompute map is empty; the empty-tree build trivially matches CPU). It proves
+/// the WIRING + the `--features "darkside gpu"` build, not the combine math. The
+/// real-Orchard byte-identical proof lives in (1) the B0.1 KAT
+/// `orchard_combine_batch == MerkleHashOrchard::combine` (0/10k random), (2) the
+/// B0.2 `gpu_subtree_build_matches_cpu` synthetic-shard test (n up to 5000, incl.
+/// partial/padded), and (3) the B0.4 mainnet tip−N oracle (real post-NU5 Orchard
+/// activity) — the definitive acceptance gate.
+#[cfg(feature = "gpu")]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires local darkside lightwalletd + internet (fixture URLs) + a GPU/Metal device"]
+async fn gpu_subtree_pipeline_matches_upstream_on_darkside_fixture() {
+    let ep = darkside_endpoint();
+
+    // ── Run A: upstream path ─────────────────────────────────────────────────
+    let dir_a = tempfile::tempdir().expect("tempdir A");
+    let db_a = dir_a.path().join("data.db");
+    {
+        let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
+        stage_fixture_chain(&mut ctl).await;
+    }
+    run_pipeline(&ep, &db_a, false, false, false).await;
+
+    // ── Run B: GPU subtree path — reset + re-stage identically ───────────────
+    let dir_b = tempfile::tempdir().expect("tempdir B");
+    let db_b = dir_b.path().join("data.db");
+    {
+        let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
+        stage_fixture_chain(&mut ctl).await;
+    }
+    run_pipeline(&ep, &db_b, true, false, true).await;
+
+    // ── Oracle: semantic diff ─────────────────────────────────────────────────
+    let report = semantic_diff(&db_a, &db_b).expect("semantic_diff");
+    assert!(
+        report.is_clean(),
+        "darkside oracle diverged (gpu-subtree vs upstream):\n{}",
+        report.render()
+    );
+
+    // ── Belt-and-braces: wallet B still has the right notes/balance ───────────
+    let conn_b = Connection::open_with_flags(
+        &db_b,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .expect("open wallet B read-only");
+
+    let tx_count: i64 = conn_b
+        .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+        .expect("query tx count");
+    assert_eq!(
+        tx_count, EXPECTED_TX_COUNT,
+        "wallet B (gpu-subtree): expected {EXPECTED_TX_COUNT} transactions, got {tx_count}."
+    );
+
+    let balance: Option<i64> = conn_b
+        .query_row(
+            "SELECT SUM(value) FROM sapling_received_notes \
+             WHERE id NOT IN (SELECT sapling_received_note_id FROM sapling_received_note_spends)",
+            [],
+            |r| r.get(0),
+        )
+        .expect("query gpu-subtree balance");
+    assert_eq!(
+        balance.unwrap_or(0),
+        EXPECTED_BALANCE_ZATOSHI,
+        "wallet B (gpu-subtree): expected balance {EXPECTED_BALANCE_ZATOSHI} zatoshi, got {balance:?}."
+    );
+}
+
 /// T6.5 truncate+rescan oracle: after a full sync on wallets A (upstream) and B (sparse),
 /// truncate both to a height below the second tx (requesting 663185; both wallets snap to
 /// the nearest shared checkpoint ≤ 663185 which is 663174, the first tx block), re-scan
@@ -367,7 +456,7 @@ async fn truncate_rescan_oracle_is_clean() {
         let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
         stage_fixture_chain(&mut ctl).await;
     }
-    run_pipeline(&ep, &db_a, false, false).await;
+    run_pipeline(&ep, &db_a, false, false, false).await;
 
     // ── Run B: sparse path — reset + re-stage + initial full sync ────────────
     let dir_b = tempfile::tempdir().expect("tempdir B");
@@ -376,7 +465,7 @@ async fn truncate_rescan_oracle_is_clean() {
         let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
         stage_fixture_chain(&mut ctl).await;
     }
-    run_pipeline(&ep, &db_b, true, false).await;
+    run_pipeline(&ep, &db_b, true, false, false).await;
 
     // ── Truncate both wallets; assert they snap to the same height ────────────
     let truncated_a_height: u32;
@@ -473,6 +562,7 @@ async fn truncate_rescan_oracle_is_clean() {
             rx_a,
             false, // upstream
             false,
+            false,
         )
         .await
         .expect("re-scan wallet A from birthday");
@@ -520,6 +610,7 @@ async fn truncate_rescan_oracle_is_clean() {
             initial_state_b,
             rx_b,
             true, // sparse
+            false,
             false,
         )
         .await

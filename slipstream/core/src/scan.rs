@@ -566,6 +566,11 @@ async fn scan_chunks_inner(
 /// `WriteBehindFacade` + `PersistLane` (second connection to the session's DB
 /// file), submit-after-scan, full drain barrier at exit. Added at T6.9 so the
 /// darkside variants can exercise the write-behind path against real fixtures.
+///
+/// `gpu_subtree` — when `true` (requires `sparse`), route the Orchard subtree
+/// build to the GPU (feature `gpu`) exactly as production does, mirroring
+/// `EngineConfig::gpu_subtree`. Added at B0.4 so the darkside oracle can prove
+/// the GPU subtree build yields a byte-identical data.db against real fixtures.
 #[cfg(any(test, feature = "darkside"))]
 pub async fn scan_chunks_from_treestate(
     session: &mut WalletSession,
@@ -574,6 +579,7 @@ pub async fn scan_chunks_from_treestate(
     rx: ChunkQueueReceiver,
     sparse: bool,
     write_behind: bool,
+    gpu_subtree: bool,
 ) -> Result<ScanStats, SlipstreamError> {
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
@@ -581,6 +587,11 @@ pub async fn scan_chunks_from_treestate(
     if write_behind && !sparse {
         return Err(SlipstreamError::Wallet(
             "write_behind requires sparse (mirrors EngineConfig::validate)".into(),
+        ));
+    }
+    if gpu_subtree && !sparse {
+        return Err(SlipstreamError::Wallet(
+            "gpu_subtree requires sparse (mirrors EngineConfig::validate)".into(),
         ));
     }
     let mut wb: Option<WriteBehind> = if write_behind {
@@ -593,7 +604,7 @@ pub async fn scan_chunks_from_treestate(
     };
 
     let result =
-        scan_chunks_from_treestate_inner(session, initial_state, rx, sparse, &mut wb).await;
+        scan_chunks_from_treestate_inner(session, initial_state, rx, sparse, gpu_subtree, &mut wb).await;
 
     // T6.9 full barrier — mirror of scan_chunks (persist error precedence).
     if let Some(mut wb) = wb {
@@ -627,9 +638,11 @@ async fn scan_chunks_from_treestate_inner(
     initial_state: TreeState,
     mut rx: ChunkQueueReceiver,
     sparse: bool,
+    gpu_subtree: bool,
     wb: &mut Option<WriteBehind>,
 ) -> Result<ScanStats, SlipstreamError> {
     let mut sparse_state = crate::persist::SparseTreeState::default();
+    sparse_state.gpu_subtree = gpu_subtree;
     let mut stats = ScanStats::default();
     let mut next_state = initial_state;
 

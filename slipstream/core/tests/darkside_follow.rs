@@ -180,7 +180,7 @@ async fn follow_probe_detects_new_blocks_and_catches_up() {
     let fetch_ep = ep.clone();
     let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
 
-    scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, false, false)
+    scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, false, false, false)
         .await
         .expect("initial scan_chunks_from_treestate");
 
@@ -273,6 +273,7 @@ async fn follow_probe_detects_new_blocks_and_catches_up() {
         followup_start,
         continuation_state,
         rx2,
+        false,
         false,
         false,
     )

@@ -194,7 +194,7 @@ async fn direct_pipeline_scan(
     };
 
     let scan_stats =
-        scan_chunks_from_treestate(session, scan_start, initial_scan_state, rx, sparse, write_behind)
+        scan_chunks_from_treestate(session, scan_start, initial_scan_state, rx, sparse, write_behind, false)
             .await
             .expect("scan_chunks_from_treestate");
 
@@ -361,6 +361,7 @@ async fn reorg_recovery_produces_correct_tip() {
         FIRST_APPLY_HEIGHT as u64 + 1,
         from_state_663200,
         fetch_rx,
+        false,
         false,
         false,
     )
@@ -591,6 +592,7 @@ async fn reorg_recovery_produces_correct_tip_sparse() {
         fetch_rx,
         false,
         false,
+        false,
     )
     .await;
 
@@ -786,6 +788,7 @@ async fn reorg_recovery_produces_correct_tip_write_behind() {
         fetch_rx,
         true,
         true,
+        false,
     )
     .await;
 
