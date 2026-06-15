@@ -5,7 +5,9 @@
 
 ## NEXT ACTION
 
-➡️ **B0.1 — graduate the GPU Orchard Sinsemilla hash into a `slipstream-gpuhash` crate (plan: `plans/2026-06-15-phase-b0-gpu-subtree-plan.md`; design: `plans/2026-06-15-phase-b0-gpu-subtree-design.md`). B0 = byte-identical GPU Orchard subtree-build integration spike (behind `--gpu-subtree`, CPU path untouched), oracle-gated. Port the bit-exact spike kernels (`field/pallas/sinsemilla.wgsl` + wgpu harness + `orchard_combine_batch`) from `~/Dev/Xcode/GitHub/LukasKorba/zcash-gpu-spike/crates/gpu-wgpu`; KAT vs orchard. Then B0.2 (precompute + GpuHashOrchard thread-local lookup) → B0.3 (flag + persist.rs orchard hook) → B0.4 (oracle VERDICT IDENTICAL tip−N + darkside CLEAN).**
+➡️ **B0.2 — `gpu_precompute_shard` + `GpuHashOrchard` lookup (plan: `plans/2026-06-15-phase-b0-gpu-subtree-plan.md`). In `slipstream/core/src/gpu_subtree.rs` (`#[cfg(feature="gpu")]`): build the complete shard bottom-up (each level one batched `orchard_combine_batch`) into a `(left‖right)→parent` map; `GpuHashOrchard(MerkleHashOrchard)` newtype impl `incrementalmerkletree::Hashable` whose `combine` reads a thread-local map (CPU fallback on miss). GATE: an Orchard shard built via `gpu_precompute_shard` + unmodified `shardtree::LocatedTree::from_iter::<GpuHashOrchard>` == the plain CPU `from_iter::<MerkleHashOrchard>` (synthetic leaves incl. partial/padded shards). FIRST confirm shardtree's `LocatedTree`/`Tree` map API for the `GpuHashOrchard`→`MerkleHashOrchard` conversion (the one external unknown). Then B0.3 (`EngineConfig.gpu_subtree` + `--gpu-subtree` + persist.rs orchard hook) → B0.4 (oracle VERDICT IDENTICAL tip−N + darkside CLEAN).**
+
+Previous: B0.1 **DONE** 2026-06-15 — `slipstream-gpuhash` crate graduated (edition 2024, feature-gated): `field/pallas/sinsemilla.wgsl` + the wgpu `Gpu` harness + `merkle_combine` ported verbatim from the spike; added `orchard_combine_batch(layers, lefts, rights) -> Vec<[u8;32]>` + a process-global `Gpu` + a cached generator table (Q via `hash_to_curve` + `SINSEMILLA_S`). Workspace member + root `Cargo.toml` deps (wgpu 29 / pollster 0.4 / bytemuck / sinsemilla / group / pasta_curves / ff; Decision Log). `slipstream-core` `gpu = ["dep:slipstream-gpuhash"]` (OFF by default → default libzcashlc build has NO wgpu, verified via `cargo tree`). KAT `orchard_combine_batch == MerkleHashOrchard::combine` **0/10k**. Gates: core `--features gpu` builds; default core 140+1ign / cli 24 green; `init-local-ffi.sh --macos-only` + OfflineTests **475/0**.
 
 **DECISION LOG 2026-06-15 (pivot):** user repriorized — **GPU-driven cooperative speedup (Phase B) is now PRE-P8 priority**; P8 hardening (T8.2 mempool + T8.3–T8.6) is **DEFERRED to follow Phase B**. Rationale: Phase A complete (bit-exact GPU Orchard Sinsemilla `combine`, oracle 0/10M, in the local-only spike `~/Dev/.../zcash-gpu-spike`) + device probe GO (iPhone 16 Pro ~1.66×, iPad A10 ~1.47× cooperative). Phase B brainstorm→spec→plan done this session (commits ba2ff1d8, 08bdbbc5).
 
@@ -34,7 +36,7 @@ Phase A (bit-exact GPU Orchard Sinsemilla combine, oracle 0/10M) is DONE in the 
 | Task | Status | Notes |
 |---|---|---|
 | B0.0 pivot to Phase B (STATE.md, pre-P8) | done | this entry + Decision Log above |
-| B0.1 `slipstream-gpuhash` crate (port spike kernels, feature `gpu`, KAT vs orchard) | todo | source: `~/Dev/.../zcash-gpu-spike/crates/gpu-wgpu` |
+| B0.1 `slipstream-gpuhash` crate (port spike kernels, feature `gpu`, KAT vs orchard) | **done** | KAT `orchard_combine_batch == orchard` 0/10k; default build has NO wgpu (cargo tree); OfflineTests 475/0 |
 | B0.2 `gpu_precompute_shard` + `GpuHashOrchard` thread-local lookup (subtree == CPU) | todo | the novel core; reuses `from_iter` verbatim |
 | B0.3 `EngineConfig.gpu_subtree` + `--gpu-subtree` + persist.rs orchard hook | todo | CPU path untouched when off; mirrors `--write-behind` |
 | B0.4 oracle VERDICT IDENTICAL tip−N + darkside CLEAN (B0 done) | todo | the acceptance gate |

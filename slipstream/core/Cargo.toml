@@ -9,6 +9,9 @@ publish = false
 [features]
 # Hermetic integration tests against a local darkside lightwalletd (see CONVENTIONS).
 darkside = []
+# Phase B: GPU-accelerated Orchard subtree-build (B0). Pulls slipstream-gpuhash + wgpu.
+# OFF by default → the default libzcashlc build never compiles wgpu.
+gpu = ["dep:slipstream-gpuhash"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -25,6 +28,7 @@ sapling = { workspace = true }
 orchard = { workspace = true }
 incrementalmerkletree = { workspace = true }
 shardtree = { workspace = true }
+slipstream-gpuhash = { path = "../gpuhash", optional = true } # Phase B `gpu` feature only
 rayon = { workspace = true }
 zip32 = { workspace = true }
 tokio = { workspace = true }

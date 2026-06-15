@@ -112,7 +112,7 @@ crate-type = ["staticlib"]
 lto = true
 
 [workspace]
-members = ["slipstream/core", "slipstream/cli", "slipstream/protogen"]
+members = ["slipstream/core", "slipstream/cli", "slipstream/protogen", "slipstream/gpuhash"]
 resolver = "3"
 
 [workspace.dependencies]
@@ -149,3 +149,15 @@ incrementalmerkletree = { version = "0.8", default-features = false }
 shardtree = "0.6"
 rayon = "1.7"
 zip32 = "0.2"
+
+# Phase B (GPU Sinsemilla offload) — used ONLY by slipstream-gpuhash, behind the
+# slipstream-core `gpu` feature. Never enters the default libzcashlc build. (Decision Log
+# 2026-06-15, B0.1.) Versions: sinsemilla/group match the orchard 0.14 / pasta_curves 0.5
+# stack already resolved by this workspace.
+wgpu = "29"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+sinsemilla = "0.1"
+group = "0.13"
+pasta_curves = "0.5"
+ff = "0.13"

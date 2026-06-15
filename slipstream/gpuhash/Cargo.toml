@@ -1,0 +1,24 @@
+[package]
+name = "slipstream-gpuhash"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+publish = false
+
+# GPU-accelerated Orchard Sinsemilla MerkleCRH (Phase A, bit-exact: oracle 0/10M vs orchard).
+# Used only by slipstream-core's `gpu` feature; never in the default libzcashlc build.
+
+[dependencies]
+wgpu = { workspace = true }
+pollster = { workspace = true }
+bytemuck = { workspace = true }
+pasta_curves = { workspace = true }
+sinsemilla = { workspace = true }
+group = { workspace = true }
+ff = { workspace = true }
+
+[dev-dependencies]
+orchard = { workspace = true }
+incrementalmerkletree = { workspace = true }
+rand = { workspace = true }
