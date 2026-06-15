@@ -162,6 +162,7 @@ pub async fn sync_once(
         engine_build = ENGINE_BUILD,
         sparse = config.sparse_persistence,
         write_behind = config.write_behind,
+        gpu_subtree = config.gpu_subtree,
         started_at_utc = %wall_clock_utc(),
         "engine pass starting"
     );
