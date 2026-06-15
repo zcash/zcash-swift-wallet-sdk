@@ -33,6 +33,18 @@ public class SDKSynchronizer: Synchronizer {
     public let logger: Logger
     var exchangeRateTor: TorClient?
     var httpTor: TorClient?
+
+    /// `SDKSynchronizer` is not actor-isolated, so the lazy Tor bootstraps below are guarded
+    /// explicitly. Without this, concurrent `refreshExchangeRateUSD()` / `httpRequestOverTor()`
+    /// calls all observe `exchangeRateTor`/`httpTor == nil` and race on the slot (MOB-1389 crash).
+    /// `OSAllocatedUnfairLock` is unavailable on the iOS 13 deployment target, hence `NSLock`.
+    private let exchangeRateRefreshLock = NSLock()
+    /// `true` while an exchange-rate refresh is in flight. Guarded by `exchangeRateRefreshLock`.
+    private var exchangeRateRefreshInFlight = false
+    private let httpTorLock = NSLock()
+    /// Single-flight bootstrap for the HTTP-over-Tor client. Guarded by `httpTorLock`.
+    private var httpTorBootstrapTask: Task<TorClient, Error>?
+
     let sdkFlags: SDKFlags
 
     // Don't read this variable directly. Use `status` instead. And don't update this variable directly use `updateStatus()` methods instead.
@@ -618,26 +630,39 @@ public class SDKSynchronizer: Synchronizer {
 
     /// Fetches the latest ZEC-USD exchange rate.
     public func refreshExchangeRateUSD() {
+        // Single-flight gate. The previous `.fetching`-state check was ineffective on first use
+        // (when `exchangeRateTor == nil`), so concurrent calls raced on the non-isolated
+        // `exchangeRateTor` and trapped (MOB-1389). Admitting only one refresh at a time means a
+        // single task ever touches `exchangeRateTor`, closing that race.
+        let started = exchangeRateRefreshLock.withLocked { () -> Bool in
+            if exchangeRateRefreshInFlight {
+                return false
+            }
+            exchangeRateRefreshInFlight = true
+            return true
+        }
+
+        guard started else { return }
+
         Task {
+            defer {
+                exchangeRateRefreshLock.withLocked { exchangeRateRefreshInFlight = false }
+            }
+
             // ignore when Tor is not enabled
             guard await sdkFlags.exchangeRateEnabled else {
                 return
             }
-            
-            // ignore refresh request when one is already in flight
-            if let latestState = await exchangeRateTor?.cachedFiatCurrencyResult?.state, latestState == .fetching {
-                return
-            }
-            
+
             // broadcast cached value but update the state
             if let cachedFiatCurrencyResult = await exchangeRateTor?.cachedFiatCurrencyResult {
                 var fetchingState = cachedFiatCurrencyResult
                 fetchingState.state = .fetching
                 await exchangeRateTor?.updateCachedFiatCurrencyResult(fetchingState)
-                
+
                 exchangeRateUSDSubject.send(fetchingState)
             }
-            
+
             do {
                 if exchangeRateTor == nil {
                     logger.info("Bootstrapping Tor client for fetching exchange rates")
@@ -651,7 +676,7 @@ public class SDKSynchronizer: Synchronizer {
                 var errorState = await exchangeRateTor?.cachedFiatCurrencyResult
                 errorState?.state = .error
                 await exchangeRateTor?.updateCachedFiatCurrencyResult(errorState)
-                
+
                 exchangeRateUSDSubject.send(errorState)
             }
         }
@@ -1026,6 +1051,7 @@ public class SDKSynchronizer: Synchronizer {
         exchangeRateTor = nil
         // deinit of isolated TorClient used for http requests
         httpTor = nil
+        httpTorLock.withLocked { httpTorBootstrapTask = nil }
         // close all connections
         let lwdService = initializer.container.resolve(LightWalletService.self)
         await lwdService.closeConnections()
@@ -1042,19 +1068,47 @@ public class SDKSynchronizer: Synchronizer {
         guard torEnabled || exchangeRateEnabled else {
             throw ZcashError.torNotEnabled
         }
-        
-        if httpTor == nil {
-            logger.info("Bootstrapping Tor client for making http requests")
-            if let torService = initializer.container.resolve(LightWalletService.self) as? LightWalletGRPCServiceOverTor {
-                httpTor = try await torService.tor.isolatedClient()
+
+        let httpTorClient = try await ensureHTTPTorClient()
+
+        return try await httpTorClient.isolatedClient().httpRequest(for: request, retryLimit: retryLimit)
+    }
+
+    /// Lazily bootstraps the shared HTTP-over-Tor client exactly once, even under concurrent
+    /// callers. Each request still proceeds; only the bootstrap itself is single-flighted, which
+    /// removes the data race on `httpTor` (the same class of bug as MOB-1389).
+    private func ensureHTTPTorClient() async throws -> TorClient {
+        let bootstrap: Task<TorClient, Error> = httpTorLock.withLocked {
+            if let existing = httpTorBootstrapTask {
+                return existing
             }
+
+            let task = Task { [logger, initializer] () async throws -> TorClient in
+                logger.info("Bootstrapping Tor client for making http requests")
+                guard let torService = initializer.container.resolve(LightWalletService.self) as? LightWalletGRPCServiceOverTor else {
+                    throw ZcashError.torClientUnavailable
+                }
+
+                return try await torService.tor.isolatedClient()
+            }
+            httpTorBootstrapTask = task
+            return task
         }
-        
-        guard let httpTor else {
-            throw ZcashError.torClientUnavailable
+
+        do {
+            let client = try await bootstrap.value
+            // Serialize the slot write so concurrent requests don't race write/write on `httpTor`.
+            httpTorLock.withLocked { httpTor = client }
+            return client
+        } catch {
+            // Allow a future request to retry bootstrap.
+            httpTorLock.withLocked {
+                if httpTorBootstrapTask == bootstrap {
+                    httpTorBootstrapTask = nil
+                }
+            }
+            throw error
         }
-        
-        return try await httpTor.isolatedClient().httpRequest(for: request, retryLimit: retryLimit)
     }
     
     public func debugDatabase(sql: String) -> String {
@@ -1347,5 +1401,16 @@ extension SessionTicker {
         default:
             return false
         }
+    }
+}
+
+private extension NSLocking {
+    /// `NSLocking.withLock` is only available from iOS 16 / macOS 13; this is the equivalent for
+    /// the iOS 13 deployment target. The body must not suspend — never hold this lock across an
+    /// `await`.
+    func withLocked<T>(_ body: () throws -> T) rethrows -> T {
+        lock()
+        defer { unlock() }
+        return try body()
     }
 }
