@@ -20,7 +20,17 @@ if [[ -f "$HOME/.cargo/env" ]]; then
     source "$HOME/.cargo/env"
 fi
 
-TARGET="${1:-ios-sim}"
+# Parse a target (ios-sim|ios-device|macos) + optional --gpu (v0.3 GPU Orchard offload
+# build; links wgpu via the libzcashlc `gpu` feature). Runtime opt-in: ZCASH_GPU_SUBTREE.
+TARGET="ios-sim"
+CARGO_FEATURES=""
+for arg in "$@"; do
+    case "$arg" in
+        --gpu) CARGO_FEATURES="--features gpu" ;;
+        ios-sim|ios-device|macos) TARGET="$arg" ;;
+        *) echo "Unknown arg: $arg"; echo "Usage: rebuild-local-ffi.sh [ios-sim|ios-device|macos] [--gpu]"; exit 1 ;;
+    esac
+done
 XCFRAMEWORK_DIR="LocalPackages/libzcashlc.xcframework"
 
 # Check if initialized
@@ -77,7 +87,7 @@ case "$TARGET" in
         ;;
 esac
 
-echo "Building for $TARGET ($RUST_TARGET)..."
+echo "Building for $TARGET ($RUST_TARGET)...${CARGO_FEATURES:+ [v0.3 GPU: $CARGO_FEATURES]}"
 echo ""
 
 # Check if Rust target is installed
@@ -93,8 +103,9 @@ if ! rustup target list --installed | grep -q "^${RUST_TARGET}$"; then
 fi
 
 # Incremental cargo build (fast for small changes!)
-# Cargo.toml is at the repo root, so we run cargo from there
-cargo build --target "$RUST_TARGET" --release
+# Cargo.toml is at the repo root, so we run cargo from there.
+# $CARGO_FEATURES is intentionally unquoted (empty = no extra args; "--features gpu" splits).
+cargo build --target "$RUST_TARGET" --release $CARGO_FEATURES
 
 # Path to built static library (target/ is at repo root)
 BUILT_LIB="target/$RUST_TARGET/release/libzcashlc.a"

@@ -4597,11 +4597,25 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
             )
         };
 
-        let cfg = slipstream_core::config::EngineConfig::new(
+        #[allow(unused_mut)] // `mut` is only used under the `gpu` feature below.
+        let mut cfg = slipstream_core::config::EngineConfig::new(
             h.network,
             h.wallet_db_path.clone(),
             h.endpoint.clone(),
         );
+
+        // v0.3 (#1755): GPU Orchard subtree offload. Compiled only with `--features gpu`;
+        // opt in at runtime via the ZCASH_GPU_SUBTREE env var (the dev A/B for the device
+        // matrix — set it in the Xcode scheme for v0.3, unset for v0.2). The capability
+        // auto-gate (calibration probe) supersedes this once tuned. No-op without the
+        // feature (build_orchard_subtrees falls back to CPU regardless).
+        #[cfg(feature = "gpu")]
+        {
+            cfg.gpu_subtree = std::env::var("ZCASH_GPU_SUBTREE")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            tracing::info!(gpu_subtree = cfg.gpu_subtree, "v0.3 GPU offload config (feature=gpu)");
+        }
 
         // The ufvk String is moved into the task; `as_str()` on it is safe within the
         // task's lifetime (the String outlives the async block inside the task).
