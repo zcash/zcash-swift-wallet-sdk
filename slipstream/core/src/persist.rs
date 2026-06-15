@@ -1625,6 +1625,17 @@ pub struct PersistLane {
     in_flight: Option<tokio::task::JoinHandle<PersistTaskOutput>>,
     /// (first_height, last_height) of the in-flight unit, for log attribution.
     in_flight_span: (u64, u64),
+    /// Depth-N write-behind buffer: pending units not yet spawned. At most ONE
+    /// runs at a time (`in_flight`); up to `depth` total may be unpersisted
+    /// (in_flight + queued) before the scan side blocks at `submit`. Persist stays
+    /// serial + in-order, so deepening this NEVER changes the committed `data.db` —
+    /// it only lets scan run further ahead, hiding more persist behind scan.
+    queue: std::collections::VecDeque<((u64, u64), PersistJob)>,
+    /// Max unpersisted units (in_flight + queued) before `submit` blocks the scan
+    /// side. 1 = strict depth-1 backpressure (legacy, byte-for-byte identical
+    /// behaviour); higher = scan runs further ahead (memory cost: ≤`depth` buffered
+    /// units, each ≈ one chunk's scanned blocks + commitments).
+    depth: usize,
     /// Σ scan-side blocked time across all awaits (0 ≈ perfect overlap).
     total_wait: std::time::Duration,
     /// Σ commit wall time measured inside the deferred closures.
@@ -1651,6 +1662,8 @@ impl PersistLane {
             lane_pool,
             in_flight: None,
             in_flight_span: (0, 0),
+            queue: std::collections::VecDeque::new(),
+            depth: 1,
             total_wait: std::time::Duration::ZERO,
             total_busy: std::time::Duration::ZERO,
         })
@@ -1719,22 +1732,25 @@ impl PersistLane {
         Ok(())
     }
 
-    /// Submit one deferred commit job. Depth-1 backpressure: awaits (and
-    /// error-propagates) the PREVIOUS commit before spawning this one — unit
-    /// N+1 is never submitted before unit N completed.
+    /// Total unpersisted units: the in-flight commit (if any) + the queued ones.
+    fn pending_count(&self) -> usize {
+        usize::from(self.in_flight.is_some()) + self.queue.len()
+    }
+
+    /// Spawn the head of the queue IF the lane is idle. No-op when a commit is
+    /// already in flight or the queue is empty. Errors loudly if the lane
+    /// connection was lost (poisoned by an earlier panic).
     ///
-    /// T6.9b: the job runs via `lane_pool.install(|| …)` so ALL nested rayon
-    /// usage inside `sparse_put_blocks` (the `rayon::join` for sapling∥orchard
-    /// and upstream `build_subtrees`' `par_chunks`) lands on the lane's
-    /// dedicated 2-thread pool — zero interaction with the global pool's decrypt
-    /// workers. The `install` call blocks until the closure returns, which is
-    /// exactly what `spawn_blocking`'s thread expects.
-    pub(crate) async fn submit_job(
-        &mut self,
-        span: (u64, u64),
-        job: PersistJob,
-    ) -> Result<(), crate::error::SlipstreamError> {
-        self.await_in_flight().await?;
+    /// T6.9b: the job runs via `lane_pool.install(|| …)` so ALL nested rayon usage
+    /// inside `sparse_put_blocks` (the `rayon::join` for sapling∥orchard and
+    /// upstream `build_subtrees`' `par_chunks`) lands on the lane's dedicated pool.
+    fn spawn_next(&mut self) -> Result<(), crate::error::SlipstreamError> {
+        if self.in_flight.is_some() {
+            return Ok(());
+        }
+        let Some((span, job)) = self.queue.pop_front() else {
+            return Ok(());
+        };
         let (Some(mut db), Some(mut sparse)) = (self.db.take(), self.sparse.take()) else {
             return Err(crate::error::SlipstreamError::Wallet(
                 "write-behind persist lane unusable (connection lost by an earlier failure)".into(),
@@ -1746,10 +1762,6 @@ impl PersistLane {
         self.in_flight_span = span;
         self.in_flight = Some(tokio::task::spawn_blocking(move || {
             let started = std::time::Instant::now();
-            // T6.9b2 policy: with an isolated pool, install routes ALL nested
-            // rayon work (rayon::join + par_chunks) onto the lane's own
-            // threads (saturated low-core machines); without one, the job uses
-            // the global pool (measured-best on ≥6-core machines).
             let result = match pool {
                 Some(p) => p.install(|| job(&mut db, &mut sparse)),
                 None => job(&mut db, &mut sparse),
@@ -1757,6 +1769,34 @@ impl PersistLane {
             .map(|()| started.elapsed());
             (db, sparse, result)
         }));
+        Ok(())
+    }
+
+    /// Submit one deferred commit job into the depth-N buffer. Persist stays
+    /// serial + IN-ORDER (one commit at a time) — so deepening the buffer never
+    /// changes the committed `data.db`. The scan side blocks ONLY once `depth`
+    /// units are unpersisted (in_flight + queued). At `depth == 1` this is the
+    /// legacy strict depth-1 backpressure: submit(N+1) awaits (and error-propagates)
+    /// unit N before spawning N+1 — byte-for-byte identical to the pre-queue lane.
+    ///
+    /// A commit error aborts the pipeline: the in-flight error is propagated and
+    /// the remaining queued units are DROPPED (the range fails; never spawned).
+    pub(crate) async fn submit_job(
+        &mut self,
+        span: (u64, u64),
+        job: PersistJob,
+    ) -> Result<(), crate::error::SlipstreamError> {
+        self.queue.push_back((span, job));
+        // Start the next unit immediately if the lane is idle.
+        self.spawn_next()?;
+        // Backpressure: await + reap + spawn-next until we are at/under `depth`.
+        while self.pending_count() > self.depth {
+            if let Err(e) = self.await_in_flight().await {
+                self.queue.clear();
+                return Err(e);
+            }
+            self.spawn_next()?;
+        }
         Ok(())
     }
 
@@ -1773,12 +1813,21 @@ impl PersistLane {
         .await
     }
 
-    /// Full barrier: wait for the in-flight commit (if any) and propagate its
-    /// error. After `drain` returns Ok, every submitted unit is durably
-    /// committed — required before enhancement, reorg recovery, suggest,
-    /// summary, and at range end.
+    /// Full barrier: drain the ENTIRE pending queue (await each in-flight commit,
+    /// spawn the next, in order) and propagate the first error. After `drain`
+    /// returns Ok, every submitted unit is durably committed — required before
+    /// enhancement, reorg recovery, suggest, summary, and at range end. A commit
+    /// error drops the remaining queued units and propagates. At `depth == 1` (and
+    /// any time ≤1 unit is pending) this is exactly the legacy single await.
     pub async fn drain(&mut self) -> Result<(), crate::error::SlipstreamError> {
-        self.await_in_flight().await
+        while self.pending_count() > 0 {
+            if let Err(e) = self.await_in_flight().await {
+                self.queue.clear();
+                return Err(e);
+            }
+            self.spawn_next()?;
+        }
+        Ok(())
     }
 }
 
