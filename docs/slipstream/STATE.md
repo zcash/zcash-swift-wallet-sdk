@@ -5,7 +5,11 @@
 
 ## NEXT ACTION
 
-➡️ **T8.2 — at-tip mempool detection (P8 plan: `plans/2026-06-12-phase-8-hardening.md`). Execute per plan: grpc.rs `open_mempool_stream` → mempool.rs `run_session` (dedupe, decrypt_and_store, progress.add_enhanced) → wire into follow loop in sync_body (replacing plain sleep with mempool-or-sleep head) → darkside mempool lifecycle test (extend darkside_follow.rs) → ENGINE_BUILD="2026-06-14.t82-mempool" → gates (cargo/clippy both feature sets, darkside serial ALL green, hermetic oracles CLEAN, mainnet tip−2000 oracle --sparse-b --write-behind-b VERDICT IDENTICAL, init-local-ffi.sh --macos-only + OfflineTests). Then T8.3 start-before-prepare wart fix.**
+➡️ **B0.1 — graduate the GPU Orchard Sinsemilla hash into a `slipstream-gpuhash` crate (plan: `plans/2026-06-15-phase-b0-gpu-subtree-plan.md`; design: `plans/2026-06-15-phase-b0-gpu-subtree-design.md`). B0 = byte-identical GPU Orchard subtree-build integration spike (behind `--gpu-subtree`, CPU path untouched), oracle-gated. Port the bit-exact spike kernels (`field/pallas/sinsemilla.wgsl` + wgpu harness + `orchard_combine_batch`) from `~/Dev/Xcode/GitHub/LukasKorba/zcash-gpu-spike/crates/gpu-wgpu`; KAT vs orchard. Then B0.2 (precompute + GpuHashOrchard thread-local lookup) → B0.3 (flag + persist.rs orchard hook) → B0.4 (oracle VERDICT IDENTICAL tip−N + darkside CLEAN).**
+
+**DECISION LOG 2026-06-15 (pivot):** user repriorized — **GPU-driven cooperative speedup (Phase B) is now PRE-P8 priority**; P8 hardening (T8.2 mempool + T8.3–T8.6) is **DEFERRED to follow Phase B**. Rationale: Phase A complete (bit-exact GPU Orchard Sinsemilla `combine`, oracle 0/10M, in the local-only spike `~/Dev/.../zcash-gpu-spike`) + device probe GO (iPhone 16 Pro ~1.66×, iPad A10 ~1.47× cooperative). Phase B brainstorm→spec→plan done this session (commits ba2ff1d8, 08bdbbc5).
+
+Previous (P8 — DEFERRED, resumes after Phase B): ➡️ **T8.2 — at-tip mempool detection (P8 plan: `plans/2026-06-12-phase-8-hardening.md`). Execute per plan: grpc.rs `open_mempool_stream` → mempool.rs `run_session` (dedupe, decrypt_and_store, progress.add_enhanced) → wire into follow loop in sync_body (replacing plain sleep with mempool-or-sleep head) → darkside mempool lifecycle test (extend darkside_follow.rs) → ENGINE_BUILD="2026-06-14.t82-mempool" → gates (cargo/clippy both feature sets, darkside serial ALL green, hermetic oracles CLEAN, mainnet tip−2000 oracle --sparse-b --write-behind-b VERDICT IDENTICAL, init-local-ffi.sh --macos-only + OfflineTests). Then T8.3 start-before-prepare wart fix.**
 
 Previous: ➡️ **USER DEVICE RE-TEST — T6.9b lane pool isolation — DELIVERED 2026-06-12 as T6.9b2: 8:32 wall (511.3s engine) NEW RECORD, third consecutive full-auto sub-Zkool run; iPad at compute floor; T6.9 series COMPLETE; speed chapter closed (see T6.9b2 session-log + truth-table rows).** Original ask: (ENGINE_BUILD=2026-06-13.l4b-lanepool). User rebuilds Zodl (full init-local-ffi.sh all 3 slices, Reset Package Caches + clean) and re-runs the standard 269k recent-wallet restore on the iPad A10 + iPhone. Verify engine_build tag in log = "2026-06-13.l4b-lanepool". Projection (pool-queueing elimination): iPad ~5:00-5:30 class IF pool-queueing was the dominant inflation in the 8:45 run (the field evidence — 60% lane busy inflation, 259s depth-1 wait — strongly implicates it); iPhone ~<73s chasing G6. Labeled PROJECTION — total CPU is conserved on a saturated chip; this removes scheduling pathology (queueing/interleaving inflation), it does not mint cores. Watch: persist_wait per chunk (should drop toward commit wall time), stage split persist_wait_s, wall time. Mac honest-physics note: Mac shows scan_s INCREASE (~5.6s before → ~10.7-12.4s after) because global pool had 10+ threads for commit; LANE_POOL_THREADS=2 limits commit parallelism on the many-core Mac but is the right budget for A10 (4 cores total: 2 lane + 2 decrypt). Kill switch retained.**
 
@@ -19,7 +23,26 @@ Previous: **T6.8-S DONE 2026-06-12 — byte-budgeted adaptive chunk splitting SH
 
 Previous: **HARDENING1 DONE 2026-06-12 — field-failure diagnosis + failure-path hardening SHIPPED (ENGINE_BUILD=2026-06-13.hardening1). Failure 1 `rustSlipstreamSyncFailed(3375119)` payload DECODED: the associated value is the snapshot CHAIN TIP at failure time (SlipstreamSynchronizer.swift:365 passes `snap.chainTip`), NOT an error code — it proves the pass got past preflight (tip fetched + DB updated) and failed later; the REAL error is only in device os_log (`tracing::error!` at the FFI runner; the tag=4 event value is a hardcoded generic 1). Mac repro attempt: 10/10 CLEAN tip-area fresh restores (5×zec.rocks, 5×eu.zec.rocks, incl. streams=8/chunk=1k) — cluster desync NOT reproduced, stays plausible-unconfirmed as failure-1 trigger. Failure 2 (frozen at 3.7% = exactly 1 chunk, state Syncing forever): rayon::join EXONERATED by hermetic stress (120 joins under 1/2-thread local pools + 2-thread global cold-injection, CLEAN); root cause is (1) un-timed transport await on a stalled-but-open connection (treestate prefetch scan.rs awaits had NO deadline) or (2) silently swallowed task panic (JoinHandle was never inspected) — BOTH now structurally impossible: B1 panic supervisor (Error(2) + tag=4/value=2 event + tracing hook), B2 30s deadlines on every unary/stream await, B3 reorg backoff (500ms×n cap 3s), B4 Swift 120s stall watchdog (loud Logger.error, no auto-restart). NEXT: user iPhone re-test with hardened build; then T6.9 L4b write-behind pipelining.** See session log 2026-06-12 hardening1 entry.
 
-## Current phase: P8 — Hardening & Productization (plan: `plans/2026-06-12-phase-8-hardening.md`)
+## Current phase: PHASE B — GPU cooperative speedup (PRE-P8; plans: `plans/2026-06-15-phase-b0-gpu-subtree-design.md` + `…-plan.md`)
+
+Goal: ship the device cooperative CPU+GPU sync win (measured: iPhone 16 Pro ~1.66×, iPad A10
+~1.47×; ~1.4–1.5× real sync after Amdahl). Sequence: **B0** (byte-identical GPU Orchard
+subtree-build integration spike) → **B1** (cooperative proportional CPU+GPU split + on-device
+sync-time) → **Phase A′** (GPU Sapling Pedersen/Jubjub kernel) → **B2** (wire Sapling in).
+Phase A (bit-exact GPU Orchard Sinsemilla combine, oracle 0/10M) is DONE in the local spike.
+
+| Task | Status | Notes |
+|---|---|---|
+| B0.0 pivot to Phase B (STATE.md, pre-P8) | done | this entry + Decision Log above |
+| B0.1 `slipstream-gpuhash` crate (port spike kernels, feature `gpu`, KAT vs orchard) | todo | source: `~/Dev/.../zcash-gpu-spike/crates/gpu-wgpu` |
+| B0.2 `gpu_precompute_shard` + `GpuHashOrchard` thread-local lookup (subtree == CPU) | todo | the novel core; reuses `from_iter` verbatim |
+| B0.3 `EngineConfig.gpu_subtree` + `--gpu-subtree` + persist.rs orchard hook | todo | CPU path untouched when off; mirrors `--write-behind` |
+| B0.4 oracle VERDICT IDENTICAL tip−N + darkside CLEAN (B0 done) | todo | the acceptance gate |
+| B1 cooperative proportional CPU+GPU split + on-device sync-time | future | own spec/plan after B0 |
+| Phase A′ GPU Sapling Pedersen/Jubjub kernel | future | Phase-A-sized; oracle vs `sapling` crate |
+| B2 wire Sapling into B0 integration + B1 scheduler | future | mechanical reuse |
+
+## Phase P8 — Hardening & Productization (DEFERRED — resumes after Phase B; plan: `plans/2026-06-12-phase-8-hardening.md`)
 
 Scope (controller-locked priorities; entered 2026-06-12 after T6.9b2 closed the speed chapter): burn down the Open rows of book ch.19's gaps table. OUT of P8 (recorded): Tor integration (own phase if user wants), L4a decrypt kernel (parked), shardtree/raw-SQL fork tier, darkside ≥v0.5 retirement (stays recorded-not-done).
 
