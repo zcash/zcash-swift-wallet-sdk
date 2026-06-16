@@ -348,6 +348,41 @@ class SlipstreamOfflineTests: ZcashTestCase {
         }
     }
 
+    /// T8.3 (T5.5 wart fix): the public `SlipstreamSynchronizer.start()` before
+    /// `prepare()` must throw `ZcashError.synchronizerNotPrepared` — parity with
+    /// `SDKSynchronizer.start` (SDKSynchronizer.swift:189-192). Without the guard it
+    /// reached `engine.start()` and surfaced the internal `.rustSlipstreamNotOpen`
+    /// the user saw at launch (the start-before-prepare wart).
+    func testStartBeforePrepareThrowsNotPrepared() async throws {
+        let sync = SlipstreamSynchronizer(initializer: try makeInitializer())
+        do {
+            try await sync.start()
+            XCTFail("start() before prepare() must throw")
+        } catch let error as ZcashError {
+            XCTAssertEqual(error.code, .synchronizerNotPrepared,
+                           "Expected synchronizerNotPrepared, got \(error.code)")
+        } catch {
+            XCTFail("Expected ZcashError.synchronizerNotPrepared, got \(error)")
+        }
+    }
+
+    /// T8.3 (T5.5 wart fix): `stop()` on an unprepared synchronizer must NOT forge
+    /// `isPrepared` by moving `.unprepared` → `.stopped`. Zodl calls `stop()`
+    /// unconditionally on `didEnterBackground` (RootInitialization.swift:75-76); if a
+    /// background hop during `prepare()` forged `isPrepared`, the next foreground
+    /// `start()` would pass the guard above and spring the wart again.
+    func testStopBeforePrepareKeepsUnprepared() throws {
+        let sync = SlipstreamSynchronizer(initializer: try makeInitializer())
+        sync.stop()
+        XCTAssertFalse(sync.latestState.internalSyncStatus.isPrepared,
+                       "stop() before prepare() must leave the synchronizer unprepared")
+        if case .unprepared = sync.latestState.internalSyncStatus {
+            // expected — state unchanged
+        } else {
+            XCTFail("internalSyncStatus must remain .unprepared after stop(), got \(sync.latestState.internalSyncStatus)")
+        }
+    }
+
     /// `zcashlc_slipstream_open` with a path whose PARENT directory does not exist returns null →
     /// `SlipstreamEngine.open(network:)` throws `ZcashError.rustSlipstreamOpen`.
     func testEngineOpenWithInvalidPathThrowsRustSlipstreamOpen() async throws {

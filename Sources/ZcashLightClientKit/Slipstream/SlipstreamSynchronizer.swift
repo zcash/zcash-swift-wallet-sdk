@@ -230,6 +230,16 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// The account is already imported in `data.db` from `prepare`, so UFVK is passed as `nil`
     /// (keyless update — engine calls `ensure_account` only when `ufvk=Some`).
     public func start(retry: Bool = false) async throws {
+        // T8.3 (T5.5 wart fix): a start() before prepare() must throw
+        // .synchronizerNotPrepared — parity with SDKSynchronizer.start
+        // (SDKSynchronizer.swift:189-192). Without this guard, start() reached
+        // engine.start() on a nil handle and surfaced the internal
+        // .rustSlipstreamNotOpen the user saw at launch. This makes that internal
+        // error unreachable via the public Synchronizer API (it is kept only for
+        // direct SlipstreamEngine misuse, covered by its own test).
+        guard latestState.internalSyncStatus.isPrepared else {
+            throw ZcashError.synchronizerNotPrepared
+        }
         let birthday = BlockHeight(initializer.walletBirthday)
         // Parity with SDKSynchronizer.start (SDKSynchronizer.swift:198/204): re-enables
         // `SDKFlags.chainTipUpdated` when the SDK was stopped less than 120 s ago, so a
@@ -274,12 +284,21 @@ public final class SlipstreamSynchronizer: Synchronizer {
         chainTipMarkedThisRun = false
         isRunning = false
         stopPolling()
-        stateSubject.send(SynchronizerState(
-            syncSessionID: latestState.syncSessionID,
-            accountsBalances: latestState.accountsBalances,
-            internalSyncStatus: .stopped,
-            latestBlockHeight: latestState.latestBlockHeight
-        ))
+        // T8.3 (T5.5 wart fix): only emit .stopped if we were prepared. stop() on an
+        // unprepared synchronizer (Zodl calls it unconditionally on didEnterBackground,
+        // RootInitialization.swift:75-76) must NOT forge isPrepared by moving
+        // .unprepared → .stopped — that springs the start-before-prepare wart on the
+        // next foreground start(). The sdkStopped()/engine.stop() side effects above
+        // stay unconditional (engine.stop() on a nil handle is a no-op). Mirrors
+        // SDKSynchronizer.stop ordering (sdkStopped THEN status guard, SDKSynchronizer.swift:243-249).
+        if latestState.internalSyncStatus.isPrepared {
+            stateSubject.send(SynchronizerState(
+                syncSessionID: latestState.syncSessionID,
+                accountsBalances: latestState.accountsBalances,
+                internalSyncStatus: .stopped,
+                latestBlockHeight: latestState.latestBlockHeight
+            ))
+        }
     }
 
     // ── Polling (D8) ──────────────────────────────────────────────────────────
