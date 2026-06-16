@@ -97,6 +97,10 @@ pub struct SlipstreamHandle {
     pub wallet_db_path: std::path::PathBuf,
     /// Network (MainNetwork or TestNetwork).
     pub network: zcash_protocol::consensus::Network,
+    /// Host physical memory in bytes, passed by Swift at open (`ProcessInfo`
+    /// `.physicalMemory`); 0 = unknown. Drives `EngineConfig::scaled_for_device_memory`
+    /// at start so <3 GiB devices get derated fetch/split budgets (T8.4).
+    pub total_memory_bytes: u64,
 }
 
 /// Spawns `fut` on `runtime` together with a SUPERVISOR task that owns the
@@ -228,6 +232,7 @@ mod tests {
             endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
             wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
             network: zcash_protocol::consensus::Network::TestNetwork,
+            total_memory_bytes: 0,
         };
 
         // Simulate F1: scheduler calls set_pass_total with whole-pass total.
@@ -270,6 +275,7 @@ mod tests {
             endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
             wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
             network: zcash_protocol::consensus::Network::TestNetwork,
+            total_memory_bytes: 0,
         };
 
         assert_eq!(handle.snapshot().ranges_completed, 0, "initial value must be 0");
@@ -297,6 +303,7 @@ mod tests {
             endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
             wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
             network: zcash_protocol::consensus::Network::TestNetwork,
+            total_memory_bytes: 0,
         };
 
         // Push 70 events — only the last 64 should survive.
@@ -438,6 +445,7 @@ mod tests {
             endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
             wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
             network: zcash_protocol::consensus::Network::TestNetwork,
+            total_memory_bytes: 0,
         };
 
         handle.push_event(FfiSlipstreamEvent { tag: 1, value: 10 });

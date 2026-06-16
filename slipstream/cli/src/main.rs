@@ -60,6 +60,11 @@ enum Cmd {
         /// "sandblasting" eras traversable). Must be >= 1 MiB.
         #[arg(long, default_value_t = slipstream_core::EngineConfig::DEFAULT_CHUNK_SPLIT_BYTES)]
         chunk_split_bytes: usize,
+        /// T8.4: in-memory fetch/decode budget (bytes); must be >= 16 MiB. Lower it for
+        /// memory-constrained runs — the device path derates this automatically from
+        /// ProcessInfo.physicalMemory; this flag is the Mac/CLI equivalent (book ch.19).
+        #[arg(long, default_value_t = slipstream_core::EngineConfig::DEFAULT_MEMORY_BUDGET)]
+        memory_budget_bytes: usize,
         /// T6.9: depth-1 write-behind persistence pipelining (overlap chunk N's
         /// DB commit with chunk N+1's decryption). Requires sparse. Default ON
         /// since the 2026-06-12 flip; `--write-behind false` is the kill switch.
@@ -248,6 +253,7 @@ fn cmd_sync(
     chunk: u32,
     sparse: bool,
     chunk_split_bytes: usize,
+    memory_budget_bytes: usize,
     write_behind: bool,
     gpu_subtree: bool,
     persist_depth: usize,
@@ -271,6 +277,7 @@ fn cmd_sync(
     cfg.chunk_blocks = chunk;
     cfg.sparse_persistence = sparse;
     cfg.chunk_split_bytes = chunk_split_bytes;
+    cfg.memory_budget_bytes = memory_budget_bytes;
     require_gpu_feature_if(gpu_subtree, "--gpu-subtree");
     // `--sparse false` (the sparse kill switch) implies write-behind off: the
     // deferred commit runs the sparse put_blocks path, so it cannot outlive it.
@@ -523,8 +530,8 @@ fn main() {
         Cmd::Fetch { server, range, streams, chunk, baseline } => {
             cmd_fetch(server, range, streams, chunk, baseline);
         }
-        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, gpu_subtree, persist_depth, follow } => {
-            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, write_behind, gpu_subtree, persist_depth, follow);
+        Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow } => {
+            cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow);
         }
         Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, gpu_subtree_b, persist_depth_b, streams, chunk } => {
             cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, gpu_subtree_b, persist_depth_b, streams, chunk);
@@ -674,6 +681,48 @@ mod tests {
         assert!(
             matches!(cli.cmd, Cmd::Sync { chunk_split_bytes: 2_097_152, .. }),
             "--chunk-split-bytes must override the default"
+        );
+    }
+
+    #[test]
+    fn sync_memory_budget_defaults_to_engine_default() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+        ])
+        .expect("parses default");
+        assert!(
+            matches!(
+                cli.cmd,
+                Cmd::Sync {
+                    memory_budget_bytes: slipstream_core::EngineConfig::DEFAULT_MEMORY_BUDGET,
+                    ..
+                }
+            ),
+            "default memory_budget_bytes must equal EngineConfig::DEFAULT_MEMORY_BUDGET"
+        );
+    }
+
+    #[test]
+    fn sync_memory_budget_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "slipstream",
+            "sync",
+            "--server",
+            "http://127.0.0.1:9067",
+            "--wallet-dir",
+            "/tmp/test-wallet",
+            "--memory-budget-bytes",
+            "67108864",
+        ])
+        .expect("parses --memory-budget-bytes");
+        assert!(
+            matches!(cli.cmd, Cmd::Sync { memory_budget_bytes: 67_108_864, .. }),
+            "--memory-budget-bytes must override the default"
         );
     }
 

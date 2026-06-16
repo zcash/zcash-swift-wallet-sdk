@@ -243,10 +243,24 @@ fn apply_txid_fetch(
     Ok(())
 }
 
+/// Effective end-EXCLUSIVE bound for a `TransactionsInvolvingAddress` range (T8.5).
+/// `None` means "unbounded above" (data_api.rs:1131-1135); the completest answer a
+/// lightwalletd can give RIGHT NOW is through the chain tip, so an open range clamps to
+/// `chain_height + 1` (end-exclusive ⇒ includes the tip block). The post-success
+/// `notify_address_checked(end - 1)` then records exactly the height we checked through,
+/// and the wallet re-issues a fresh request covering later heights next pass — no gap.
+fn effective_range_end(
+    block_range_end: Option<BlockHeight>,
+    chain_height: BlockHeight,
+) -> BlockHeight {
+    block_range_end.unwrap_or(chain_height + 1)
+}
+
 /// Handle one `TransactionsInvolvingAddress` request.
 ///
 /// Mirrors `BlockEnhancer.swift:124-171` skip-guards and streaming logic:
-/// 1. Missing `block_range_end` → skip + warn (open-ended ranges not supported by lightwalletd).
+/// 1. Open-ended `block_range_end` (None) → clamp to `chain_height + 1` (T8.5); only
+///    skipped if there is no scanned chain tip yet (cannot happen after preflight).
 /// 2. `request_at` set → skip + warn (timed/decorrelated fetches not supported yet).
 /// 3. `output_status_filter == Unspent` → skip silently (not supported yet).
 /// 4. Otherwise: stream `GetTaddressTxids` over `[block_range_start, block_range_end - 1]`
@@ -256,7 +270,7 @@ fn apply_txid_fetch(
 ///    advances its check watermark.
 ///
 /// `skipped_keys` — the per-run dedupe set shared across all rounds.  When a skip guard
-/// fires, the skip key (`address:range_start-range_end` or `address:open`) is inserted.
+/// fires, the skip key (`address:range_start-range_end` or `address:open-no-tip`) is inserted.
 /// If the key is already present (same request re-issued in a later round), the duplicate
 /// is silently counted without re-emitting a `warn!` or incrementing `stats.skipped`.
 async fn apply_address_request(
@@ -268,27 +282,39 @@ async fn apply_address_request(
     skipped_keys: &mut HashSet<String>,
     progress: Option<&Progress>,
 ) -> Result<(), SlipstreamError> {
-    // Guard 1: open-ended range (lightwalletd does not support it).
+    // Guard 1 (T8.5): clamp an open-ended range to the wallet's current chain tip instead
+    // of skipping it. An open range (None) means "unbounded above" (data_api.rs:1131-1135);
+    // the completest answer lightwalletd can give now is through the tip — so we clamp via
+    // effective_range_end and service the request as a closed range. Only skip if there is
+    // genuinely no scanned tip yet (cannot happen after preflight; handled defensively so
+    // an unbounded request never reaches upstream). Privacy: the clamped request sends the
+    // SAME address string to GetTaddressTxids as any closed-range request already does — no
+    // new transparent-address leakage surface (book ch.15).
     let block_range_end = match tia.block_range_end() {
         Some(h) => h,
-        None => {
-            let key = format!("{}:open", tia.address().encode(network));
-            if skipped_keys.insert(key) {
-                // First time this address+open-range combo is skipped: warn once.
-                warn!(
-                    address = %tia.address().encode(network),
-                    "TransactionsInvolvingAddress missing blockRangeEnd — skipping (open-ended range unsupported)"
-                );
-                stats.skipped += 1;
-            } else {
-                // Duplicate skip in a later round: silent debug only.
-                debug!(
-                    address = %tia.address().encode(network),
-                    "TransactionsInvolvingAddress open-range skip (duplicate, already counted)"
-                );
+        None => match session
+            .db_mut()
+            .chain_height()
+            .map_err(|e| SlipstreamError::Wallet(format!("chain_height for open-range clamp: {e}")))?
+        {
+            Some(tip) => effective_range_end(None, tip),
+            None => {
+                let key = format!("{}:open-no-tip", tia.address().encode(network));
+                if skipped_keys.insert(key) {
+                    warn!(
+                        address = %tia.address().encode(network),
+                        "TransactionsInvolvingAddress open range with no scanned chain tip — skipping"
+                    );
+                    stats.skipped += 1;
+                } else {
+                    debug!(
+                        address = %tia.address().encode(network),
+                        "TransactionsInvolvingAddress open-no-tip skip (duplicate, already counted)"
+                    );
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
+        },
     };
 
     // Guard 2: requestAt set (privacy-decorrelated scheduling not implemented).
@@ -448,5 +474,21 @@ mod tests {
             }
         }
         assert_eq!(skipped_count, 3, "requestAt skip must be counted once per unique address+range");
+    }
+
+    /// T8.5 — open-ended TransactionsInvolvingAddress ranges clamp to the wallet's current
+    /// chain height (end-EXCLUSIVE per data_api.rs:1131-1135: "mined at heights LESS than
+    /// this height"); closed ranges pass through untouched.
+    #[test]
+    fn effective_range_end_clamps_open_ranges_to_tip() {
+        use zcash_protocol::consensus::BlockHeight;
+        let tip = BlockHeight::from_u32(3_375_000);
+        // Closed range passes through untouched.
+        assert_eq!(
+            effective_range_end(Some(BlockHeight::from_u32(100)), tip),
+            BlockHeight::from_u32(100)
+        );
+        // Open range → tip + 1 (end-exclusive ⇒ includes the tip block).
+        assert_eq!(effective_range_end(None, tip), BlockHeight::from_u32(3_375_001));
     }
 }

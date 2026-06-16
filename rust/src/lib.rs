@@ -4492,6 +4492,9 @@ async fn run_pass_with_retry(
 /// - `server_port`: lightwalletd port.
 /// - `use_tls`: `true` for TLS (mainnet), `false` for plaintext.
 /// - `network_id`: `1` for mainnet, `0` for testnet.
+/// - `total_memory_bytes`: host physical memory in bytes (Swift passes
+///   `ProcessInfo.processInfo.physicalMemory`); `0` = unknown. Drives device-memory
+///   budget derating at start for <3 GiB devices (T8.4); `0`/big devices keep defaults.
 ///
 /// Returns an opaque handle pointer, or null on failure.
 /// Free with [`zcashlc_slipstream_free`] when done.
@@ -4516,6 +4519,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
     server_port: u16,
     use_tls: bool,
     network_id: u32,
+    total_memory_bytes: u64,
 ) -> *mut SlipstreamHandle {
     let res = catch_panic(|| {
         // B1 (#1755): make sure every panic is visible in device logs (os_log via
@@ -4549,7 +4553,10 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
             },
             wallet_db_path: db_path.to_path_buf(),
             network,
+            total_memory_bytes,
         };
+
+        tracing::info!(total_memory_bytes, "slipstream handle opened");
 
         Ok(Box::into_raw(Box::new(SlipstreamHandle { inner })))
     });
@@ -4610,7 +4617,10 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
             h.network,
             h.wallet_db_path.clone(),
             h.endpoint.clone(),
-        );
+        )
+        // T8.4: derate fetch/split budgets on <3 GiB devices from the open-time
+        // physical-memory hint (0 = unknown → defaults). Explicit field overrides win.
+        .scaled_for_device_memory(h.total_memory_bytes);
 
         // v0.3 (#1755): GPU Orchard subtree offload. Compiled only with `--features gpu`;
         // opt in at runtime via the ZCASH_GPU_SUBTREE env var (the dev A/B for the device

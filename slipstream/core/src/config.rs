@@ -167,6 +167,31 @@ impl EngineConfig {
         }
         Ok(())
     }
+
+    /// Derated budgets for <3 GiB devices (A10-class, 2 GiB shared with the GPU).
+    /// Sizing from the T6.8-S field record (STATE Blockers): a 64 MiB wire budget
+    /// ≈ 128–192 MiB decoded (2–3× amplification) + the per-range sparse tree +
+    /// allocator HWM stays well under the ~1.4 GiB practical jetsam line on a 2 GiB
+    /// device. The 4 MiB split keeps the AheadGate (8×split = 32 MiB) and the
+    /// per-sub-chunk RAM proportionally small.
+    pub const SMALL_DEVICE_MEMORY_BUDGET: usize = 64 * 1024 * 1024;
+    pub const SMALL_DEVICE_CHUNK_SPLIT_BYTES: usize = 4 * 1024 * 1024;
+    /// Devices reporting less physical memory than this are derated.
+    pub const SMALL_DEVICE_THRESHOLD_BYTES: u64 = 3 << 30;
+
+    /// Applies device-memory-aware budget scaling (T8.4). `total_memory_bytes` is the
+    /// host's physical memory (Swift passes `ProcessInfo.physicalMemory` via the FFI
+    /// open hint; the CLI uses an explicit `--memory-budget-bytes` flag instead); 0 =
+    /// unknown → defaults unchanged. Only ever DERATES — explicit field overrides set
+    /// after this call still win.
+    #[must_use]
+    pub fn scaled_for_device_memory(mut self, total_memory_bytes: u64) -> Self {
+        if total_memory_bytes > 0 && total_memory_bytes < Self::SMALL_DEVICE_THRESHOLD_BYTES {
+            self.memory_budget_bytes = Self::SMALL_DEVICE_MEMORY_BUDGET;
+            self.chunk_split_bytes = Self::SMALL_DEVICE_CHUNK_SPLIT_BYTES;
+        }
+        self
+    }
 }
 
 #[cfg(test)]
@@ -292,5 +317,19 @@ mod tests {
         let mut c = config();
         c.enhance_every_chunks = 1;
         assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn device_memory_scaling_derates_small_devices() {
+        let c = config();
+        // Unknown (0) and big devices keep defaults.
+        assert_eq!(c.clone().scaled_for_device_memory(0).memory_budget_bytes, EngineConfig::DEFAULT_MEMORY_BUDGET);
+        assert_eq!(c.clone().scaled_for_device_memory(8 << 30).chunk_split_bytes, EngineConfig::DEFAULT_CHUNK_SPLIT_BYTES);
+        assert_eq!(c.clone().scaled_for_device_memory(3 << 30).memory_budget_bytes, EngineConfig::DEFAULT_MEMORY_BUDGET);
+        // Sub-3 GiB devices (A10 iPad = 2 GiB) derate to the Blockers sizing.
+        let small = c.clone().scaled_for_device_memory((3 << 30) - 1);
+        assert_eq!(small.memory_budget_bytes, EngineConfig::SMALL_DEVICE_MEMORY_BUDGET);
+        assert_eq!(small.chunk_split_bytes, EngineConfig::SMALL_DEVICE_CHUNK_SPLIT_BYTES);
+        small.validate().expect("derated config must validate");
     }
 }

@@ -68,7 +68,10 @@ public actor SlipstreamEngine {
                 UInt(hPtr.count),
                 UInt16(clamping: server.port),
                 server.secure,
-                networkId
+                networkId,
+                // T8.4: device-memory hint — the Rust side derates fetch/split budgets on
+                // <3 GiB devices (A10-class) so spam-era restores don't jetsam. 0 = unknown.
+                ProcessInfo.processInfo.physicalMemory
             )
         }
 
