@@ -539,6 +539,67 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertTrue(spendable, "spendable must be true when scan.isComplete is true")
     }
 
+    // MARK: - 6b. T8.3.5 warm-start progress helpers (summaryProgress + syncingProgress floor)
+
+    /// summaryProgress(nil) → (0.0, false): a genuinely fresh wallet has no summary, so it
+    /// contributes no floor and the cold restore path is preserved.
+    func testSummaryProgressNilIsZero() {
+        let (progress, spendable) = SlipstreamSynchronizer.summaryProgress(nil)
+        XCTAssertEqual(progress, 0.0, accuracy: Float.ulpOfOne)
+        XCTAssertFalse(spendable)
+    }
+
+    /// Restore: with no summary floor (fresh wallet, floor 0), the pass-local counter is
+    /// reported verbatim — the from-birthday restore bar is unchanged by T8.3.5.
+    func testSyncingProgressRestoreUsesPassLocalCounter() {
+        let progress = SlipstreamSynchronizer.syncingProgress(scanned: 250, passTotal: 1000, summaryFloor: 0.0)
+        XCTAssertEqual(progress, 0.25, accuracy: 1e-5)
+    }
+
+    /// Cold-launch catch-up (THE T8.3.5 fix): the pass covers only a few new blocks
+    /// (pass-local 0/5 = 0%), but the wallet is 99% synced globally → floored to 0.99, so
+    /// the widget stays hidden (>98%) instead of flashing 0%.
+    func testSyncingProgressCatchUpFlooredToSummary() {
+        let progress = SlipstreamSynchronizer.syncingProgress(scanned: 0, passTotal: 5, summaryFloor: 0.99)
+        XCTAssertEqual(progress, 0.99, accuracy: 1e-5)
+    }
+
+    /// When the live pass-local counter is AHEAD of a (stale) summary floor, the live value
+    /// wins — a restore mid-flight keeps climbing past a lagging summary.
+    func testSyncingProgressLivePassLocalDominatesStaleFloor() {
+        let progress = SlipstreamSynchronizer.syncingProgress(scanned: 600, passTotal: 1000, summaryFloor: 0.3)
+        XCTAssertEqual(progress, 0.6, accuracy: 1e-5)
+    }
+
+    /// initialState(nil) → cold `.disconnected` with no balances — a genuinely fresh
+    /// wallet (no summary yet) keeps the prior cold-launch behaviour.
+    func testInitialStateColdWhenNil() {
+        let state = SlipstreamSynchronizer.initialState(from: nil, syncSessionID: UUID())
+        XCTAssertEqual(state.internalSyncStatus, .disconnected)
+        XCTAssertTrue(state.accountsBalances.isEmpty)
+    }
+
+    /// initialState(summary) → WARM `.syncing` carrying the summary's progress + chain tip,
+    /// so a cold launch of a synced wallet shows a truthful near-100% instead of 0%.
+    func testInitialStateWarmFromSummary() {
+        let summary = WalletSummary(
+            accountBalances: [:],
+            chainTipHeight: 3_000_000,
+            fullyScannedHeight: 2_999_990,
+            recoveryProgress: nil,
+            scanProgress: ScanProgress(numerator: 99, denominator: 100),
+            nextSaplingSubtreeIndex: 0,
+            nextOrchardSubtreeIndex: 0
+        )
+        let state = SlipstreamSynchronizer.initialState(from: summary, syncSessionID: UUID())
+        if case let .syncing(progress, _) = state.internalSyncStatus {
+            XCTAssertEqual(progress, 0.99, accuracy: 1e-5, "warm progress must come from the summary scanProgress")
+        } else {
+            XCTFail("warm initial state must be .syncing, got \(state.internalSyncStatus)")
+        }
+        XCTAssertEqual(state.latestBlockHeight, 3_000_000)
+    }
+
     // MARK: - 7. T4.9 regression tests (F1 timeout-helper; F2 switchTo same-endpoint no-op)
 
     // ── 7a. withTaskTimeout helper ─────────────────────────────────────────────

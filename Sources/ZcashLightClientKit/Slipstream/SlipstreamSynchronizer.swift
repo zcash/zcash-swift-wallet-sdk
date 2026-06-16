@@ -215,12 +215,15 @@ public final class SlipstreamSynchronizer: Synchronizer {
             return .seedRequired
         }
         try await engine.open(network: initializer.network)
-        stateSubject.send(SynchronizerState(
-            syncSessionID: UUID(),
-            accountsBalances: [:],
-            internalSyncStatus: .disconnected,
-            latestBlockHeight: .zero
-        ))
+        // T8.3.5: warm the cold-launch emission from the persisted wallet summary, so an
+        // already-synced wallet shows its REAL balance + a truthful near-100% progress
+        // immediately (widget stays hidden), instead of [:]/0% until the first sync tick
+        // resolves seconds later. A genuinely fresh wallet has no summary yet → cold
+        // .disconnected, as before (a real restore legitimately starts at 0 balance/0%).
+        // `cachedSummary` is seeded here so start() + the first ticks inherit the warm
+        // values (and the syncingProgress floor has a baseline).
+        cachedSummary = try? await initializer.rustBackend.getWalletSummary()
+        stateSubject.send(SlipstreamSynchronizer.initialState(from: cachedSummary, syncSessionID: UUID()))
         return .success
     }
 
@@ -259,11 +262,16 @@ public final class SlipstreamSynchronizer: Synchronizer {
         try await engine.start(ufvk: nil, birthday: birthday)
         isRunning = true
         startPolling()
+        // T8.3.5: seed the initial syncing emission from the cached summary (seeded in
+        // prepare) so a cold-launch catch-up doesn't reset progress to 0% — the pass-local
+        // counter starts at 0 for the few new blocks. A fresh wallet has no summary → 0%,
+        // as before; balance carries the warm value from prepare().
+        let (warmProgress, warmSpendable) = SlipstreamSynchronizer.summaryProgress(cachedSummary)
         stateSubject.send(SynchronizerState(
             syncSessionID: UUID(),
-            accountsBalances: latestState.accountsBalances,
-            internalSyncStatus: .syncing(0, false),
-            latestBlockHeight: latestState.latestBlockHeight
+            accountsBalances: cachedSummary?.accountBalances ?? latestState.accountsBalances,
+            internalSyncStatus: .syncing(warmProgress, warmSpendable),
+            latestBlockHeight: cachedSummary?.chainTipHeight ?? latestState.latestBlockHeight
         ))
     }
 
@@ -372,9 +380,14 @@ public final class SlipstreamSynchronizer: Synchronizer {
         } else if snap.state == 1 {
             // Syncing: counter-based progress only — NO regular getWalletSummary.
             // (A10 log evidence: summary was ~20–35% CPU parasite; eliminated in T5.5.)
-            let progress = SlipstreamSynchronizer.counterProgress(
+            // T8.3.5: floor the pass-local counter with the wallet's GLOBAL summary
+            // progress so a cold-launch catch-up (a few new blocks → pass-local 0%)
+            // doesn't read as "0% synced". A real restore (summary ≈ 0 at the start)
+            // still climbs 0→100% off the pass-local counter.
+            let progress = SlipstreamSynchronizer.syncingProgress(
                 scanned: snap.scannedBlocks,
-                total: snap.passTotalBlocks
+                passTotal: snap.passTotalBlocks,
+                summaryFloor: SlipstreamSynchronizer.summaryProgress(cachedSummary).progress
             )
             let spendable = snap.spendableHint != 0
 

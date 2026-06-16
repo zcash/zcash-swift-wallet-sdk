@@ -76,6 +76,56 @@ extension SlipstreamSynchronizer {
         return (progress, scan.isComplete)
     }
 
+    /// T8.3.5: the wallet's GLOBAL scan progress from a persisted `WalletSummary`
+    /// (the engine's scanned-vs-total-needed fraction), or `(0.0, false)` when no
+    /// summary exists yet (a genuinely fresh wallet). Wraps `composeProgress` with the
+    /// summary's `scanProgress`/`recoveryProgress`. Used to (a) warm the cold-launch
+    /// emissions (`prepare`/`start`) so balance + progress show real values immediately,
+    /// and (b) FLOOR the pass-local counter during a pass (see `syncingProgress`).
+    static func summaryProgress(_ summary: WalletSummary?) -> (progress: Float, spendable: Bool) {
+        guard let summary else { return (0.0, false) }
+        return composeProgress(
+            scanProgress: summary.scanProgress.map { ($0.numerator, $0.denominator, $0.isComplete) },
+            recoveryProgress: summary.recoveryProgress.map { ($0.numerator, $0.denominator) }
+        )
+    }
+
+    /// T8.3.5: the % to show while `state == 1` (Syncing). The engine reports PASS-LOCAL
+    /// progress (`counterProgress(scanned, passTotal)`) — correct for a from-birthday
+    /// restore, but MISLEADING for a small catch-up pass on an already-synced wallet: a
+    /// few new blocks read as "0% synced", so a cold launch flashes the restore widget at
+    /// 0%. We FLOOR the pass-local value with the wallet's global summary progress, so a
+    /// near-synced wallet never drops below ~100% (the widget stays hidden) while a real
+    /// restore (summary ≈ 0 at the start) still climbs 0→100% off the pass-local counter.
+    /// Cheap — `summaryFloor` is the already-cached value; no `getWalletSummary` call here.
+    static func syncingProgress(scanned: UInt64, passTotal: UInt64, summaryFloor: Float) -> Float {
+        max(counterProgress(scanned: scanned, total: passTotal), summaryFloor)
+    }
+
+    /// T8.3.5: the `SynchronizerState` that `prepare()` emits right after opening the
+    /// engine. WARM (from the persisted summary) when a summary exists — the real balance
+    /// + a truthful near-100% progress, so a cold launch of a synced wallet never flashes
+    /// `[:]`/0%. COLD (`.disconnected`, no balances) when there is no summary yet (a
+    /// genuinely fresh wallet about to restore — 0 balance / "connecting" is correct).
+    static func initialState(from summary: WalletSummary?, syncSessionID: UUID) -> SynchronizerState {
+        guard let summary else {
+            return SynchronizerState(
+                syncSessionID: syncSessionID,
+                accountsBalances: [:],
+                internalSyncStatus: .disconnected,
+                latestBlockHeight: .zero
+            )
+        }
+        let (progress, spendable) = summaryProgress(summary)
+        return SynchronizerState(
+            syncSessionID: syncSessionID,
+            accountsBalances: summary.accountBalances,
+            internalSyncStatus: .syncing(progress, spendable),
+            latestBlockHeight: summary.chainTipHeight,
+            fullyScannedHeight: summary.fullyScannedHeight
+        )
+    }
+
     /// Pure decision: should this poll tick mark `SDKFlags.chainTipUpdated`?
     ///
     /// Semantics mirror `UpdateChainTipAction.swift:49` — the flag is marked exactly when
