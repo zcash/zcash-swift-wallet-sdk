@@ -4274,6 +4274,14 @@ const FOLLOW_POLL_MAX_SECS: u64 = 30;
 /// failure loop would hide a dead server from the user forever.
 const FOLLOW_FAILURE_CAP: u32 = 8;
 
+/// Consecutive mempool-session failures tolerated before mempool monitoring is
+/// disabled for THIS handle (T8.2). Mempool is a non-fatal convenience layer on
+/// top of following: a persistently failing stream must NOT kill the follow
+/// loop — the handle drops back to plain tip-polling and the user still syncs
+/// (Deviation D6). Lower than FOLLOW_FAILURE_CAP because, unlike tip probes,
+/// losing mempool degrades nothing essential.
+const MEMPOOL_FAILURE_CAP: u32 = 5;
+
 /// Maps a uniform random sample in [0, 1) to a probe sleep duration in
 /// [FOLLOW_POLL_MIN_SECS, FOLLOW_POLL_MAX_SECS] (inclusive on both ends).
 ///
@@ -4683,11 +4691,50 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                     // old-SDK's CompactBlockProcessor.swift:74-76 jitter design.
                     let mut last_tip = outcome.chain_tip;
                     let mut consecutive_failures: u32 = 0;
+                    // T8.2 mempool monitoring state (per-handle). Non-fatal: a
+                    // persistently failing stream disables mempool for this handle
+                    // and the loop keeps tip-polling. `seen_txids` persists across
+                    // sessions because lightwalletd replays the whole mempool on
+                    // every reconnect (mempool.go g_txList; Deviation D6).
+                    let mut mempool_enabled = true;
+                    let mut mempool_failures: u32 = 0;
+                    let mut seen_txids: std::collections::HashSet<[u8; 32]> =
+                        std::collections::HashSet::new();
                     loop {
-                        // Jittered sleep before each probe.
-                        let sleep_dur = follow_poll_jitter(rand::random::<f64>());
-                        tracing::debug!(sleep_secs = sleep_dur.as_secs(), last_tip, "follow: sleeping before tip probe");
-                        tokio::time::sleep(sleep_dur).await;
+                        // ── Between passes: hold a mempool session (surfaces 0-conf
+                        // incoming) or jitter-sleep if mempool is disabled. A live
+                        // session blocks until the server closes the stream on a new
+                        // block (then we probe immediately — lower latency than the
+                        // 10-30 s poll) or MEMPOOL_SESSION_IDLE elapses; either way
+                        // it falls through to the tip probe below, so the session
+                        // bounds the iteration cadence by itself. Mempool failure is
+                        // NON-FATAL (T8.2, Deviation D6): on the cap it disables
+                        // mempool for this handle and the loop reverts to the exact
+                        // T8.1 jitter-poll behaviour — following never dies from it.
+                        if mempool_enabled {
+                            match slipstream_core::mempool::run_session(&cfg, Some(progress.clone()), &mut seen_txids, slipstream_core::mempool::MEMPOOL_SESSION_IDLE).await {
+                                Ok((end, stats)) => {
+                                    mempool_failures = 0;
+                                    tracing::debug!(?end, received = stats.received, hits = stats.stored_hits, last_tip, "follow: mempool session ended");
+                                }
+                                Err(err) => {
+                                    mempool_failures += 1;
+                                    tracing::warn!(%err, mempool_failures, "follow: mempool session failed (non-fatal)");
+                                    if mempool_failures >= MEMPOOL_FAILURE_CAP {
+                                        tracing::warn!("follow: mempool monitoring disabled for this handle (cap reached) — tip polling continues");
+                                        mempool_enabled = false;
+                                    }
+                                    // Back off with the same jittered cadence as the
+                                    // plain poll so a flapping stream cannot hot-loop.
+                                    tokio::time::sleep(follow_poll_jitter(rand::random::<f64>())).await;
+                                }
+                            }
+                        } else {
+                            // Jittered sleep before each probe (mempool off/capped).
+                            let sleep_dur = follow_poll_jitter(rand::random::<f64>());
+                            tracing::debug!(sleep_secs = sleep_dur.as_secs(), last_tip, "follow: sleeping before tip probe");
+                            tokio::time::sleep(sleep_dur).await;
+                        }
 
                         // Fast-path probe: GetLatestBlock only (no subtree roots,
                         // no UTXO refresh — those only happen in a full pass).
@@ -5000,6 +5047,18 @@ mod slipstream_retry_tests {
         assert!(
             FOLLOW_FAILURE_CAP >= 3,
             "FOLLOW_FAILURE_CAP must be >= 3 to tolerate transient server weather"
+        );
+    }
+
+    /// Mempool cap is sane: >= 1 (so a single failure can't disable it) and
+    /// strictly below FOLLOW_FAILURE_CAP — mempool is a non-essential layer, so
+    /// it should give up sooner than the tip-poll that actually drives sync.
+    #[test]
+    fn mempool_failure_cap_is_sane() {
+        assert!(MEMPOOL_FAILURE_CAP >= 1, "one failure must not disable mempool");
+        assert!(
+            MEMPOOL_FAILURE_CAP < FOLLOW_FAILURE_CAP,
+            "mempool (non-essential) must give up before the essential tip poll"
         );
     }
 

@@ -12,6 +12,7 @@ pub mod events;
 pub mod ffi_handle;
 pub mod fetch;
 pub mod grpc;
+pub mod mempool;
 pub mod oracle;
 pub mod persist;
 #[cfg(feature = "gpu")]

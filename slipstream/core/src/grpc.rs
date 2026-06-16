@@ -276,6 +276,28 @@ pub async fn get_taddress_txids(
     Ok(txs)
 }
 
+/// Opens a `GetMempoolStream` session (T8.2). The server pushes raw mempool
+/// transactions as they arrive and CLOSES the stream when a new block is mined
+/// (lightwalletd contract, `service.proto:188-192`). Unlike the other stream
+/// helpers this returns the RAW stream — the caller reacts per-message.
+///
+/// Deliberately NOT wrapped in [`with_unary_timeout`]: `GetMempoolStream` is
+/// server-streaming and lightwalletd sends its response HEADERS lazily — only
+/// with the first mempool tx, or when it closes the stream on a new block. On a
+/// quiet mempool the `.await` here legitimately blocks well past the 30 s unary
+/// timeout (blocks are ~75 s apart on mainnet), so wrapping it would spuriously
+/// fail. The CALLER bounds the open with `mempool::MEMPOOL_SESSION_IDLE` and
+/// treats an over-idle open as a benign reconnect (Deviation D6), not a failure.
+pub async fn open_mempool_stream(
+    client: &mut LwdClient,
+) -> Result<tonic::Streaming<RawTransaction>, SlipstreamError> {
+    client
+        .get_mempool_stream(Empty {})
+        .await
+        .map(tonic::Response::into_inner)
+        .map_err(|status| SlipstreamError::Transport(format!("get_mempool_stream: {status}")))
+}
+
 /// Collect UTXOs for the given transparent addresses from `start_height`.
 pub async fn get_address_utxos(
     client: &mut LwdClient,

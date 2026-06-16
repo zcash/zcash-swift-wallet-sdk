@@ -22,6 +22,7 @@
 //! Then: cargo test -p slipstream-core --features darkside -- --ignored --test-threads=1
 #![cfg(feature = "darkside")]
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -31,7 +32,7 @@ use slipstream_core::{
     darkside::DarksideCtl,
     engine::{probe_tip, should_resync},
     fetch::{FetchPlan, run_fetch},
-    grpc,
+    grpc, mempool,
     scan::scan_chunks_from_treestate,
     wallet_session::{WalletSession, TEST_UFVK},
 };
@@ -300,3 +301,62 @@ async fn follow_probe_detects_new_blocks_and_catches_up() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// T8.2 darkside mempool session test (quiet-mempool integration)
+// ---------------------------------------------------------------------------
+
+/// T8.2: `mempool::run_session` against a REAL lightwalletd handles a quiet
+/// mempool cleanly — it opens GetMempoolStream, waits out the (lazy-header) open
+/// under the idle bound, and returns a benign `IdleReconnect` with NO spurious
+/// wallet hits and NO error. This is the end-to-end validation of the
+/// lazy-header open handling: the open is bounded by `idle`, NOT the 30 s gRPC
+/// unary timeout — otherwise a quiet mempool (no tx, no new block) would
+/// spuriously fail and, after the cap, wrongly disable mempool monitoring.
+///
+/// SCOPE / darkside limitation (recorded in STATE Blockers): darkside v0.4.9's
+/// GetMempoolStream does NOT serve `StageTransactions`-staged txs as mempool
+/// entries — empirically, 30 s of active mempool polling delivered nothing, and
+/// the old-SDK Swift pending/mempool tests are themselves disabled (#1247 /
+/// #1518). So the wallet-HIT path (staged incoming tx → stored 0-conf hit →
+/// convergence on mine) is NOT hermetically testable here. It is covered by:
+///   1. the `mempool.rs` unit tests (dedupe / relevance-via-stats / idle bound),
+///   2. the structural argument — run_session stores via upstream's audited
+///      `decrypt_and_store_transaction`, the OLD SDK's exact production write
+///      path (rust/src/lib.rs:2070), passing `mined_height=None` for 0-conf, and
+///   3. [needs-user] manual validation (CLI `--follow` on mainnet + a real
+///      0-conf send → the incoming tx appears while still unmined).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires local darkside lightwalletd + internet (fixture URLs)"]
+async fn mempool_session_handles_quiet_mempool() {
+    let ep = darkside_endpoint();
+    let mut ctl = DarksideCtl::connect(&ep).await.expect("darkside connect");
+
+    // A minimal applied chain so the server has a tip. The mempool stays empty:
+    // we never SendTransaction nor stage a loose tx.
+    ctl.reset_with_tree_sizes(START_SAPLING_TREE_SIZE, 0).await.expect("reset");
+    ctl.stage_blocks_url(TX_MAINNET_BLOCK_URL).await.expect("stage 663150 block");
+    ctl.stage_blocks_create(663_151, 40).await.expect("stage empty blocks");
+    ctl.apply_staged(APPLY_HEIGHT).await.expect("apply chain");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let wallet_dir = tempfile::tempdir().expect("tempdir");
+    let db_path = wallet_dir.path().join("data.db");
+    let cfg = EngineConfig::new(Network::MainNetwork, db_path, ep.clone());
+
+    // One bounded session against the quiet mempool. A short idle keeps the test
+    // fast; production passes mempool::MEMPOOL_SESSION_IDLE (60 s).
+    let mut seen: HashSet<[u8; 32]> = HashSet::new();
+    let (end, stats) = mempool::run_session(&cfg, None, &mut seen, Duration::from_secs(4))
+        .await
+        .expect("run_session must NOT error on a quiet mempool (lazy-header open is idle-bounded)");
+
+    eprintln!("quiet mempool session: end={end:?}, stats={stats:?}");
+    assert_eq!(stats.stored_hits, 0, "a quiet mempool must yield no wallet hits");
+    assert_eq!(stats.received, 0, "no mempool txs were submitted — none should be received");
+    // Lazy headers + quiet mempool ⇒ the open idles out ⇒ benign IdleReconnect
+    // (BlockBoundary is also acceptable if the server happened to close first).
+    assert!(
+        matches!(end, mempool::SessionEnd::IdleReconnect | mempool::SessionEnd::BlockBoundary),
+        "quiet session must end benignly, got {end:?}"
+    );
+}
