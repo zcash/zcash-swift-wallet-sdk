@@ -126,6 +126,22 @@ extension SlipstreamSynchronizer {
         )
     }
 
+    /// T8.3.6 (UX): return `raw` with each transaction's `state` populated from
+    /// `currentHeight` (via `Overview.getState`). Pure — the height resolution stays in the
+    /// synchronizer (it needs `latestState`/the backend). Without populating `state`, Zashi
+    /// maps an INCOMING tx via `transaction.state == .pending` → `nil == .pending` → false →
+    /// ".received", so a 0-conf mempool tx wrongly shows "received" instead of "receiving".
+    static func transactionsWithState(
+        _ raw: [ZcashTransaction.Overview],
+        currentHeight: BlockHeight
+    ) -> [ZcashTransaction.Overview] {
+        raw.map { tx in
+            var copy = tx
+            copy.state = tx.getState(for: currentHeight)
+            return copy
+        }
+    }
+
     /// Pure decision: should this poll tick mark `SDKFlags.chainTipUpdated`?
     ///
     /// Semantics mirror `UpdateChainTipAction.swift:49` — the flag is marked exactly when

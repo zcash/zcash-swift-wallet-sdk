@@ -453,7 +453,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
         if snap.enhancedTxs > lastEnhancedCount {
             // Primary: new enhancements observed — fetch and emit.
-            let txs = (try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []
+            let txs = await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? [])
             if !txs.isEmpty {
                 eventSubject.send(.foundTransactions(txs, nil))
             }
@@ -462,7 +462,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
             // Fallback: sync completed with stored transactions but the counter
             // did not advance this tick (already caught by an earlier tick or
             // count unchanged across this pass).  Emit so the UI sees them.
-            let txs = (try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []
+            let txs = await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? [])
             if !txs.isEmpty {
                 eventSubject.send(.foundTransactions(txs, nil))
             }
@@ -764,11 +764,22 @@ public final class SlipstreamSynchronizer: Synchronizer {
     }
 
     public func allTransactions() async throws -> [ZcashTransaction.Overview] {
-        try await transactionRepository.find(offset: 0, limit: Int.max, kind: .all)
+        try await enhanceWithState(transactionRepository.find(offset: 0, limit: Int.max, kind: .all))
     }
 
     public func allTransactions(from transaction: ZcashTransaction.Overview, limit: Int) async throws -> [ZcashTransaction.Overview] {
-        try await transactionRepository.find(from: transaction, limit: limit, kind: .all)
+        try await enhanceWithState(transactionRepository.find(from: transaction, limit: limit, kind: .all))
+    }
+
+    /// T8.3.6 (UX): populate `ZcashTransaction.Overview.state` on fetched transactions (the
+    /// Slipstream equivalent of `SDKSynchronizer.enhanceRawTransactionsWithState`). `find`
+    /// leaves `state == nil`, so without this Zashi maps an INCOMING tx via
+    /// `transaction.state == .pending` → `nil == .pending` → false → ".received" — a 0-conf
+    /// mempool tx then wrongly shows "received" instead of "receiving". Pure mapping lives in
+    /// `transactionsWithState`; here we just resolve the current chain height it needs.
+    private func enhanceWithState(_ raw: [ZcashTransaction.Overview]) async -> [ZcashTransaction.Overview] {
+        let tip = latestState.latestBlockHeight
+        return Self.transactionsWithState(raw, currentHeight: tip != 0 ? tip : ((try? await initializer.rustBackend.maxScannedHeight()) ?? .zero))
     }
 
     public func getMemos(for rawID: Data) async throws -> [Memo] {
@@ -1225,11 +1236,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
 private extension SlipstreamSynchronizer {
     func allSentTransactions() async throws -> [ZcashTransaction.Overview] {
-        try await transactionRepository.findSent(offset: 0, limit: Int.max)
+        try await enhanceWithState(transactionRepository.findSent(offset: 0, limit: Int.max))
     }
 
     func allReceivedTransactions() async throws -> [ZcashTransaction.Overview] {
-        try await transactionRepository.findReceived(offset: 0, limit: Int.max)
+        try await enhanceWithState(transactionRepository.findReceived(offset: 0, limit: Int.max))
     }
 
     func submitTransactions(_ transactions: [ZcashTransaction.Overview]) -> AsyncThrowingStream<TransactionSubmitResult, Error> {
