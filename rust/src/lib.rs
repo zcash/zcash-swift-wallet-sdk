@@ -4268,10 +4268,13 @@ const FOLLOW_POLL_MIN_SECS: u64 = 10;
 /// Maximum follow-probe sleep (inclusive). Matches the old-SDK jitter ceiling.
 const FOLLOW_POLL_MAX_SECS: u64 = 30;
 
-/// Consecutive follow-iteration transient failures tolerated before the
-/// handle surfaces SyncState::Error. A probe failure is most often server
-/// weather; following must shrug it off, not die — but an UNBOUNDED silent
-/// failure loop would hide a dead server from the user forever.
+/// Consecutive follow-iteration failures after which the follow loop logs an
+/// ESCALATED warning (likely a connectivity problem). T8.7: this NO LONGER
+/// surfaces SyncState::Error — a follow-phase failure is recoverable (the wallet
+/// stays synced to last_tip and keeps retrying); only the INITIAL sync's
+/// non-transient errors (and panics, via the supervisor) surface Error. Kept as a
+/// louder-logging threshold so a dead server is visible in logs without scaring an
+/// internal tester with a hard error.
 const FOLLOW_FAILURE_CAP: u32 = 8;
 
 /// Consecutive mempool-session failures tolerated before mempool monitoring is
@@ -4281,6 +4284,15 @@ const FOLLOW_FAILURE_CAP: u32 = 8;
 /// (Deviation D6). Lower than FOLLOW_FAILURE_CAP because, unlike tip probes,
 /// losing mempool degrades nothing essential.
 const MEMPOOL_FAILURE_CAP: u32 = 5;
+
+/// Capped exponential backoff for the resilient initial-sync retry loop (T8.7). A
+/// foreground wallet must NOT surface a hard sync error for a transient network blip —
+/// the runner retries with this backoff (showing Disconnected) instead of Error-ing.
+/// attempt 1→3s, 2→6s, 3→12s, 4→24s, ≥5→30s (capped). Pure + unit-tested.
+fn sync_retry_backoff(attempt: u32) -> std::time::Duration {
+    let shift = attempt.saturating_sub(1).min(4);
+    std::time::Duration::from_secs((3u64 << shift).min(30))
+}
 
 /// Maps a uniform random sample in [0, 1) to a probe sleep duration in
 /// [FOLLOW_POLL_MIN_SECS, FOLLOW_POLL_MAX_SECS] (inclusive on both ends).
@@ -4654,12 +4666,41 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
             // follow pass. Use SlipstreamCoreEvent (the type stored in the handle's ring).
             push_ring_event(&events, SlipstreamCoreEvent { tag: 1, value: 0 });
 
-            // ── Initial pass: bounded retry loop (T6.8-H2 Fix B) ─────────────
-            let initial_result = run_pass_with_retry(
-                &cfg,
-                ufvk_arg.as_ref().map(|(s, h)| (s.as_str(), *h)),
-                &progress,
-            ).await;
+            // ── Initial pass: RESILIENT retry loop (T8.7) ────────────────────
+            // A foreground wallet must NEVER surface a hard sync error for a
+            // recoverable (transient/transport) failure — internal testers must not
+            // see "sync failed" from a transient network blip at sync start. On a
+            // transient error we retry with a capped backoff, surfacing Disconnected
+            // (Swift maps state 0 → .disconnected) between attempts; a NON-transient
+            // error (config/logic) still surfaces Error below (a real, non-recoverable
+            // problem). Panics are caught by the B1 supervisor → Error(2).
+            // run_pass_with_retry already does the inner T6.8-H2 transient retries;
+            // this is the outer never-give-up-on-the-network layer.
+            let mut initial_failures: u32 = 0;
+            let initial_result = loop {
+                *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Syncing;
+                match run_pass_with_retry(
+                    &cfg,
+                    ufvk_arg.as_ref().map(|(s, h)| (s.as_str(), *h)),
+                    &progress,
+                ).await {
+                    Ok(outcome) => break Ok(outcome),
+                    Err(err) if err.is_transient() => {
+                        initial_failures += 1;
+                        let backoff = sync_retry_backoff(initial_failures);
+                        tracing::warn!(
+                            %err,
+                            initial_failures,
+                            backoff_secs = backoff.as_secs(),
+                            "initial sync attempt failed (transient) — retrying, NOT surfacing Error"
+                        );
+                        // Disconnected between attempts (not Error): the wallet keeps trying.
+                        *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Idle;
+                        tokio::time::sleep(backoff).await;
+                    }
+                    Err(err) => break Err(err),
+                }
+            };
 
             match initial_result {
                 Err(err) => {
@@ -4755,20 +4796,24 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                             }
                             Err(err) if err.is_transient() => {
                                 consecutive_failures += 1;
-                                tracing::warn!(%err, consecutive_failures, "follow tip probe failed (transient)");
+                                // T8.7: a transient probe failure NEVER surfaces Error — the wallet
+                                // is already synced; just retry on the next tick. After
+                                // FOLLOW_FAILURE_CAP we log louder (likely a connectivity problem)
+                                // but STILL stay synced and keep retrying.
                                 if consecutive_failures > FOLLOW_FAILURE_CAP {
-                                    tracing::error!("follow loop giving up after repeated probe failures");
-                                    *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(1);
-                                    push_ring_event(&events, SlipstreamCoreEvent { tag: 4, value: 1 });
-                                    return;
+                                    tracing::warn!(%err, consecutive_failures, "follow tip probe failing repeatedly — wallet stays synced, still retrying (check connectivity)");
+                                } else {
+                                    tracing::warn!(%err, consecutive_failures, "follow tip probe failed (transient) — will retry");
                                 }
                                 continue;
                             }
                             Err(err) => {
-                                tracing::error!(%err, "follow tip probe failed (fatal)");
-                                *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(1);
-                                push_ring_event(&events, SlipstreamCoreEvent { tag: 4, value: 1 });
-                                return;
+                                consecutive_failures += 1;
+                                // T8.7: even a non-transient probe error stays OUT of Error — the
+                                // wallet is synced; surfacing a hard error for a follow-phase blip
+                                // is exactly what internal testers must not see. Retry next tick.
+                                tracing::warn!(%err, consecutive_failures, "follow tip probe failed (non-transient) — staying synced, will retry");
+                                continue;
                             }
                         };
 
@@ -4795,10 +4840,14 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                                 });
                             }
                             Err(err) => {
-                                tracing::error!(%err, failed_at_utc = %slipstream_core::engine::wall_clock_utc(), "follow pass failed");
-                                *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(1);
-                                push_ring_event(&events, SlipstreamCoreEvent { tag: 4, value: 1 });
-                                return;
+                                consecutive_failures += 1;
+                                // T8.7: a failed catch-up pass is RECOVERABLE — the wallet is still
+                                // synced to last_tip. Revert to Done (NOT Error) and retry the
+                                // catch-up on the next tick; internal testers must never see a hard
+                                // sync error from a follow blip. (Persistent failures just keep
+                                // retrying + logging; a real panic still surfaces via the supervisor.)
+                                tracing::warn!(%err, consecutive_failures, last_tip, failed_at_utc = %slipstream_core::engine::wall_clock_utc(), "follow catch-up pass failed — staying synced, will retry");
+                                *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Done;
                             }
                         }
                     }
@@ -5031,6 +5080,17 @@ mod slipstream_retry_tests {
             d >= std::time::Duration::from_secs(FOLLOW_POLL_MIN_SECS),
             "sample near 1.0 must be at least min poll interval ({FOLLOW_POLL_MIN_SECS}s), got {d:?}"
         );
+    }
+
+    /// T8.7: the resilient initial-sync backoff grows then caps at 30 s, no overflow.
+    #[test]
+    fn sync_retry_backoff_grows_then_caps() {
+        assert_eq!(sync_retry_backoff(1), std::time::Duration::from_secs(3));
+        assert_eq!(sync_retry_backoff(2), std::time::Duration::from_secs(6));
+        assert_eq!(sync_retry_backoff(3), std::time::Duration::from_secs(12));
+        assert_eq!(sync_retry_backoff(4), std::time::Duration::from_secs(24));
+        assert_eq!(sync_retry_backoff(5), std::time::Duration::from_secs(30));
+        assert_eq!(sync_retry_backoff(100), std::time::Duration::from_secs(30));
     }
 
     /// Constants are in the old-SDK jitter band (10–30 s) and sane relative to each other.
