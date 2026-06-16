@@ -26,18 +26,18 @@
     <tbody>
       <tr>
         <td>Mempool detection missing (P8 GAP 1)</td>
-        <td><span style="color:#b54708;font-weight:700">Open</span></td>
-        <td>Incoming transactions not visible until mined AND a new sync pass runs</td>
+        <td><span style="color:#1a7f37;font-weight:700">Shipped (T8.2)</span></td>
+        <td>SHIPPED + device-validated 2026-06-16: an incoming wallet tx is detected in the mempool (0-conf) before it mines — <code>GetMempoolStream</code> → <code>decrypt_and_store_transaction(mined_height=None)</code> → <code>foundTransactions</code>, at-tip between follow passes; non-fatal (cap → tip-polling continues). Deviation D1 (mined_height=None, not bug-for-bug old-SDK), D2 (at-tip-only, serialized with passes).</td>
       </tr>
       <tr>
         <td>No periodic tip-following (P8 GAP 2)</td>
-        <td><span style="color:#27864a;font-weight:700">Mitigated/Shipped</span></td>
-        <td>T8.1 shipped: jittered [10–30s] probe loop inside sync_body; Done↔Syncing state contract; stop/background cancels via AbortHandle. Deviations: D3 (no new Following state), D4 (brief ~syncing flap per catch-up pass). [needs-user] device field confirmation pending.</td>
+        <td><span style="color:#1a7f37;font-weight:700">Shipped (T8.1)</span></td>
+        <td>SHIPPED + device-confirmed 2026-06-16: jittered [10–30s] probe loop inside sync_body; Done↔Syncing state contract; stop/background cancels via AbortHandle. Deviations: D3 (no new Following state), D4 (brief ~syncing flap per catch-up pass).</td>
       </tr>
       <tr>
         <td>A10-class spam-era memory tuning</td>
-        <td><span style="color:#b54708;font-weight:700">Open</span></td>
-        <td>Old-wallet restores (birthday &lt; ~1.7M) may crash (jetsam) on 2 GB devices crossing the 2022 spam era</td>
+        <td><span style="color:#1a7f37;font-weight:700">Mitigated (T8.4)</span></td>
+        <td>T8.4 ships the device-memory derate: Swift passes <code>ProcessInfo.physicalMemory</code> to <code>zcashlc_slipstream_open</code>, and <code>EngineConfig::scaled_for_device_memory</code> applies a 64 MiB budget + 4 MiB split on &lt;3 GiB devices (AheadGate auto-scales). [needs-user] iPad A10 935000-birthday restore survival is the acceptance gate (pending).</td>
       </tr>
       <tr>
         <td>Tor not wired into Slipstream paths</td>
@@ -46,8 +46,8 @@
       </tr>
       <tr>
         <td><code>TransactionsInvolvingAddress</code> skip</td>
-        <td><span style="color:#b54708;font-weight:700">Open</span></td>
-        <td>Enhancement requests with open-ended block ranges are silently skipped; transparent address history may be incomplete</td>
+        <td><span style="color:#1a7f37;font-weight:700">Mitigated (T8.5)</span></td>
+        <td>T8.5: open-ended ranges clamp to <code>chain_height+1</code> (<code>effective_range_end</code>) and are serviced as closed ranges (no longer skipped). Caveat (fact I): ephemeral ZIP-320 checks still skip via the requestAt/Unspent guards — same as the old SDK (#1551/#1552).</td>
       </tr>
       <tr>
         <td>Transparent address privacy leakage</td>
@@ -56,8 +56,13 @@
       </tr>
       <tr>
         <td><code>startFailed(.rustSlipstreamNotOpen)</code> launch wart</td>
-        <td><span style="color:#1a7f37;font-weight:700">Mitigated</span></td>
-        <td>Zodl emits this error at app launch if <code>start()</code> is called before <code>prepare()</code> completes; self-recovers</td>
+        <td><span style="color:#1a7f37;font-weight:700">Fixed (T8.3)</span></td>
+        <td>T8.3: two SDK-side guards (start guards <code>isPrepared</code> → throws <code>synchronizerNotPrepared</code>; stop only emits <code>.stopped</code> when prepared) make <code>.rustSlipstreamNotOpen</code> unreachable via the public Synchronizer API. Two OfflineTests cover it. Root cause (fact G): Zodl's unconditional didEnterBackground <code>stop()</code> forged <code>isPrepared</code>.</td>
+      </tr>
+      <tr>
+        <td>Cold-launch balance/progress flash (T8.3.5)</td>
+        <td><span style="color:#1a7f37;font-weight:700">Fixed (T8.3.5)</span></td>
+        <td>NEW (user-reported 2026-06-16): on a cold launch of an already-synced wallet, balance flashed 0→X and the smart widget flashed ~0% before dismissing. Fixed SDK-side — <code>prepare()</code>/<code>start()</code> warm-seed balance + progress from the persisted wallet summary, and the <code>.syncing</code> tick floors the pass-local counter with the wallet's GLOBAL summary progress (a catch-up reads ~100%, never 0%). The 98% widget threshold + last-balance cache stay Zodl-side.</td>
       </tr>
       <tr>
         <td>L2 row batching seam-blocked</td>
@@ -113,9 +118,7 @@
 
   <p><strong>Why it matters:</strong> For interactive use — especially receiving payments — the absence of pending-transaction state is a significant UX regression vs. the old SDK. A user who sends ZEC to a Slipstream wallet sees nothing until the next full sync pass completes.</p>
 
-  <p><strong>Current mitigation:</strong> None. The engine is single-shot and does not monitor the mempool at any point.</p>
-
-  <p><strong>Planned fix shape:</strong> Engine-level mempool stream while at tip: stream <code>GetMempoolStream</code>, decrypt+store via <code>decrypt_and_store_transaction</code>, emit <code>foundTransactions</code>. Pairs with GAP 2 (both are "engine only syncs once" symptoms). Targeted for P8.</p>
+  <p><strong>Status — SHIPPED (T8.2, device-validated 2026-06-16):</strong> <code>mempool::run_session</code> holds a <code>GetMempoolStream</code> between follow passes, dedupes by txid, stores wallet-relevant txs via <code>decrypt_and_store_transaction(mined_height=None)</code> (0-conf), and bumps the enhanced counter → Swift's existing <code>foundTransactions</code> fires. Non-fatal (cap → tip-polling continues). On a real device a genuine incoming tx surfaced 0-conf before mining. Deviation D1 (mined_height=None — not bug-for-bug old-SDK, but Zodl renders both as 0-conf), D2 (at-tip-only, serialized with passes so there is never a second DB writer). One honest limitation: lightwalletd sends GetMempoolStream headers LAZILY (so the open is bounded by a 60 s idle, not the 30 s unary timeout — otherwise a quiet mempool would spuriously fail), and darkside v0.4.9 cannot serve a staged mempool tx, so the full hermetic lifecycle is covered by a real-server quiet-mempool integration test + unit tests + the structural argument (upstream's audited write path).</p>
 
   <h3>No periodic tip-following (P8 GAP 2)</h3>
 
@@ -132,7 +135,7 @@
     <li><strong>D4</strong>: Brief <code>.syncing</code> flap during each catch-up pass (~1-2 blocks; seconds). Tip-gating (no pass unless tip advanced) means flap frequency equals block arrival rate — same as old SDK's 10–30 s restart timer.</li>
   </ul>
 
-  <p><strong>Remaining gap:</strong> [needs-user] device field confirmation. CLI validation: <code>cargo run -p slipstream-cli --release -- sync --server https://zec.rocks:443 --wallet-dir /tmp/t81 --follow</code> watches tip and catches the next real block.</p>
+  <p><strong>Field status:</strong> Corroborated on device 2026-06-16 — the T8.2 mempool session showed the follow loop live at tip (the <code>engine pass starting</code> line + between-pass mempool sessions). CLI validation: <code>cargo run -p slipstream-cli --release -- sync --server https://zec.rocks:443 --wallet-dir /tmp/t81 --follow</code> watches tip and catches the next real block.</p>
 
   <h3>A10-class spam-era memory tuning</h3>
 
@@ -143,9 +146,7 @@
 
   <p><strong>Why it matters:</strong> Old wallets — anyone who set a birthday before ~1.7M — cannot restore on A10-class devices without a jetsam kill. This is the most common iOS device class in the Zodl user base.</p>
 
-  <p><strong>Current mitigation:</strong> The sandblasting era is traversable on Mac-class hardware (T6.8-S). A10-class is untested. CLI override: <code>--chunk-split-bytes</code> and <code>--memory-budget-bytes</code>.</p>
-
-  <p><strong>Planned fix shape:</strong> Per-device-class configuration: smaller <code>memory_budget_bytes</code> (e.g. 64 MB) and <code>chunk_split_bytes</code> (e.g. 4 MiB) for A10-class. Consider range segmentation so the sparse tree state resets periodically, bounding in-memory accumulator size across a 1.5M-block historic range.</p>
+  <p><strong>Status — derate SHIPPED (T8.4, 2026-06-16; A10 device run pending):</strong> Swift passes <code>ProcessInfo.physicalMemory</code> to <code>zcashlc_slipstream_open</code>, and <code>EngineConfig::scaled_for_device_memory</code> applies a 64 MiB <code>memory_budget_bytes</code> + 4 MiB <code>chunk_split_bytes</code> on &lt;3 GiB devices (the AheadGate auto-scales as 8×split). A <code>--memory-budget-bytes</code> CLI flag now exists too — this chapter previously over-claimed that flag before it was added (fact H); T8.4 made it real. The <strong>acceptance gate is [needs-user]</strong>: an iPad A10 935000-birthday restore that survives the 1.70–2.00M spam era (the run that jetsams today). If 64 MiB still isn't enough on the A10, range segmentation (resetting the sparse tree state periodically across the 1.5M-block historic range) remains a future option.</p>
 
   <h3>Tor not wired into Slipstream paths</h3>
 
@@ -169,15 +170,13 @@
 
   <p><strong>Why it matters:</strong> Transparent address history may be incomplete in edge cases where the upstream WalletDb generates open-ended TransactionsInvolvingAddress requests. For most wallets using shielded addresses primarily, this is not observed in practice.</p>
 
-  <p><strong>Current mitigation:</strong> Skips are deduplicated (per-run HashSet, T4.6) so each unique address+range combination produces only one warning. The final enhancement backstop runs post-loop.</p>
-
-  <p><strong>Planned fix shape:</strong> Supply a concrete block range (e.g., birthday..current tip) for any open-ended request. Requires verifying that the upstream data_api generates these requests in a form where a closed range is semantically equivalent. Targeted for P8.</p>
+  <p><strong>Status — SHIPPED (T8.5, 2026-06-16):</strong> An open-ended range now clamps to <code>chain_height + 1</code> (<code>effective_range_end</code>) and is serviced as a closed <code>[start, tip]</code> request — the completest answer lightwalletd can give now; <code>notify_address_checked(tip)</code> records the watermark so the wallet re-issues for later heights next pass (no coverage gap). Caveat (fact I): the ONLY upstream producer of open-ended requests is ephemeral ZIP-320 checks, which ALSO set <code>request_at</code> + <code>Unspent</code> — so they still skip via guards 2+3, exactly as the old SDK does (#1551/#1552). Privacy: the clamped request sends the same address string as any closed-range request already does — no new leakage (ch. 15). An honest "Mitigated-with-caveat" close.</p>
 
   <h2>19.3 Mitigated gaps</h2>
 
   <h3>startFailed(.rustSlipstreamNotOpen) launch wart</h3>
 
-  <p>Zodl observed <code>synchronizerStartFailed(.rustSlipstreamNotOpen)</code> at app launch in T5.5 testing. The cause: some call path invoked <code>start()</code> before <code>prepare()</code> completed, hitting the FFI guard that requires an open handle. The error is benign — the app self-recovers when <code>prepare()</code> subsequently opens the handle and the lifecycle triggers another <code>start()</code>. Recorded for investigation of the Zodl initialization sequencing; low priority.</p>
+  <p><strong>FIXED (T8.3, 2026-06-16).</strong> Zodl observed <code>synchronizerStartFailed(.rustSlipstreamNotOpen)</code> at app launch in T5.5 testing. Root cause (fact G): <code>SlipstreamSynchronizer.start()</code> lacked the unprepared guard AND <code>stop()</code> emitted <code>.stopped</code> unconditionally — so Zodl's unconditional <code>didEnterBackground</code> <code>stop()</code> during a background-hop-while-preparing forged <code>isPrepared</code> (<code>.unprepared</code>→<code>.stopped</code>), and the next foreground <code>start()</code> then reached <code>engine.start()</code> on a not-yet-open handle. Fix: two SDK-side guards (start guards <code>isPrepared</code> → throws <code>synchronizerNotPrepared</code>; stop only emits <code>.stopped</code> when prepared), zero Zodl changes — <code>.rustSlipstreamNotOpen</code> is now unreachable via the public Synchronizer API. Two OfflineTests cover it.</p>
 
   <h3>L2 row batching seam-blocked (upstream API)</h3>
 
