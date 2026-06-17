@@ -71,6 +71,27 @@ tried, measured, and concluded, so the next attempt starts from knowledge, not f
   byte-identical, verified). depth>1 might help *only* the isolated-lane-pool low-core A10 (which
   is memory-constrained + gate-off) — i.e. nowhere useful.
 
+## Decrypt-ahead (zallet-inspired orchestration) — arc + verdict
+
+- **Source:** the 2026-06-17 zallet↔slipstream comparison flagged zallet's persistent, decoupled
+  batch-decryptor (decrypt-ahead across boundaries) as slipstream's #1 thing-to-steal (slipstream
+  "rebuilds its `BatchRunner` per `scan_cached_blocks` call").
+- **NO-GO at Phase 0 — from code + existing data, no new sync.** Two hypotheses, both dead:
+  - **H-work (remove per-call rebuild overhead):** already captured. `scan_batch_target_ms=None`
+    → one `scan_cached_blocks` call per **10k-block chunk** → one upstream `BatchRunner` per ~35k
+    outputs. A 50k restore builds ~5–6 runners total; decrypt-ahead-across-boundaries saves ~5
+    constructions across the whole restore. Negligible.
+  - **H-cores (overlap decrypt with persist):** already done at chunk granularity — the
+    **write-behind lane (default ON)** runs decrypt(N+1) while it commits N (the ~9% Mac gain).
+    Deepening it is exactly **depth>1, already FALSIFIED** (M4 1.26× slower, scan-active doubled —
+    same global-rayon contention).
+- **It is the SAME concurrency lever** the unifying insight already kills: conserves work + adds
+  contention; slipstream already runs the one useful depth (1).
+- **Park:** `plans/2026-06-17-decrypt-ahead-spike.md` (full VERDICT + original scope). Residual is
+  ~sub-second range-boundary drains (correctness-fraught); bigger chunks rejected on A10 memory.
+  Comparison merge items ② inline-reorg / ③ tip-Notify remain open. The honest decrypt lever stays
+  **kernel work-reduction** (parked L4a / column-ECDH), not orchestration.
+
 ## The unifying insight
 
 **Modern devices are compute-bound: `wall ≈ total_cpu_work / cores`.** Both concurrency levers

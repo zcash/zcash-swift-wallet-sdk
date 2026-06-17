@@ -14,6 +14,7 @@
 > 2. **The persistence win is the T6.3b *checkpoint-downgrade* (CPU), not the in-memory store itself.** T6.3 measured the sparse *storage* change alone at **0.96× (4% slower)**; the 5.27× comes entirely from the checkpoint-downgrade, which merely *rides on* the `sparse_persistence` path. Read "in-memory sparse shard store" below as "the vehicle that carries the checkpoint-downgrade," not "the storage is the win."
 >
 > **Confirmed shipped (default-on):** `config.rs:118-119` → `sparse_persistence: true`, `write_behind: true` (depth-1). So the persistence/tree credits *are* accurate for the shipped engine. `gpu_subtree` + `persist_depth>1` remain parked/off.
+> 3. **Merge item ① (decrypt-ahead) — SPIKED NO-GO (2026-06-17).** Examined against slipstream's actual code, it's already present or already falsified: slipstream amortizes one `BatchRunner` per 10k-block chunk (`scan_batch_target_ms=None`) *and* the write-behind lane already overlaps decrypt(N+1) with persist(N) (~9% Mac); deepening that overlap was already falsified (depth>1, M4 1.26× slower). So the highest-ranked merge item is dead — see `plans/2026-06-17-decrypt-ahead-spike.md`. Items ② (inline reorg) and ③ (tip Notify) remain open.
 
 # Verdict: Two Sync Engines for a Memory-Constrained Mobile Wallet — zallet vs slipstream
 

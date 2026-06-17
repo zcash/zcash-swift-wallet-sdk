@@ -1,9 +1,25 @@
 # Decrypt-ahead spike — does a persistent cross-chunk decryptor beat the per-call BatchRunner, and does it compose with write-behind?
 
-> **Status:** SCOPED (not started).
+> **Status:** **NO-GO — killed at Phase 0 (2026-06-17)** from confirmed code structure + two *existing* measurements; no engine work and no new M4 sync were needed. See **VERDICT** below.
 > **Source:** the 2026-06-17 zallet↔slipstream comparison (`docs/slipstream/2026-06-17-zallet-vs-slipstream.md`), merge item ①.
 > **Conventions:** `docs/slipstream/CONVENTIONS.md` — LOCAL-ONLY, branch `slipstream`, additive (flag default-OFF), byte-identical oracle-gated, **measure M4 first**.
 > **Prior (load-bearing):** `2026-06-15-perf-spikes-learnings.md` — modern devices are **compute-bound** (`wall ≈ total_cpu_work/cores`); **concurrency levers were falsified twice** (GPU offload, deeper write-behind). "Don't re-test concurrency on modern devices … start from work reduction." This spike must respect that.
+
+## VERDICT — NO-GO at Phase 0 (cheapest possible disconfirmation)
+
+Phase 0 was meant to "disconfirm cheaply before building." It did — from confirmed code structure + two *existing* measurements, no new engine and no new sync:
+
+1. **H-work is structurally already captured.** `scan_batch_target_ms` defaults to `None` (config.rs:116) → one `scan_cached_blocks` call per **10,000-block chunk** (`DEFAULT_CHUNK_BLOCKS`, config.rs:98; `none_means_single_batch_per_chunk` test) → upstream constructs **one `BatchRunner` per ~35k outputs**. Per-call construction is already amortized to negligible; a 50k restore builds ~5–6 runners total. zallet's decrypt-ahead-across-boundaries would save ~5 constructions across an entire restore — nothing.
+2. **H-cores ("idle cores between calls") is false — write-behind already overlaps decrypt(N+1) with persist(N).** The write-behind lane (T6.9 L4b, **default ON**) runs `scan_cached_blocks(N+1)` — which *is* the decrypt (scan.rs:354) — on the main flow while the lane commits chunk N. STATE.md records it directly: *"per-chunk decrypt 242-383ms once the ~684-817ms commit is deferred"* + *"while a commit runs, the scan side does ZERO DB work."* Chunk-level decrypt-ahead is **already shipped** (~9% Mac gain at depth-1).
+3. **Deepening that overlap was already MEASURED to regress.** The depth>1 write-behind A/B (R3): M4 depth-1 **33.4s** vs depth-4 **42.2s = 1.26× slower**; scan-active *doubled* (10.8→22.6s) from scan-rayon + persist-rayon both wanting all cores via the global pool on ≥6-core. Finer decrypt-ahead is the same contention.
+
+**Net:** zallet's decrypt-ahead, mapped onto slipstream's actual architecture, is **either already present** (one-runner-per-10k-chunk amortization + chunk-level decrypt/persist overlap via write-behind) **or already falsified** (deeper overlap → contention). The only residual is the few `drain()` barriers at spend-before-sync *range* boundaries (the lane drains there for correctness) — a handful per restore, ~sub-second total, correctness-fraught to remove, and subject to the same contention finding. Bigger chunks (more amortization, fewer drains) were already rejected on A10 memory grounds (T6.8-L3b: 20k doubles peak memory → jetsam).
+
+**This is not a guess** — it rests on confirmed code (one call per 10k-block chunk; write-behind overlap) + two existing measurements (depth-1 ~9% gain; depth>1 1.26× regression). An empirical M4 A/B would re-confirm, not reveal.
+
+**Consequence for the comparison's merge plan:** merge item ① (the highest-ranked) is **NO-GO**. Items ② (inline reorg) and ③ (tip-change Notify) are untouched and remain open. The honest decrypt lever remains **work reduction on the kernel** (parked L4a / column-ECDH), not orchestration.
+
+The original scope follows, for the record.
 
 ## The idea (from zallet)
 
