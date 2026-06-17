@@ -177,15 +177,18 @@ public final class SlipstreamSynchronizer: Synchronizer {
         self.transactionEncoder = WalletTransactionEncoder(initializer: initializer)
         let eventSubjectRef = eventSubject
 
-        let sdkFlags = initializer.container.resolve(SDKFlags.self)
         let logger = initializer.logger
         let transactionEncoderRef = WalletTransactionEncoder(initializer: initializer)
+        // [#1755] zcash #1757 (multiserver submission) reworked SDKBroadcaster's init: it now
+        // takes submitPlanStore + multiEndpointSubmitter (resolved from the container, same as
+        // SDKSynchronizer) and no longer takes sdkFlags. Mirror SDKSynchronizer exactly.
         self.broadcasterStorage = SDKBroadcaster(
             transactionEncoder: transactionEncoderRef,
             initializer: initializer,
-            sdkFlags: sdkFlags,
             logger: logger,
             eventSubject: eventSubjectRef,
+            submitPlanStore: initializer.container.resolve(SubmitPlanStoring.self),
+            multiEndpointSubmitter: initializer.container.resolve(MultiEndpointSubmitter.self),
             statusCheck: {}
         )
         self.engine = SlipstreamEngine(
@@ -1258,25 +1261,35 @@ private extension SlipstreamSynchronizer {
         try await enhanceWithState(transactionRepository.findReceived(offset: 0, limit: Int.max))
     }
 
-    func submitTransactions(_ transactions: [ZcashTransaction.Overview]) -> AsyncThrowingStream<TransactionSubmitResult, Error> {
+    // [#1755] Mirrors SDKSynchronizer.submitTransactions after zcash #1757 (multiserver
+    // submission): consumes [CreatedTransaction] (was [ZcashTransaction.Overview]) and adopts the
+    // "trust the network over the submit-side error" recovery branch. Submission is shared SDK
+    // logic — slipstream only owns the sync path — so this stays byte-for-byte the SDK behaviour.
+    func submitTransactions(_ transactions: [CreatedTransaction]) -> AsyncThrowingStream<TransactionSubmitResult, Error> {
         var iterator = transactions.makeIterator()
         var submitFailed = false
-        return AsyncThrowingStream {
+
+        return AsyncThrowingStream(unfolding: {
             guard let transaction = iterator.next() else { return nil }
+
             if submitFailed {
-                return .notAttempted(txId: transaction.rawID)
+                return .notAttempted(txId: transaction.txId)
+            } else {
+                do {
+                    try await self.transactionEncoder.submit(transaction: transaction.encodedTransaction)
+                    return TransactionSubmitResult.success(txId: transaction.txId)
+                } catch ZcashError.serviceSubmitFailed(let error) {
+                    submitFailed = true
+                    return TransactionSubmitResult.grpcFailure(txId: transaction.txId, error: error)
+                } catch TransactionEncoderError.submitError(let code, let message) {
+                    // If the server already has this tx, the broadcast landed — treat as success.
+                    if await self.transactionEncoder.isTransactionKnownToServer(txId: transaction.txId) {
+                        return TransactionSubmitResult.success(txId: transaction.txId)
+                    }
+                    submitFailed = true
+                    return TransactionSubmitResult.submitFailure(txId: transaction.txId, code: code, description: message)
+                }
             }
-            let encodedTransaction = try transaction.encodedTransaction()
-            do {
-                try await self.transactionEncoder.submit(transaction: encodedTransaction)
-                return TransactionSubmitResult.success(txId: transaction.rawID)
-            } catch ZcashError.serviceSubmitFailed(let error) {
-                submitFailed = true
-                return TransactionSubmitResult.grpcFailure(txId: transaction.rawID, error: error)
-            } catch TransactionEncoderError.submitError(let code, let message) {
-                submitFailed = true
-                return TransactionSubmitResult.submitFailure(txId: transaction.rawID, code: code, description: message)
-            }
-        }
+        })
     }
 }
