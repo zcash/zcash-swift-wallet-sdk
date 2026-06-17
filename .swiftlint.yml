@@ -151,6 +151,7 @@ identifier_name:
     - tx
     - as
     - di
+    - by
 
 indentation_width:
   indentation_width: 4

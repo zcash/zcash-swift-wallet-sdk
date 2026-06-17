@@ -54,6 +54,59 @@ final class ZcashTransactionStateTests: XCTestCase {
         )
     }
 
+    func testUnminedPastExpiryIsExpiredWhenColumnNotYetUpdated() {
+        let currentHeight = 1_500_000
+
+        XCTAssertEqual(
+            ZcashTransaction.Overview.State(
+                currentHeight: currentHeight,
+                minedHeight: nil,
+                expiredUnmined: false,
+                expiryHeight: currentHeight - 1
+            ),
+            .expired
+        )
+
+        XCTAssertEqual(
+            ZcashTransaction.Overview.State(
+                currentHeight: currentHeight,
+                minedHeight: nil,
+                expiredUnmined: false,
+                expiryHeight: currentHeight
+            ),
+            .expired
+        )
+
+        XCTAssertEqual(
+            ZcashTransaction.Overview.State(
+                currentHeight: currentHeight,
+                minedHeight: nil,
+                expiredUnmined: false,
+                expiryHeight: currentHeight + 100
+            ),
+            .pending
+        )
+
+        XCTAssertEqual(
+            ZcashTransaction.Overview.State(
+                currentHeight: currentHeight,
+                minedHeight: nil,
+                expiredUnmined: false,
+                expiryHeight: nil
+            ),
+            .pending
+        )
+
+        XCTAssertEqual(
+            ZcashTransaction.Overview.State(
+                currentHeight: currentHeight,
+                minedHeight: nil,
+                expiredUnmined: false
+            ),
+            .pending
+        )
+    }
+
     func testMinedHeightAboveOrEqualToStaleConstantIsConfirmed() {
         let currentHeight = 1010
 

@@ -57,6 +57,7 @@ class LiveLatestBlockHeightProvider: LatestBlockHeightProvider {
 // swiftlint:disable:next type_body_length
 class LightWalletGRPCService: LightWalletService {
     var channel: Channel?
+    var eventLoopGroup: NIOTSEventLoopGroup?
     var connectionManager: ConnectionStatusManager?
     var compactTxStreamerInternal: CompactTxStreamerAsyncClient?
     var compactTxStreamer: CompactTxStreamerAsyncClient {
@@ -134,9 +135,14 @@ class LightWalletGRPCService: LightWalletService {
             }
         }
 
+        // The group is caller-owned: neither the connection nor the channel
+        // shuts it down, so it is kept and released in `stop()`.
+        let group = NIOTSEventLoopGroup(loopCount: 1, defaultQoS: .default)
+        self.eventLoopGroup = group
+
         let connectionBuilder = secure ?
-        ClientConnection.usingPlatformAppropriateTLS(for: NIOTSEventLoopGroup(loopCount: 1, defaultQoS: .default)) :
-        ClientConnection.insecure(group: NIOTSEventLoopGroup(loopCount: 1, defaultQoS: .default))
+        ClientConnection.usingPlatformAppropriateTLS(for: group) :
+        ClientConnection.insecure(group: group)
         
         let channel = connectionBuilder
             .withKeepalive(
@@ -163,9 +169,22 @@ class LightWalletGRPCService: LightWalletService {
     }
 
     func stop() {
-        _ = channel?.close()
+        let channelToClose = channel
+        let groupToShutDown = eventLoopGroup
         channel = nil
+        eventLoopGroup = nil
         compactTxStreamerInternal = nil
+
+        guard channelToClose != nil || groupToShutDown != nil else { return }
+
+        // Close the channel first, then shut the group down — otherwise its
+        // event loop threads (one per service instance) live for the rest of
+        // the process. Runs detached because `stop()` is also called from
+        // `deinit` and must not block or capture `self`.
+        DispatchQueue.global(qos: .utility).async {
+            _ = try? channelToClose?.close().wait()
+            groupToShutDown?.shutdownGracefully(queue: DispatchQueue.global(qos: .utility)) { _ in }
+        }
     }
 
     func latestBlock(mode: ServiceMode) async throws -> BlockID {

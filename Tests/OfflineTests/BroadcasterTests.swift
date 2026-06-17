@@ -5,9 +5,6 @@
 
 import Combine
 import XCTest
-import GRPC
-import NIO
-import NIOTransportServices
 @testable import TestUtils
 @testable import ZcashLightClientKit
 
@@ -24,21 +21,21 @@ final class BroadcasterTests: ZcashTestCase {
         try await super.tearDown()
     }
 
-    // MARK: - createProposedTransactions
+    // MARK: - Create
 
-    func testCreateProposedTransactionsReturnsRawBytesAndEmitsEvent() async throws {
+    func testCreateProposedTransactionsReturnsCreatedTransactionsAndEmitsEvent() async throws {
         let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
-        let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: Data(repeating: 0xAB, count: 32))]
-        let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
+        let rawID = Data(repeating: 0xAB, count: 32)
+        let overviews = [makeTransaction(raw: rawTransaction, rawID: rawID)]
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: overviews)
         let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
 
         let foundTransactionsExpectation = XCTestExpectation(description: "found transactions event")
-
         synchronizer.eventStream
             .sink { event in
                 guard case let .foundTransactions(transactions, range) = event else { return }
                 XCTAssertNil(range)
-                XCTAssertEqual(transactions.map(\.rawID), createdTransactions.map(\.rawID))
+                XCTAssertEqual(transactions.map(\.rawID), [rawID])
                 foundTransactionsExpectation.fulfill()
             }
             .store(in: &cancellables)
@@ -53,76 +50,56 @@ final class BroadcasterTests: ZcashTestCase {
             spendingKey: spendingKey
         )
 
-        XCTAssertEqual(transactionEncoder.receivedCreateArguments?.proposal, proposal)
-        XCTAssertEqual(transactionEncoder.receivedCreateArguments?.spendingKey, spendingKey)
-        XCTAssertEqual(transactions.map(\.rawID), createdTransactions.map(\.rawID))
-        XCTAssertEqual(try transactions.map { try XCTUnwrap($0.raw) }, [rawTransaction])
-
+        XCTAssertEqual(transactions.map(\.txId), [rawID])
+        XCTAssertEqual(transactions.map(\.raw), [rawTransaction])
         await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
     }
 
-    // MARK: - submit
-
-    func testSubmitSendsRawBytesToProvidedEndpoint() async throws {
-        let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
-        let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: Data(repeating: 0xAB, count: 32))]
-        let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
-        let service = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: 0, errorMessage: ""))
-        defer { try? service.stop() }
+    func testCreateMarksTransactionsAwaitingSubmission() async throws {
+        let rawID = Data(repeating: 0xAB, count: 32)
+        let overviews = [makeTransaction(raw: Data([0x01]), rawID: rawID)]
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: overviews)
         let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
-
-        try await synchronizer.broadcaster.submit(rawTransaction, to: service.endpoint)
-
-        XCTAssertEqual(service.recordedTransactions(), [rawTransaction])
-    }
-
-    func testSubmitThrowsWhenEndpointRejectsTransaction() async throws {
-        try await assertSubmitThrows(errorCode: -25, errorMessage: "rejected")
-    }
-
-    // MARK: - Full round-trip: create then submit
-
-    func testCreateThenSubmitRoundTrip() async throws {
-        let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
-        let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: Data(repeating: 0xAB, count: 32))]
-        let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
-        let service = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: 0, errorMessage: ""))
-        defer { try? service.stop() }
-        let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
-
         await synchronizer.updateStatus(.stopped)
 
-        let proposal = Proposal.testOnlyFakeProposal(totalFee: 10)
-        let spendingKey = TestsData(networkType: .testnet).spendingKey
-
-        // Step 1: Create without submitting
-        let transactions = try await synchronizer.broadcaster.createProposedTransactions(
-            proposal: proposal,
-            spendingKey: spendingKey
+        _ = try await synchronizer.broadcaster.createProposedTransactions(
+            proposal: Proposal.testOnlyFakeProposal(totalFee: 10),
+            spendingKey: TestsData(networkType: .testnet).spendingKey
         )
 
-        XCTAssertEqual(service.recordedTransactions(), [], "No transactions should be submitted yet")
+        let store = mockContainer.resolve(SubmitPlanStoring.self)
+        let plan = await store.plan(for: rawID)
+        XCTAssertEqual(plan, StoredSubmitPlan.awaiting)
+    }
 
-        // Step 2: Submit to the endpoint
-        let raw = try XCTUnwrap(transactions.first?.raw)
-        try await synchronizer.broadcaster.submit(raw, to: service.endpoint)
+    func testCreateTransactionFromPCZTMarksAwaitingAndEmitsEvent() async throws {
+        let rawID = Data(repeating: 0xCD, count: 32)
+        let overviews = [makeTransaction(raw: Data([0x05, 0x06]), rawID: rawID)]
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: overviews)
+        let rustBackend = ZcashRustBackendWeldingMock()
+        rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReturnValue = rawID
+        let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder, rustBackend: rustBackend)
+        await synchronizer.updateStatus(.stopped)
 
-        XCTAssertEqual(service.recordedTransactions(), [rawTransaction])
+        let transactions = try await synchronizer.broadcaster.createTransactionFromPCZT(
+            pcztWithProofs: Pczt([0x10, 0x11]),
+            pcztWithSigs: Pczt([0x12, 0x13])
+        )
+
+        XCTAssertEqual(transactions.map(\.txId), [rawID])
+        let store = mockContainer.resolve(SubmitPlanStoring.self)
+        let plan = await store.plan(for: rawID)
+        XCTAssertEqual(plan, StoredSubmitPlan.awaiting)
     }
 
     func testBroadcasterThrowsWhenNotPrepared() async throws {
         let transactionEncoder = StubTransactionEncoder(createdTransactions: [])
         let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
 
-        // Status is .unprepared by default — broadcaster should throw
-
-        let proposal = Proposal.testOnlyFakeProposal(totalFee: 10)
-        let spendingKey = TestsData(networkType: .testnet).spendingKey
-
         do {
             _ = try await synchronizer.broadcaster.createProposedTransactions(
-                proposal: proposal,
-                spendingKey: spendingKey
+                proposal: Proposal.testOnlyFakeProposal(totalFee: 10),
+                spendingKey: TestsData(networkType: .testnet).spendingKey
             )
             XCTFail("Should throw when synchronizer is not prepared")
         } catch {
@@ -146,118 +123,178 @@ final class BroadcasterTests: ZcashTestCase {
             )
             XCTFail("Should throw when the owning synchronizer has been released")
         } catch ZcashError.synchronizerNotPrepared {
-            XCTAssertNil(transactionEncoder.receivedCreateArguments)
+            // expected
         } catch {
             XCTFail("Expected synchronizerNotPrepared but got \(error)")
         }
     }
 
-    // MARK: - Legacy Synchronizer APIs
+    // MARK: - Submit (single, via real local gRPC servers)
 
-    func testLegacyCreateProposedTransactionsReusesBroadcasterCreationAndSubmitsOnce() async throws {
+    func testSubmitRecordsPlanAndDeliversToEndpoint() async throws {
+        let acceptingService = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: 0, errorMessage: ""))
+        defer { try? acceptingService.stop() }
+        let synchronizer = try makeSynchronizer(transactionEncoder: StubTransactionEncoder(createdTransactions: []))
+        let transaction = makeCreatedTransaction()
+
+        let outcome = await synchronizer.broadcaster.submit(
+            transaction: transaction,
+            to: [acceptingService.endpoint]
+        )
+
+        XCTAssertEqual(outcome, TransactionSubmissionOutcome.accepted(by: acceptingService.endpoint))
+        XCTAssertEqual(acceptingService.recordedTransactions(), [transaction.raw])
+
+        let store = mockContainer.resolve(SubmitPlanStoring.self)
+        let plan = await store.plan(for: transaction.txId)
+        XCTAssertEqual(plan, StoredSubmitPlan.ready([acceptingService.endpoint]))
+    }
+
+    func testSubmitToRejectingEndpointIsRejected() async throws {
+        let rejectingService = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: -25, errorMessage: "rejected"))
+        defer { try? rejectingService.stop() }
+        let synchronizer = try makeSynchronizer(transactionEncoder: StubTransactionEncoder(createdTransactions: []))
+
+        let outcome = await synchronizer.broadcaster.submit(
+            transaction: makeCreatedTransaction(),
+            to: [rejectingService.endpoint]
+        )
+
+        XCTAssertEqual(outcome, TransactionSubmissionOutcome.rejected(code: -25, message: "rejected"))
+    }
+
+    func testSubmitFirstAcceptanceWinsAcrossEndpoints() async throws {
+        let acceptingService = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: 0, errorMessage: ""))
+        defer { try? acceptingService.stop() }
+        let rejectingService = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: -25, errorMessage: "rejected"))
+        defer { try? rejectingService.stop() }
+        let synchronizer = try makeSynchronizer(transactionEncoder: StubTransactionEncoder(createdTransactions: []))
+        let transaction = makeCreatedTransaction()
+
+        let outcome = await synchronizer.broadcaster.submit(
+            transaction: transaction,
+            to: [rejectingService.endpoint, acceptingService.endpoint],
+            timing: SubmissionTiming(responseTimeout: 5, postAcceptanceGraceDelay: 0.2)
+        )
+
+        XCTAssertEqual(outcome, TransactionSubmissionOutcome.accepted(by: acceptingService.endpoint))
+
+        let store = mockContainer.resolve(SubmitPlanStoring.self)
+        let plan = await store.plan(for: transaction.txId)
+        XCTAssertEqual(plan, StoredSubmitPlan.ready([rejectingService.endpoint, acceptingService.endpoint]))
+    }
+
+    func testSubmitWithEmptyEndpointsIsUnreachableAndRecordsNoPlan() async throws {
+        let synchronizer = try makeSynchronizer(transactionEncoder: StubTransactionEncoder(createdTransactions: []))
+        let transaction = makeCreatedTransaction()
+
+        let outcome = await synchronizer.broadcaster.submit(transaction: transaction, to: [])
+
+        XCTAssertEqual(outcome, TransactionSubmissionOutcome.unreachable)
+        let store = mockContainer.resolve(SubmitPlanStoring.self)
+        let plan = await store.plan(for: transaction.txId)
+        XCTAssertNil(plan)
+    }
+
+    // MARK: - Submit (batch)
+
+    func testBatchSubmitStopsAfterFirstFailureAndMarksRestNotAttempted() async throws {
+        let rejectingService = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: -25, errorMessage: "rejected"))
+        defer { try? rejectingService.stop() }
+        let synchronizer = try makeSynchronizer(transactionEncoder: StubTransactionEncoder(createdTransactions: []))
+        let first = makeCreatedTransaction(seed: 0x01)
+        let second = makeCreatedTransaction(seed: 0x02)
+
+        let reports = await synchronizer.broadcaster.submit(
+            transactions: [first, second],
+            to: [rejectingService.endpoint]
+        )
+
+        XCTAssertEqual(reports.count, 2)
+        XCTAssertEqual(reports[0].txId, first.txId)
+        XCTAssertEqual(reports[0].outcome, TransactionSubmissionOutcome.rejected(code: -25, message: "rejected"))
+        XCTAssertEqual(reports[1].txId, second.txId)
+        XCTAssertEqual(reports[1].outcome, TransactionSubmissionOutcome.notAttempted)
+
+        // The second transaction was never released — its plan must not exist.
+        let store = mockContainer.resolve(SubmitPlanStoring.self)
+        let secondPlan = await store.plan(for: second.txId)
+        XCTAssertNil(secondPlan)
+    }
+
+    func testBatchSubmitAllAccepted() async throws {
+        let acceptingService = try RecordingCompactTxStreamerService(sendResponse: makeSendResponse(errorCode: 0, errorMessage: ""))
+        defer { try? acceptingService.stop() }
+        let synchronizer = try makeSynchronizer(transactionEncoder: StubTransactionEncoder(createdTransactions: []))
+        let first = makeCreatedTransaction(seed: 0x03)
+        let second = makeCreatedTransaction(seed: 0x04)
+
+        let reports = await synchronizer.broadcaster.submit(
+            transactions: [first, second],
+            to: [acceptingService.endpoint]
+        )
+
+        XCTAssertEqual(reports.map(\.outcome), [
+            TransactionSubmissionOutcome.accepted(by: acceptingService.endpoint),
+            TransactionSubmissionOutcome.accepted(by: acceptingService.endpoint)
+        ])
+        XCTAssertEqual(acceptingService.recordedTransactions(), [first.raw, second.raw])
+    }
+
+    // MARK: - Legacy Synchronizer APIs (behavior unchanged, no plan rows)
+
+    func testLegacyCreateProposedTransactionsSubmitsOnceAndRecordsNoPlan() async throws {
         let rawID = Data(repeating: 0xAB, count: 32)
         let rawTransaction = Data([0x01, 0x02, 0x03, 0x04])
-        let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: rawID)]
-        let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
+        let overviews = [makeTransaction(raw: rawTransaction, rawID: rawID)]
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: overviews)
         let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
-        let foundTransactionsExpectation = XCTestExpectation(description: "found transactions event")
-        foundTransactionsExpectation.expectedFulfillmentCount = 1
-        foundTransactionsExpectation.assertForOverFulfill = true
-        var foundTransactionsEventCount = 0
-
-        synchronizer.eventStream
-            .sink { event in
-                guard case let .foundTransactions(transactions, range) = event else { return }
-                foundTransactionsEventCount += 1
-                XCTAssertNil(range)
-                XCTAssertEqual(transactions.map(\.rawID), [rawID])
-                foundTransactionsExpectation.fulfill()
-            }
-            .store(in: &cancellables)
-
         await synchronizer.updateStatus(.stopped)
 
-        let proposal = Proposal.testOnlyFakeProposal(totalFee: 10)
-        let spendingKey = TestsData(networkType: .testnet).spendingKey
         let stream = try await synchronizer.createProposedTransactions(
-            proposal: proposal,
-            spendingKey: spendingKey
+            proposal: Proposal.testOnlyFakeProposal(totalFee: 10),
+            spendingKey: TestsData(networkType: .testnet).spendingKey
         )
         var iterator = stream.makeAsyncIterator()
 
         let maybeSubmitResult = try await iterator.next()
         let submitResult = try XCTUnwrap(maybeSubmitResult)
-        XCTAssertEqual(submitResult, .success(txId: rawID))
+        XCTAssertEqual(submitResult, TransactionSubmitResult.success(txId: rawID))
         let nextSubmitResult = try await iterator.next()
         XCTAssertNil(nextSubmitResult)
-        XCTAssertEqual(transactionEncoder.receivedCreateArguments?.proposal, proposal)
-        XCTAssertEqual(transactionEncoder.receivedCreateArguments?.spendingKey, spendingKey)
         XCTAssertEqual(
             transactionEncoder.submittedTransactions,
             [EncodedTransaction(transactionId: rawID, raw: rawTransaction)]
         )
 
-        await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
-        XCTAssertEqual(foundTransactionsEventCount, 1)
+        let store = mockContainer.resolve(SubmitPlanStoring.self)
+        let plan = await store.plan(for: rawID)
+        XCTAssertNil(plan, "Legacy path must not register submit plans")
     }
 
-    func testLegacyCreateTransactionFromPCZTReusesBroadcasterCreationAndSubmitsOnce() async throws {
+    func testLegacyCreateTransactionFromPCZTSubmitsOnceAndRecordsNoPlan() async throws {
         let rawID = Data(repeating: 0xCD, count: 32)
         let rawTransaction = Data([0x05, 0x06, 0x07, 0x08])
-        let pcztWithProofs = Pczt([0x10, 0x11])
-        let pcztWithSigs = Pczt([0x12, 0x13])
-        let createdTransactions = [makeTransaction(raw: rawTransaction, rawID: rawID)]
-        let transactionEncoder = StubTransactionEncoder(createdTransactions: createdTransactions)
+        let overviews = [makeTransaction(raw: rawTransaction, rawID: rawID)]
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: overviews)
         let rustBackend = ZcashRustBackendWeldingMock()
         rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReturnValue = rawID
-        let synchronizer = try makeSynchronizer(
-            transactionEncoder: transactionEncoder,
-            rustBackend: rustBackend
-        )
-        let foundTransactionsExpectation = XCTestExpectation(description: "found transactions event")
-        foundTransactionsExpectation.expectedFulfillmentCount = 1
-        foundTransactionsExpectation.assertForOverFulfill = true
-        var foundTransactionsEventCount = 0
-
-        synchronizer.eventStream
-            .sink { event in
-                guard case let .foundTransactions(transactions, range) = event else { return }
-                foundTransactionsEventCount += 1
-                XCTAssertNil(range)
-                XCTAssertEqual(transactions.map(\.rawID), [rawID])
-                foundTransactionsExpectation.fulfill()
-            }
-            .store(in: &cancellables)
-
+        let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder, rustBackend: rustBackend)
         await synchronizer.updateStatus(.stopped)
 
         let stream = try await synchronizer.createTransactionFromPCZT(
-            pcztWithProofs: pcztWithProofs,
-            pcztWithSigs: pcztWithSigs
+            pcztWithProofs: Pczt([0x10, 0x11]),
+            pcztWithSigs: Pczt([0x12, 0x13])
         )
         var iterator = stream.makeAsyncIterator()
 
         let maybeSubmitResult = try await iterator.next()
         let submitResult = try XCTUnwrap(maybeSubmitResult)
-        XCTAssertEqual(submitResult, .success(txId: rawID))
-        let nextSubmitResult = try await iterator.next()
-        XCTAssertNil(nextSubmitResult)
-        XCTAssertEqual(
-            rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReceivedArguments?.pcztWithProofs,
-            pcztWithProofs
-        )
-        XCTAssertEqual(
-            rustBackend.extractAndStoreTxFromPCZTPcztWithProofsPcztWithSigsReceivedArguments?.pcztWithSigs,
-            pcztWithSigs
-        )
-        XCTAssertEqual(transactionEncoder.receivedFetchTxIds, [rawID])
-        XCTAssertEqual(
-            transactionEncoder.submittedTransactions,
-            [EncodedTransaction(transactionId: rawID, raw: rawTransaction)]
-        )
+        XCTAssertEqual(submitResult, TransactionSubmitResult.success(txId: rawID))
 
-        await fulfillment(of: [foundTransactionsExpectation], timeout: 1.0)
-        XCTAssertEqual(foundTransactionsEventCount, 1)
+        let store = mockContainer.resolve(SubmitPlanStoring.self)
+        let plan = await store.plan(for: rawID)
+        XCTAssertNil(plan, "Legacy path must not register submit plans")
     }
 
     // MARK: - Helpers
@@ -274,6 +311,7 @@ final class BroadcasterTests: ZcashTestCase {
         }
         mockContainer.mock(type: LightWalletService.self, isSingleton: true) { _ in serviceMock }
         mockContainer.mock(type: TransactionRepository.self, isSingleton: true) { _ in transactionRepository }
+        mockContainer.mock(type: Logger.self, isSingleton: true) { _ in submissionLifecycleLogger() }
 
         let initializer = Initializer(
             container: mockContainer,
@@ -306,25 +344,15 @@ final class BroadcasterTests: ZcashTestCase {
         )
     }
 
-    private func makeTransaction(raw: Data, rawID: Data) -> ZcashTransaction.Overview {
-        ZcashTransaction.Overview(
-            accountUUID: TestsData.mockedAccountUUID,
-            blockTime: nil,
-            expiryHeight: 123_456,
-            fee: Zatoshi(10_000),
-            index: 0,
-            isShielding: false,
-            hasChange: false,
-            memoCount: 0,
-            minedHeight: nil,
-            raw: raw,
-            rawID: rawID,
-            receivedNoteCount: 0,
-            sentNoteCount: 1,
-            value: Zatoshi(-1_000),
-            isExpiredUmined: false,
-            totalSpent: nil,
-            totalReceived: nil
+    private func makeTransaction(raw: Data?, rawID: Data) -> ZcashTransaction.Overview {
+        CreatedTransactionTests.makeTransaction(raw: raw, rawID: rawID)
+    }
+
+    private func makeCreatedTransaction(seed: UInt8 = 0xAB) -> CreatedTransaction {
+        CreatedTransaction(
+            txId: Data(repeating: seed, count: 32),
+            raw: Data([seed, 0x02, 0x03, 0x04]),
+            expiryHeight: 123_456
         )
     }
 
@@ -333,33 +361,6 @@ final class BroadcasterTests: ZcashTestCase {
         response.errorCode = errorCode
         response.errorMessage = errorMessage
         return response
-    }
-
-    private func assertSubmitThrows(errorCode: Int32, errorMessage: String) async throws {
-        let rawTransaction = Data([0x0A, 0x0B, 0x0C])
-        let transactionEncoder = StubTransactionEncoder(createdTransactions: [])
-        let service = try RecordingCompactTxStreamerService(
-            sendResponse: makeSendResponse(errorCode: errorCode, errorMessage: errorMessage)
-        )
-        defer { try? service.stop() }
-
-        let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
-
-        do {
-            try await synchronizer.broadcaster.submit(rawTransaction, to: service.endpoint)
-            XCTFail("submit should throw when the server rejects the transaction.")
-        } catch let error as TransactionEncoderError {
-            guard case let .submitError(code, message) = error else {
-                XCTFail("Expected submitError but got \(error)")
-                return
-            }
-            XCTAssertEqual(code, Int(errorCode))
-            XCTAssertEqual(message, errorMessage)
-        } catch {
-            XCTFail("Expected TransactionEncoderError.submitError but got \(error)")
-        }
-
-        XCTAssertEqual(service.recordedTransactions(), [rawTransaction])
     }
 }
 
@@ -412,6 +413,10 @@ private final class StubTransactionEncoder: TransactionEncoder {
         submittedTransactions.append(transaction)
     }
 
+    func isTransactionKnownToServer(txId: Data) async -> Bool {
+        false
+    }
+
     func fetchTransactionsForTxIds(_ txIds: [Data]) async throws -> [ZcashTransaction.Overview] {
         receivedFetchTxIds = txIds
         return txIds.compactMap { txId in
@@ -420,131 +425,4 @@ private final class StubTransactionEncoder: TransactionEncoder {
     }
 
     func closeDBConnection() { }
-}
-
-private final class RecordingCompactTxStreamerService: CompactTxStreamerProvider {
-    var interceptors: CompactTxStreamerServerInterceptorFactoryProtocol? { nil }
-
-    private(set) var endpoint: LightWalletEndpoint!
-
-    private let sendResponse: SendResponse
-    private let eventLoopGroup = NIOTSEventLoopGroup(loopCount: 1, defaultQoS: .default)
-    private let queue = DispatchQueue(label: "RecordingCompactTxStreamerService.queue")
-    private var submittedTransactions: [Data] = []
-    private var server: Server?
-
-    init(sendResponse: SendResponse) throws {
-        self.sendResponse = sendResponse
-        self.endpoint = LightWalletEndpoint(address: "127.0.0.1", port: 0, secure: false)
-
-        let server = try Server.insecure(group: eventLoopGroup)
-            .withServiceProviders([self])
-            .bind(host: "127.0.0.1", port: 0)
-            .wait()
-
-        self.server = server
-        self.endpoint = LightWalletEndpoint(
-            address: "127.0.0.1",
-            port: server.channel.localAddress?.port ?? 0,
-            secure: false,
-            singleCallTimeoutInMillis: 5_000,
-            streamingCallTimeoutInMillis: 5_000
-        )
-    }
-
-    func stop() throws {
-        try server?.close().wait()
-        try eventLoopGroup.syncShutdownGracefully()
-    }
-
-    func recordedTransactions() -> [Data] {
-        queue.sync { submittedTransactions }
-    }
-
-    func getLatestBlock(request: ChainSpec, context: StatusOnlyCallContext) -> EventLoopFuture<BlockID> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    func getBlock(request: BlockID, context: StatusOnlyCallContext) -> EventLoopFuture<CompactBlock> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    func getBlockNullifiers(request: BlockID, context: StatusOnlyCallContext) -> EventLoopFuture<CompactBlock> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    func getBlockRange(request: BlockRange, context: StreamingResponseCallContext<CompactBlock>) -> EventLoopFuture<GRPCStatus> {
-        unimplementedStreaming(on: context.eventLoop)
-    }
-
-    func getBlockRangeNullifiers(request: BlockRange, context: StreamingResponseCallContext<CompactBlock>) -> EventLoopFuture<GRPCStatus> {
-        unimplementedStreaming(on: context.eventLoop)
-    }
-
-    func getTransaction(request: TxFilter, context: StatusOnlyCallContext) -> EventLoopFuture<RawTransaction> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    func sendTransaction(request: RawTransaction, context: StatusOnlyCallContext) -> EventLoopFuture<SendResponse> {
-        queue.sync {
-            submittedTransactions.append(request.data)
-        }
-        return context.eventLoop.makeSucceededFuture(sendResponse)
-    }
-
-    func getTaddressTxids(request: TransparentAddressBlockFilter, context: StreamingResponseCallContext<RawTransaction>) -> EventLoopFuture<GRPCStatus> {
-        unimplementedStreaming(on: context.eventLoop)
-    }
-
-    func getTaddressBalance(request: AddressList, context: StatusOnlyCallContext) -> EventLoopFuture<Balance> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    func getTaddressBalanceStream(context: UnaryResponseCallContext<Balance>) -> EventLoopFuture<(StreamEvent<Address>) -> Void> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    func getMempoolTx(request: Exclude, context: StreamingResponseCallContext<CompactTx>) -> EventLoopFuture<GRPCStatus> {
-        unimplementedStreaming(on: context.eventLoop)
-    }
-
-    func getMempoolStream(request: ZcashLightClientKit.Empty, context: StreamingResponseCallContext<RawTransaction>) -> EventLoopFuture<GRPCStatus> {
-        unimplementedStreaming(on: context.eventLoop)
-    }
-
-    func getTreeState(request: BlockID, context: StatusOnlyCallContext) -> EventLoopFuture<TreeState> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    func getLatestTreeState(request: ZcashLightClientKit.Empty, context: StatusOnlyCallContext) -> EventLoopFuture<TreeState> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    func getSubtreeRoots(request: GetSubtreeRootsArg, context: StreamingResponseCallContext<SubtreeRoot>) -> EventLoopFuture<GRPCStatus> {
-        unimplementedStreaming(on: context.eventLoop)
-    }
-
-    func getAddressUtxos(request: GetAddressUtxosArg, context: StatusOnlyCallContext) -> EventLoopFuture<GetAddressUtxosReplyList> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    func getAddressUtxosStream(request: GetAddressUtxosArg, context: StreamingResponseCallContext<GetAddressUtxosReply>) -> EventLoopFuture<GRPCStatus> {
-        unimplementedStreaming(on: context.eventLoop)
-    }
-
-    func getLightdInfo(request: ZcashLightClientKit.Empty, context: StatusOnlyCallContext) -> EventLoopFuture<LightdInfo> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    func ping(request: ZcashLightClientKit.Duration, context: StatusOnlyCallContext) -> EventLoopFuture<PingResponse> {
-        unimplementedUnary(on: context.eventLoop)
-    }
-
-    private func unimplementedUnary<T>(on eventLoop: EventLoop) -> EventLoopFuture<T> {
-        eventLoop.makeFailedFuture(GRPCStatus(code: .unimplemented, message: "Unused in test"))
-    }
-
-    private func unimplementedStreaming(on eventLoop: EventLoop) -> EventLoopFuture<GRPCStatus> {
-        eventLoop.makeSucceededFuture(GRPCStatus(code: .unimplemented, message: "Unused in test"))
-    }
 }

@@ -596,22 +596,37 @@ private final class UnimplementedBroadcaster: Broadcaster {
     func createProposedTransactions(
         proposal: Proposal,
         spendingKey: UnifiedSpendingKey
-    ) async throws -> [ZcashTransaction.Overview] {
+    ) async throws -> [CreatedTransaction] {
         throw BroadcasterUnimplemented()
     }
 
     func createTransactionFromPCZT(
         pcztWithProofs: Pczt,
         pcztWithSigs: Pczt
-    ) async throws -> [ZcashTransaction.Overview] {
+    ) async throws -> [CreatedTransaction] {
         throw BroadcasterUnimplemented()
     }
 
     func submit(
-        _ rawTransaction: Data,
-        to endpoint: LightWalletEndpoint
-    ) async throws {
-        throw BroadcasterUnimplemented()
+        transaction: CreatedTransaction,
+        to endpoints: [LightWalletEndpoint],
+        timing: SubmissionTiming
+    ) async -> TransactionSubmissionOutcome {
+        // Non-throwing API: unavailability is reported as unreachable.
+        .unreachable
+    }
+
+    func submit(
+        transactions: [CreatedTransaction],
+        to endpoints: [LightWalletEndpoint],
+        timing: SubmissionTiming
+    ) async -> [TransactionSubmissionReport] {
+        transactions.enumerated().map { index, transaction in
+            TransactionSubmissionReport(
+                txId: transaction.txId,
+                outcome: index == 0 ? .unreachable : .notAttempted
+            )
+        }
     }
 }
 

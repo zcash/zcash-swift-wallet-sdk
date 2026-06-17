@@ -91,6 +91,10 @@ protocol TransactionEncoder {
     /// - Parameter transaction: a transaction overview
     func submit(transaction: EncodedTransaction) async throws
 
+    /// Asks the connected lightwalletd backend whether it has the given txid in mempool or chain.
+    /// Returns `false` if the server reports `txidNotRecognized` or if the verification call itself fails.
+    func isTransactionKnownToServer(txId: Data) async -> Bool
+
     /// Tries to fetch the transaction for the given transaction ids.
     /// - Parameter txIds: an array of transaction ids to be fetched from the DB.
     func fetchTransactionsForTxIds(_ txIds: [Data]) async throws -> [ZcashTransaction.Overview]

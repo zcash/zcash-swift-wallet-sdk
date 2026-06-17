@@ -8,6 +8,21 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Changed
 - New wallets now use a recent tree state from the lightwalletd server as the wallet birthday, reducing unnecessary block scanning on first launch while retaining reorg safety. Falls back to the bundled checkpoint if the server is unreachable.
+- `Broadcaster` has been redesigned for multi-server submission (breaking change to the 2.6.0-alpha API; see MIGRATING.md):
+  - `createProposedTransactions` / `createTransactionFromPCZT` now return `[CreatedTransaction]` (with non-optional raw bytes) instead of `[ZcashTransaction.Overview]`.
+  - `submit(_:to:)` (raw bytes, single endpoint) has been replaced by `submit(transaction:to:timing:)` which submits to multiple endpoints in parallel — first acceptance wins, remaining submissions get a grace window — and returns a `TransactionSubmissionOutcome` instead of throwing. A batch variant `submit(transactions:to:timing:)` submits sequentially and stops at the first transaction that isn't accepted.
+  - The endpoints used for submission are recorded as the transaction's retry plan (persisted in the SDK's general storage). Background resubmission retries pending transactions through their recorded endpoints, skips transactions created through `Broadcaster` that were never submitted, and keeps the default-endpoint behavior for everything else. The plan store fails safe (resubmission skips affected transactions when the store is unreadable), keeps plans until the transaction expires so a chain reorg cannot detach a transaction from its endpoints, and `Synchronizer.wipe()` deletes the plan database file.
+  - Cancelling the task that awaits `submit` resolves `.cancelled` promptly; the recorded retry plan stays in place (see MIGRATING.md).
+  - With Tor enabled, each endpoint submission uses an isolated Tor client so one stalled endpoint cannot serialize the parallel race.
+  - `CreatedTransaction` and `TransactionSubmissionReport` gained public initializers so custom `Broadcaster` conformers and test doubles can construct them.
+  - `LightWalletEndpoint` now conforms to `Equatable`.
+
+## Fixed
+- `LightWalletGRPCService` now shuts down its NIO event loop group in `stop()`, fixing a thread leak for every ephemeral connection (one per endpoint per `Broadcaster` submission attempt).
+
+## Fixed
+- `Synchronizer.submitTransactions` now verifies submit failures against the server before surfacing them: when the submit RPC returns a non-zero error code, the SDK immediately asks the same lightwalletd whether the tx is known via `GetTransaction`, and reclassifies the result as `TransactionSubmitResult.success` if the server reports the tx is in mempool or chain. This covers the cases that previously produced misleading failure UIs — Zebra's `MempoolError::InMempool` / `AlreadyQueued`, zcashd's `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant we don't recognise — without depending on backend-specific error codes or message text.
+- `ZcashTransaction.Overview.State.init` now accepts an optional `expiryHeight:` argument and treats an unmined transaction whose `expiryHeight` is at or below the supplied `currentHeight` as `.expired` even when the `expiredUnmined` column hasn't been flipped to `true`. This makes the Swift-side state-machine resilient to lagging or missed updates of that column (in particular: sent transactions that were unmined when the wallet migrated across a consensus-rule change, which previously stayed reported as `.pending` indefinitely). Existing call sites that don't pass `expiryHeight` keep their prior behaviour.
 
 # 2.6.0-alpha.5
 

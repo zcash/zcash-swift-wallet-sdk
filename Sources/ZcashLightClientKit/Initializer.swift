@@ -46,6 +46,8 @@ public struct LightWalletEndpoint {
     }
 }
 
+extension LightWalletEndpoint: Equatable {}
+
 /// This contains URLs from which can the SDK fetch files that contain sapling parameters.
 /// Use `SaplingParamsSourceURL.default` when initilizing the SDK.
 public struct SaplingParamsSourceURL {

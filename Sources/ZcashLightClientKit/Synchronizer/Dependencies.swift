@@ -92,6 +92,32 @@ enum Dependencies {
             TorClient(torDir: urls.torDirURL)
         }
 
+        container.register(type: SubmitPlanStoring.self, isSingleton: true) { di in
+            let logger = di.resolve(Logger.self)
+            let databaseURL = urls.generalStorageURL
+                .appendingPathComponent("submit_plans_\(networkType.networkId).db")
+
+            return SubmitPlanStore(databaseURL: databaseURL, logger: logger)
+        }
+
+        container.register(type: EndpointSubmitter.self, isSingleton: true) { di in
+            GRPCEndpointSubmitter(torClient: di.resolve(TorClient.self), sdkFlags: di.resolve(SDKFlags.self), logger: di.resolve(Logger.self))
+        }
+
+        container.register(type: MultiEndpointSubmitter.self, isSingleton: true) { di in
+            MultiEndpointSubmitter(
+                endpointSubmitter: di.resolve(EndpointSubmitter.self),
+                logger: di.resolve(Logger.self)
+            )
+        }
+
+        container.register(type: SubmitPlanExecutor.self, isSingleton: true) { di in
+            SubmitPlanExecutor(
+                endpointSubmitter: di.resolve(EndpointSubmitter.self),
+                logger: di.resolve(Logger.self)
+            )
+        }
+
         container.register(type: LightWalletService.self, isSingleton: true) { di in
             let torClient = di.resolve(TorClient.self)
             

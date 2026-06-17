@@ -1453,10 +1453,10 @@ class BroadcasterMock: Broadcaster {
     var createProposedTransactionsProposalSpendingKeyCalled: Bool {
         return createProposedTransactionsProposalSpendingKeyCallsCount > 0
     }
-    var createProposedTransactionsProposalSpendingKeyReturnValue: [ZcashTransaction.Overview]!
-    var createProposedTransactionsProposalSpendingKeyClosure: ((Proposal, UnifiedSpendingKey) async throws -> [ZcashTransaction.Overview])?
+    var createProposedTransactionsProposalSpendingKeyReturnValue: [CreatedTransaction]!
+    var createProposedTransactionsProposalSpendingKeyClosure: ((Proposal, UnifiedSpendingKey) async throws -> [CreatedTransaction])?
 
-    func createProposedTransactions(proposal: Proposal, spendingKey: UnifiedSpendingKey) async throws -> [ZcashTransaction.Overview] {
+    func createProposedTransactions(proposal: Proposal, spendingKey: UnifiedSpendingKey) async throws -> [CreatedTransaction] {
         if let error = createProposedTransactionsProposalSpendingKeyThrowableError {
             throw error
         }
@@ -1475,10 +1475,10 @@ class BroadcasterMock: Broadcaster {
     var createTransactionFromPCZTPcztWithProofsPcztWithSigsCalled: Bool {
         return createTransactionFromPCZTPcztWithProofsPcztWithSigsCallsCount > 0
     }
-    var createTransactionFromPCZTPcztWithProofsPcztWithSigsReturnValue: [ZcashTransaction.Overview]!
-    var createTransactionFromPCZTPcztWithProofsPcztWithSigsClosure: ((Pczt, Pczt) async throws -> [ZcashTransaction.Overview])?
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsReturnValue: [CreatedTransaction]!
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsClosure: ((Pczt, Pczt) async throws -> [CreatedTransaction])?
 
-    func createTransactionFromPCZT(pcztWithProofs: Pczt, pcztWithSigs: Pczt) async throws -> [ZcashTransaction.Overview] {
+    func createTransactionFromPCZT(pcztWithProofs: Pczt, pcztWithSigs: Pczt) async throws -> [CreatedTransaction] {
         if let error = createTransactionFromPCZTPcztWithProofsPcztWithSigsThrowableError {
             throw error
         }
@@ -1492,19 +1492,42 @@ class BroadcasterMock: Broadcaster {
 
     // MARK: - submit
 
-    var submitToThrowableError: Error?
-    var submitToCallsCount = 0
-    var submitToCalled: Bool {
-        return submitToCallsCount > 0
+    var submitTransactionToTimingCallsCount = 0
+    var submitTransactionToTimingCalled: Bool {
+        return submitTransactionToTimingCallsCount > 0
     }
-    var submitToClosure: ((Data, LightWalletEndpoint) async throws -> Void)?
+    var submitTransactionToTimingReceivedArguments: (transaction: CreatedTransaction, endpoints: [LightWalletEndpoint], timing: SubmissionTiming)?
+    var submitTransactionToTimingReturnValue: TransactionSubmissionOutcome!
+    var submitTransactionToTimingClosure: ((CreatedTransaction, [LightWalletEndpoint], SubmissionTiming) async -> TransactionSubmissionOutcome)?
 
-    func submit(_ rawTransaction: Data, to endpoint: LightWalletEndpoint) async throws {
-        if let error = submitToThrowableError {
-            throw error
+    func submit(transaction: CreatedTransaction, to endpoints: [LightWalletEndpoint], timing: SubmissionTiming) async -> TransactionSubmissionOutcome {
+        submitTransactionToTimingCallsCount += 1
+        submitTransactionToTimingReceivedArguments = (transaction: transaction, endpoints: endpoints, timing: timing)
+        if let closure = submitTransactionToTimingClosure {
+            return await closure(transaction, endpoints, timing)
+        } else {
+            return submitTransactionToTimingReturnValue
         }
-        submitToCallsCount += 1
-        try await submitToClosure?(rawTransaction, endpoint)
+    }
+
+    // MARK: - submit
+
+    var submitTransactionsToTimingCallsCount = 0
+    var submitTransactionsToTimingCalled: Bool {
+        return submitTransactionsToTimingCallsCount > 0
+    }
+    var submitTransactionsToTimingReceivedArguments: (transactions: [CreatedTransaction], endpoints: [LightWalletEndpoint], timing: SubmissionTiming)?
+    var submitTransactionsToTimingReturnValue: [TransactionSubmissionReport]!
+    var submitTransactionsToTimingClosure: (([CreatedTransaction], [LightWalletEndpoint], SubmissionTiming) async -> [TransactionSubmissionReport])?
+
+    func submit(transactions: [CreatedTransaction], to endpoints: [LightWalletEndpoint], timing: SubmissionTiming) async -> [TransactionSubmissionReport] {
+        submitTransactionsToTimingCallsCount += 1
+        submitTransactionsToTimingReceivedArguments = (transactions: transactions, endpoints: endpoints, timing: timing)
+        if let closure = submitTransactionsToTimingClosure {
+            return await closure(transactions, endpoints, timing)
+        } else {
+            return submitTransactionsToTimingReturnValue
+        }
     }
 
 }
