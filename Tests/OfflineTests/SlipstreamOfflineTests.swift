@@ -338,7 +338,7 @@ class SlipstreamOfflineTests: ZcashTestCase {
 
         do {
             // Deliberately skip engine.open(network:) to exercise the nil-handle guard.
-            try await engine.start(ufvk: nil, birthday: 663150)
+            try await engine.start(ufvk: nil, birthday: 663150, torDir: nil)
             XCTFail("start() must throw when engine is not opened")
         } catch let error as ZcashError {
             XCTAssertEqual(error.code, .rustSlipstreamNotOpen,

@@ -89,22 +89,31 @@ public actor SlipstreamEngine {
     ///   - birthday: wallet birthday height (ignored when `ufvk` is nil).
     /// - Throws: `ZcashError.rustSlipstreamNotOpen` if `open` hasn't been called,
     ///           `ZcashError.rustSlipstreamStart` if the Rust call fails.
-    public func start(ufvk: String?, birthday: BlockHeight) throws {
+    /// T-Tor.3: `torDir` is a dedicated Tor state directory for the engine's isolated
+    /// circuits, passed ONLY when Tor is enabled (`nil` = direct, no Tor). It must be
+    /// SEPARATE from the old SDK's `TorClient` directory (arti holds a state lock).
+    /// (The engine mirrors the old SDK's per-platform `dangerously_trust_everyone` internally.)
+    public func start(ufvk: String?, birthday: BlockHeight, torDir: String?) throws {
         guard let handlePtr = handle else {
             throw ZcashError.rustSlipstreamNotOpen
         }
 
-        let result: Bool
-        if let ufvk {
-            // Pass UFVK bytes and birthday.  Use Array(ufvk.utf8) → withUnsafeBufferPointer
-            // for explicit pointer + length (matches plan C9 correction).
-            let ufvkBytes = Array(ufvk.utf8)
-            result = ufvkBytes.withUnsafeBufferPointer { ptr in
-                zcashlc_slipstream_start(handlePtr, ptr.baseAddress, UInt(ptr.count), UInt64(birthday))
+        // Empty Tor-dir bytes → null pointer / length 0 → the engine syncs directly (Tor off).
+        let torBytes: [UInt8] = torDir.map { Array($0.utf8) } ?? []
+        let result: Bool = torBytes.withUnsafeBufferPointer { torPtr in
+            let torBase = torPtr.baseAddress
+            let torLen = UInt(torPtr.count)
+            if let ufvk {
+                // Pass UFVK bytes and birthday.  Use Array(ufvk.utf8) → withUnsafeBufferPointer
+                // for explicit pointer + length (matches plan C9 correction).
+                let ufvkBytes = Array(ufvk.utf8)
+                return ufvkBytes.withUnsafeBufferPointer { ptr in
+                    zcashlc_slipstream_start(handlePtr, ptr.baseAddress, UInt(ptr.count), UInt64(birthday), torBase, torLen)
+                }
+            } else {
+                // Keyless update: pass null UFVK pointer with length 0.
+                return zcashlc_slipstream_start(handlePtr, nil, 0, UInt64(birthday), torBase, torLen)
             }
-        } else {
-            // Keyless update: pass null UFVK pointer with length 0.
-            result = zcashlc_slipstream_start(handlePtr, nil, 0, UInt64(birthday))
         }
 
         guard result else {

@@ -259,7 +259,19 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // TODO: [#1755] Consider passing ufvk=Some after T4.4 integration tests confirm
         //   idempotency. Current strategy: ufvk=nil (keyless) since prepare() already
         //   imported the account and stored its birthday treestate.
-        try await engine.start(ufvk: nil, birthday: birthday)
+        // T-Tor.3: when Tor is enabled, hand the engine its OWN Tor state dir — a subdir of
+        // the SDK's torDirURL, separate from the old SDK's TorClient dir (arti holds a state
+        // lock). nil = direct. The engine syncs at full speed regardless (bulk stays direct;
+        // only the identifying metadata calls traverse Tor), so this never re-introduces the
+        // 12x-slower fallback — Tor users get fast sync AND privacy.
+        let torEnabled = await sdkFlags.torEnabled
+        var slipstreamTorDir: String?
+        if torEnabled {
+            let dir = initializer.torDirURL.appendingPathComponent("slipstream", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            slipstreamTorDir = dir.path
+        }
+        try await engine.start(ufvk: nil, birthday: birthday, torDir: slipstreamTorDir)
         isRunning = true
         startPolling()
         // T8.3.5: seed the initial syncing emission from the cached summary (seeded in
@@ -604,9 +616,10 @@ public final class SlipstreamSynchronizer: Synchronizer {
         birthday: BlockHeight? = nil
     ) async throws -> AccountUUID {
         let checkpointSource = initializer.container.resolve(CheckpointSource.self)
+        let sdkFlags = initializer.container.resolve(SDKFlags.self)
         // Use chain tip if available, fallback to provided birthday.
         let chainTipHeight = try? await UInt32(
-            initializer.lightWalletService.latestBlockHeight(mode: .direct)
+            initializer.lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor))
         )
         let effectiveBirthday = birthday ?? BlockHeight(chainTipHeight ?? UInt32(initializer.walletBirthday))
         let checkpoint = checkpointSource.birthday(for: effectiveBirthday)
@@ -804,9 +817,10 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
     public func enhanceTransactionBy(txId: TxId) async throws {
         let txIdData = txId.id.data
+        let sdkFlags = initializer.container.resolve(SDKFlags.self)
         let response = try await initializer.blockDownloaderService.fetchTransaction(
             txId: txIdData,
-            mode: .direct
+            mode: await sdkFlags.ifTor(ServiceMode.txIdGroup(prefix: "fetch", txId: txIdData))
         )
         if response.status == .txidNotRecognized {
             try await initializer.rustBackend.setTransactionStatus(txId: txIdData, status: .txidNotRecognized)
@@ -821,7 +835,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // ── Height queries ────────────────────────────────────────────────────────
 
     public func latestHeight() async throws -> BlockHeight {
-        try await initializer.lightWalletService.latestBlockHeight(mode: .direct)
+        let sdkFlags = initializer.container.resolve(SDKFlags.self)
+        return try await initializer.lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor))
     }
 
     // ── UTXO refresh ──────────────────────────────────────────────────────────

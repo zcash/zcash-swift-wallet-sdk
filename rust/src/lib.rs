@@ -4469,11 +4469,12 @@ async fn run_pass_with_retry(
     cfg: &slipstream_core::config::EngineConfig,
     ufvk_ref: Option<(&str, u64)>,
     progress: &std::sync::Arc<slipstream_core::events::Progress>,
+    tor: Option<&slipstream_core::connector::TorConn>,
 ) -> Result<slipstream_core::engine::SyncOutcome, slipstream_core::error::SlipstreamError> {
     let mut attempt: u32 = 0;
     loop {
         let result =
-            slipstream_core::engine::sync_once(cfg, ufvk_ref, Some(progress.clone()), None).await;
+            slipstream_core::engine::sync_once(cfg, ufvk_ref, Some(progress.clone()), tor).await;
         match result {
             Ok(outcome) => return Ok(outcome),
             Err(err) => {
@@ -4581,6 +4582,11 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
 /// - `ufvk`/`ufvk_len`: UFVK string (UTF-8 bytes), or null/0 for a keyless update
 ///   (birthday is ignored when ufvk is null — account must already be imported).
 /// - `birthday_height`: wallet birthday height (ignored when ufvk is null).
+/// - `tor_dir`/`tor_dir_len`: dedicated Tor state directory (UTF-8 bytes) for the engine's
+///   isolated circuits. Pass null/0 to sync directly (Tor off). When non-empty, the engine
+///   bootstraps an arti client from it — a subdir SEPARATE from the old SDK's `TorClient`
+///   directory (arti holds a state lock). Metadata calls then use isolated Tor circuits;
+///   bulk block fetch stays direct (mirrors the old SDK's per-call Tor policy).
 ///
 /// Can be called after [`zcashlc_slipstream_stop`] to restart. Cancels any in-flight
 /// sync before spawning the new one.
@@ -4594,12 +4600,16 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
 /// - `handle` must not be passed to two FFI calls at the same time.
 /// - If `ufvk` is non-null, it must be valid for reads for `ufvk_len` bytes (UTF-8,
 ///   alignment `1`), and its memory must not be mutated for the duration of the call.
+/// - If `tor_dir` is non-null, it must be valid for reads for `tor_dir_len` bytes (UTF-8,
+///   alignment `1`), and its memory must not be mutated for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_slipstream_start(
     handle: *mut SlipstreamHandle,
     ufvk: *const u8,
     ufvk_len: usize,
     birthday_height: u64,
+    tor_dir: *const u8,
+    tor_dir_len: usize,
 ) -> bool {
     // SAFETY: callers must respect mutability rules on the Swift side so that observing
     // a panic from another thread does not leave the handle in an inconsistent state.
@@ -4621,6 +4631,21 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                 std::str::from_utf8(unsafe { slice::from_raw_parts(ufvk, ufvk_len) })
                     .map_err(|e| anyhow!("ufvk UTF-8: {e}"))?
                     .to_string(),
+            )
+        };
+
+        // ── T-Tor.3: engine-owned Tor (mirrors the old SDK's per-call Tor setup) ──
+        // Swift passes a non-empty `tor_dir` — a DEDICATED slipstream Tor state subdir,
+        // separate from the old SDK's TorRuntime dir to avoid an arti state-lock clash —
+        // ONLY when Tor is enabled at start() time; empty/null = Tor off (direct).
+        let tor_dir_opt: Option<std::path::PathBuf> = if tor_dir.is_null() || tor_dir_len == 0 {
+            None
+        } else {
+            Some(
+                Path::new(OsStr::from_bytes(unsafe {
+                    slice::from_raw_parts(tor_dir, tor_dir_len)
+                }))
+                .to_path_buf(),
             )
         };
 
@@ -4666,6 +4691,50 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
             // follow pass. Use SlipstreamCoreEvent (the type stored in the handle's ring).
             push_ring_event(&events, SlipstreamCoreEvent { tag: 1, value: 0 });
 
+            // ── T-Tor.3: bootstrap the engine-owned Tor client ───────────────
+            // When Tor is enabled, bootstrap an arti client on THIS (engine) tokio
+            // runtime (T-Tor.0: Client::create binds to PreferredRuntime::current(), so
+            // no block_on / no cross-runtime). Bootstrapping is resilient: a transient
+            // failure shows Disconnected and retries forever — we NEVER fall back to
+            // direct, because Tor was explicitly requested and a direct fallback would
+            // silently de-anonymise the sync. Once up, the client is held for the whole
+            // session (initial pass + follow loop); metadata calls get isolated circuits,
+            // bulk fetch stays direct (the per-call policy lives in slipstream-core).
+            let tor_conn: Option<slipstream_core::connector::TorConn> = match tor_dir_opt {
+                None => None,
+                Some(ref dir) => {
+                    // Mirror the old SDK's zcashlc_create_tor_runtime: iOS sandboxes the app
+                    // dir so fs-mistrust can trust it; elsewhere let Tor manage permissions.
+                    #[cfg(target_os = "ios")]
+                    let tor_dangerously = true;
+                    #[cfg(not(target_os = "ios"))]
+                    let tor_dangerously = false;
+                    let mut boot_failures: u32 = 0;
+                    loop {
+                        match slipstream_core::connector::TorConn::bootstrap(dir, tor_dangerously)
+                            .await
+                        {
+                            Ok(tc) => {
+                                tracing::info!("slipstream Tor bootstrapped (engine-owned isolated circuits)");
+                                break Some(tc);
+                            }
+                            Err(err) => {
+                                boot_failures += 1;
+                                let backoff = sync_retry_backoff(boot_failures);
+                                tracing::warn!(
+                                    %err,
+                                    boot_failures,
+                                    backoff_secs = backoff.as_secs(),
+                                    "Tor bootstrap failed (transient) — retrying; NOT falling back to direct"
+                                );
+                                *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Idle;
+                                tokio::time::sleep(backoff).await;
+                            }
+                        }
+                    }
+                }
+            };
+
             // ── Initial pass: RESILIENT retry loop (T8.7) ────────────────────
             // A foreground wallet must NEVER surface a hard sync error for a
             // recoverable (transient/transport) failure — internal testers must not
@@ -4683,6 +4752,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                     &cfg,
                     ufvk_arg.as_ref().map(|(s, h)| (s.as_str(), *h)),
                     &progress,
+                    tor_conn.as_ref(),
                 ).await {
                     Ok(outcome) => break Ok(outcome),
                     Err(err) if err.is_transient() => {
@@ -4763,7 +4833,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                         // mempool for this handle and the loop reverts to the exact
                         // T8.1 jitter-poll behaviour — following never dies from it.
                         if mempool_enabled {
-                            match slipstream_core::mempool::run_session(&cfg, Some(progress.clone()), &mut seen_txids, slipstream_core::mempool::MEMPOOL_SESSION_IDLE, None).await {
+                            match slipstream_core::mempool::run_session(&cfg, Some(progress.clone()), &mut seen_txids, slipstream_core::mempool::MEMPOOL_SESSION_IDLE, tor_conn.as_ref()).await {
                                 Ok((end, stats)) => {
                                     mempool_failures = 0;
                                     tracing::debug!(?end, received = stats.received, hits = stats.stored_hits, last_tip, "follow: mempool session ended");
@@ -4789,7 +4859,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
 
                         // Fast-path probe: GetLatestBlock only (no subtree roots,
                         // no UTXO refresh — those only happen in a full pass).
-                        let observed = match slipstream_core::engine::probe_tip(&cfg, None).await {
+                        let observed = match slipstream_core::engine::probe_tip(&cfg, tor_conn.as_ref()).await {
                             Ok(t) => {
                                 consecutive_failures = 0;
                                 t
@@ -4829,7 +4899,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                         // is already imported; passing Some would waste a GetTreeState
                         // RPC on every catch-up pass (fact A of the plan recon).
                         *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Syncing;
-                        match run_pass_with_retry(&cfg, None, &progress).await {
+                        match run_pass_with_retry(&cfg, None, &progress, tor_conn.as_ref()).await {
                             Ok(o) => {
                                 last_tip = o.chain_tip;
                                 consecutive_failures = 0;
