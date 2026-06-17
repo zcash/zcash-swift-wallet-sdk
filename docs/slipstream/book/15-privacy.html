@@ -13,15 +13,17 @@
 
   <div class="callout summary">
     <span class="label">1-minute summary · reading time ≈ 10 min</span>
-    <p>This chapter documents, with precision grounded in the source code, exactly what the lightwalletd server learns about a wallet when Slipstream syncs. The most significant facts: the wallet's transparent addresses are sent to the server in plain text during enhancement; the wallet's transaction IDs of interest are revealed via GetTransaction; and Tor is <em>not</em> wired into Slipstream's network paths. These are not surprises — they are protocol-inherent leakages shared with the upstream SDK — but they are stated plainly here.</p>
+    <p>This chapter documents, with precision grounded in the source code, exactly what the lightwalletd server learns about a wallet when Slipstream syncs. The most significant facts: the wallet's transparent addresses are sent to the server during enhancement, and its transaction IDs of interest are revealed via GetTransaction. When Tor is enabled, those wallet-identifying calls are routed over <em>isolated Tor circuits</em> while the bulk compact-block download stays direct — mirroring the old SDK's per-call Tor policy exactly (§15.3). These leakages are protocol-inherent and shared with the upstream SDK; this chapter states plainly what the server learns, and what Tor does and does not hide.</p>
   </div>
 
   <div class="callout warning">
     <span class="label">This chapter's honesty register</span>
-    <p>Every claim in the "what the server learns" table is verified against the source code at commit ad755e08. Claims that cannot be verified from the code are marked UNVERIFIED. No claim is made about anonymity or privacy properties not supported by the code.</p>
+    <p>Every claim in the "what the server learns" table is verified against the source code at commit e31bd005 (Tor integration). Claims that cannot be verified from the code are marked UNVERIFIED. No claim is made about anonymity or privacy properties not supported by the code.</p>
   </div>
 
   <h2>15.1 What the server learns: the complete table</h2>
+
+  <p>This table lists every disclosure on the wire. <em>Which</em> of these the operator can tie to the wallet's syncing IP depends on Tor (§15.3): with Tor on, the bulk-download rows (IP, birthday range, the 4-stream pattern) stay direct, while the wallet-identifying rows (treestate, transparent addresses, txids) travel over isolated Tor circuits.</p>
 
   <table>
     <thead>
@@ -155,7 +157,7 @@
       <text x="520" y="131" fill="#1a2333" font-size="10">Generic (no wallet linkage)</text>
       <rect x="500" y="140" width="14" height="14" rx="3" fill="#effaf1" stroke="#a8dcb2" stroke-width="1"/>
       <text x="520" y="151" fill="#1a2333" font-size="10">Stays on device (never sent)</text>
-      <text x="580" y="175" text-anchor="middle" fill="#b54708" font-size="10" font-weight="600">Tor NOT wired — all paths direct TLS</text>
+      <text x="580" y="175" text-anchor="middle" fill="#1a7f37" font-size="10" font-weight="600">Tor ON: metadata isolated · bulk direct</text>
 
       <!-- Arrows -->
       <line x1="140" y1="62" x2="152" y2="62" stroke="#b54708" stroke-width="1.5" marker-end="url(#arrw15)"/>
@@ -166,7 +168,7 @@
       <line x1="325" y1="202" x2="338" y2="202" stroke="#6e7781" stroke-width="1.5" marker-end="url(#arr15)"/>
       <line x1="325" y1="234" x2="338" y2="234" stroke="#6e7781" stroke-width="1.5" marker-end="url(#arr15)"/>
     </svg>
-    <figcaption>Figure 15.1 — Data-flow privacy map. Orange flows reach the server and are correlated with this wallet. The UFVK, shielded keys, balances, memos, and note positions stay on the device. All network paths are direct TLS — Tor is not wired.</figcaption>
+    <figcaption>Figure 15.1 — Data-flow privacy map. Orange flows reach the server. The UFVK, shielded keys, balances, memos, and note positions stay on the device. When Tor is enabled, the wallet-identifying orange flows (treestate, txids, transparent addresses, submit) use isolated Tor circuits; the bulk block download stays direct (§15.3).</figcaption>
   </figure>
 
   <h2>15.2 What the server can never learn from Slipstream</h2>
@@ -179,12 +181,28 @@
     <li><strong>The wallet's spend history or internal note positions.</strong> Nullifiers and note commitment tree positions are computed and stored locally.</li>
   </ul>
 
-  <h2>15.3 Tor status — honest gap</h2>
+  <h2>15.3 Tor: engine-owned circuits, mirroring the old SDK</h2>
+  <p>As of the Tor integration (ENGINE_BUILD <code>2026-06-17.tor</code>), Slipstream routes its sync over Tor when the host wallet enables it — using the <em>same per-call policy the old SDK established</em> (that policy was designed and reviewed by the engineer who drove Tor into the SDK). The rule splits by call type:</p>
+  <table>
+    <thead><tr><th>Call</th><th>Transport when Tor is ON</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Bulk block fetch (<code>GetBlockRange</code>, 4 streams)</td><td><strong>Direct</strong> — never Tor</td><td>Public range data, too high-volume for Tor; mirrors the old SDK's <code>blockStream(.direct)</code>, and keeps full sync speed.</td></tr>
+      <tr><td><code>GetTreeState</code>, <code>GetLatestBlock</code></td><td>Isolated Tor circuit (<code>.uniqueTor</code>)</td><td>Wallet-correlated metadata; a fresh circuit per connection.</td></tr>
+      <tr><td><code>GetLightdInfo</code> (server validation)</td><td>Default Tor circuit (<code>.defaultTor</code>)</td><td>Mirror of the old SDK.</td></tr>
+      <tr><td><code>GetTransaction</code> (enhancement)</td><td>Tor circuit grouped by txid (<code>.txIdGroup</code>)</td><td>Hides which txids this wallet fetches from the syncing IP.</td></tr>
+      <tr><td>Transparent <code>GetTaddressTxids</code> / <code>GetAddressUtxos</code></td><td>Isolated Tor circuit</td><td>Hides the wallet's transparent addresses from the syncing IP.</td></tr>
+      <tr><td>Transaction submit</td><td>Isolated Tor circuit</td><td>Hides which IP broadcast a transaction.</td></tr>
+    </tbody>
+  </table>
+  <p><strong>What this hides — and what it does not.</strong> With Tor on, the lightwalletd operator <em>still</em> observes the wallet's real IP and approximate birthday range <em>on the direct bulk download</em> — exactly as the old SDK does, by deliberate design (the bulk stream is public block data, and routing hundreds of MB over Tor would defeat the engine's speed). What Tor <em>does</em> hide is the linkage between that IP and the wallet's specific identifying operations: the transaction IDs it fetches, the transparent addresses it queries, the treestate heights, and its transaction broadcasts each travel over a <em>separate isolated Tor circuit</em> (a distinct exit IP), so the operator cannot tie them to the syncing IP. This is privacy parity with the old SDK — neither weaker nor stronger.</p>
+  <div class="callout">
+    <span class="label">Engine-owned, resilient, never-falls-back</span>
+    <p>The engine bootstraps its <em>own</em> arti Tor client on its own async runtime (<code>zcash_client_backend::tor::Client::create</code> binds to the ambient runtime — no <code>block_on</code>, no second runtime), from a dedicated state directory <em>separate</em> from the old SDK's <code>TorClient</code> dir (arti holds a per-directory state lock). Bootstrapping is resilient: a transient failure surfaces as <em>Disconnected</em> and retries with capped backoff indefinitely — it <strong>never</strong> silently falls back to a direct connection, because a Tor-requesting user must not be de-anonymised by a network blip. Enabling Tor therefore costs a one-time circuit bootstrap (a few seconds, overlapping the direct bulk fetch) but <em>not</em> the old SDK's whole-engine slowdown: the wallet syncs at full speed with Tor on.</p>
+  </div>
+  <p><strong>Tor off</strong> is byte-for-byte the previous behaviour — the connector's direct path is the literal <code>grpc::connect</code> call, unchanged, and the golden oracle confirms an identical <code>data.db</code>.</p>
   <div class="callout warning">
-    <span class="label">Tor is NOT wired into Slipstream</span>
-    <p>All of Slipstream's network paths — GetBlockRange (fetch), GetTreeState (scan boundaries), GetSubtreeRoots (engine startup), GetTransaction/GetTaddressTxids/GetAddressUtxos (enhancement and UTXO refresh) — connect directly to the lightwalletd server over TLS. There is no Tor routing for any of these calls.</p>
-    <p>The old SDK has Tor plumbing for some flows (the TorClient infrastructure is present in <code>Modules/Service/Tor/</code>). Slipstream's gRPC module (<code>grpc.rs</code>) was architected to be drop-in compatible with a Tor-backed channel (see the module comment: "produces the same client type <code>rust/src/tor.rs</code> uses... so a Tor-backed channel can be swapped in later (P8)"), but that swap has not been implemented. Integrating Tor for Slipstream's network paths is an open roadmap item.</p>
-    <p>The practical consequence is that the lightwalletd server observes the wallet's real IP address, in addition to the range and address leakages described above. A user who requires IP-level privacy must route Slipstream's connections through an external VPN or Tor proxy at the network layer — the engine itself provides no such protection.</p>
+    <span class="label">Residual IP exposure (unchanged from the old SDK)</span>
+    <p>Because the bulk download is direct, a user who additionally wants to hide the <em>fact and IP</em> of syncing (not just unlink their specific operations) must still route the connection through an external VPN or system-level Tor — the engine's bulk path provides no IP protection, by the same design choice as the old SDK.</p>
   </div>
 
   <h2>15.4 Data at rest</h2>
@@ -207,13 +225,13 @@
   <p>Recommendations for users and operators who want stronger privacy:</p>
   <ul>
     <li><strong>Server choice:</strong> use a self-operated or trusted lightwalletd. The engine is server-agnostic and accepts any compliant endpoint.</li>
-    <li><strong>Tor (future):</strong> once the P8 Tor integration is implemented, routing Slipstream's gRPC channel over Tor would hide the source IP from the lightwalletd operator.</li>
+    <li><strong>Tor:</strong> enabling Tor (a host-wallet setting) routes the wallet-identifying calls over isolated Tor circuits, unlinking them from the syncing IP (§15.3). The bulk download stays direct by design, so the IP + range remain visible on it — hiding those too requires a system-level VPN/Tor.</li>
     <li><strong>Transparent address use:</strong> wallets that use only shielded addresses leak significantly less during enhancement (no GetTaddressTxids calls, no GetAddressUtxos calls for those accounts, since <code>get_transparent_receivers</code> would return an empty set).</li>
   </ul>
 
   <h2>Known limitations</h2>
   <ul>
-    <li>Tor is not wired into Slipstream's network paths (documented gap above).</li>
+    <li>The bulk block download stays direct even with Tor on (deliberate parity with the old SDK; §15.3), so the syncing IP + birthday range remain visible to the operator. The wallet-identifying calls are Tor-isolated when Tor is on.</li>
     <li>The 4-stream parallel fetch creates a fingerprintable traffic pattern not present in single-stream clients. This is an inherent consequence of the parallel fetch design and is acknowledged.</li>
     <li>The <code>TransactionsInvolvingAddress</code> open-ended range requests (those with no <code>block_range_end</code>) are currently skipped. When this skip is removed and full transparent address scanning is implemented, the set of transparent addresses and ranges sent to the server will increase.</li>
     <li>The privacy properties described here apply to the engine's own network behaviour. Privacy properties of the application layer, user-generated data, or any other SDK components are outside the scope of this analysis.</li>
@@ -224,7 +242,7 @@
     <a href="16-exploitability.html">16. Exploitability Review →</a>
   </nav>
 
-  <footer class="colophon">Citations as of commit ad755e08. Slipstream Book · local-only draft, not for distribution.</footer>
+  <footer class="colophon">Citations as of commit e31bd005 (Tor integration). Slipstream Book · local-only draft, not for distribution.</footer>
 </main>
 </body>
 </html>

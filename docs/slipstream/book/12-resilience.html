@@ -276,7 +276,7 @@
   <div class="callout warning">
     <span class="label">Honest gaps</span>
     <ul>
-      <li><strong>Single-shot runner</strong>: no in-foreground tip-following; the wallet only updates on explicit sync calls. A reorg or new transaction arriving after a pass completes is not seen until the next pass.</li>
+      <li><strong>In-foreground tip-following (DONE, T8.1)</strong>: the follow loop above re-runs a keyless catch-up pass whenever the server tip advances, so a reorg or new transaction arriving after a pass completes is picked up automatically — the wallet no longer updates only on explicit sync calls.</li>
       <li><strong>Progress % resets on Layer 3 retry</strong>: the ratio counters reset when <code>begin_pass()</code> is called at each retry entry. The user briefly sees a lower percentage before it recovers. Monotonic counters (ranges_completed, enhanced_txs) do not reset.</li>
       <li><strong>Stall watchdog is visibility-only</strong>: the watchdog fires a log entry but does not attempt any recovery. Recovery policy is entirely with the app layer. If the app is backgrounded during a stall, the watchdog fires when the app returns to the foreground and the next poll tick runs.</li>
       <li><strong>A10 spam-era memory tuning pending</strong>: Layer 1 resume-from-height handles the bytes in flight, but the per-range in-memory shardtree plus decode amplification may exceed 2 GB on A10-class devices during the spam era. See chapter 11.</li>

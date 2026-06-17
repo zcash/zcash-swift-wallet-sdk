@@ -215,9 +215,9 @@
   <div class="callout warning">
     <span class="label">Current gaps (see chapter 19 for the complete list)</span>
     <ul>
-      <li><strong>Single-shot runner:</strong> Slipstream runs one pass and stops. There is no in-foreground tip-following (continuous sync). The app is responsible for calling <code>start()</code> again when new blocks arrive.</li>
-      <li><strong>Mempool detection missing:</strong> unconfirmed transactions are not surfaced. The old SDK's mempool polling is not yet ported.</li>
-      <li><strong>Tor not wired:</strong> Slipstream's fetch/scan/enhance paths connect directly via TLS. The old SDK has Tor integration for some flows; Slipstream has none. This is a confirmed privacy gap — see chapter 15.</li>
+      <li><strong>In-foreground tip-following (DONE, T8.1):</strong> after each pass, the engine enters a jittered 10–30 s probe loop; a server-tip advance triggers a keyless catch-up pass, cancelled by the existing AbortHandle on stop/free. The app no longer has to call <code>start()</code> again when new blocks arrive.</li>
+      <li><strong>Mempool (0-conf) detection (DONE, T8.2):</strong> the engine holds a mempool stream between follow passes and surfaces wallet-relevant unconfirmed transactions 0-conf via <code>decrypt_and_store_transaction</code>; non-fatal (on cap it falls back to tip-polling).</li>
+      <li><strong>Tor wired (DONE, T-Tor):</strong> when the host wallet enables Tor, the engine bootstraps its own arti client and routes wallet-identifying gRPC calls over isolated Tor circuits while the bulk block download stays direct — privacy parity with the old SDK at full sync speed. See chapter 15.</li>
       <li><strong>A10 sandblasting era:</strong> the spam era (~1.70M–2.00M blocks) is now traversable on Mac (84,964 blocks / 43.2M outputs validated). Device memory budgets on A10-class hardware (2 GB) need dedicated tuning before a birthday-935000 full restore is safe on device.</li>
       <li><strong>iPhone 16 Pro Zkool gap:</strong> Slipstream on iPhone 16 Pro is 1:35 vs Zkool's 1:13. The remaining lever is the decrypt-kernel track (L4a — the column-oriented ECDH kernel parked, awaiting a seam design).</li>
       <li><strong>LOCAL-ONLY:</strong> this prototype has never been pushed to any remote. No public release, no Android port, no productization decision made.</li>

@@ -329,7 +329,7 @@ continue;</code></pre>
     <ul>
       <li>The <code>MAX_CONSECUTIVE_REORGS=5</code> cap is conservative and may surface as an error to the user in adversarial server scenarios. The app layer should present this as a recoverable error (restart the sync) rather than a permanent failure.</li>
       <li>Tip-desync failure scenario (field failure 1) remains unconfirmed as the root cause of <code>rustSlipstreamSyncFailed(3375119)</code> — the Mac repro attempt produced 10/10 clean runs. The backoff mitigation addresses the plausible scenario regardless.</li>
-      <li>No tip-following between passes (single-shot runner, P8 gap): a reorg that occurs <em>after</em> a sync pass completes will only be detected at the start of the next pass when <code>suggest_scan_ranges</code> returns Verify-priority ranges. In-foreground tip-following is a known gap documented in chapter 19.</li>
+      <li>Tip-following between passes (DONE, T8.1): a reorg that occurs <em>after</em> a sync pass completes is detected on the next catch-up pass, which the in-foreground follow loop launches automatically when the server tip advances (<code>suggest_scan_ranges</code> then returns Verify-priority ranges). The follow loop is described in chapter 12 and chapter 19.</li>
     </ul>
   </div>
 

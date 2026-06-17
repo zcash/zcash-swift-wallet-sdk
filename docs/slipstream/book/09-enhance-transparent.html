@@ -66,18 +66,18 @@ for round in 0..3 {
   <p>Before any address RPC, the engine applies three guards in order (<code>enhance.rs:265–285</code>):</p>
 
   <ol>
-    <li><strong>Missing <code>blockRangeEnd</code>:</strong> if the request has no upper block bound, it cannot be safely issued (open-ended scan would walk the entire chain). Skip and document as a gap — see below.</li>
-    <li><strong>Missing <code>requestAt</code>:</strong> if the request has no anchor block height, the engine has no anchor for the treestate and cannot issue the request safely.</li>
-    <li><strong>Status already <code>Unspent</code>:</strong> if the UTXO is already marked as unspent (fully processed), the request is redundant.</li>
+    <li><strong>Missing <code>blockRangeEnd</code> (now clamped, T8.5):</strong> an open-ended request clamps to <code>chain_height+1</code> via <code>effective_range_end</code> and is serviced as a closed <code>[start, tip]</code> range rather than skipped — see below. The request is only skipped if there is genuinely no scanned chain tip yet (defensive; cannot occur after preflight).</li>
+    <li><strong>Set <code>requestAt</code>:</strong> requests carrying a decorrelated-fetch anchor are skipped (privacy-decorrelated scheduling not implemented) — matching the old SDK.</li>
+    <li><strong>Status already <code>Unspent</code>:</strong> if the UTXO is already marked as unspent (fully processed), the request is redundant and skipped.</li>
   </ol>
 
-  <h2>The open-ended address skip: a documented completeness gap</h2>
+  <h2>The open-ended address range: clamped to the tip (T8.5)</h2>
 
-  <p>When <code>blockRangeEnd</code> is absent from a <code>TransactionsInvolvingAddress</code> request, the engine logs a warning and skips the request. It does not issue a best-effort open-ended RPC because such a request would walk the entire chain and bypass the byte-budget and deadline mechanisms that bound all other network calls.</p>
+  <p>When <code>blockRangeEnd</code> is absent from a <code>TransactionsInvolvingAddress</code> request, the request means "unbounded above." The completest answer lightwalletd can give right now is through the chain tip, so the engine clamps the range to <code>chain_height+1</code> via <code>effective_range_end</code> and services it as an ordinary closed <code>[start, tip]</code> request — the same byte-budget and deadline mechanisms bound it as every other call. After success, <code>notify_address_checked(tip)</code> records the watermark, so any activity above the tip is re-issued on the next pass with no coverage gap.</p>
 
-  <div class="callout warning">
-    <span class="label">Documented completeness gap</span>
-    <p>Slipstream does not currently handle open-ended <code>TransactionsInvolvingAddress</code> requests. Wallets with transparent activity <em>after</em> the scan tip may not have all transparent transactions enhanced until a subsequent sync that covers those blocks. This is a known gap; it does not affect shielded balance correctness. The privacy note: issuing open-ended address queries to the server would reveal more of the wallet's address history than bounded queries; the conservative skip also limits privacy leakage. See chapter 15 for the privacy model, and chapter 19 for the roadmap item.</p>
+  <div class="callout note">
+    <span class="label">Completeness — closed (T8.5)</span>
+    <p>Open-ended ranges are no longer skipped: they clamp and service against the current tip. The only residual skips are the <code>requestAt</code> and <code>Unspent</code> guards, which fire for ephemeral ZIP-320 checks — and those upstream producers also set <code>requestAt</code> + <code>Unspent</code>, so they skip here for exactly the same reason the old SDK skips them. Privacy: the clamped request sends the same address strings as any other closed-range query. See chapter 15 for the privacy model, and chapter 19 for the roadmap context.</p>
   </div>
 
   <h2>The three interleave layers</h2>
@@ -205,9 +205,9 @@ for round in 0..3 {
   <div class="callout warning">
     <span class="label">Honest gaps</span>
     <ul>
-      <li><strong>Open-ended address skip:</strong> Requests without a <code>blockRangeEnd</code> are skipped. Transparent activity at heights beyond the current scan tip may not be enhanced until a subsequent sync that covers those heights. This is not a shielded correctness issue. See chapter 19 for the roadmap item and chapter 15 for the privacy implications of address queries.</li>
+      <li><strong>Open-ended address range now clamped (T8.5):</strong> Requests without a <code>blockRangeEnd</code> are clamped to <code>chain_height+1</code> and serviced as a closed range, then re-issued for any activity above the tip on the next pass. The residual <code>requestAt</code>/<code>Unspent</code> skips cover only ephemeral ZIP-320 checks — matching the old SDK. See chapter 15 for the privacy implications of address queries.</li>
       <li><strong>Three-round cap:</strong> Enhancement loops at most three rounds per invocation. A pathological wallet state that requires more than three cascade levels per range would not be fully enhanced in one interleave call. In practice, one or two rounds is the observed maximum; three is a conservatively generous bound.</li>
-      <li><strong>No mempool enhancement:</strong> <code>transaction_data_requests</code> does not return pending (unconfirmed) transactions. Outgoing spends are not enhanced until they are mined. This is a known gap shared with the old SDK path.</li>
+      <li><strong>Mempool surfacing vs. enhancement detail:</strong> 0-conf wallet-relevant transactions — including the wallet's own outgoing spends, which appear in the mempool — are now surfaced via the T8.2 mempool stream (between follow passes). The <code>transaction_data_requests</code> enhance path itself still fills full transaction detail only for mined txs, because the upstream library drives those requests off confirmed state.</li>
       <li><strong>Address stream dedupe is per-invocation:</strong> the <code>skipped_keys</code> HashSet is created fresh in each <code>run_enhancement</code> call. Across the three interleave layers in a single pass, the same address may be queried up to three times (once per layer). Within one call, it is queried at most once.</li>
     </ul>
   </div>

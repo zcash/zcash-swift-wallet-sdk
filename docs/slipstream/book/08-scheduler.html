@@ -237,8 +237,8 @@ if let Err(e) = run_enhancement(&mut wallet, &p, handle).await {
   <div class="callout warning">
     <span class="label">Honest gaps</span>
     <ul>
-      <li><strong>Single-shot runner:</strong> the scheduler runs to completion and exits. There is no foreground tip-following loop that polls for new blocks while the wallet is open. Post-sync balance updates require the Swift layer to re-trigger a sync call. (See ch.19 for the roadmap item.)</li>
-      <li><strong>No mempool detection:</strong> the engine does not query the mempool for pending transactions. Outgoing spends are detected only after mining. (Documented gap — ch.19.)</li>
+      <li><strong>In-foreground tip-following (DONE, T8.1):</strong> after the scheduler runs to completion, <code>sync_body</code> enters a jittered 10–30 s probe loop and re-runs a keyless catch-up pass whenever the server tip advances, so post-sync balance updates no longer require the Swift layer to re-trigger a sync call. (See ch.19.)</li>
+      <li><strong>Mempool (0-conf) detection (DONE, T8.2):</strong> between follow passes the engine holds a mempool stream and surfaces wallet-relevant pending transactions 0-conf; the wallet's own outgoing spends appear there before mining. (See ch.19.)</li>
       <li><strong>Progress percentages are pass-scoped:</strong> a user watching the progress bar will see it reset between passes (e.g., after a reorg recovery). The "snap-back" fix (T6.5) addresses within-pass jumps, but cross-pass resets are intentional and documented — the Swift layer is expected to show a "reorg detected" message rather than trying to continue the prior percentage.</li>
     </ul>
   </div>

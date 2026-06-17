@@ -367,8 +367,8 @@
   <div class="callout warning">
     <span class="label">Architecture-level gaps</span>
     <ul>
-      <li><strong>Single-shot runner:</strong> <code>sync_once</code> runs one complete pass. There is no continuous background sync. The pass-level retry loop (T6.8-H2: up to 3 total attempts for transient transport errors, sleeping 5s/15s between attempts) is bounded — it does not loop indefinitely.</li>
-      <li><strong>Tor not wired:</strong> all gRPC connections in <code>grpc.rs</code> are direct TLS. The old SDK routes some flows through Tor; Slipstream has no arti integration. See chapter 15.</li>
+      <li><strong>In-foreground tip-following (DONE, T8.1):</strong> <code>sync_once</code> runs one complete pass, after which <code>sync_body</code> enters a jittered 10–30 s probe loop and launches a keyless catch-up pass whenever the server tip advances (cancelled by the AbortHandle on stop/free). The pass-level retry loop (T6.8-H2: up to 3 total attempts for transient transport errors, sleeping 5s/15s between attempts) remains bounded — it does not loop indefinitely.</li>
+      <li><strong>Tor wired (DONE, T-Tor):</strong> when the host enables Tor, the engine bootstraps its own arti client; <code>grpc.rs</code> routes wallet-identifying calls (treestate, latest-block, getInfo, GetTransaction, transparent txids/UTXOs, submit) over isolated Tor circuits while the bulk <code>GetBlockRange</code> download stays direct — mirroring the old SDK's per-call policy. See chapter 15.</li>
       <li><strong>L2 row batching seam-blocked:</strong> the <code>put_blocks</code> SQL write path inside <code>zcash_client_sqlite</code> cannot be replaced via public API without a fork or upstream PR — the performance lever for bulk-inserting rows exists but is blocked at the library boundary.</li>
       <li><strong>L4a decrypt kernel parked:</strong> a column-oriented ECDH scan kernel would eliminate the 3–5% decryption fraction and could cut further into the tree-time overhead on modern hardware, but requires a new oracle harness (the current oracle covers the <code>scan_cached_blocks</code> output, not an alternative kernel). Deferred.</li>
     </ul>

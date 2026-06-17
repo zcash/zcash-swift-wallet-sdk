@@ -40,9 +40,9 @@
         <td>T8.4 ships the device-memory derate: Swift passes <code>ProcessInfo.physicalMemory</code> to <code>zcashlc_slipstream_open</code>, and <code>EngineConfig::scaled_for_device_memory</code> applies a 64 MiB budget + 4 MiB split on &lt;3 GiB devices (AheadGate auto-scales). [needs-user] iPad A10 935000-birthday restore survival is the acceptance gate (pending).</td>
       </tr>
       <tr>
-        <td>Tor not wired into Slipstream paths</td>
-        <td><span style="color:#b54708;font-weight:700">Open</span></td>
-        <td>Slipstream fetch/scan/enhance uses direct TLS even when the old SDK's Tor paths are enabled</td>
+        <td>Tor wired into Slipstream paths</td>
+        <td><span style="color:#1a7f37;font-weight:700">Done (T-Tor, 2026-06-17)</span></td>
+        <td>When Tor is enabled, wallet-identifying gRPC calls route over isolated Tor circuits (engine-owned arti client); the bulk block download stays direct — mirroring the old SDK's per-call policy. See §15.3. [needs-user] device acceptance pending.</td>
       </tr>
       <tr>
         <td><code>TransactionsInvolvingAddress</code> skip</td>
@@ -148,18 +148,14 @@
 
   <p><strong>Status — derate SHIPPED (T8.4, 2026-06-16; A10 device run pending):</strong> Swift passes <code>ProcessInfo.physicalMemory</code> to <code>zcashlc_slipstream_open</code>, and <code>EngineConfig::scaled_for_device_memory</code> applies a 64 MiB <code>memory_budget_bytes</code> + 4 MiB <code>chunk_split_bytes</code> on &lt;3 GiB devices (the AheadGate auto-scales as 8×split). A <code>--memory-budget-bytes</code> CLI flag now exists too — this chapter previously over-claimed that flag before it was added (fact H); T8.4 made it real. The <strong>acceptance gate is [needs-user]</strong>: an iPad A10 935000-birthday restore that survives the 1.70–2.00M spam era (the run that jetsams today). If 64 MiB still isn't enough on the A10, range segmentation (resetting the sparse tree state periodically across the 1.5M-block historic range) remains a future option.</p>
 
-  <h3>Tor not wired into Slipstream paths</h3>
+  <h3>Tor wired into Slipstream paths — RESOLVED (T-Tor, 2026-06-17)</h3>
 
-  <div class="callout warning">
-    <span class="label">Documented in ch. 15 (Privacy), PLAN.md honesty register</span>
-    <p>All Slipstream fetch, scan, and enhance traffic uses direct TLS to lightwalletd. The old SDK has Tor integration for some flows (GetBlock, GetTransaction, certain enhancement queries). Slipstream does not use these paths.</p>
+  <div class="callout">
+    <span class="label">Engine syncs over Tor; documented in ch. 15 (Privacy) §15.3</span>
+    <p>When the host wallet enables Tor, the engine bootstraps its own arti client (on its own runtime, from a dedicated state dir separate from the old SDK's <code>TorClient</code>) and routes the wallet-identifying gRPC calls — <code>GetTreeState</code>, <code>GetLatestBlock</code>, <code>GetLightdInfo</code>, <code>GetTransaction</code>, transparent <code>GetTaddressTxids</code>/<code>GetAddressUtxos</code>, and submit — over isolated Tor circuits. The bulk <code>GetBlockRange</code> download stays direct, mirroring the old SDK's per-call policy exactly. This is privacy parity with the old SDK, with no engine slowdown (the bulk stays full-speed). Bootstrapping is resilient and never falls back to direct.</p>
   </div>
 
-  <p><strong>Why it matters:</strong> Users who enable Tor in Zodl expect all wallet network traffic to route through Tor. Slipstream's direct-TLS sync reveals the user's IP address and query patterns to the lightwalletd operator. This is the same leakage class as the old SDK without Tor enabled — but it is a regression from the Tor-enabled old SDK.</p>
-
-  <p><strong>Current mitigation:</strong> None for Slipstream paths. The old SDK's Tor paths are intact and available if the user reverts to the old synchronizer.</p>
-
-  <p><strong>Planned fix shape:</strong> P8 T8.x — route tonic connections through the arti channel already wired in the libzcashlc FFI boundary for the old SDK's Tor client. The arti client is already present as a dependency; the grpc <code>connect()</code> call needs an arti-backed transport channel variant.</p>
+  <p><strong>Remaining:</strong> [needs-user] on-device acceptance — Zodl with Tor ON syncs at full speed (log shows <code>engine_build=2026-06-17.tor</code> + <code>slipstream Tor bootstrapped</code>). The residual IP exposure on the direct bulk download is unchanged from the old SDK (by design — §15.3).</p>
 
   <h3>TransactionsInvolvingAddress skip (completeness gap)</h3>
 
