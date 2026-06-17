@@ -5,6 +5,7 @@
 pub mod block_source;
 pub mod chunk;
 pub mod config;
+pub mod connector;
 pub mod enhance;
 pub mod engine;
 pub mod error;
