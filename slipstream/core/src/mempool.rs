@@ -81,13 +81,19 @@ pub async fn run_session(
     progress: Option<Arc<Progress>>,
     seen: &mut HashSet<[u8; 32]>,
     idle: Duration,
+    tor: Option<&crate::connector::TorConn>,
 ) -> Result<(SessionEnd, SessionStats), SlipstreamError> {
     let mut stats = SessionStats::default();
     if seen.len() > SEEN_TXIDS_CAP {
         seen.clear(); // bounded memory; worst case = one re-emit per live tx
     }
     let mut session = WalletSession::open(config.network, &config.wallet_db_path)?;
-    let mut client = grpc::connect(&config.endpoint).await?;
+    let mut client = crate::connector::connect_via(
+        &config.endpoint,
+        tor,
+        crate::connector::ConnPurpose::MetadataUnique,
+    )
+    .await?;
     // Bound the OPEN by `idle`, NOT the gRPC unary timeout: lightwalletd sends
     // GetMempoolStream response headers lazily (see grpc::open_mempool_stream),
     // so a quiet mempool legitimately blocks the open past 30 s. An over-idle

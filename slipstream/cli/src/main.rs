@@ -310,7 +310,7 @@ fn cmd_sync(
             }
         });
 
-        let result = slipstream_core::engine::sync_once(&cfg, ufvk_arg, Some(progress)).await;
+        let result = slipstream_core::engine::sync_once(&cfg, ufvk_arg, Some(progress), None).await;
 
         // Abort the ticker (JoinHandle::abort is fine per spec — no cleanup needed).
         ticker.abort();
@@ -393,7 +393,7 @@ fn cmd_sync(
                         tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
 
                         // Cheap probe.
-                        match slipstream_core::engine::probe_tip(&cfg).await {
+                        match slipstream_core::engine::probe_tip(&cfg, None).await {
                             Ok(observed) => {
                                 if !slipstream_core::engine::should_resync(last_tip, observed) {
                                     println!("follow: tip unchanged ({observed}), no pass needed");
@@ -406,6 +406,7 @@ fn cmd_sync(
                                     &cfg,
                                     None, // keyless: account already imported
                                     None,
+                                    None, // CLI follow: direct (no Tor)
                                 )
                                 .await
                                 {
@@ -489,10 +490,10 @@ fn cmd_oracle(
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     let verdict = rt.block_on(async {
         println!("oracle: run A (upstream persistence) …");
-        let a = slipstream_core::engine::sync_once(&mk_cfg(&wallet_a, false, false, false, 1), Some((ufvk.as_str(), birthday)), None).await?;
+        let a = slipstream_core::engine::sync_once(&mk_cfg(&wallet_a, false, false, false, 1), Some((ufvk.as_str(), birthday)), None, None).await?;
         println!("oracle: run A done — tip {} in {:.1?}", a.chain_tip, a.elapsed);
         println!("oracle: run B (sparse_b={sparse_b} write_behind_b={write_behind_b} gpu_subtree_b={gpu_subtree_b} persist_depth_b={persist_depth_b}) …");
-        let b = slipstream_core::engine::sync_once(&mk_cfg(&wallet_b, sparse_b, write_behind_b, gpu_subtree_b, persist_depth_b), Some((ufvk.as_str(), birthday)), None).await?;
+        let b = slipstream_core::engine::sync_once(&mk_cfg(&wallet_b, sparse_b, write_behind_b, gpu_subtree_b, persist_depth_b), Some((ufvk.as_str(), birthday)), None, None).await?;
         println!("oracle: run B done — tip {} in {:.1?}", b.chain_tip, b.elapsed);
         if a.chain_tip != b.chain_tip {
             eprintln!("oracle: TIP SKEW (A={} B={}) — rerun when the chain is quiet", a.chain_tip, b.chain_tip);

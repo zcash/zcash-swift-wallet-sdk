@@ -24,6 +24,7 @@ use crate::{
     block_source::MemBlockSource,
     chunk::ChunkQueueReceiver,
     config::{Endpoint, EngineConfig},
+    connector::TorConn,
     enhance::run_enhancement,
     error::SlipstreamError,
     events::Progress,
@@ -164,6 +165,7 @@ struct WriteBehind {
 /// RPC cost: ~1 GetTreeState per ~TARGET_BATCH_MS on slow devices, fully hidden
 /// behind the blocking scan; zero extra RPCs on fast devices (fast-path = 1 call
 /// per chunk, same as before T5.2).
+#[allow(clippy::too_many_arguments)] // +tor (T-Tor.2); bundling would obscure the borrow structure
 pub async fn scan_chunks(
     session: &mut WalletSession,
     client: &mut LwdClient,
@@ -172,6 +174,7 @@ pub async fn scan_chunks(
     progress: Option<Arc<Progress>>,
     config: &EngineConfig,
     skipped_keys: &mut HashSet<String>,
+    tor: Option<&TorConn>,
 ) -> Result<ScanStats, SlipstreamError> {
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
@@ -191,7 +194,7 @@ pub async fn scan_chunks(
     };
 
     let result =
-        scan_chunks_inner(session, client, range_start, rx, progress, config, skipped_keys, &mut wb)
+        scan_chunks_inner(session, client, range_start, rx, progress, config, skipped_keys, &mut wb, tor)
             .await;
 
     // ── T6.9 full barrier (range end AND every error exit) ───────────────────
@@ -247,6 +250,7 @@ async fn scan_chunks_inner(
     config: &EngineConfig,
     skipped_keys: &mut HashSet<String>,
     wb: &mut Option<WriteBehind>,
+    tor: Option<&TorConn>,
 ) -> Result<ScanStats, SlipstreamError> {
     let mut sparse_state = crate::persist::SparseTreeState::default();
     sparse_state.gpu_subtree = config.gpu_subtree; // B0: route Orchard build to GPU when set
@@ -261,7 +265,7 @@ async fn scan_chunks_inner(
     // T6.8-H2: uses retry_get_tree_state (up to 3 attempts, reconnect on retry)
     // instead of bare get_tree_state — a single 30s server stall was FATAL here.
     let mut next_state =
-        grpc::retry_get_tree_state(&endpoint, range_start - 1, "initial seed").await?;
+        grpc::retry_get_tree_state(&endpoint, range_start - 1, "initial seed", tor).await?;
 
     // batch_len: for the adaptive path (batch_target_ms = Some), this is carried
     // across chunks and updated by the controller.  For the None path it is set to
@@ -324,7 +328,10 @@ async fn scan_chunks_inner(
             // On scan failure, prefetch.abort() is called before returning. The to_chain_state() and height-overflow error paths return without aborting — the spawned task completes detached, which is harmless.
             let prefetch = tokio::spawn({
                 let ep = endpoint.clone();
-                async move { grpc::retry_get_tree_state(&ep, sub_end, "chunk-boundary prefetch").await }
+                let tor_owned = tor.cloned();
+                async move {
+                    grpc::retry_get_tree_state(&ep, sub_end, "chunk-boundary prefetch", tor_owned.as_ref()).await
+                }
             });
 
             let from_state = next_state

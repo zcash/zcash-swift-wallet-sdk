@@ -4473,7 +4473,7 @@ async fn run_pass_with_retry(
     let mut attempt: u32 = 0;
     loop {
         let result =
-            slipstream_core::engine::sync_once(cfg, ufvk_ref, Some(progress.clone())).await;
+            slipstream_core::engine::sync_once(cfg, ufvk_ref, Some(progress.clone()), None).await;
         match result {
             Ok(outcome) => return Ok(outcome),
             Err(err) => {
@@ -4763,7 +4763,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                         // mempool for this handle and the loop reverts to the exact
                         // T8.1 jitter-poll behaviour — following never dies from it.
                         if mempool_enabled {
-                            match slipstream_core::mempool::run_session(&cfg, Some(progress.clone()), &mut seen_txids, slipstream_core::mempool::MEMPOOL_SESSION_IDLE).await {
+                            match slipstream_core::mempool::run_session(&cfg, Some(progress.clone()), &mut seen_txids, slipstream_core::mempool::MEMPOOL_SESSION_IDLE, None).await {
                                 Ok((end, stats)) => {
                                     mempool_failures = 0;
                                     tracing::debug!(?end, received = stats.received, hits = stats.stored_hits, last_tip, "follow: mempool session ended");
@@ -4789,7 +4789,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
 
                         // Fast-path probe: GetLatestBlock only (no subtree roots,
                         // no UTXO refresh — those only happen in a full pass).
-                        let observed = match slipstream_core::engine::probe_tip(&cfg).await {
+                        let observed = match slipstream_core::engine::probe_tip(&cfg, None).await {
                             Ok(t) => {
                                 consecutive_failures = 0;
                                 t

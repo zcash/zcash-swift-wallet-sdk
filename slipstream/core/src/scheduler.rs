@@ -13,11 +13,11 @@ use zcash_protocol::consensus::BlockHeight;
 use crate::{
     chunk::chunk_queue,
     config::EngineConfig,
+    connector::{ConnPurpose, TorConn, connect_via},
     enhance::{EnhanceStats, run_enhancement},
     error::SlipstreamError,
     events::Progress,
     fetch::{FetchPlan, FetchStats, run_fetch},
-    grpc,
     scan::{ScanStats, scan_chunks},
     wallet_session::WalletSession,
 };
@@ -100,6 +100,7 @@ pub async fn run_to_completion(
     session: &mut WalletSession,
     progress: Option<Arc<Progress>>,
     skipped_keys: &mut HashSet<String>,
+    tor: Option<&TorConn>,
 ) -> Result<SyncReport, SlipstreamError> {
     let mut report = SyncReport::default();
     // Counter for back-to-back ScanContinuity recoveries without a successful range.
@@ -177,11 +178,11 @@ pub async fn run_to_completion(
 
         // scan_chunks runs in the current task using a SEPARATE grpc client so it
         // does not contend with the fetch workers' connections.
-        let mut scan_client = grpc::connect(&config.endpoint).await?;
+        let mut scan_client = connect_via(&config.endpoint, tor, ConnPurpose::MetadataUnique).await?;
 
         let scan_started = std::time::Instant::now();
         let scan_result: Result<ScanStats, SlipstreamError> =
-            scan_chunks(session, &mut scan_client, start, rx, progress.clone(), config, skipped_keys).await;
+            scan_chunks(session, &mut scan_client, start, rx, progress.clone(), config, skipped_keys, tor).await;
         let scan_wall = scan_started.elapsed();
 
         // Error-precedence rationale (deviation from plan's draft `??` which loses nuance):
@@ -334,7 +335,7 @@ pub async fn run_to_completion(
         {
             let enhance_started = std::time::Instant::now();
             let enhance_result = async {
-                let mut enhance_client = grpc::connect(&config.endpoint).await?;
+                let mut enhance_client = connect_via(&config.endpoint, tor, ConnPurpose::MetadataUnique).await?;
                 run_enhancement(session, &mut enhance_client, config.network, progress.clone(), skipped_keys)
                     .await
             }

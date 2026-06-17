@@ -7,6 +7,7 @@ use tracing::info;
 
 use crate::{
     config::EngineConfig,
+    connector::{ConnPurpose, TorConn, connect_via},
     enhance::{EnhanceStats, run_enhancement},
     error::SlipstreamError,
     events::Progress,
@@ -109,8 +110,8 @@ pub fn should_resync(last_synced_tip: u64, observed_tip: u64) -> bool {
 /// Fresh connection per probe (TLS ~100-300 ms every FOLLOW_POLL; a held
 /// connection would need its own keepalive/staleness handling). All awaits
 /// carry the hardening1 deadlines (connect 10 s, unary 30 s).
-pub async fn probe_tip(config: &EngineConfig) -> Result<u64, SlipstreamError> {
-    let mut client = grpc::connect(&config.endpoint).await?;
+pub async fn probe_tip(config: &EngineConfig, tor: Option<&TorConn>) -> Result<u64, SlipstreamError> {
+    let mut client = connect_via(&config.endpoint, tor, ConnPurpose::MetadataUnique).await?;
     grpc::get_latest_block_height(&mut client).await
 }
 
@@ -132,6 +133,7 @@ pub async fn sync_once(
     config: &EngineConfig,
     ufvk: Option<(&str, u64)>,
     progress: Option<Arc<Progress>>,
+    tor: Option<&TorConn>,
 ) -> Result<SyncOutcome, SlipstreamError> {
     config.validate()?;
 
@@ -168,7 +170,7 @@ pub async fn sync_once(
     );
 
     let mut session = WalletSession::open(config.network, &config.wallet_db_path)?;
-    let mut client = grpc::connect(&config.endpoint).await?;
+    let mut client = connect_via(&config.endpoint, tor, ConnPurpose::MetadataUnique).await?;
 
     if let Some((ufvk_str, birthday_height)) = ufvk {
         let birthday_ts = grpc::get_tree_state(&mut client, birthday_height - 1).await?;
@@ -197,7 +199,7 @@ pub async fn sync_once(
     // Scope = one sync pass (all interleaved/per-range/final runs share it).
     let mut skipped_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    let report = run_to_completion(config, &mut session, progress.clone(), &mut skipped_keys).await?;
+    let report = run_to_completion(config, &mut session, progress.clone(), &mut skipped_keys, tor).await?;
 
     // Final enhancement: fetch full tx data for any remaining TransactionDataRequests
     // that were not caught by the per-range enhancement (F3 cleanup run). This is cheap
@@ -350,7 +352,7 @@ mod tests {
         );
         // birthday=0 must fail before any network call.
         let result = rt.block_on(async {
-            sync_once(&cfg, Some(("dummy_ufvk", 0)), None).await
+            sync_once(&cfg, Some(("dummy_ufvk", 0)), None, None).await
         });
         assert!(
             matches!(result, Err(SlipstreamError::Config(_))),

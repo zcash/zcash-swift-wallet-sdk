@@ -77,12 +77,16 @@ pub(crate) async fn retry_get_tree_state(
     endpoint: &Endpoint,
     height: u64,
     context: &str,
+    tor: Option<&crate::connector::TorConn>,
 ) -> Result<zcash_client_backend::proto::service::TreeState, SlipstreamError> {
     let mut attempt: u32 = 0;
     loop {
         // For the first attempt, connect fresh; for retries, also fresh (reconnect
-        // semantics — avoids reusing a wedged channel).
-        let mut client = connect(endpoint).await?;
+        // semantics — avoids reusing a wedged channel). Tor-aware: treestate is
+        // `.uniqueTor` (isolated circuit) when Tor is on, direct otherwise.
+        let mut client =
+            crate::connector::connect_via(endpoint, tor, crate::connector::ConnPurpose::MetadataUnique)
+                .await?;
         match get_tree_state(&mut client, height).await {
             Ok(ts) => return Ok(ts),
             Err(err) if err.is_transient() && attempt < TREESTATE_RETRY_MAX => {
@@ -405,7 +409,7 @@ mod tests {
         // PASS_RETRY_MAX=2 means 3 total attempts; all will fail with Transport.
         // The test just confirms that: (a) it returns a Transport error (not panic),
         // and (b) the function exists and is callable.
-        let result = retry_get_tree_state(&ep, 1_000_000, "test-context").await;
+        let result = retry_get_tree_state(&ep, 1_000_000, "test-context", None).await;
         assert!(
             matches!(result, Err(SlipstreamError::Transport(_))),
             "unroutable endpoint must yield Transport error, got: {result:?}"

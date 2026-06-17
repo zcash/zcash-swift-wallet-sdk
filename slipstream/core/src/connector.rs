@@ -113,11 +113,23 @@ impl Connector {
 
     /// Open a lightwalletd client for `purpose`.
     pub async fn connect(&self, purpose: ConnPurpose) -> Result<LwdClient, SlipstreamError> {
-        match (&self.tor, tor_mode(purpose)) {
-            (Some(tor), Some(mode)) => tor.connect(mode, &self.endpoint).await,
-            // Tor off (None), or BulkFetch (tor_mode == None → always direct, even with Tor on).
-            _ => grpc::connect(&self.endpoint).await,
-        }
+        connect_via(&self.endpoint, self.tor.as_ref(), purpose).await
+    }
+}
+
+/// Free-function form of [`Connector::connect`] for call sites that already thread `endpoint`
+/// (from `EngineConfig`) and an optional Tor handle separately — avoids restructuring the run
+/// path around the bundled [`Connector`]. Same per-call policy: bulk → direct; metadata → Tor
+/// when `tor` is `Some`. The bulk path (`tor_mode == None`) stays on the plain direct client even
+/// with Tor on, mirroring the old SDK's `blockStream(.direct)`.
+pub async fn connect_via(
+    endpoint: &Endpoint,
+    tor: Option<&TorConn>,
+    purpose: ConnPurpose,
+) -> Result<LwdClient, SlipstreamError> {
+    match (tor, tor_mode(purpose)) {
+        (Some(t), Some(mode)) => t.connect(mode, endpoint).await,
+        _ => grpc::connect(endpoint).await,
     }
 }
 
