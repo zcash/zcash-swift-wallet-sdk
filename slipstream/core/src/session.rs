@@ -16,10 +16,30 @@ use std::time::Duration;
 
 use crate::config::EngineConfig;
 use crate::connector::TorConn;
-use crate::engine::{SyncOutcome, sync_once};
+use crate::engine::{SyncOutcome, probe_tip, should_resync, sync_once, wall_clock_utc};
 use crate::error::SlipstreamError;
 use crate::events::Progress;
 use crate::ffi_handle::{EVENT_RING_CAP, FfiSlipstreamEvent, SyncState};
+
+/// Per-session configuration: the per-pass engine config + optional account import + optional Tor.
+#[derive(Clone, Debug)]
+pub struct SessionConfig {
+    /// Per-pass engine config (network, db, endpoint, budgets, sparse, write-behind, gpu).
+    pub engine: EngineConfig,
+    /// `Some((ufvk, birthday))` imports the account on the initial pass if the wallet has none;
+    /// `None` = already imported. Follow passes are always keyless regardless.
+    pub account: Option<(String, u64)>,
+    /// `Some` routes metadata over isolated Tor circuits (bulk stays direct); `None` = all direct.
+    pub tor: Option<TorSessionConfig>,
+}
+
+/// Tor session policy. The HOST decides `dangerously_trust_everyone` (true on sandboxed app dirs:
+/// iOS, Android) — this keeps the engine host-agnostic (no `cfg!(target_os = ...)` in core).
+#[derive(Clone, Debug)]
+pub struct TorSessionConfig {
+    pub dir: std::path::PathBuf,
+    pub dangerously_trust_everyone: bool,
+}
 
 // ── T8.1 follow-mode cadence (jittered probe interval) ───────────────────────
 //
@@ -103,8 +123,6 @@ pub(crate) fn should_retry(err: &SlipstreamError, attempt: u32) -> Option<Durati
 /// `SyncState` is NOT modified by this function — the caller sets Syncing before calling and
 /// transitions Done/Error based on the result. SyncStarted is NOT emitted here — it is the
 /// caller's responsibility (emitted once per session).
-// Used by `run_session` (added in R2); allow the transient unused-warning until then.
-#[allow(dead_code)]
 pub(crate) async fn run_pass_with_retry(
     cfg: &EngineConfig,
     ufvk_ref: Option<(&str, u64)>,
@@ -161,6 +179,258 @@ impl SessionReporter {
             ring.remove(0);
         }
         ring.push(e);
+    }
+}
+
+/// Run a full sync session: resilient Tor bootstrap (never falls back to direct) → resilient
+/// initial pass (T8.7) → tip-following loop with mempool monitoring, until the future is dropped
+/// or aborted by the host (via the `AbortHandle` returned by `ffi_handle::spawn_supervised`).
+///
+/// Returns only if the initial pass hits a NON-transient error (after surfacing `Error` to the
+/// reporter — exactly the pre-lift FFI behaviour). On success it never returns: it follows the
+/// chain tip until the host aborts the task. Panics are converted to `Error` by the supervisor.
+pub async fn run_session(config: SessionConfig, reporter: SessionReporter) {
+    // Notify SyncStarted (tag=1) — emitted exactly ONCE, before any retry or follow pass.
+    reporter.push_event(FfiSlipstreamEvent { tag: 1, value: 0 });
+
+    // ── Engine-owned Tor bootstrap ───────────────────────────────────────────
+    // When Tor is enabled, bootstrap an arti client on THIS tokio runtime (Client::create binds
+    // to PreferredRuntime::current(), so no block_on / no cross-runtime). Bootstrapping is
+    // RESILIENT: a transient failure shows Disconnected and retries forever — we NEVER fall back
+    // to direct, because Tor was explicitly requested and a direct fallback would silently
+    // de-anonymise the sync. Once up, the client is held for the whole session (initial pass +
+    // follow loop); metadata calls get isolated circuits, bulk fetch stays direct (per-call
+    // policy in connector.rs).
+    let tor_conn: Option<TorConn> = match config.tor {
+        None => None,
+        Some(ref t) => {
+            let mut boot_failures: u32 = 0;
+            loop {
+                match TorConn::bootstrap(&t.dir, t.dangerously_trust_everyone).await {
+                    Ok(tc) => {
+                        tracing::info!(
+                            "slipstream Tor bootstrapped (engine-owned isolated circuits)"
+                        );
+                        break Some(tc);
+                    }
+                    Err(err) => {
+                        boot_failures += 1;
+                        let backoff = sync_retry_backoff(boot_failures);
+                        tracing::warn!(
+                            %err,
+                            boot_failures,
+                            backoff_secs = backoff.as_secs(),
+                            "Tor bootstrap failed (transient) — retrying; NOT falling back to direct"
+                        );
+                        reporter.set_state(SyncState::Idle);
+                        tokio::time::sleep(backoff).await;
+                    }
+                }
+            }
+        }
+    };
+
+    // Initial-pass account import (if any). `Option<(&str, u64)>` is Copy, so it is reused per
+    // retry iteration without re-borrowing.
+    let account_ref = config.account.as_ref().map(|(s, h)| (s.as_str(), *h));
+
+    // ── Initial pass: RESILIENT retry loop (T8.7) ────────────────────────────
+    // A foreground wallet must NEVER surface a hard sync error for a recoverable
+    // (transient/transport) failure. On a transient error we retry with a capped backoff,
+    // surfacing Disconnected (Swift maps state 0 → .disconnected) between attempts; a
+    // NON-transient error (config/logic) surfaces Error below. Panics → the supervisor → Error(2).
+    let mut initial_failures: u32 = 0;
+    let initial_result = loop {
+        reporter.set_state(SyncState::Syncing);
+        match run_pass_with_retry(
+            &config.engine,
+            account_ref,
+            &reporter.progress,
+            tor_conn.as_ref(),
+        )
+        .await
+        {
+            Ok(outcome) => break Ok(outcome),
+            Err(err) if err.is_transient() => {
+                initial_failures += 1;
+                let backoff = sync_retry_backoff(initial_failures);
+                tracing::warn!(
+                    %err,
+                    initial_failures,
+                    backoff_secs = backoff.as_secs(),
+                    "initial sync attempt failed (transient) — retrying, NOT surfacing Error"
+                );
+                reporter.set_state(SyncState::Idle);
+                tokio::time::sleep(backoff).await;
+            }
+            Err(err) => break Err(err),
+        }
+    };
+
+    match initial_result {
+        Err(err) => {
+            tracing::error!(
+                %err,
+                failed_at_utc = %wall_clock_utc(),
+                "slipstream sync failed"
+            );
+            reporter.set_state(SyncState::Error(1));
+            reporter.push_event(FfiSlipstreamEvent { tag: 4, value: 1 });
+        }
+        Ok(outcome) => {
+            // Initial pass succeeded: Done + SyncDone event.
+            reporter.set_state(SyncState::Done);
+            reporter.push_event(FfiSlipstreamEvent {
+                tag: 3,
+                value: outcome.enhance.txs_stored,
+            });
+
+            // ── T8.1 follow loop: track the chain while the host keeps the task alive ─────
+            // State contract (Deviation D3): Done between passes, Syncing during real catch-up
+            // passes. Jitter (uniform [MIN, MAX] per cycle) defeats the timing fingerprint a
+            // fixed cadence would leak. The host aborts this task on stop()/free()/restart
+            // (tokio sleeps/awaits are abort-safe).
+            let mut last_tip = outcome.chain_tip;
+            let mut consecutive_failures: u32 = 0;
+            // T8.2 mempool monitoring state (per-session). Non-fatal: a persistently failing
+            // stream disables mempool for this session and the loop keeps tip-polling.
+            // `seen_txids` persists across reconnects because lightwalletd replays the whole
+            // mempool on every reconnect (Deviation D6).
+            let mut mempool_enabled = true;
+            let mut mempool_failures: u32 = 0;
+            let mut seen_txids: std::collections::HashSet<[u8; 32]> =
+                std::collections::HashSet::new();
+            loop {
+                // Between passes: hold a mempool session (surfaces 0-conf incoming) or jitter-sleep
+                // if mempool is disabled. A live session blocks until the server closes the stream
+                // on a new block (then we probe immediately) or MEMPOOL_SESSION_IDLE elapses;
+                // either way it bounds the iteration cadence. Mempool failure is NON-FATAL (D6).
+                if mempool_enabled {
+                    match crate::mempool::run_session(
+                        &config.engine,
+                        Some(reporter.progress.clone()),
+                        &mut seen_txids,
+                        crate::mempool::MEMPOOL_SESSION_IDLE,
+                        tor_conn.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok((end, stats)) => {
+                            mempool_failures = 0;
+                            tracing::debug!(
+                                ?end,
+                                received = stats.received,
+                                hits = stats.stored_hits,
+                                last_tip,
+                                "follow: mempool session ended"
+                            );
+                        }
+                        Err(err) => {
+                            mempool_failures += 1;
+                            tracing::warn!(
+                                %err,
+                                mempool_failures,
+                                "follow: mempool session failed (non-fatal)"
+                            );
+                            if mempool_failures >= MEMPOOL_FAILURE_CAP {
+                                tracing::warn!(
+                                    "follow: mempool monitoring disabled for this handle (cap reached) — tip polling continues"
+                                );
+                                mempool_enabled = false;
+                            }
+                            // Back off with the same jittered cadence as the plain poll so a
+                            // flapping stream cannot hot-loop.
+                            tokio::time::sleep(follow_poll_jitter(rand::random::<f64>())).await;
+                        }
+                    }
+                } else {
+                    let sleep_dur = follow_poll_jitter(rand::random::<f64>());
+                    tracing::debug!(
+                        sleep_secs = sleep_dur.as_secs(),
+                        last_tip,
+                        "follow: sleeping before tip probe"
+                    );
+                    tokio::time::sleep(sleep_dur).await;
+                }
+
+                // Fast-path probe: GetLatestBlock only (no subtree roots, no UTXO refresh).
+                let observed = match probe_tip(&config.engine, tor_conn.as_ref()).await {
+                    Ok(t) => {
+                        consecutive_failures = 0;
+                        t
+                    }
+                    Err(err) if err.is_transient() => {
+                        consecutive_failures += 1;
+                        // T8.7: a transient probe failure NEVER surfaces Error — the wallet is
+                        // already synced; retry on the next tick.
+                        if consecutive_failures > FOLLOW_FAILURE_CAP {
+                            tracing::warn!(
+                                %err,
+                                consecutive_failures,
+                                "follow tip probe failing repeatedly — wallet stays synced, still retrying (check connectivity)"
+                            );
+                        } else {
+                            tracing::warn!(
+                                %err,
+                                consecutive_failures,
+                                "follow tip probe failed (transient) — will retry"
+                            );
+                        }
+                        continue;
+                    }
+                    Err(err) => {
+                        consecutive_failures += 1;
+                        // T8.7: even a non-transient probe error stays OUT of Error — the wallet is
+                        // synced; surfacing a hard error for a follow-phase blip is exactly what
+                        // internal testers must not see. Retry next tick.
+                        tracing::warn!(
+                            %err,
+                            consecutive_failures,
+                            "follow tip probe failed (non-transient) — staying synced, will retry"
+                        );
+                        continue;
+                    }
+                };
+
+                if !should_resync(last_tip, observed) {
+                    tracing::debug!(last_tip, observed, "follow: tip unchanged, no pass needed");
+                    continue;
+                }
+
+                tracing::info!(last_tip, observed, "follow: tip advanced, running catch-up pass");
+
+                // New block(s): Syncing for the pass duration, then Done. Follow passes are ALWAYS
+                // keyless (ufvk=None) — the account is already imported; passing Some would waste a
+                // GetTreeState RPC on every catch-up pass.
+                reporter.set_state(SyncState::Syncing);
+                match run_pass_with_retry(&config.engine, None, &reporter.progress, tor_conn.as_ref())
+                    .await
+                {
+                    Ok(o) => {
+                        last_tip = o.chain_tip;
+                        consecutive_failures = 0;
+                        reporter.set_state(SyncState::Done);
+                        reporter.push_event(FfiSlipstreamEvent {
+                            tag: 3,
+                            value: o.enhance.txs_stored,
+                        });
+                    }
+                    Err(err) => {
+                        consecutive_failures += 1;
+                        // T8.7: a failed catch-up pass is RECOVERABLE — the wallet is still synced
+                        // to last_tip. Revert to Done (NOT Error) and retry on the next tick.
+                        tracing::warn!(
+                            %err,
+                            consecutive_failures,
+                            last_tip,
+                            failed_at_utc = %wall_clock_utc(),
+                            "follow catch-up pass failed — staying synced, will retry"
+                        );
+                        reporter.set_state(SyncState::Done);
+                    }
+                }
+            }
+        }
     }
 }
 

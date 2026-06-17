@@ -35,7 +35,7 @@ pub mod darkside;
 pub use config::{EngineConfig, Endpoint};
 pub use error::SlipstreamError;
 pub use events::{Bound, Event, Progress, ProgressArc, Snapshot, SyncMode};
-pub use session::SessionReporter;
+pub use session::{SessionConfig, SessionReporter, TorSessionConfig, run_session};
 pub use zcash_protocol::consensus::Network;
 
 /// Crate smoke marker used by the workspace smoke test.
