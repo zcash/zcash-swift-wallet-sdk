@@ -20,6 +20,7 @@ pub mod persist;
 mod gpu_subtree;
 pub mod scan;
 pub mod scheduler;
+pub mod session;
 pub mod transparent;
 pub mod verify;
 pub mod wallet_session;
@@ -34,6 +35,7 @@ pub mod darkside;
 pub use config::{EngineConfig, Endpoint};
 pub use error::SlipstreamError;
 pub use events::{Bound, Event, Progress, ProgressArc, Snapshot, SyncMode};
+pub use session::SessionReporter;
 pub use zcash_protocol::consensus::Network;
 
 /// Crate smoke marker used by the workspace smoke test.
