@@ -50,6 +50,22 @@ fn tor_mode(purpose: ConnPurpose) -> Option<TorMode> {
     }
 }
 
+/// Per-attempt timeout for building a Tor circuit + connecting to lightwalletd. A healthy circuit
+/// builds in a few seconds; a STUCK one (dead relay / bad path) is cut here so we can retry on a
+/// FRESH isolated circuit instead of blocking on arti's much longer internal circuit-build
+/// timeout. Field evidence (2026-06-17, device, Tor ON): a single stuck circuit wedged a per-range
+/// enhancement connect for ~58s, turning a ~90s restore into ~161s. 15s leaves a slow-but-healthy
+/// circuit room while cutting a stuck one promptly.
+const TOR_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Fresh-circuit attempts before giving up a single connect. With `Isolated` mode each attempt
+/// draws a NEW isolated circuit, so a transient bad circuit recovers on the next try. The error
+/// returned after all attempts is still `Transport` (transient) — every higher resilience layer
+/// (scan treestate retry, the per-range enhancement's non-fatal defer, the initial-pass
+/// never-Error retry loop) still stacks on top. 3 attempts ⇒ ≤45s worst case vs the old single
+/// ~58s-then-fail, and ~0 overhead in the healthy case (attempt 1 connects fast).
+const TOR_CONNECT_ATTEMPTS: u32 = 3;
+
 /// A bootstrapped arti Tor client, owned by the engine and driven on its own runtime.
 #[derive(Clone)]
 pub struct TorConn {
@@ -74,19 +90,51 @@ impl TorConn {
     }
 
     async fn connect(&self, mode: TorMode, endpoint: &Endpoint) -> Result<LwdClient, SlipstreamError> {
-        // `.uniqueTor` = a fresh isolated circuit; `.defaultTor` = the default circuit.
-        let client = match mode {
-            TorMode::Isolated => self.client.isolated_client(),
-            TorMode::Default => self.client.clone(),
-        };
         let uri: Uri = endpoint
             .uri()
             .parse()
             .map_err(|e| SlipstreamError::Config(format!("bad endpoint uri for tor: {e}")))?;
-        client
-            .connect_to_lightwalletd(uri)
+
+        // Bounded circuit build + retry on a FRESH circuit (see TOR_CONNECT_* docs). A stuck
+        // circuit is cut at TOR_CONNECT_TIMEOUT and the next attempt draws a new isolated circuit,
+        // instead of blocking on arti's long internal timeout. The healthy case connects on
+        // attempt 1 with no added latency.
+        let mut last_err: Option<String> = None;
+        for attempt in 1..=TOR_CONNECT_ATTEMPTS {
+            // `.uniqueTor` = a fresh isolated circuit EACH attempt (so a retry escapes a stuck
+            // circuit); `.defaultTor` = the default circuit.
+            let client = match mode {
+                TorMode::Isolated => self.client.isolated_client(),
+                TorMode::Default => self.client.clone(),
+            };
+            match tokio::time::timeout(
+                TOR_CONNECT_TIMEOUT,
+                client.connect_to_lightwalletd(uri.clone()),
+            )
             .await
-            .map_err(|e| SlipstreamError::Transport(format!("tor connect: {e}")))
+            {
+                Ok(Ok(c)) => return Ok(c),
+                Ok(Err(e)) => {
+                    tracing::warn!(attempt, err = %e, "tor connect failed — retrying on a fresh circuit");
+                    last_err = Some(format!("tor connect: {e}"));
+                }
+                Err(_elapsed) => {
+                    tracing::warn!(
+                        attempt,
+                        timeout_secs = TOR_CONNECT_TIMEOUT.as_secs(),
+                        "tor circuit build timed out — retrying on a fresh circuit"
+                    );
+                    last_err = Some(format!(
+                        "tor connect: circuit build exceeded {}s",
+                        TOR_CONNECT_TIMEOUT.as_secs()
+                    ));
+                }
+            }
+        }
+        // Still transient — callers retry/defer (the build never silently de-anonymises to direct).
+        Err(SlipstreamError::Transport(last_err.unwrap_or_else(|| {
+            "tor connect: failed to obtain a circuit".to_string()
+        })))
     }
 }
 
@@ -147,5 +195,20 @@ mod tests {
     fn metadata_maps_to_isolated_and_default_circuits() {
         assert_eq!(tor_mode(ConnPurpose::MetadataUnique), Some(TorMode::Isolated)); // .uniqueTor
         assert_eq!(tor_mode(ConnPurpose::MetadataDefault), Some(TorMode::Default)); // .defaultTor
+    }
+
+    /// Locks the bounded-retry design intent: at least one fresh-circuit retry, and a per-attempt
+    /// timeout that gives a healthy circuit room (>=5s) while cutting a stuck one promptly (<=30s).
+    #[test]
+    fn tor_connect_retry_constants_are_sane() {
+        assert!(
+            TOR_CONNECT_ATTEMPTS >= 2,
+            "need at least one retry on a fresh circuit"
+        );
+        let secs = TOR_CONNECT_TIMEOUT.as_secs();
+        assert!(
+            (5..=30).contains(&secs),
+            "per-attempt timeout must be 5..=30s (room for a healthy circuit, cut a stuck one), got {secs}s"
+        );
     }
 }
