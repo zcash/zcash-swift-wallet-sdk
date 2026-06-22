@@ -152,8 +152,8 @@ class SlipstreamDarksideTests: ZcashTestCase {
 
     // MARK: - importAccount re-scan path round-trip ([#1755])
 
-    /// Drives the [#1755] importAccount re-scan path — `importAccount` → cached-summary refresh →
-    /// `start()` restart — through the REAL FFI/engine on a RUNNING synchronizer.
+    /// Drives the [#1755] importAccount re-scan path — `importAccount` → clear cached summary (drop
+    /// the progress floor) → `start()` restart — through the REAL FFI/engine on a RUNNING synchronizer.
     ///
     /// lightwalletd v0.4.9 cannot fully sync (no AddTreeState), so this can NOT assert the progress
     /// DIP the fix produces on mainnet — that is covered by the pure-logic tests in
@@ -186,7 +186,7 @@ class SlipstreamDarksideTests: ZcashTestCase {
         let usk = try derivationTool.deriveUnifiedSpendingKey(seed: Environment.seedBytes, accountIndex: Zip32AccountIndex(1))
         let ufvk = try derivationTool.deriveUnifiedFullViewingKey(from: usk)
 
-        // THE [#1755] PATH: rustBackend.importAccount → cached-summary refresh → start() restart.
+        // THE [#1755] PATH: rustBackend.importAccount → clear cached summary (floor) → start() restart.
         // Must not throw/crash; returns a UUID. Imported as an EXTERNAL UFVK (seedFingerprint and
         // zip32AccountIndex both absent — librustzcash requires both-present or both-absent), which
         // is the hardware-wallet / Keystone shape this fix targets.

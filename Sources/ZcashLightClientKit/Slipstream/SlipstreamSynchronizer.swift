@@ -638,30 +638,31 @@ public final class SlipstreamSynchronizer: Synchronizer {
             keySource: keySource
         )
 
-        // [#1755] Make the new account's re-scan VISIBLE. Importing an account — especially with an
-        // older birthday — adds a large `[birthday, tip]` recovery range the wallet must re-scan.
-        // On an already-synced wallet, two things must happen for that re-scan to surface as a
-        // SmartBanner, and NEITHER does on its own:
+        // [#1755] Make the new account's re-scan VISIBLE + prompt. Importing an account — especially
+        // with an older birthday — adds a large `[birthday, tip]` range the wallet must re-scan. The
+        // engine DOES re-scan it (the next pass's `update_chain_tip` → `suggest_scan_ranges` returns
+        // the range — this is what made the balance appear), but two things stop it surfacing as a
+        // SmartBanner, and we fix both:
         //
-        //  1. Refresh the cached `WalletSummary`. While syncing, % progress is FLOORED by the cached
-        //     summary (`syncingProgress` = `max(passLocalCounter, summaryFloor)`). On a synced wallet
-        //     that floor is ~1.0, so it MASKS the re-scan — `max(low, ~1.0) ≈ 1.0` stays above the
-        //     0.98 banner threshold and syncing is invisible. A fresh summary reflects the new
-        //     recovery range (`recoverUntil = chainTip` lands it in `recoveryProgress`, which
-        //     `composeProgress` sums into the denominator), dropping the floor below 0.98. The DB is
-        //     quiet here (wallet idle/synced), so the 20 s boundary timeout is safe and awaited.
+        //  1. Drop the progress FLOOR. While syncing, % = `max(passLocalCounter, summaryFloor)` where
+        //     `summaryFloor` is the cached `WalletSummary`. On a just-synced wallet that floor is
+        //     ~1.0 and MASKS the re-scan (`max(low, ~1.0) ≈ 1.0`, above the 0.98 banner threshold).
+        //     We deliberately do NOT re-fetch the summary here: right after importAccount the scan
+        //     queue is NOT yet updated for the new account (that happens in the next pass's
+        //     `update_chain_tip`), so `getWalletSummary` would still report ~100% and the floor would
+        //     stay high. Instead we CLEAR the cached summary → floor = 0 → the pass-local counter
+        //     drives a real 0→100% climb. Balances are unaffected (state falls back to the last-known
+        //     `latestState` balances; the pass's range-boundary + Done summary fetches repopulate it).
         //
-        //  2. Restart the sync pass. The engine's follow loop only re-syncs when the server TIP
-        //     advances (`session.rs` `should_resync`); without a restart the re-scan would wait for
-        //     the next block (≤ ~75 s on mainnet). Restarting runs `sync_once` now →
-        //     `suggest_scan_ranges` returns the new range → state flips to `.syncing` immediately and
-        //     climbs from the (now low) floor. Order matters: refresh the floor BEFORE `start()` so
-        //     its initial `.syncing` emission already carries the low value (no 100%→low flicker).
+        //  2. Restart the sync pass. The follow loop only re-syncs when the server TIP advances
+        //     (`session.rs` `should_resync`), so without a restart the re-scan would wait for the next
+        //     block (≤ ~75 s). Restarting runs `sync_once` NOW and emits `.syncing` immediately.
         //     `try?`: a restart hiccup must never fail an otherwise-successful import.
-        let rustBackend = initializer.rustBackend
-        cachedSummary = (try? await withTaskTimeout(Self.boundarySummaryTimeoutNanoseconds) {
-            try await rustBackend.getWalletSummary()
-        }) ?? cachedSummary
+        cachedSummary = nil
+        initializer.logger.debug(
+            "[#1755] importAccount: cleared progress floor; isRunning=\(isRunning) "
+            + (isRunning ? "→ restarting sync pass now to surface the re-scan" : "→ next start() will re-scan")
+        )
         if isRunning {
             try? await start()
         }
