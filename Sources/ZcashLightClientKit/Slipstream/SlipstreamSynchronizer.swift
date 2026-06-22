@@ -627,7 +627,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
         let effectiveBirthday = birthday ?? BlockHeight(chainTipHeight ?? UInt32(initializer.walletBirthday))
         let checkpoint = checkpointSource.birthday(for: effectiveBirthday)
 
-        return try await initializer.rustBackend.importAccount(
+        let uuid = try await initializer.rustBackend.importAccount(
             ufvk: ufvk,
             seedFingerprint: seedFingerprint,
             zip32AccountIndex: zip32AccountIndex,
@@ -637,6 +637,36 @@ public final class SlipstreamSynchronizer: Synchronizer {
             name: name,
             keySource: keySource
         )
+
+        // [#1755] Make the new account's re-scan VISIBLE. Importing an account — especially with an
+        // older birthday — adds a large `[birthday, tip]` recovery range the wallet must re-scan.
+        // On an already-synced wallet, two things must happen for that re-scan to surface as a
+        // SmartBanner, and NEITHER does on its own:
+        //
+        //  1. Refresh the cached `WalletSummary`. While syncing, % progress is FLOORED by the cached
+        //     summary (`syncingProgress` = `max(passLocalCounter, summaryFloor)`). On a synced wallet
+        //     that floor is ~1.0, so it MASKS the re-scan — `max(low, ~1.0) ≈ 1.0` stays above the
+        //     0.98 banner threshold and syncing is invisible. A fresh summary reflects the new
+        //     recovery range (`recoverUntil = chainTip` lands it in `recoveryProgress`, which
+        //     `composeProgress` sums into the denominator), dropping the floor below 0.98. The DB is
+        //     quiet here (wallet idle/synced), so the 20 s boundary timeout is safe and awaited.
+        //
+        //  2. Restart the sync pass. The engine's follow loop only re-syncs when the server TIP
+        //     advances (`session.rs` `should_resync`); without a restart the re-scan would wait for
+        //     the next block (≤ ~75 s on mainnet). Restarting runs `sync_once` now →
+        //     `suggest_scan_ranges` returns the new range → state flips to `.syncing` immediately and
+        //     climbs from the (now low) floor. Order matters: refresh the floor BEFORE `start()` so
+        //     its initial `.syncing` emission already carries the low value (no 100%→low flicker).
+        //     `try?`: a restart hiccup must never fail an otherwise-successful import.
+        let rustBackend = initializer.rustBackend
+        cachedSummary = (try? await withTaskTimeout(Self.boundarySummaryTimeoutNanoseconds) {
+            try await rustBackend.getWalletSummary()
+        }) ?? cachedSummary
+        if isRunning {
+            try? await start()
+        }
+
+        return uuid
     }
 
     public func deleteAccount(_ accountUUID: AccountUUID) async throws {

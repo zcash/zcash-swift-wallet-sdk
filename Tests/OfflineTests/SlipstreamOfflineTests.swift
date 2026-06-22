@@ -571,6 +571,49 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertEqual(progress, 0.6, accuracy: 1e-5)
     }
 
+    // MARK: - 6c. importAccount re-scan visibility ([#1755] truncation/old-birthday fix)
+    //
+    // Importing an account with an older birthday on an already-synced wallet adds a large
+    // [birthday, tip] recovery range to re-scan. The bug: the syncing-time progress FLOOR is the
+    // cached summary, which on a synced wallet is ~1.0 — so `max(passLocalCounter, floor)` pins
+    // progress at ~100%, masking the whole re-scan; the SmartBanner (shown only below 0.98) never
+    // appears. The fix refreshes the summary after importAccount so the floor reflects the new
+    // recovery range. These pure tests pin the contract the fix relies on.
+
+    /// THE BUG: ~50k of a ~650k (≈15-month) re-scan is 7.7% pass-local, but a STALE pre-import
+    /// floor (~0.99) clamps it back up — progress stays above the 0.98 banner threshold, so the
+    /// re-scan is invisible. (This is exactly why the floor MUST be refreshed after importAccount.)
+    func testSyncingProgressLargeRescanMaskedByStaleFloor() {
+        let progress = SlipstreamSynchronizer.syncingProgress(scanned: 50_000, passTotal: 650_000, summaryFloor: 0.99)
+        XCTAssertEqual(progress, 0.99, accuracy: 1e-5)
+        XCTAssertGreaterThan(progress, 0.98, "a stale high floor masks the large re-scan — the bug")
+    }
+
+    /// THE FIX: once the summary is refreshed, the floor reflects the new recovery range (≈0), so
+    /// the pass-local counter drives a visible 0→100% climb and the banner (below 0.98) appears.
+    func testSyncingProgressLargeRescanVisibleWithFreshFloor() {
+        let progress = SlipstreamSynchronizer.syncingProgress(scanned: 50_000, passTotal: 650_000, summaryFloor: 0.0)
+        XCTAssertEqual(progress, 50_000.0 / 650_000.0, accuracy: 1e-5)
+        XCTAssertLessThan(progress, 0.98, "a fresh low floor reveals the large re-scan — the fix")
+    }
+
+    /// THE MECHANISM behind the fresh floor: a just-imported old-birthday account yields a
+    /// `WalletSummary` whose `scanProgress` is COMPLETE (existing accounts stay synced/spendable)
+    /// but whose `recoveryProgress` covers the big new [birthday, tip] range (`recoverUntil=chainTip`).
+    /// `composeProgress` sums them, so global progress falls far below the 0.98 banner threshold —
+    /// i.e. refreshing the cached summary after importAccount installs a sub-threshold floor.
+    func testComposeProgressFreshlyImportedOldBirthdayIsBelowBannerThreshold() {
+        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
+            scanProgress: (numerator: 1_000, denominator: 1_000, isComplete: true),
+            recoveryProgress: (numerator: 0, denominator: 650_000)
+        )
+        // (1000 + 0) / (1000 + 650000) ≈ 0.0015
+        XCTAssertLessThan(progress, 0.98,
+                          "a just-imported old-birthday recovery range drops global progress below the banner threshold")
+        XCTAssertTrue(spendable,
+                      "existing accounts stay spendable (scanProgress.isComplete) while the new account recovers")
+    }
+
     /// initialState(nil) → cold `.disconnected` with no balances — a genuinely fresh
     /// wallet (no summary yet) keeps the prior cold-launch behaviour.
     func testInitialStateColdWhenNil() {
