@@ -157,6 +157,12 @@ public final class SlipstreamSynchronizer: Synchronizer {
     private var cachedSummary: WalletSummary?
     private var summaryTask: Task<Void, Never>?
     private var lastSummaryFinishDate: Date?
+    // [#1755] When set, syncing-time % is driven PURELY by the pass-local counter (no summary
+    // floor) until the next pass reaches Done. importAccount sets it so a new account's re-scan is
+    // visible: the cached summary lags (the scan queue isn't updated for the new account until the
+    // pass's update_chain_tip), AND the idle/Tor-bootstrap summary refetch in the poll loop would
+    // otherwise re-raise a stale ~100% floor — either of which masks the re-scan. Cleared on Done.
+    private var forceCounterProgressUntilDone = false
     // Minimum interval (seconds) between summary fetches when NOT syncing (Disconnected, Done, Error).
     private static let summaryRefetchIntervalSeconds: TimeInterval = 2.0
     // Hard timeout (nanoseconds) for a single getWalletSummary call: 3 seconds.
@@ -379,6 +385,9 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
         if snap.state == 3 {
             // Done: cancel any in-flight summary task + emit .synced immediately.
+            // [#1755] The import re-scan (if any) is complete — resume normal floored progress so a
+            // later small catch-up doesn't read as 0% (the T8.3.5 reason the floor exists).
+            forceCounterProgressUntilDone = false
             summaryTask?.cancel()
             summaryTask = nil
             stateSubject.send(SynchronizerState(
@@ -399,11 +408,23 @@ public final class SlipstreamSynchronizer: Synchronizer {
             // progress so a cold-launch catch-up (a few new blocks → pass-local 0%)
             // doesn't read as "0% synced". A real restore (summary ≈ 0 at the start)
             // still climbs 0→100% off the pass-local counter.
-            let progress = SlipstreamSynchronizer.syncingProgress(
-                scanned: snap.scannedBlocks,
-                passTotal: snap.passTotalBlocks,
-                summaryFloor: SlipstreamSynchronizer.summaryProgress(cachedSummary).progress
-            )
+            // [#1755] After importAccount, drive % purely from the pass-local counter (no floor)
+            // until the re-scan reaches Done — see `forceCounterProgressUntilDone`. The floor would
+            // otherwise mask the re-scan (the cached summary lags the new account, and the idle/Tor
+            // refetch re-raises a stale ~100% floor).
+            let progress: Float
+            if forceCounterProgressUntilDone {
+                progress = SlipstreamSynchronizer.counterProgress(
+                    scanned: snap.scannedBlocks,
+                    total: snap.passTotalBlocks
+                )
+            } else {
+                progress = SlipstreamSynchronizer.syncingProgress(
+                    scanned: snap.scannedBlocks,
+                    passTotal: snap.passTotalBlocks,
+                    summaryFloor: SlipstreamSynchronizer.summaryProgress(cachedSummary).progress
+                )
+            }
             let spendable = snap.spendableHint != 0
 
             stateSubject.send(SynchronizerState(
@@ -644,23 +665,26 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // the range — this is what made the balance appear), but two things stop it surfacing as a
         // SmartBanner, and we fix both:
         //
-        //  1. Drop the progress FLOOR. While syncing, % = `max(passLocalCounter, summaryFloor)` where
-        //     `summaryFloor` is the cached `WalletSummary`. On a just-synced wallet that floor is
-        //     ~1.0 and MASKS the re-scan (`max(low, ~1.0) ≈ 1.0`, above the 0.98 banner threshold).
-        //     We deliberately do NOT re-fetch the summary here: right after importAccount the scan
-        //     queue is NOT yet updated for the new account (that happens in the next pass's
-        //     `update_chain_tip`), so `getWalletSummary` would still report ~100% and the floor would
-        //     stay high. Instead we CLEAR the cached summary → floor = 0 → the pass-local counter
-        //     drives a real 0→100% climb. Balances are unaffected (state falls back to the last-known
-        //     `latestState` balances; the pass's range-boundary + Done summary fetches repopulate it).
+        //  1. Bypass the progress FLOOR for this re-scan. While syncing, % = `max(passLocalCounter,
+        //     summaryFloor)` where `summaryFloor` is the cached `WalletSummary`. On a just-synced
+        //     wallet that floor is ~1.0 and MASKS the re-scan. Re-fetching the summary here does NOT
+        //     help — right after importAccount the scan queue isn't updated for the new account (that
+        //     happens in the next pass's `update_chain_tip`), so `getWalletSummary` still reports
+        //     ~100%; worse, the idle/Tor-bootstrap summary refetch in the poll loop would re-raise
+        //     that stale floor even if we cleared it once (the field bug). So we set
+        //     `forceCounterProgressUntilDone`: the poll loop drives % purely from the pass-local
+        //     counter (a real 0→100% climb) until the pass reaches Done. We also clear the cached
+        //     summary so the FIRST emission starts near 0% (no 100%→0% flicker); balances fall back
+        //     to `latestState` and repopulate on Done.
         //
         //  2. Restart the sync pass. The follow loop only re-syncs when the server TIP advances
         //     (`session.rs` `should_resync`), so without a restart the re-scan would wait for the next
         //     block (≤ ~75 s). Restarting runs `sync_once` NOW and emits `.syncing` immediately.
         //     `try?`: a restart hiccup must never fail an otherwise-successful import.
+        forceCounterProgressUntilDone = true
         cachedSummary = nil
         initializer.logger.debug(
-            "[#1755] importAccount: cleared progress floor; isRunning=\(isRunning) "
+            "[#1755] importAccount: counter-driven progress until Done; isRunning=\(isRunning) "
             + (isRunning ? "→ restarting sync pass now to surface the re-scan" : "→ next start() will re-scan")
         )
         if isRunning {

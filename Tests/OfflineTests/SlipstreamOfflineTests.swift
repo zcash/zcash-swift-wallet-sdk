@@ -577,10 +577,12 @@ class SlipstreamOfflineTests: ZcashTestCase {
     // [birthday, tip] recovery range to re-scan. The bug: the syncing-time progress FLOOR is the
     // cached summary, which on a synced wallet is ~1.0 — so `max(passLocalCounter, floor)` pins
     // progress at ~100%, masking the whole re-scan; the SmartBanner (shown only below 0.98) never
-    // appears. The fix CLEARS the cached summary after importAccount so the floor is 0 and the
-    // pass-local counter drives a visible 0→100% climb. (Re-fetching the summary here would NOT
-    // work: the scan queue isn't updated for the new account until the next pass's update_chain_tip,
-    // so getWalletSummary would still report ~100%.) These pure tests pin the contract the fix relies on.
+    // appears. The fix sets a flag (`forceCounterProgressUntilDone`) so the poll loop
+    // drives % PURELY from the pass-local counter (no floor at all) until the re-scan reaches Done.
+    // A one-time summary clear is NOT enough — the idle/Tor-bootstrap summary refetch re-raises a
+    // stale ~100% floor before scanning starts (the field bug). With the flag, % == counterProgress,
+    // which equals syncingProgress(..., summaryFloor: 0). These tests pin that contract: floor 0
+    // (≡ the flag's counter-only path) reveals the re-scan; a stale high floor masks it.
 
     /// THE BUG: ~50k of a ~650k (≈15-month) re-scan is 7.7% pass-local, but a STALE pre-import
     /// floor (~0.99) clamps it back up — progress stays above the 0.98 banner threshold, so the
