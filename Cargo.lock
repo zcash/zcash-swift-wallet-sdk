@@ -180,7 +180,7 @@ dependencies = [
  "derive_builder_fork_arti",
  "derive_more",
  "educe",
- "fs-mistrust",
+ "fs-mistrust 0.12.0",
  "futures",
  "hostname-validator",
  "humantime",
@@ -1708,6 +1708,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs-mistrust"
+version = "0.14.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfebc7c6bb65d327ded064db65cd260b6c418c27ae790318650cfa2a81bf33f"
+dependencies = [
+ "derive_builder_fork_arti",
+ "dirs",
+ "libc",
+ "pwd-grp",
+ "thiserror 2.0.18",
+ "void",
+ "walkdir",
+]
+
+[[package]]
 name = "fslock"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2520,7 +2535,7 @@ dependencies = [
  "eip681",
  "ff",
  "ffi_helpers",
- "fs-mistrust",
+ "fs-mistrust 0.14.2",
  "http",
  "http-body-util",
  "incrementalmerkletree",
@@ -5123,7 +5138,7 @@ dependencies = [
  "educe",
  "either",
  "figment",
- "fs-mistrust",
+ "fs-mistrust 0.12.0",
  "futures",
  "itertools 0.14.0",
  "notify",
@@ -5230,7 +5245,7 @@ dependencies = [
  "digest 0.10.7",
  "educe",
  "event-listener",
- "fs-mistrust",
+ "fs-mistrust 0.12.0",
  "fslock",
  "futures",
  "hex",
@@ -5408,7 +5423,7 @@ dependencies = [
  "derive_more",
  "downcast-rs",
  "dyn-clone",
- "fs-mistrust",
+ "fs-mistrust 0.12.0",
  "glob-match",
  "humantime",
  "inventory",
@@ -5626,7 +5641,7 @@ dependencies = [
  "derive-deftly",
  "derive_more",
  "filetime",
- "fs-mistrust",
+ "fs-mistrust 0.12.0",
  "fslock",
  "futures",
  "itertools 0.14.0",
@@ -6858,7 +6873,7 @@ dependencies = [
  "crossbeam-channel",
  "document-features",
  "dynosaur",
- "fs-mistrust",
+ "fs-mistrust 0.12.0",
  "futures-util",
  "getset",
  "group",
