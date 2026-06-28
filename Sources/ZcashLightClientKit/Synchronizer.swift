@@ -50,6 +50,14 @@ public struct SynchronizerState: Equatable {
     /// snapshot — must gate on this, not on `latestBlockHeight`.
     public var fullyScannedHeight: BlockHeight
 
+    /// True while the wallet is in a deep recovery (a restore, or a new-account backfill) where the
+    /// balance and transaction history are still provisional: during recent-first sync a note can
+    /// appear unspent before the block that spends it has been scanned, transiently inflating both
+    /// the balance and the Activity list. Clients should treat balance/Activity as not-yet-final
+    /// (e.g. hold `0` and hold the Activity) until this is `false`. Derived from the wallet
+    /// backend's `recovery_progress`; `false` for light catch-ups and once fully synced.
+    public var isRecovering: Bool
+
     /// Represents a synchronizer that has made zero progress hasn't done a sync attempt
     public static var zero: SynchronizerState {
         SynchronizerState(
@@ -66,13 +74,15 @@ public struct SynchronizerState: Equatable {
         accountsBalances: [AccountUUID: AccountBalance],
         internalSyncStatus: InternalSyncStatus,
         latestBlockHeight: BlockHeight,
-        fullyScannedHeight: BlockHeight = .zero
+        fullyScannedHeight: BlockHeight = .zero,
+        isRecovering: Bool = false
     ) {
         self.syncSessionID = syncSessionID
         self.accountsBalances = accountsBalances
         self.internalSyncStatus = internalSyncStatus
         self.latestBlockHeight = latestBlockHeight
         self.fullyScannedHeight = fullyScannedHeight
+        self.isRecovering = isRecovering
         self.syncStatus = internalSyncStatus.mapToSyncStatus()
     }
 }

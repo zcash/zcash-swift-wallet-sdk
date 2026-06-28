@@ -155,6 +155,24 @@ public final class SlipstreamSynchronizer: Synchronizer {
     //     `.synced` immediately without waiting. A single post-sync summary fetch fires
     //     AFTER emitting .synced (never delays the .synced emission).
     private var cachedSummary: WalletSummary?
+    /// [#1755] Mirrors the wallet backend's deep-recovery state (`recovery_progress` incomplete),
+    /// refreshed whenever a summary is fetched (tickPoll + getAccountsBalances). While true the SDK
+    /// reports 0 balance and an empty Activity to every client, so no consumer can render the
+    /// provisional (phantom-inflated) mid-restore values. Tracks the LIVE signal, so it self-corrects
+    /// across rewind / truncate / stop.
+    private var currentlyRecovering = false
+    /// [#1755] Previous tick's recovery state — detects the recovery→done transition so the Activity
+    /// reveal (a re-fetch push) fires once even if the enhanced-tx counter didn't move that tick.
+    private var wasRecovering = false
+    /// [#1755] "Spendable early, hold": the recent-done BALANCE snapshot, captured the FIRST time
+    /// spendable funds appear during a recovery (recent-first scan ⇒ this is the clean recent balance,
+    /// taken before the historic backfill adds its transient over-count) and HELD through the backfill.
+    /// The SDK surfaces this frozen balance instead of the live, inflating partial; cleared when recovery
+    /// ends so the reveal shows the final reconciled balance. (Can under-show a wallet whose funds sit in
+    /// OLD unspent notes — those appear at 100% — but never over-shows.) The Activity is held EMPTY
+    /// during recovery (not frozen): a recent send whose input is historic would otherwise read as a
+    /// phantom +receive (the upstream change-vs-receive ambiguity), so we reveal it reconciled at 100%.
+    private var recoveryFrozenBalances: [AccountUUID: AccountBalance]?
     private var summaryTask: Task<Void, Never>?
     private var lastSummaryFinishDate: Date?
     // [#1755] When set, syncing-time % is driven PURELY by the pass-local counter (no summary
@@ -232,6 +250,10 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // `cachedSummary` is seeded here so start() + the first ticks inherit the warm
         // values (and the syncingProgress floor has a baseline).
         cachedSummary = try? await initializer.rustBackend.getWalletSummary()
+        // [#1755] Seed the recovery gate from the persisted summary so the FIRST balance/Activity read
+        // is correct without waiting for a poll: a synced wallet (recovery complete) shows its real
+        // Activity immediately; a relaunch mid-restore gates from the first read (no phantom flash).
+        currentlyRecovering = SlipstreamSynchronizer.isRecovering(cachedSummary)
         stateSubject.send(SlipstreamSynchronizer.initialState(from: cachedSummary, syncSessionID: UUID()))
         return .success
     }
@@ -288,11 +310,14 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // counter starts at 0 for the few new blocks. A fresh wallet has no summary → 0%,
         // as before; balance carries the warm value from prepare().
         let (warmProgress, warmSpendable) = SlipstreamSynchronizer.summaryProgress(cachedSummary)
+        let startRecovering = SlipstreamSynchronizer.isRecovering(cachedSummary)
+        currentlyRecovering = startRecovering
         stateSubject.send(SynchronizerState(
             syncSessionID: UUID(),
-            accountsBalances: cachedSummary?.accountBalances ?? latestState.accountsBalances,
+            accountsBalances: startRecovering ? [:] : (cachedSummary?.accountBalances ?? latestState.accountsBalances),
             internalSyncStatus: .syncing(warmProgress, warmSpendable),
-            latestBlockHeight: cachedSummary?.chainTipHeight ?? latestState.latestBlockHeight
+            latestBlockHeight: cachedSummary?.chainTipHeight ?? latestState.latestBlockHeight,
+            isRecovering: startRecovering
         ))
     }
 
@@ -383,6 +408,37 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // STATES 0/2 (Disconnected/Error): summary fetches run at the 2s cadence so
         // the balance display stays fresh while the wallet is idle or recovering.
 
+        // [#1755] Deep-recovery gate. While the wallet backend's recovery_progress is incomplete,
+        // balance + Activity are provisional (device data: phantom at every recov<100%, gone at 100%),
+        // so the SDK reports ZERO balance + an EMPTY Activity to every client until recovery completes
+        // — forced, not a flag clients must honor. A live signal ⇒ robust across rewind/truncate/stop.
+        //
+        // Read the maintained flag — do NOT recompute from `cachedSummary` here. During a from-birthday
+        // restore the engine emits NO summary mid-pass (T5.5), so `cachedSummary` lags a boundary behind
+        // and would read "not recovering" for the first chunk — exactly when the recent range's phantom
+        // change notes first land, leaking them until the first boundary fetch. `currentlyRecovering` is
+        // refreshed by every LIVE summary fetch (prepare, getAccountsBalances, boundary, idle/done), so
+        // it is already true by the first read (the cold-launch balance read fires at scan=0/0).
+        let recovering = currentlyRecovering
+
+        // [#1755] "Spendable early, hold" — capture the recent-done snapshot ONCE (the first spendable
+        // balance seen during recovery; recent-first guarantees it's the clean recent funds, taken
+        // BEFORE the historic backfill adds its transient over-count) and hold it through the backfill
+        // (the "appears at ~61%, rest is uninteresting historic" behaviour). Cleared when recovery ends.
+        if recovering, recoveryFrozenBalances == nil,
+            let liveBalances = cachedSummary?.accountBalances,
+            liveBalances.values.contains(where: {
+                ($0.saplingBalance.total() + $0.orchardBalance.total() + $0.unshielded + $0.awaitingResolution).amount > 0
+            }) {
+            recoveryFrozenBalances = liveBalances
+        }
+        if !recovering, recoveryFrozenBalances != nil {
+            recoveryFrozenBalances = nil
+        }
+        // Balances to surface this tick: the held recent-done snapshot while recovering (0 until
+        // captured), the live wallet balances otherwise.
+        let surfacedBalances: [AccountUUID: AccountBalance]? = recovering ? (recoveryFrozenBalances ?? [:]) : nil
+
         if snap.state == 3 {
             // Done: cancel any in-flight summary task + emit .synced immediately.
             // [#1755] The import re-scan (if any) is complete — resume normal floored progress so a
@@ -392,10 +448,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
             summaryTask = nil
             stateSubject.send(SynchronizerState(
                 syncSessionID: latestState.syncSessionID,
-                accountsBalances: cachedSummary?.accountBalances ?? latestState.accountsBalances,
+                accountsBalances: surfacedBalances ?? (cachedSummary?.accountBalances ?? latestState.accountsBalances),
                 internalSyncStatus: .synced,
                 latestBlockHeight: BlockHeight(snap.chainTip),
-                fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight
+                fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight,
+                isRecovering: recovering
             ))
             // Kick a post-sync summary fetch for balance freshness in idle state.
             // The .synced emission already fired above — this never delays it.
@@ -429,10 +486,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
             stateSubject.send(SynchronizerState(
                 syncSessionID: latestState.syncSessionID,
-                accountsBalances: cachedSummary?.accountBalances ?? latestState.accountsBalances,
+                accountsBalances: surfacedBalances ?? (cachedSummary?.accountBalances ?? latestState.accountsBalances),
                 internalSyncStatus: .syncing(progress, spendable),
                 latestBlockHeight: BlockHeight(snap.chainTip),
-                fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight
+                fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight,
+                isRecovering: recovering
             ))
 
             // F2: Range-boundary balance refresh (exempt from no-summary-while-syncing rule).
@@ -463,10 +521,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
             stateSubject.send(SynchronizerState(
                 syncSessionID: latestState.syncSessionID,
-                accountsBalances: balances,
+                accountsBalances: surfacedBalances ?? balances,
                 internalSyncStatus: newStatus,
                 latestBlockHeight: BlockHeight(snap.chainTip),
-                fullyScannedHeight: fullyScannedHeight
+                fullyScannedHeight: fullyScannedHeight,
+                isRecovering: recovering
             ))
         }
 
@@ -485,19 +544,36 @@ public final class SlipstreamSynchronizer: Synchronizer {
         //
         // Single emission point: we never emit both paths in the same tick (the
         // primary path takes precedence; the fallback is an else-branch).
+        //
+        // [#1755] The live Activity carries phantom "+receive" rows during recovery (change recorded
+        // before its input's spend links). Rather than HOLD emissions back (which leaves a stale,
+        // phantom-laden list on macOS/iPad, where the always-visible Home doesn't re-fire onAppear),
+        // we PUSH: during recovery emit an EMPTY list, so consumers re-fetch via allTransactions()
+        // (also gated to []) and actively clear. When recovery completes we push once more so the
+        // now-reconciled real list is revealed even if the enhanced-tx counter didn't move.
         let hasSyncDoneEvent = events.contains { $0.tag == 3 && $0.value > 0 }
+        let recoveryJustStarted = !wasRecovering && recovering
+        let recoveryJustCompleted = wasRecovering && !recovering
+        wasRecovering = recovering
 
-        if snap.enhancedTxs > lastEnhancedCount {
-            // Primary: new enhancements observed — fetch and emit.
+        if recovering {
+            // Throttled: push an EMPTY Activity exactly ONCE, when recovery begins, so any pre-recovery
+            // stale (phantom) list is cleared even on macOS/iPad (where the always-visible Home doesn't
+            // re-fire onAppear). After that we stay silent — allTransactions() is gated to [] so the list
+            // can't repopulate — which also removes the per-tick re-fetch churn that felt busy.
+            if recoveryJustStarted {
+                eventSubject.send(.foundTransactions([], nil))
+            }
+            lastEnhancedCount = snap.enhancedTxs
+        } else if recoveryJustCompleted || snap.enhancedTxs > lastEnhancedCount {
+            // Reveal the reconciled list once recovery completes, or emit normal incremental updates.
             let txs = await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? [])
-            if !txs.isEmpty {
+            if recoveryJustCompleted || !txs.isEmpty {
                 eventSubject.send(.foundTransactions(txs, nil))
             }
             lastEnhancedCount = snap.enhancedTxs
         } else if hasSyncDoneEvent && snap.enhancedTxs > 0 {
-            // Fallback: sync completed with stored transactions but the counter
-            // did not advance this tick (already caught by an earlier tick or
-            // count unchanged across this pass).  Emit so the UI sees them.
+            // Fallback: a pass completed with stored transactions but the counter did not advance.
             let txs = await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? [])
             if !txs.isEmpty {
                 eventSubject.send(.foundTransactions(txs, nil))
@@ -584,6 +660,9 @@ public final class SlipstreamSynchronizer: Synchronizer {
             // Only update state if the task was not cancelled (e.g. by Done or wipe).
             guard !Task.isCancelled else { return }
             self?.cachedSummary = result ?? self?.cachedSummary
+            // [#1755] Maintain the recovery gate from this LIVE summary (idle/done refresh). This is the
+            // robust reveal at completion: a synced fetch flips the flag false → next tick reveals.
+            self?.currentlyRecovering = SlipstreamSynchronizer.isRecovering(self?.cachedSummary)
             self?.lastSummaryFinishDate = Date()
             self?.summaryTask = nil
         }
@@ -614,6 +693,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
             guard !Task.isCancelled else { return }
             // Update the shared cache so the next tick emits fresh balances.
             self?.cachedSummary = result ?? self?.cachedSummary
+            // [#1755] Maintain the recovery gate from this LIVE boundary summary.
+            self?.currentlyRecovering = SlipstreamSynchronizer.isRecovering(self?.cachedSummary)
             self?.lastSummaryFinishDate = Date()
             self?.boundarySummaryTask = nil
         }
@@ -622,7 +703,15 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // ── Accounts / Balances ────────────────────────────────────────────────────
 
     public func getAccountsBalances() async throws -> [AccountUUID: AccountBalance] {
-        try await initializer.rustBackend.getWalletSummary()?.accountBalances ?? [:]
+        // [#1755] During deep recovery the live summary is provisional (phantom-inflated) and the UI
+        // surfaces the held recent-done balance, so skip the getWalletSummary call entirely — it would
+        // otherwise be a scan-time parasite. The recovery flag is maintained by tickPoll + the boundary
+        // and idle/done summary fetches.
+        if currentlyRecovering { return recoveryFrozenBalances ?? [:] }
+        let summary = try await initializer.rustBackend.getWalletSummary()
+        let recovering = SlipstreamSynchronizer.isRecovering(summary)
+        currentlyRecovering = recovering
+        return recovering ? (recoveryFrozenBalances ?? [:]) : (summary?.accountBalances ?? [:])
     }
 
     public func listAccounts() async throws -> [Account] {
@@ -835,11 +924,15 @@ public final class SlipstreamSynchronizer: Synchronizer {
     }
 
     public func allTransactions() async throws -> [ZcashTransaction.Overview] {
-        try await enhanceWithState(transactionRepository.find(offset: 0, limit: Int.max, kind: .all))
+        // [#1755] Hold the Activity empty during deep recovery — until recovery_progress completes the
+        // list carries phantom "+receive" rows (change recorded before its input's spend links).
+        if currentlyRecovering { return [] }
+        return try await enhanceWithState(transactionRepository.find(offset: 0, limit: Int.max, kind: .all))
     }
 
     public func allTransactions(from transaction: ZcashTransaction.Overview, limit: Int) async throws -> [ZcashTransaction.Overview] {
-        try await enhanceWithState(transactionRepository.find(from: transaction, limit: limit, kind: .all))
+        if currentlyRecovering { return [] }
+        return try await enhanceWithState(transactionRepository.find(from: transaction, limit: limit, kind: .all))
     }
 
     /// T8.3.6 (UX): populate `ZcashTransaction.Overview.state` on fetched transactions (the

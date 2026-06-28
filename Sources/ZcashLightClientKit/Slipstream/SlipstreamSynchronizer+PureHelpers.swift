@@ -90,6 +90,16 @@ extension SlipstreamSynchronizer {
         )
     }
 
+    /// [#1755] Deep-recovery (restore / new-account backfill) detector. True while the wallet
+    /// backend's `recovery_progress` exists and is incomplete — the window in which a note can
+    /// appear unspent before the block that spends it has been scanned, transiently inflating both
+    /// balance and Activity. The SDK reports 0 balance / empty Activity while this is true. A nil or
+    /// complete recovery (light catch-ups, fully synced) ⇒ false.
+    static func isRecovering(_ summary: WalletSummary?) -> Bool {
+        guard let recovery = summary?.recoveryProgress else { return false }
+        return !recovery.isComplete
+    }
+
     /// T8.3.5: the % to show while `state == 1` (Syncing). The engine reports PASS-LOCAL
     /// progress (`counterProgress(scanned, passTotal)`) — correct for a from-birthday
     /// restore, but MISLEADING for a small catch-up pass on an already-synced wallet: a
@@ -117,12 +127,14 @@ extension SlipstreamSynchronizer {
             )
         }
         let (progress, spendable) = summaryProgress(summary)
+        let recovering = isRecovering(summary)
         return SynchronizerState(
             syncSessionID: syncSessionID,
-            accountsBalances: summary.accountBalances,
+            accountsBalances: recovering ? [:] : summary.accountBalances,
             internalSyncStatus: .syncing(progress, spendable),
             latestBlockHeight: summary.chainTipHeight,
-            fullyScannedHeight: summary.fullyScannedHeight
+            fullyScannedHeight: summary.fullyScannedHeight,
+            isRecovering: recovering
         )
     }
 
