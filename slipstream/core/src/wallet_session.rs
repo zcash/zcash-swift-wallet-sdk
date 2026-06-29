@@ -55,6 +55,15 @@ impl WalletSession {
             .map_err(|e| wallet_err("open wallet db", e))?;
         zcash_client_sqlite::wallet::init::init_wallet_db(&mut db, None)
             .map_err(|e| wallet_err("init/migrations", e))?;
+        // [#1755] Install the slipstream-owned, read-side reconciliation view
+        // (additive; see `reconcile.rs`). It is a VIEW — adds no rows to data.db,
+        // never runs on the scan hot path, and is invisible to the golden oracle
+        // (which diffs `type='table'` only). Idempotent, so every host inherits it
+        // with no FFI change. WAL (set above) permits this short side connection.
+        {
+            let conn = Connection::open(db_path).map_err(|e| wallet_err("reconcile view open", e))?;
+            crate::reconcile::create_reconcile_view(&conn)?;
+        }
         Ok(Self { network, db, db_path: db_path.to_path_buf() })
     }
 

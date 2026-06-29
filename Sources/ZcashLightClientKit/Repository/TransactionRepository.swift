@@ -28,4 +28,15 @@ protocol TransactionRepository {
     func getRecipients(for rawID: Data) async throws -> [TransactionRecipient]
     func getTransactionOutputs(for rawID: Data) async throws -> [ZcashTransaction.Output]
     func debugDatabase(sql: String) -> String
+
+    /// [#1755] Txids whose `account_balance_delta` is not yet final during a deep recovery — read from
+    /// the slipstream-owned `slipstream_v_tx_reconciled` view. A recent-first restore can scan a spend
+    /// before its input's origin block, so the spend is transiently unattributed and the tx reads as a
+    /// phantom "+receive". Consumers hold these txs out of the Activity list until they reconcile. The
+    /// default returns an empty set: a DB without the view (legacy / non-slipstream) holds nothing back.
+    func unreconciledTxids() async throws -> Set<Data>
+}
+
+extension TransactionRepository {
+    func unreconciledTxids() async throws -> Set<Data> { [] }
 }

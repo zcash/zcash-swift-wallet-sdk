@@ -157,21 +157,28 @@ public final class SlipstreamSynchronizer: Synchronizer {
     private var cachedSummary: WalletSummary?
     /// [#1755] Mirrors the wallet backend's deep-recovery state (`recovery_progress` incomplete),
     /// refreshed whenever a summary is fetched (tickPoll + getAccountsBalances). While true the SDK
-    /// reports 0 balance and an empty Activity to every client, so no consumer can render the
-    /// provisional (phantom-inflated) mid-restore values. Tracks the LIVE signal, so it self-corrects
-    /// across rewind / truncate / stop.
+    /// HOLDS a frozen recent-done balance (see `recoveryFrozenBalances`); the Activity is gated
+    /// PER-TRANSACTION by the `slipstream_v_tx_reconciled` view (not held wholesale), so reconciled
+    /// txs surface immediately while only the provisional ones wait. Tracks the LIVE signal, so it
+    /// self-corrects across rewind / truncate / stop.
     private var currentlyRecovering = false
     /// [#1755] Previous tick's recovery state — detects the recovery→done transition so the Activity
     /// reveal (a re-fetch push) fires once even if the enhanced-tx counter didn't move that tick.
     private var wasRecovering = false
+    /// [#1755] Count of the reconciled-visible Activity rows last surfaced during a recovery. The poll
+    /// tick pushes `foundTransactions` only when this changes — incremental reveal as the backfill links
+    /// spends, without the per-tick re-fetch churn. Reset to -1 at each recovery start so the first
+    /// reveal always fires (clearing any pre-recovery phantom list on macOS/iPad).
+    private var lastSurfacedReconciledCount = -1
     /// [#1755] "Spendable early, hold": the recent-done BALANCE snapshot, captured the FIRST time
     /// spendable funds appear during a recovery (recent-first scan ⇒ this is the clean recent balance,
     /// taken before the historic backfill adds its transient over-count) and HELD through the backfill.
     /// The SDK surfaces this frozen balance instead of the live, inflating partial; cleared when recovery
     /// ends so the reveal shows the final reconciled balance. (Can under-show a wallet whose funds sit in
-    /// OLD unspent notes — those appear at 100% — but never over-shows.) The Activity is held EMPTY
-    /// during recovery (not frozen): a recent send whose input is historic would otherwise read as a
-    /// phantom +receive (the upstream change-vs-receive ambiguity), so we reveal it reconciled at 100%.
+    /// OLD unspent notes — those appear at 100% — but never over-shows.) The Activity is gated
+    /// PER-TRANSACTION (not held wholesale): the `slipstream_v_tx_reconciled` view drops only the txs
+    /// whose delta is still provisional (a recent send whose historic input isn't linked yet would read
+    /// as a phantom +receive), revealing each as soon as its spend links — sooner AND correct.
     private var recoveryFrozenBalances: [AccountUUID: AccountBalance]?
     private var summaryTask: Task<Void, Never>?
     private var lastSummaryFinishDate: Date?
@@ -545,36 +552,42 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // Single emission point: we never emit both paths in the same tick (the
         // primary path takes precedence; the fallback is an else-branch).
         //
-        // [#1755] The live Activity carries phantom "+receive" rows during recovery (change recorded
-        // before its input's spend links). Rather than HOLD emissions back (which leaves a stale,
-        // phantom-laden list on macOS/iPad, where the always-visible Home doesn't re-fire onAppear),
-        // we PUSH: during recovery emit an EMPTY list, so consumers re-fetch via allTransactions()
-        // (also gated to []) and actively clear. When recovery completes we push once more so the
-        // now-reconciled real list is revealed even if the enhanced-tx counter didn't move.
+        // [#1755] During a recent-first recovery the raw Activity carries phantom "+receive" rows (a
+        // self-send's change, recorded before its historic input's spend links). We no longer hold the
+        // list wholesale: `allTransactions()` drops only the unreconciled txs (the
+        // `slipstream_v_tx_reconciled` view), so each reconciled tx surfaces as soon as it's scanned.
+        // The poll tick just PRODS consumers to re-fetch — macOS/iPad's always-visible Home doesn't
+        // re-fire onAppear — by emitting `foundTransactions` whenever the reconciled-visible count
+        // changes (incremental + calm), plus once when recovery completes.
         let hasSyncDoneEvent = events.contains { $0.tag == 3 && $0.value > 0 }
         let recoveryJustStarted = !wasRecovering && recovering
         let recoveryJustCompleted = wasRecovering && !recovering
         wasRecovering = recovering
 
         if recovering {
-            // Throttled: push an EMPTY Activity exactly ONCE, when recovery begins, so any pre-recovery
-            // stale (phantom) list is cleared even on macOS/iPad (where the always-visible Home doesn't
-            // re-fire onAppear). After that we stay silent — allTransactions() is gated to [] so the list
-            // can't repopulate — which also removes the per-tick re-fetch churn that felt busy.
-            if recoveryJustStarted {
-                eventSubject.send(.foundTransactions([], nil))
+            // Incremental reveal: recompute the reconciled-visible list when recovery begins or the engine
+            // enhanced new txs, and push only when what the user can see actually changed — surfacing
+            // genuine receives + already-linked sends mid-backfill without per-tick churn.
+            if recoveryJustStarted { lastSurfacedReconciledCount = -1 }
+            if recoveryJustStarted || snap.enhancedTxs != lastEnhancedCount {
+                let txs = await droppingUnreconciled(await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []))
+                if txs.count != lastSurfacedReconciledCount {
+                    eventSubject.send(.foundTransactions(txs, nil))
+                    lastSurfacedReconciledCount = txs.count
+                }
             }
             lastEnhancedCount = snap.enhancedTxs
         } else if recoveryJustCompleted || snap.enhancedTxs > lastEnhancedCount {
-            // Reveal the reconciled list once recovery completes, or emit normal incremental updates.
-            let txs = await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? [])
+            // Reveal the now-fully-reconciled list once recovery completes, or emit normal incremental updates.
+            let txs = await droppingUnreconciled(await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []))
             if recoveryJustCompleted || !txs.isEmpty {
                 eventSubject.send(.foundTransactions(txs, nil))
             }
             lastEnhancedCount = snap.enhancedTxs
+            lastSurfacedReconciledCount = txs.count
         } else if hasSyncDoneEvent && snap.enhancedTxs > 0 {
             // Fallback: a pass completed with stored transactions but the counter did not advance.
-            let txs = await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? [])
+            let txs = await droppingUnreconciled(await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []))
             if !txs.isEmpty {
                 eventSubject.send(.foundTransactions(txs, nil))
             }
@@ -924,15 +937,24 @@ public final class SlipstreamSynchronizer: Synchronizer {
     }
 
     public func allTransactions() async throws -> [ZcashTransaction.Overview] {
-        // [#1755] Hold the Activity empty during deep recovery — until recovery_progress completes the
-        // list carries phantom "+receive" rows (change recorded before its input's spend links).
-        if currentlyRecovering { return [] }
-        return try await enhanceWithState(transactionRepository.find(offset: 0, limit: Int.max, kind: .all))
+        await droppingUnreconciled(try await enhanceWithState(transactionRepository.find(offset: 0, limit: Int.max, kind: .all)))
     }
 
     public func allTransactions(from transaction: ZcashTransaction.Overview, limit: Int) async throws -> [ZcashTransaction.Overview] {
-        if currentlyRecovering { return [] }
-        return try await enhanceWithState(transactionRepository.find(from: transaction, limit: limit, kind: .all))
+        await droppingUnreconciled(try await enhanceWithState(transactionRepository.find(from: transaction, limit: limit, kind: .all)))
+    }
+
+    /// [#1755] Drop the transactions whose `account_balance_delta` is not yet final — those a recent-first
+    /// restore scanned the spend of before its input's origin block, so a self-send's change reads as a
+    /// phantom "+receive" until the spend links. The set comes from the slipstream-owned
+    /// `slipstream_v_tx_reconciled` view via the repository; a synced wallet (or any DB without the view)
+    /// yields an empty set, so this is a no-op outside an active recovery — the full list renders at once,
+    /// engine running or not. This replaces the old wholesale "hold the Activity empty during recovery"
+    /// gate: reconciled txs (genuine receives, already-linked sends) are surfaced as soon as they appear.
+    private func droppingUnreconciled(_ txs: [ZcashTransaction.Overview]) async -> [ZcashTransaction.Overview] {
+        let unreconciled = (try? await transactionRepository.unreconciledTxids()) ?? []
+        guard !unreconciled.isEmpty else { return txs }
+        return txs.filter { !unreconciled.contains($0.rawID) }
     }
 
     /// T8.3.6 (UX): populate `ZcashTransaction.Overview.state` on fetched transactions (the

@@ -16,6 +16,7 @@ pub mod grpc;
 pub mod mempool;
 pub mod oracle;
 pub mod persist;
+pub mod reconcile;
 #[cfg(feature = "gpu")]
 mod gpu_subtree;
 pub mod scan;
