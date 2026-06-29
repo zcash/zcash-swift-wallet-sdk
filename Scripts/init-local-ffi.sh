@@ -90,6 +90,10 @@ else
     # level — device builds silently run old code). Always replace, never merge.
     rm -rf "$XCFRAMEWORK_DIR"
     cp -R BuildSupport/products/libzcashlc.xcframework "$XCFRAMEWORK_DIR"
+    # The Makefile assembles every slice shallow (iOS layout). macOS embedded
+    # frameworks require the versioned bundle layout, else Xcode rejects the app
+    # ("expected Versions/Current/Resources/Info.plist"). Fix the macOS slice.
+    ./Scripts/version-macos-framework.sh "$XCFRAMEWORK_DIR/macos-arm64_x86_64/libzcashlc.framework"
 fi
 
 # Create local SPM package wrapper

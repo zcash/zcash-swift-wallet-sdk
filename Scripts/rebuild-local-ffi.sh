@@ -170,6 +170,12 @@ rm -rf "$XCFRAMEWORK_DIR"
 mv "$TEMP_XCFW" "$XCFRAMEWORK_DIR"
 rm -rf "$TEMP_DIR"
 
+# macOS embedded frameworks need the versioned bundle layout (the slice is built
+# shallow like iOS); without this Xcode rejects the embedded framework.
+if [[ "$TARGET" == "macos" ]]; then
+    ./Scripts/version-macos-framework.sh "$XCFRAMEWORK_DIR/$XCFRAMEWORK_SLICE/libzcashlc.framework"
+fi
+
 echo ""
 echo "Rebuilt $TARGET ($ARCH) in $XCFRAMEWORK_DIR"
 echo ""
