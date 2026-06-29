@@ -276,7 +276,7 @@ class SynchronizerOfflineTests: ZcashTestCase {
         let synchronizer = SDKSynchronizer(initializer: initializer)
 
         do {
-            _ = try await synchronizer.prepare(with: Environment.seedBytes, walletBirthday: 123000, for: .newWallet, name: "", keySource: nil)
+            _ = try await synchronizer.prepare(with: Environment.seedBytes, walletBirthday: 123000, name: "", keySource: nil)
             XCTFail("Failure of prepare is expected.")
         } catch {
             if let error = error as? ZcashError, case let .initializerCantUpdateURLWithAlias(failedURL) = error {

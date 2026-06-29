@@ -101,7 +101,7 @@ class ClosureSynchronizerOfflineTests: XCTestCase {
     }
 
     func testPrepareSucceed() throws {
-        synchronizerMock.prepareWithWalletBirthdayForNameKeySourceClosure = { receivedSeed, receivedWalletBirthday, _, _, _ in
+        synchronizerMock.prepareWithWalletBirthdayNameKeySourceClosure = { receivedSeed, receivedWalletBirthday, _, _ in
             XCTAssertEqual(receivedSeed, self.data.seed)
             XCTAssertEqual(receivedWalletBirthday, self.data.birthday)
             return .success
@@ -109,7 +109,7 @@ class ClosureSynchronizerOfflineTests: XCTestCase {
 
         let expectation = XCTestExpectation()
 
-        synchronizer.prepare(with: data.seed, walletBirthday: data.birthday, for: .newWallet, name: "", keySource: nil) { result in
+        synchronizer.prepare(with: data.seed, walletBirthday: data.birthday, name: "", keySource: nil) { result in
             switch result {
             case let .success(status):
                 XCTAssertEqual(status, .success)
@@ -123,13 +123,13 @@ class ClosureSynchronizerOfflineTests: XCTestCase {
     }
 
     func testPrepareThrowsError() throws {
-        synchronizerMock.prepareWithWalletBirthdayForNameKeySourceClosure = { _, _, _, _, _ in
+        synchronizerMock.prepareWithWalletBirthdayNameKeySourceClosure = { _, _, _, _ in
             throw "Some error"
         }
 
         let expectation = XCTestExpectation()
 
-        synchronizer.prepare(with: data.seed, walletBirthday: data.birthday, for: .newWallet, name: "", keySource: nil) { result in
+        synchronizer.prepare(with: data.seed, walletBirthday: data.birthday, name: "", keySource: nil) { result in
             switch result {
             case .success:
                 XCTFail("Error should be thrown.")

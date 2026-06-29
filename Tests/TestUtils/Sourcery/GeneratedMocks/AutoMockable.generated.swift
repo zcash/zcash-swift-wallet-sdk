@@ -537,6 +537,102 @@ class BlockScannerMock: BlockScanner {
     }
 
 }
+class BroadcasterMock: Broadcaster {
+
+
+    init(
+    ) {
+    }
+
+    // MARK: - createProposedTransactions
+
+    var createProposedTransactionsProposalSpendingKeyThrowableError: Error?
+    var createProposedTransactionsProposalSpendingKeyCallsCount = 0
+    var createProposedTransactionsProposalSpendingKeyCalled: Bool {
+        return createProposedTransactionsProposalSpendingKeyCallsCount > 0
+    }
+    var createProposedTransactionsProposalSpendingKeyReceivedArguments: (proposal: Proposal, spendingKey: UnifiedSpendingKey)?
+    var createProposedTransactionsProposalSpendingKeyReturnValue: [CreatedTransaction]!
+    var createProposedTransactionsProposalSpendingKeyClosure: ((Proposal, UnifiedSpendingKey) async throws -> [CreatedTransaction])?
+
+    func createProposedTransactions(proposal: Proposal, spendingKey: UnifiedSpendingKey) async throws -> [CreatedTransaction] {
+        if let error = createProposedTransactionsProposalSpendingKeyThrowableError {
+            throw error
+        }
+        createProposedTransactionsProposalSpendingKeyCallsCount += 1
+        createProposedTransactionsProposalSpendingKeyReceivedArguments = (proposal: proposal, spendingKey: spendingKey)
+        if let closure = createProposedTransactionsProposalSpendingKeyClosure {
+            return try await closure(proposal, spendingKey)
+        } else {
+            return createProposedTransactionsProposalSpendingKeyReturnValue
+        }
+    }
+
+    // MARK: - createTransactionFromPCZT
+
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsThrowableError: Error?
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsCallsCount = 0
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsCalled: Bool {
+        return createTransactionFromPCZTPcztWithProofsPcztWithSigsCallsCount > 0
+    }
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsReceivedArguments: (pcztWithProofs: Pczt, pcztWithSigs: Pczt)?
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsReturnValue: [CreatedTransaction]!
+    var createTransactionFromPCZTPcztWithProofsPcztWithSigsClosure: ((Pczt, Pczt) async throws -> [CreatedTransaction])?
+
+    func createTransactionFromPCZT(pcztWithProofs: Pczt, pcztWithSigs: Pczt) async throws -> [CreatedTransaction] {
+        if let error = createTransactionFromPCZTPcztWithProofsPcztWithSigsThrowableError {
+            throw error
+        }
+        createTransactionFromPCZTPcztWithProofsPcztWithSigsCallsCount += 1
+        createTransactionFromPCZTPcztWithProofsPcztWithSigsReceivedArguments = (pcztWithProofs: pcztWithProofs, pcztWithSigs: pcztWithSigs)
+        if let closure = createTransactionFromPCZTPcztWithProofsPcztWithSigsClosure {
+            return try await closure(pcztWithProofs, pcztWithSigs)
+        } else {
+            return createTransactionFromPCZTPcztWithProofsPcztWithSigsReturnValue
+        }
+    }
+
+    // MARK: - submit
+
+    var submitTransactionToTimingCallsCount = 0
+    var submitTransactionToTimingCalled: Bool {
+        return submitTransactionToTimingCallsCount > 0
+    }
+    var submitTransactionToTimingReceivedArguments: (transaction: CreatedTransaction, endpoints: [LightWalletEndpoint], timing: SubmissionTiming)?
+    var submitTransactionToTimingReturnValue: TransactionSubmissionOutcome!
+    var submitTransactionToTimingClosure: ((CreatedTransaction, [LightWalletEndpoint], SubmissionTiming) async -> TransactionSubmissionOutcome)?
+
+    func submit(transaction: CreatedTransaction, to endpoints: [LightWalletEndpoint], timing: SubmissionTiming) async -> TransactionSubmissionOutcome {
+        submitTransactionToTimingCallsCount += 1
+        submitTransactionToTimingReceivedArguments = (transaction: transaction, endpoints: endpoints, timing: timing)
+        if let closure = submitTransactionToTimingClosure {
+            return await closure(transaction, endpoints, timing)
+        } else {
+            return submitTransactionToTimingReturnValue
+        }
+    }
+
+    // MARK: - submit
+
+    var submitTransactionsToTimingCallsCount = 0
+    var submitTransactionsToTimingCalled: Bool {
+        return submitTransactionsToTimingCallsCount > 0
+    }
+    var submitTransactionsToTimingReceivedArguments: (transactions: [CreatedTransaction], endpoints: [LightWalletEndpoint], timing: SubmissionTiming)?
+    var submitTransactionsToTimingReturnValue: [TransactionSubmissionReport]!
+    var submitTransactionsToTimingClosure: (([CreatedTransaction], [LightWalletEndpoint], SubmissionTiming) async -> [TransactionSubmissionReport])?
+
+    func submit(transactions: [CreatedTransaction], to endpoints: [LightWalletEndpoint], timing: SubmissionTiming) async -> [TransactionSubmissionReport] {
+        submitTransactionsToTimingCallsCount += 1
+        submitTransactionsToTimingReceivedArguments = (transactions: transactions, endpoints: endpoints, timing: timing)
+        if let closure = submitTransactionsToTimingClosure {
+            return await closure(transactions, endpoints, timing)
+        } else {
+            return submitTransactionsToTimingReturnValue
+        }
+    }
+
+}
 class CompactBlockRepositoryMock: CompactBlockRepository {
 
 
@@ -1439,98 +1535,6 @@ class SaplingParametersHandlerMock: SaplingParametersHandler {
     }
 
 }
-class BroadcasterMock: Broadcaster {
-
-
-    init(
-    ) {
-    }
-
-    // MARK: - createProposedTransactions
-
-    var createProposedTransactionsProposalSpendingKeyThrowableError: Error?
-    var createProposedTransactionsProposalSpendingKeyCallsCount = 0
-    var createProposedTransactionsProposalSpendingKeyCalled: Bool {
-        return createProposedTransactionsProposalSpendingKeyCallsCount > 0
-    }
-    var createProposedTransactionsProposalSpendingKeyReturnValue: [CreatedTransaction]!
-    var createProposedTransactionsProposalSpendingKeyClosure: ((Proposal, UnifiedSpendingKey) async throws -> [CreatedTransaction])?
-
-    func createProposedTransactions(proposal: Proposal, spendingKey: UnifiedSpendingKey) async throws -> [CreatedTransaction] {
-        if let error = createProposedTransactionsProposalSpendingKeyThrowableError {
-            throw error
-        }
-        createProposedTransactionsProposalSpendingKeyCallsCount += 1
-        if let closure = createProposedTransactionsProposalSpendingKeyClosure {
-            return try await closure(proposal, spendingKey)
-        } else {
-            return createProposedTransactionsProposalSpendingKeyReturnValue
-        }
-    }
-
-    // MARK: - createTransactionFromPCZT
-
-    var createTransactionFromPCZTPcztWithProofsPcztWithSigsThrowableError: Error?
-    var createTransactionFromPCZTPcztWithProofsPcztWithSigsCallsCount = 0
-    var createTransactionFromPCZTPcztWithProofsPcztWithSigsCalled: Bool {
-        return createTransactionFromPCZTPcztWithProofsPcztWithSigsCallsCount > 0
-    }
-    var createTransactionFromPCZTPcztWithProofsPcztWithSigsReturnValue: [CreatedTransaction]!
-    var createTransactionFromPCZTPcztWithProofsPcztWithSigsClosure: ((Pczt, Pczt) async throws -> [CreatedTransaction])?
-
-    func createTransactionFromPCZT(pcztWithProofs: Pczt, pcztWithSigs: Pczt) async throws -> [CreatedTransaction] {
-        if let error = createTransactionFromPCZTPcztWithProofsPcztWithSigsThrowableError {
-            throw error
-        }
-        createTransactionFromPCZTPcztWithProofsPcztWithSigsCallsCount += 1
-        if let closure = createTransactionFromPCZTPcztWithProofsPcztWithSigsClosure {
-            return try await closure(pcztWithProofs, pcztWithSigs)
-        } else {
-            return createTransactionFromPCZTPcztWithProofsPcztWithSigsReturnValue
-        }
-    }
-
-    // MARK: - submit
-
-    var submitTransactionToTimingCallsCount = 0
-    var submitTransactionToTimingCalled: Bool {
-        return submitTransactionToTimingCallsCount > 0
-    }
-    var submitTransactionToTimingReceivedArguments: (transaction: CreatedTransaction, endpoints: [LightWalletEndpoint], timing: SubmissionTiming)?
-    var submitTransactionToTimingReturnValue: TransactionSubmissionOutcome!
-    var submitTransactionToTimingClosure: ((CreatedTransaction, [LightWalletEndpoint], SubmissionTiming) async -> TransactionSubmissionOutcome)?
-
-    func submit(transaction: CreatedTransaction, to endpoints: [LightWalletEndpoint], timing: SubmissionTiming) async -> TransactionSubmissionOutcome {
-        submitTransactionToTimingCallsCount += 1
-        submitTransactionToTimingReceivedArguments = (transaction: transaction, endpoints: endpoints, timing: timing)
-        if let closure = submitTransactionToTimingClosure {
-            return await closure(transaction, endpoints, timing)
-        } else {
-            return submitTransactionToTimingReturnValue
-        }
-    }
-
-    // MARK: - submit
-
-    var submitTransactionsToTimingCallsCount = 0
-    var submitTransactionsToTimingCalled: Bool {
-        return submitTransactionsToTimingCallsCount > 0
-    }
-    var submitTransactionsToTimingReceivedArguments: (transactions: [CreatedTransaction], endpoints: [LightWalletEndpoint], timing: SubmissionTiming)?
-    var submitTransactionsToTimingReturnValue: [TransactionSubmissionReport]!
-    var submitTransactionsToTimingClosure: (([CreatedTransaction], [LightWalletEndpoint], SubmissionTiming) async -> [TransactionSubmissionReport])?
-
-    func submit(transactions: [CreatedTransaction], to endpoints: [LightWalletEndpoint], timing: SubmissionTiming) async -> [TransactionSubmissionReport] {
-        submitTransactionsToTimingCallsCount += 1
-        submitTransactionsToTimingReceivedArguments = (transactions: transactions, endpoints: endpoints, timing: timing)
-        if let closure = submitTransactionsToTimingClosure {
-            return await closure(transactions, endpoints, timing)
-        } else {
-            return submitTransactionsToTimingReturnValue
-        }
-    }
-
-}
 class SynchronizerMock: Synchronizer {
 
 
@@ -1580,25 +1584,25 @@ class SynchronizerMock: Synchronizer {
 
     // MARK: - prepare
 
-    var prepareWithWalletBirthdayForNameKeySourceThrowableError: Error?
-    var prepareWithWalletBirthdayForNameKeySourceCallsCount = 0
-    var prepareWithWalletBirthdayForNameKeySourceCalled: Bool {
-        return prepareWithWalletBirthdayForNameKeySourceCallsCount > 0
+    var prepareWithWalletBirthdayNameKeySourceThrowableError: Error?
+    var prepareWithWalletBirthdayNameKeySourceCallsCount = 0
+    var prepareWithWalletBirthdayNameKeySourceCalled: Bool {
+        return prepareWithWalletBirthdayNameKeySourceCallsCount > 0
     }
-    var prepareWithWalletBirthdayForNameKeySourceReceivedArguments: (seed: [UInt8]?, walletBirthday: BlockHeight, walletMode: WalletInitMode, name: String, keySource: String?)?
-    var prepareWithWalletBirthdayForNameKeySourceReturnValue: Initializer.InitializationResult!
-    var prepareWithWalletBirthdayForNameKeySourceClosure: (([UInt8]?, BlockHeight, WalletInitMode, String, String?) async throws -> Initializer.InitializationResult)?
+    var prepareWithWalletBirthdayNameKeySourceReceivedArguments: (seed: [UInt8]?, walletBirthday: BlockHeight?, name: String, keySource: String?)?
+    var prepareWithWalletBirthdayNameKeySourceReturnValue: Initializer.InitializationResult!
+    var prepareWithWalletBirthdayNameKeySourceClosure: (([UInt8]?, BlockHeight?, String, String?) async throws -> Initializer.InitializationResult)?
 
-    func prepare(with seed: [UInt8]?, walletBirthday: BlockHeight, for walletMode: WalletInitMode, name: String, keySource: String?) async throws -> Initializer.InitializationResult {
-        if let error = prepareWithWalletBirthdayForNameKeySourceThrowableError {
+    func prepare(with seed: [UInt8]?, walletBirthday: BlockHeight?, name: String, keySource: String?) async throws -> Initializer.InitializationResult {
+        if let error = prepareWithWalletBirthdayNameKeySourceThrowableError {
             throw error
         }
-        prepareWithWalletBirthdayForNameKeySourceCallsCount += 1
-        prepareWithWalletBirthdayForNameKeySourceReceivedArguments = (seed: seed, walletBirthday: walletBirthday, walletMode: walletMode, name: name, keySource: keySource)
-        if let closure = prepareWithWalletBirthdayForNameKeySourceClosure {
-            return try await closure(seed, walletBirthday, walletMode, name, keySource)
+        prepareWithWalletBirthdayNameKeySourceCallsCount += 1
+        prepareWithWalletBirthdayNameKeySourceReceivedArguments = (seed: seed, walletBirthday: walletBirthday, name: name, keySource: keySource)
+        if let closure = prepareWithWalletBirthdayNameKeySourceClosure {
+            return try await closure(seed, walletBirthday, name, keySource)
         } else {
-            return prepareWithWalletBirthdayForNameKeySourceReturnValue
+            return prepareWithWalletBirthdayNameKeySourceReturnValue
         }
     }
 
@@ -2050,7 +2054,7 @@ class SynchronizerMock: Synchronizer {
         }
     }
 
-    // MARK: - allTransactions (no params)
+    // MARK: - allTransactions
 
     var allTransactionsThrowableError: Error?
     var allTransactionsCallsCount = 0
@@ -2245,6 +2249,25 @@ class SynchronizerMock: Synchronizer {
         } else {
             return fetchTxidsWithMemoContainingSearchTermReturnValue
         }
+    }
+
+    // MARK: - rescanFrom
+
+    var rescanFromHeightThrowableError: Error?
+    var rescanFromHeightCallsCount = 0
+    var rescanFromHeightCalled: Bool {
+        return rescanFromHeightCallsCount > 0
+    }
+    var rescanFromHeightReceivedHeight: BlockHeight?
+    var rescanFromHeightClosure: ((BlockHeight) async throws -> Void)?
+
+    func rescanFrom(height: BlockHeight) async throws {
+        if let error = rescanFromHeightThrowableError {
+            throw error
+        }
+        rescanFromHeightCallsCount += 1
+        rescanFromHeightReceivedHeight = height
+        try await rescanFromHeightClosure!(height)
     }
 
     // MARK: - rewind
@@ -2488,6 +2511,30 @@ class SynchronizerMock: Synchronizer {
         }
     }
 
+    // MARK: - getTreeState
+
+    var getTreeStateHeightThrowableError: Error?
+    var getTreeStateHeightCallsCount = 0
+    var getTreeStateHeightCalled: Bool {
+        return getTreeStateHeightCallsCount > 0
+    }
+    var getTreeStateHeightReceivedHeight: UInt64?
+    var getTreeStateHeightReturnValue: Data!
+    var getTreeStateHeightClosure: ((UInt64) async throws -> Data)?
+
+    func getTreeState(height: UInt64) async throws -> Data {
+        if let error = getTreeStateHeightThrowableError {
+            throw error
+        }
+        getTreeStateHeightCallsCount += 1
+        getTreeStateHeightReceivedHeight = height
+        if let closure = getTreeStateHeightClosure {
+            return try await closure(height)
+        } else {
+            return getTreeStateHeightReturnValue
+        }
+    }
+
     // MARK: - getSingleUseTransparentAddress
 
     var getSingleUseTransparentAddressAccountUUIDThrowableError: Error?
@@ -2620,49 +2667,6 @@ class SynchronizerMock: Synchronizer {
         deleteAccountCallsCount += 1
         deleteAccountReceivedAccountUUID = accountUUID
         try await deleteAccountClosure!(accountUUID)
-    }
-
-    // MARK: - rescanFrom
-
-    var rescanFromHeightThrowableError: Error?
-    var rescanFromHeightCallsCount = 0
-    var rescanFromHeightCalled: Bool {
-        return rescanFromHeightCallsCount > 0
-    }
-    var rescanFromHeightReceivedHeight: BlockHeight?
-    var rescanFromHeightClosure: ((BlockHeight) async throws -> Void)?
-
-    func rescanFrom(height: BlockHeight) async throws {
-        if let error = rescanFromHeightThrowableError {
-            throw error
-        }
-        rescanFromHeightCallsCount += 1
-        rescanFromHeightReceivedHeight = height
-        try await rescanFromHeightClosure?(height)
-    }
-
-    // MARK: - getTreeState
-
-    var getTreeStateHeightThrowableError: Error?
-    var getTreeStateHeightCallsCount = 0
-    var getTreeStateHeightCalled: Bool {
-        return getTreeStateHeightCallsCount > 0
-    }
-    var getTreeStateHeightReceivedHeight: UInt64?
-    var getTreeStateHeightReturnValue: Data!
-    var getTreeStateHeightClosure: ((UInt64) async throws -> Data)?
-
-    func getTreeState(height: UInt64) async throws -> Data {
-        if let error = getTreeStateHeightThrowableError {
-            throw error
-        }
-        getTreeStateHeightCallsCount += 1
-        getTreeStateHeightReceivedHeight = height
-        if let closure = getTreeStateHeightClosure {
-            return try await closure(height)
-        } else {
-            return getTreeStateHeightReturnValue
-        }
     }
 
 }
@@ -3081,6 +3085,28 @@ class TransactionRepositoryMock: TransactionRepository {
             return closure(sql)
         } else {
             return debugDatabaseSqlReturnValue
+        }
+    }
+
+    // MARK: - unreconciledTxids
+
+    var unreconciledTxidsThrowableError: Error?
+    var unreconciledTxidsCallsCount = 0
+    var unreconciledTxidsCalled: Bool {
+        return unreconciledTxidsCallsCount > 0
+    }
+    var unreconciledTxidsReturnValue: Set<Data>!
+    var unreconciledTxidsClosure: (() async throws -> Set<Data>)?
+
+    func unreconciledTxids() async throws -> Set<Data> {
+        if let error = unreconciledTxidsThrowableError {
+            throw error
+        }
+        unreconciledTxidsCallsCount += 1
+        if let closure = unreconciledTxidsClosure {
+            return try await closure()
+        } else {
+            return unreconciledTxidsReturnValue
         }
     }
 

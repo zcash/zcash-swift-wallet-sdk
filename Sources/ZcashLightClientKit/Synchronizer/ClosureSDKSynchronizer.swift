@@ -34,8 +34,7 @@ extension ClosureSDKSynchronizer: ClosureSynchronizer {
     // swiftlint:disable:next function_parameter_count
     public func prepare(
         with seed: [UInt8]?,
-        walletBirthday: BlockHeight,
-        for walletMode: WalletInitMode,
+        walletBirthday: BlockHeight?,
         name: String,
         keySource: String?,
         completion: @escaping (Result<Initializer.InitializationResult, Error>) -> Void
@@ -44,7 +43,6 @@ extension ClosureSDKSynchronizer: ClosureSynchronizer {
             return try await self.synchronizer.prepare(
                 with: seed,
                 walletBirthday: walletBirthday,
-                for: walletMode,
                 name: name,
                 keySource: keySource
             )

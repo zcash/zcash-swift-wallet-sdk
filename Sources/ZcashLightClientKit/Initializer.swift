@@ -432,8 +432,7 @@ public class Initializer {
     /// `InitializerError.accountInitFailed` if the account table can't be initialized. 
     func initialize(
         with seed: [UInt8]?,
-        walletBirthday: BlockHeight,
-        for walletMode: WalletInitMode,
+        walletBirthday: BlockHeight?,
         name: String,
         keySource: String? = nil
     ) async throws -> InitializationResult {
@@ -445,26 +444,36 @@ public class Initializer {
 
         let checkpointSource = container.resolve(CheckpointSource.self)
 
-        let checkpoint = checkpointSource.birthday(for: walletBirthday)
+        // A restore honors the caller's (past) birthday; a new wallet (nil birthday) starts from the
+        // latest checkpoint, refined below to a reorg-safe server tree state.
+        let checkpoint = checkpointSource.birthday(for: walletBirthday ?? BlockHeight.max)
 
         self.walletBirthday = checkpoint.height
 
-        // If there are no accounts it must be created, the default amount of accounts is 1
+        // If there are no accounts it must be created (the default amount of accounts is 1). The init
+        // "mode" is DERIVED here — clients no longer pass `WalletInitMode`:
+        //   • an account already exists  → existing wallet → we never enter this block, just open it.
+        //   • no account + a birthday    → RESTORE: recover_until = current tip, so the
+        //     [birthday … tip] backfill is tracked as recovery (SynchronizerState.isRecovering).
+        //   • no account + nil birthday  → NEW: start at a reorg-safe recent height, no recovery phase
+        //     (recover_until = nil).
+        // (A deliberate re-scan/resync is a separate, explicit action — `rewind(_:)` — not an init mode.)
         if let seed, try await rustBackend.listAccounts().isEmpty {
             var chainTip: UInt32?
             var accountTreeState = checkpoint.treeState()
 
             let sdkFlags = container.resolve(SDKFlags.self)
 
-            switch walletMode {
-            case .restoreWallet:
+            if walletBirthday != nil {
+                // RESTORE — recover_until = current chain tip.
                 if let latestBlockHeight = try? await lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor)) {
                     chainTip = UInt32(latestBlockHeight)
                 }
-            case .newWallet:
+            } else {
+                // NEW — no prior history. Fetch a recent tree state below the reorg horizon so funds
+                // intended for the wallet can't be missed if the current chain tip is reorganized; leave
+                // recover_until nil (no recovery phase).
                 if let latestBlockHeight = try? await lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor)) {
-                    // Fetch a recent tree state below the reorg horizon so funds intended for the
-                    // wallet can't be missed if the current chain tip is reorganized.
                     let birthdayTreeStateHeight = max(
                         latestBlockHeight - ZcashSDK.maxReorgSize,
                         network.constants.saplingActivationHeight
@@ -478,8 +487,6 @@ public class Initializer {
                         self.walletBirthday = BlockHeight(serverTreeState.height)
                     }
                 }
-            case .existingWallet:
-                break
             }
 
             _ = try await rustBackend.createAccount(

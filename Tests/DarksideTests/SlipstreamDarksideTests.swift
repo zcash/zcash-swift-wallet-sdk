@@ -125,7 +125,6 @@ class SlipstreamDarksideTests: ZcashTestCase {
         let result = try await sync.prepare(
             with: Environment.seedBytes,
             walletBirthday: birthday,
-            for: .restoreWallet,
             name: "",
             keySource: nil
         )
@@ -172,7 +171,6 @@ class SlipstreamDarksideTests: ZcashTestCase {
         let result = try await sync.prepare(
             with: Environment.seedBytes,
             walletBirthday: birthday,
-            for: .restoreWallet,
             name: "",
             keySource: nil
         )

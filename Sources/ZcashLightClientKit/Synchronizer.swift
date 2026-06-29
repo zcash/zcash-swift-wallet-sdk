@@ -136,12 +136,13 @@ public protocol Synchronizer: AnyObject {
     ///
     /// - Parameters:
     ///   - seed: ZIP-32 Seed bytes for the wallet that will be initialized
-    ///   - walletBirthday: Birthday of wallet.
-    ///   - for: [walletMode] Set `.newWallet` when preparing synchronizer for a brand new generated wallet,
-    ///   `.restoreWallet` when wallet is about to be restored from a seed
-    ///   and  `.existingWallet` for all other scenarios.
+    ///   - walletBirthday: Birthday of the wallet to RESTORE from, or `nil` for a brand-new wallet (the
+    ///   SDK then picks a reorg-safe recent height). Ignored when an account already exists.
     ///   - name: name of the account.
     ///   - keySource: custom optional string for clients, used for example to help identify the type of the account.
+    /// - Note: The init flow (new / restore / existing) is DERIVED by the SDK — an existing account is
+    ///   opened, a `nil` birthday creates a new wallet, a past birthday restores from it. A deliberate
+    ///   re-scan/resync is the separate `rewind(_:)` action, not an init mode.
     /// - Throws:
     ///     - `aliasAlreadyInUse` if the Alias used to create this instance is already used by other instance.
     ///     - `cantUpdateURLWithAlias` if the updating of paths in `Initilizer` according to alias fails. When this happens it means that
@@ -150,8 +151,7 @@ public protocol Synchronizer: AnyObject {
     ///     - Some other `ZcashError` thrown by lower layer of the SDK.
     func prepare(
         with seed: [UInt8]?,
-        walletBirthday: BlockHeight,
-        for walletMode: WalletInitMode,
+        walletBirthday: BlockHeight?,
         name: String,
         keySource: String?
     ) async throws -> Initializer.InitializationResult
@@ -798,16 +798,6 @@ enum InternalSyncStatus: Equatable {
         case .error: return "error"
         }
     }
-}
-
-/// Mode of the Synchronizer's initialization for the wallet.
-public enum WalletInitMode: Equatable {
-    /// For brand new wallet - typically when users creates a new wallet.
-    case newWallet
-    /// For a wallet that is about to be restored. Typically when a user wants to restore a wallet from a seed.
-    case restoreWallet
-    /// All other cases - typically when clients just start the process e.g. every regular app start for mobile apps.
-    case existingWallet
 }
 
 /// Kind of transactions handled by a Synchronizer

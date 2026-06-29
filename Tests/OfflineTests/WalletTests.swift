@@ -63,8 +63,7 @@ class WalletTests: ZcashTestCase {
         do {
             guard case .success = try await synchronizer.prepare(
                 with: seedData.bytes,
-                walletBirthday: 663194,
-                for: .newWallet,
+                walletBirthday: nil,
                 name: "",
                 keySource: nil
             ) else {
