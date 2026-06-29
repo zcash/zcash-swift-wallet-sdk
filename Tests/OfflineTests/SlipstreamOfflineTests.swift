@@ -518,6 +518,30 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertFalse(spendable)
     }
 
+    /// [#1755] Monotonic recovery floor: during a recovery the displayed % never drops, even when a
+    /// whole-pass restart resets the pass-local counter. Mirrors the field arc 9% → (restart) →
+    /// would-be 1.8% → held at 9% → 100% (syncLogsMac3).
+    func testMonotonicRecoveryProgressNeverRegressesDuringRecovery() {
+        var (surfaced, floor) = SlipstreamSynchronizer.monotonicRecoveryProgress(current: 0.09, recovering: true, floor: 0.0)
+        XCTAssertEqual(surfaced, 0.09, accuracy: 1e-6)
+
+        // Whole-pass restart resets the pass-local counter to 1.8% — the bar must HOLD at 9%.
+        (surfaced, floor) = SlipstreamSynchronizer.monotonicRecoveryProgress(current: 0.018, recovering: true, floor: floor)
+        XCTAssertEqual(surfaced, 0.09, accuracy: 1e-6, "must not regress across a pass restart")
+
+        // Then it climbs past the floor to completion.
+        (surfaced, floor) = SlipstreamSynchronizer.monotonicRecoveryProgress(current: 1.0, recovering: true, floor: floor)
+        XCTAssertEqual(surfaced, 1.0, accuracy: 1e-6)
+    }
+
+    /// Outside recovery the floor is inert: the current value passes through and the floor resets to
+    /// 0, so a legitimate steady-state rewind (reorg) is never masked.
+    func testMonotonicRecoveryProgressInertOutsideRecovery() {
+        let (surfaced, floor) = SlipstreamSynchronizer.monotonicRecoveryProgress(current: 0.4, recovering: false, floor: 0.9)
+        XCTAssertEqual(surfaced, 0.4, accuracy: 1e-6, "no clamping outside recovery")
+        XCTAssertEqual(floor, 0.0, accuracy: 1e-6, "floor resets when not recovering")
+    }
+
     /// If the composed ratio somehow exceeds 1.0, it is clamped to 1.0.
     func testComposeProgressClampAboveOne() {
         // Force numerator > denominator (numerator=120, denominator=100 → raw=1.2).

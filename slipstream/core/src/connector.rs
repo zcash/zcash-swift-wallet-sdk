@@ -177,8 +177,61 @@ pub async fn connect_via(
 ) -> Result<LwdClient, SlipstreamError> {
     match (tor, tor_mode(purpose)) {
         (Some(t), Some(mode)) => t.connect(mode, endpoint).await,
-        _ => grpc::connect(endpoint).await,
+        _ => connect_direct_with_retry(endpoint).await,
     }
+}
+
+/// Bounded transient-failure retries for the DIRECT (non-Tor) connect path. The Tor path refreshes
+/// a fresh circuit per attempt ([`TOR_CONNECT_ATTEMPTS`]); the direct path has no circuit to
+/// refresh, so it waits out a brief server outage with capped exponential backoff and resumes in
+/// place — instead of letting a transient `connect` failure bubble up and restart the WHOLE sync
+/// pass (which resets per-pass progress and re-establishes everything; field log syncLogsMac3,
+/// 2026-06-29). 6 attempts with the backoff below ⇒ ~31s survival window; a genuinely-down or
+/// misconfigured endpoint still surfaces after it, and the healthy case connects on attempt 1 with
+/// ~0 overhead. A longer outage falls back to a pass restart, which the SDK's monotonic progress
+/// floor keeps from visibly regressing.
+const DIRECT_CONNECT_ATTEMPTS: u32 = 6;
+
+/// Capped exponential backoff between direct-connect attempts: 1, 2, 4, 8, 16s (then held at 16s).
+fn direct_connect_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(1u64 << attempt.saturating_sub(1).min(4))
+}
+
+/// Retry a transient connect/op with bounded backoff. Returns the first `Ok`, or the error from the
+/// final attempt. A NON-transient error (config / logic) returns immediately — only `is_transient()`
+/// failures are retried. Generic over the success type so the retry + backoff logic is unit-testable
+/// without a live client.
+async fn retry_transient<T, F, Fut>(
+    mut op: F,
+    attempts: u32,
+    backoff: impl Fn(u32) -> std::time::Duration,
+) -> Result<T, SlipstreamError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, SlipstreamError>>,
+{
+    let mut attempt: u32 = 1;
+    loop {
+        match op().await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if !e.is_transient() || attempt >= attempts {
+                    return Err(e);
+                }
+                tracing::warn!(attempt, err = %e, "direct connect failed (transient) — retrying after backoff");
+                tokio::time::sleep(backoff(attempt)).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// Direct (non-Tor) lightwalletd connect with bounded transient-failure retry (see
+/// [`DIRECT_CONNECT_ATTEMPTS`]). Drop-in for `grpc::connect` at the sites that must survive a brief
+/// server outage without restarting the sync pass: the bulk-fetch workers and the direct branch of
+/// [`connect_via`].
+pub async fn connect_direct_with_retry(endpoint: &Endpoint) -> Result<LwdClient, SlipstreamError> {
+    retry_transient(|| grpc::connect(endpoint), DIRECT_CONNECT_ATTEMPTS, direct_connect_backoff).await
 }
 
 #[cfg(test)]
@@ -210,5 +263,72 @@ mod tests {
             (5..=30).contains(&secs),
             "per-attempt timeout must be 5..=30s (room for a healthy circuit, cut a stuck one), got {secs}s"
         );
+    }
+
+    #[tokio::test]
+    async fn retry_transient_recovers_from_a_brief_outage() {
+        use std::cell::Cell;
+        let calls = Cell::new(0u32);
+        let out: Result<u32, SlipstreamError> = retry_transient(
+            || {
+                let n = calls.get() + 1;
+                calls.set(n);
+                async move {
+                    if n < 3 {
+                        Err(SlipstreamError::Transport("server down".into()))
+                    } else {
+                        Ok(n)
+                    }
+                }
+            },
+            DIRECT_CONNECT_ATTEMPTS,
+            |_| std::time::Duration::ZERO,
+        )
+        .await;
+        assert_eq!(out.expect("recovers in place — no pass restart"), 3);
+        assert_eq!(calls.get(), 3, "stops retrying the moment the connect succeeds");
+    }
+
+    #[tokio::test]
+    async fn retry_transient_gives_up_after_budget() {
+        use std::cell::Cell;
+        let calls = Cell::new(0u32);
+        let out: Result<u32, SlipstreamError> = retry_transient(
+            || {
+                calls.set(calls.get() + 1);
+                async { Err(SlipstreamError::Transport("still down".into())) }
+            },
+            4,
+            |_| std::time::Duration::ZERO,
+        )
+        .await;
+        assert!(out.is_err(), "a genuinely-down endpoint still surfaces (pass then falls back to a restart)");
+        assert_eq!(calls.get(), 4, "exactly `attempts` tries");
+    }
+
+    #[tokio::test]
+    async fn retry_transient_does_not_retry_nontransient() {
+        use std::cell::Cell;
+        let calls = Cell::new(0u32);
+        let out: Result<u32, SlipstreamError> = retry_transient(
+            || {
+                calls.set(calls.get() + 1);
+                async { Err(SlipstreamError::Config("bad uri".into())) }
+            },
+            DIRECT_CONNECT_ATTEMPTS,
+            |_| std::time::Duration::ZERO,
+        )
+        .await;
+        assert!(out.is_err());
+        assert_eq!(calls.get(), 1, "a non-transient (config) error surfaces immediately, never retried");
+    }
+
+    #[test]
+    fn direct_connect_backoff_is_capped_exponential() {
+        assert_eq!(direct_connect_backoff(1).as_secs(), 1);
+        assert_eq!(direct_connect_backoff(2).as_secs(), 2);
+        assert_eq!(direct_connect_backoff(5).as_secs(), 16);
+        assert_eq!(direct_connect_backoff(99).as_secs(), 16, "held at the 16s cap, never overflows");
+        assert!(DIRECT_CONNECT_ATTEMPTS >= 2, "need at least one retry to absorb a blip");
     }
 }

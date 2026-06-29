@@ -170,6 +170,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// spends, without the per-tick re-fetch churn. Reset to -1 at each recovery start so the first
     /// reveal always fires (clearing any pre-recovery phantom list on macOS/iPad).
     private var lastSurfacedReconciledCount = -1
+    /// [#1755] Highest sync % surfaced during the current recovery — a monotonic floor so a
+    /// whole-pass restart (a transient server outage that outlasted the engine's bounded reconnect)
+    /// can't visibly drop the progress bar (field: 9% → 1.8% → 100%, syncLogsMac3). Reset to 0 when
+    /// recovery ends; not applied outside recovery, where a reorg can legitimately rewind.
+    private var maxSurfacedSyncProgress: Float = 0
     /// [#1755] "Spendable early, hold": the recent-done BALANCE snapshot, captured the FIRST time
     /// spendable funds appear during a recovery (recent-first scan ⇒ this is the clean recent balance,
     /// taken before the historic backfill adds its transient over-count) and HELD through the backfill.
@@ -489,12 +494,21 @@ public final class SlipstreamSynchronizer: Synchronizer {
                     summaryFloor: SlipstreamSynchronizer.summaryProgress(cachedSummary).progress
                 )
             }
+            // [#1755] Monotonic recovery floor — never let the bar jump backward across a transient
+            // whole-pass restart (the pass-local counter resets on restart; recovery_progress only
+            // advances). Reset once recovery completes; off outside recovery (reorgs may rewind).
+            let (surfacedProgress, newFloor) = SlipstreamSynchronizer.monotonicRecoveryProgress(
+                current: progress,
+                recovering: recovering,
+                floor: maxSurfacedSyncProgress
+            )
+            maxSurfacedSyncProgress = newFloor
             let spendable = snap.spendableHint != 0
 
             stateSubject.send(SynchronizerState(
                 syncSessionID: latestState.syncSessionID,
                 accountsBalances: surfacedBalances ?? (cachedSummary?.accountBalances ?? latestState.accountsBalances),
-                internalSyncStatus: .syncing(progress, spendable),
+                internalSyncStatus: .syncing(surfacedProgress, spendable),
                 latestBlockHeight: BlockHeight(snap.chainTip),
                 fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight,
                 isRecovering: recovering

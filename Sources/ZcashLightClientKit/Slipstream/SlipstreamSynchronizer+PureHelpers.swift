@@ -100,6 +100,18 @@ extension SlipstreamSynchronizer {
         return !recovery.isComplete
     }
 
+    /// [#1755] Monotonic recovery floor for the displayed sync %. A transient server outage that
+    /// outlasts the engine's bounded reconnect forces a whole-pass restart, which resets the
+    /// pass-local counter; during a recovery `recovery_progress` only advances, so the bar must never
+    /// drop (field: 9% → 1.8% → 100%, syncLogsMac3). Returns the value to surface and the new floor.
+    /// Outside recovery the floor resets to 0 and the current value passes through unchanged (a
+    /// steady-state reorg may legitimately rewind, so the floor is intentionally not applied there).
+    static func monotonicRecoveryProgress(current: Float, recovering: Bool, floor: Float) -> (surfaced: Float, floor: Float) {
+        guard recovering else { return (current, 0) }
+        let surfaced = max(current, floor)
+        return (surfaced, surfaced)
+    }
+
     /// T8.3.5: the % to show while `state == 1` (Syncing). The engine reports PASS-LOCAL
     /// progress (`counterProgress(scanned, passTotal)`) — correct for a from-birthday
     /// restore, but MISLEADING for a small catch-up pass on an already-synced wallet: a

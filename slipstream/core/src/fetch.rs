@@ -29,6 +29,7 @@ use zcash_client_backend::proto::{
 use crate::{
     chunk::{Chunk, ChunkQueueSender},
     config::{EngineConfig, Endpoint},
+    connector::connect_direct_with_retry,
     error::SlipstreamError,
     grpc::{self, LwdClient},
     verify::Continuity,
@@ -411,7 +412,7 @@ async fn worker(
     gate: AheadGate,
     out: mpsc::Sender<SubChunk>,
 ) -> Result<(), SlipstreamError> {
-    let mut client = grpc::connect(&endpoint).await?;
+    let mut client = connect_direct_with_retry(&endpoint).await?;
     loop {
         let index = next.fetch_add(1, Ordering::Relaxed);
         if index >= plan.chunk_count() {
@@ -460,8 +461,10 @@ async fn worker(
                         250u64.saturating_mul(1 << attempt.saturating_sub(1).min(10)),
                     ))
                     .await;
-                    // Reconnect: the channel may be poisoned after a stream error.
-                    client = grpc::connect(&endpoint).await?;
+                    // Reconnect: the channel may be poisoned after a stream error. Resilient to a
+                    // brief server outage (bounded retry-with-backoff) so a transient connect blip
+                    // resumes this chunk in place instead of failing it → restarting the whole pass.
+                    client = connect_direct_with_retry(&endpoint).await?;
                 }
             }
         }
