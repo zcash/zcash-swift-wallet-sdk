@@ -431,6 +431,20 @@ public protocol Synchronizer: AnyObject {
     /// - parameter seed: byte array of the seed
     func isSeedRelevantToAnyDerivedAccount(seed: [UInt8]) async throws -> Bool
 
+    /// Computes a plan for splitting a spendable Orchard balance into round-ZEC-denominated
+    /// outputs ahead of an Orchard -> Ironwood migration transfer.
+    ///
+    /// - Parameter totalInputZatoshi: the spendable Orchard balance to split.
+    /// - Parameter prepFeeZatoshi: the fee required to produce the denominated outputs.
+    /// - Parameter migrationFeeZatoshi: the fee required for each individual migration transfer.
+    /// - Parameter minimumOutputZatoshi: the smallest output value worth migrating on its own.
+    func planOrchardDenominationSplit(
+        totalInputZatoshi: Int64,
+        prepFeeZatoshi: Int64,
+        migrationFeeZatoshi: Int64,
+        minimumOutputZatoshi: Int64
+    ) async throws -> DenominationPlan
+
     /// Takes the list of endpoints and runs it through a series of checks to evaluate its performance.
     /// - Parameters:
     ///    - endpoints: Array of endpoints to evaluate.

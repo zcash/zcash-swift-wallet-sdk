@@ -806,6 +806,20 @@ public class SDKSynchronizer: Synchronizer {
         try await initializer.rustBackend.isSeedRelevantToAnyDerivedAccount(seed: seed)
     }
 
+    public func planOrchardDenominationSplit(
+        totalInputZatoshi: Int64,
+        prepFeeZatoshi: Int64,
+        migrationFeeZatoshi: Int64,
+        minimumOutputZatoshi: Int64
+    ) async throws -> DenominationPlan {
+        try await initializer.rustBackend.planOrchardDenominationSplit(
+            totalInputZatoshi: totalInputZatoshi,
+            prepFeeZatoshi: prepFeeZatoshi,
+            migrationFeeZatoshi: migrationFeeZatoshi,
+            minimumOutputZatoshi: minimumOutputZatoshi
+        )
+    }
+
     /// Takes the list of endpoints and runs it through a series of checks to evaluate its performance.
     /// - Parameters:
     ///    - endpoints: Array of endpoints to evaluate.

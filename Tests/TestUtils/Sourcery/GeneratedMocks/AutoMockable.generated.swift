@@ -2306,6 +2306,45 @@ class SynchronizerMock: Synchronizer {
         }
     }
 
+    // MARK: - planOrchardDenominationSplit
+
+    var planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiThrowableError: Error?
+    var planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiCallsCount = 0
+    var planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiCalled: Bool {
+        return planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiCallsCount > 0
+    }
+    var planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiReceivedArguments: (
+        totalInputZatoshi: Int64,
+        prepFeeZatoshi: Int64,
+        migrationFeeZatoshi: Int64,
+        minimumOutputZatoshi: Int64
+    )?
+    var planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiReturnValue: DenominationPlan!
+    var planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiClosure: ((Int64, Int64, Int64, Int64) async throws -> DenominationPlan)?
+
+    func planOrchardDenominationSplit(
+        totalInputZatoshi: Int64,
+        prepFeeZatoshi: Int64,
+        migrationFeeZatoshi: Int64,
+        minimumOutputZatoshi: Int64
+    ) async throws -> DenominationPlan {
+        if let error = planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiThrowableError {
+            throw error
+        }
+        planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiCallsCount += 1
+        planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiReceivedArguments = (
+            totalInputZatoshi: totalInputZatoshi,
+            prepFeeZatoshi: prepFeeZatoshi,
+            migrationFeeZatoshi: migrationFeeZatoshi,
+            minimumOutputZatoshi: minimumOutputZatoshi
+        )
+        if let closure = planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiClosure {
+            return try await closure(totalInputZatoshi, prepFeeZatoshi, migrationFeeZatoshi, minimumOutputZatoshi)
+        } else {
+            return planOrchardDenominationSplitTotalInputZatoshiPrepFeeZatoshiMigrationFeeZatoshiMinimumOutputZatoshiReturnValue
+        }
+    }
+
     // MARK: - evaluateBestOf
 
     var evaluateBestOfEndpointsFetchThresholdSecondsNBlocksToFetchKServersNetworkCallsCount = 0
