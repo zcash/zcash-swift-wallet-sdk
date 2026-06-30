@@ -15,7 +15,10 @@ build = "rust/build.rs"
 [dependencies]
 
 # Zcash
-orchard = { version = "0.14", features = ["unstable-voting-circuits"] }
+# Ironwood (NU6.3): tracks the same git rev as [patch.crates-io] below directly,
+# since its version (0.15.0-pre.0) can't satisfy a "0.14" crates-io requirement.
+# "unstable-voting-circuits" dropped since it's only needed by the deferred voting feature.
+orchard = { git = "https://github.com/zcash/orchard", rev = "2f322a220d2750c3fa752132f51594b8358f653f" }
 pasta_curves = "0.5"
 ff = "0.13"
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
@@ -84,12 +87,20 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 xz2 = { version = "0.1", features = ["static"] }
 
 # Voting
+# Deferred while on the Ironwood (NU6.3) pre-release deps below: zcash_voting's
+# Ironwood-compatible branch only resolves against valargroup/librustzcash + their
+# orchard rev, which conflicts with the official zcash/librustzcash feat/ironwood
+# pins this branch uses. Open question for Kris/upstream — see
+# ironwood-migration-execution.md. `voting` feature is off by default until resolved.
 zcash_voting = { version = "0.11", default-features = false, features = [
     "client-pir",
     "client-tree-sync",
-] }
+], optional = true }
 zcash_keys = { version = "0.14", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
+
+[features]
+voting = ["dep:zcash_voting"]
 
 [dev-dependencies]
 zcash_voting = { version = "0.11", default-features = false, features = ["test-fixtures"] }
@@ -98,6 +109,22 @@ zcash_voting = { version = "0.11", default-features = false, features = ["test-f
 bindgen = "0.72"
 cbindgen = "0.29"
 cc = "1.0"
+
+# Ironwood (NU6.3) pre-release support: pinned to zcash/librustzcash's feat/ironwood branch
+# instead of crates.io. This is the official org's active integration branch, not a
+# third-party fork — see ironwood-migration-execution.md for why. Unpin once these land
+# on crates.io as published pre-releases.
+[patch.crates-io]
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "676e8dd64f0b166ee3dcfaadafcc374e536693f6" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "676e8dd64f0b166ee3dcfaadafcc374e536693f6" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "676e8dd64f0b166ee3dcfaadafcc374e536693f6" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "676e8dd64f0b166ee3dcfaadafcc374e536693f6" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "676e8dd64f0b166ee3dcfaadafcc374e536693f6" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "676e8dd64f0b166ee3dcfaadafcc374e536693f6" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "676e8dd64f0b166ee3dcfaadafcc374e536693f6" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "676e8dd64f0b166ee3dcfaadafcc374e536693f6" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "676e8dd64f0b166ee3dcfaadafcc374e536693f6" }
+orchard = { git = "https://github.com/zcash/orchard", rev = "2f322a220d2750c3fa752132f51594b8358f653f" }
 
 [lib]
 name = "zcashlc"

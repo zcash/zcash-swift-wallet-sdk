@@ -1,0 +1,5 @@
+# Ironwood (NU6.3) pre-release transaction-building support is gated behind this
+# unstable cfg in zcash/librustzcash's feat/ironwood branch (see Cargo.toml [patch.crates-io]
+# and ironwood-migration-execution.md). Remove once Ironwood stabilizes.
+[build]
+rustflags = ["--cfg", "zcash_unstable=\"nu6.3\""]

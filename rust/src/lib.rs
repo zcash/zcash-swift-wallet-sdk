@@ -92,6 +92,8 @@ mod eip681;
 mod ffi;
 mod ironwood_migration;
 mod tor;
+// Deferred while on Ironwood (NU6.3) pre-release deps — see Cargo.toml [features] voting.
+#[cfg(feature = "voting")]
 mod voting;
 
 #[cfg(target_vendor = "apple")]
@@ -1332,7 +1334,7 @@ pub unsafe extern "C" fn zcashlc_rewind_to_height(
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
 
         let height = BlockHeight::from(height);
-        let result_height = db_data.rewind_to_height(height);
+        let result_height = db_data.truncate_to_height(height);
 
         result_height.map_or_else(
             |err| match err {
@@ -1837,6 +1839,11 @@ pub unsafe extern "C" fn zcashlc_put_utxo(
                 script_pubkey,
             ),
             Some(BlockHeight::from(height as u32)),
+            // This FFI call doesn't carry account context (same as before this API gained
+            // these fields) — left unset, consistent with prior behavior.
+            None,
+            None,
+            None,
         )
         .ok_or_else(|| {
             anyhow!(
@@ -2694,7 +2701,10 @@ pub unsafe extern "C" fn zcashlc_create_pczt_from_proposal(
             )
             .map_err(|e| anyhow!("Error creating PCZT from single-step proposal: {}", e))?;
 
-            Ok(ffi::BoxedSlice::some(pczt.serialize()))
+            Ok(ffi::BoxedSlice::some(
+                pczt.serialize()
+                    .map_err(|e| anyhow!("Error serializing PCZT: {:?}", e))?,
+            ))
         } else {
             Err(anyhow!(
                 "Multi-step proposals are not yet supported for PCZT generation."
@@ -2753,7 +2763,11 @@ pub unsafe extern "C" fn zcashlc_redact_pczt_for_signer(
             })
             .finish();
 
-        Ok(ffi::BoxedSlice::some(redacted_pczt.serialize()))
+        Ok(ffi::BoxedSlice::some(
+            redacted_pczt
+                .serialize()
+                .map_err(|e| anyhow!("Error serializing redacted PCZT: {:?}", e))?,
+        ))
     });
     unwrap_exc_or_null(res)
 }
@@ -2849,7 +2863,12 @@ pub unsafe extern "C" fn zcashlc_add_proofs_to_pczt(
 
         if prover.requires_orchard_proof() {
             prover = prover
-                .create_orchard_proof(&orchard::circuit::ProvingKey::build())
+                .create_orchard_proof(&orchard::circuit::ProvingKey::build(
+                    // Matches the PCZT extractor's own default for regular Orchard-pool
+                    // proving (see pczt's tx_extractor::orchard::verify_bundle); PostNu6_3
+                    // is reserved for the separate create_ironwood_proof path.
+                    orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2,
+                ))
                 .map_err(|e| anyhow!("Failed to create Orchard proof for PCZT: {:?}", e))?;
         }
         assert!(!prover.requires_orchard_proof());
@@ -2878,7 +2897,11 @@ pub unsafe extern "C" fn zcashlc_add_proofs_to_pczt(
 
         let pczt_with_proofs = prover.finish();
 
-        Ok(ffi::BoxedSlice::some(pczt_with_proofs.serialize()))
+        Ok(ffi::BoxedSlice::some(
+            pczt_with_proofs
+                .serialize()
+                .map_err(|e| anyhow!("Error serializing PCZT with proofs: {:?}", e))?,
+        ))
     });
     unwrap_exc_or_null(res)
 }
