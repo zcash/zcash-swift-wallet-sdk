@@ -136,6 +136,22 @@ class ZcashRustBackendTests: XCTestCase {
         XCTAssertEqual(metadata?.addressType, .sapling)
     }
 
+    func testPlanOrchardDenominationSplit() throws {
+        let plan = try rustBackend.planOrchardDenominationSplit(
+            totalInputZatoshi: 100_010_000,
+            prepFeeZatoshi: 0,
+            migrationFeeZatoshi: 10_000,
+            minimumOutputZatoshi: 1
+        )
+
+        XCTAssertEqual(plan.migrationOutputs, [100_000_000])
+        XCTAssertEqual(plan.orchardChange, 10_000)
+        XCTAssertEqual(plan.totalMigratableZatoshi, 100_000_000)
+        XCTAssertEqual(plan.prepFeeZatoshi, 0)
+        XCTAssertEqual(plan.migrationFeeZatoshi, 10_000)
+        XCTAssertEqual(plan.totalInputZatoshi, 100_010_000)
+    }
+
     func testScanProgressThrowsOnWrongValues() {
         // Assert that throws on numerator > denominator
         XCTAssertThrowsError(try ScanProgress(numerator: 23, denominator: 2).progress())

@@ -1156,6 +1156,42 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         return branchId
     }
 
+    nonisolated func planOrchardDenominationSplit(
+        totalInputZatoshi: Int64,
+        prepFeeZatoshi: Int64,
+        migrationFeeZatoshi: Int64,
+        minimumOutputZatoshi: Int64
+    ) throws -> DenominationPlan {
+        let planPtr = zcashlc_plan_orchard_denomination_split(
+            totalInputZatoshi,
+            prepFeeZatoshi,
+            migrationFeeZatoshi,
+            minimumOutputZatoshi
+        )
+
+        guard let planPtr else {
+            throw ZcashError.rustPlanOrchardDenominationSplit(
+                lastErrorMessage(fallback: "`planOrchardDenominationSplit` failed with unknown error")
+            )
+        }
+
+        defer { zcashlc_free_denomination_plan(planPtr) }
+
+        var migrationOutputs: [Int64] = []
+        for i in 0 ..< Int(planPtr.pointee.migration_outputs_len) {
+            migrationOutputs.append(Int64(planPtr.pointee.migration_outputs_ptr.advanced(by: i).pointee))
+        }
+
+        return DenominationPlan(
+            migrationOutputs: migrationOutputs,
+            orchardChange: planPtr.pointee.has_orchard_change ? Int64(planPtr.pointee.orchard_change) : nil,
+            prepFeeZatoshi: Int64(planPtr.pointee.prep_fee_zatoshi),
+            migrationFeeZatoshi: Int64(planPtr.pointee.migration_fee_zatoshi),
+            totalInputZatoshi: Int64(planPtr.pointee.total_input_zatoshi),
+            totalMigratableZatoshi: Int64(planPtr.pointee.total_migratable_zatoshi)
+        )
+    }
+
     // swiftlint:disable:next cyclomatic_complexity
     @DBActor func transactionDataRequests() async throws -> [TransactionDataRequest] {
         let tDataRequestsPtr = zcashlc_transaction_data_requests(

@@ -259,6 +259,8 @@ public enum ZcashErrorCode: String {
     case rustTruncateToChainState = "ZRUST0091"
     /// Error from rust layer when calling ZcashEip681Backend.parseTransactionRequest
     case rustEip681Parse = "ZRUST0092"
+    /// Error from rust layer when calling ZcashRustBackend.planOrchardDenominationSplit
+    case rustPlanOrchardDenominationSplit = "ZRUST0093"
     /// SQLite query failed when fetching all accounts from the database.
     case accountDAOGetAll = "ZADAO0001"
     /// Fetched accounts from SQLite but can't decode them.

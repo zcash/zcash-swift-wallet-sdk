@@ -356,6 +356,17 @@ protocol ZcashRustBackendWelding {
     /// - Throws: `rustNoConsensusBranchId` if rust layer returns error.
     func consensusBranchIdFor(height: Int32) throws -> Int32
 
+    /// Plans how to split a spendable Orchard balance into round-ZEC-denominated outputs ahead of
+    /// an Orchard -> Ironwood migration transfer. Pure arithmetic - does not touch the wallet DB or
+    /// build any transaction.
+    /// - Throws: `rustPlanOrchardDenominationSplit` if rust layer returns error.
+    func planOrchardDenominationSplit(
+        totalInputZatoshi: Int64,
+        prepFeeZatoshi: Int64,
+        migrationFeeZatoshi: Int64,
+        minimumOutputZatoshi: Int64
+    ) throws -> DenominationPlan
+
     /// Initializes Filesystem based block cache
     /// - Throws: `rustInitBlockMetadataDb` if rust layer returns error.
     func initBlockMetadataDb() async throws
