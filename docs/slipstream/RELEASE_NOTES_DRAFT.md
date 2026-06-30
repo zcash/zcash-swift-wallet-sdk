@@ -1,16 +1,70 @@
-# Slipstream — Release-notes DRAFT (LOCAL-ONLY)
+# Slipstream — Release notes
 
-> **LOCAL-ONLY — move into MIGRATING.md / CHANGELOG.md only when the user lifts the
-> no-push policy.** This file is the staging area for the user-visible release notes of
-> the Slipstream sync engine. Nothing here is published. Slipstream is a prototype behind
-> `useSlipstreamSynchronizer`; the old `SDKSynchronizer` remains the supported path.
+> Release notes for the Slipstream sync engine (the `slipstream` branch). Slipstream is a
+> prototype behind `useSlipstreamSynchronizer`; the old `SDKSynchronizer` remains the default,
+> supported path. Shared with the team for review.
 
-Date drafted: 2026-06-16 (after P8 — Hardening & Productization). Engine build at draft:
-`2026-06-16.t84-devmem`.
+## Version history
+
+- **v0.1–v0.2** — the engine rewrite: parallel `GetBlockRange` fetch → in-memory scan → sparse
+  in-memory commitment tree + write-behind persist lane. ~**12×** faster than the old SDK (A14
+  iPad **25:11 → 2:05**). Shipped; the standalone engine is tagged **`v0.2.0`**.
+- **v0.2.5** — **restore & correctness hardening** (this release, 2026-06-30): balance and
+  transaction reporting during a restore made correct and **robust to a mid-sync / mid-restore
+  kill & resume**, plus network-stall resilience and an init-flow simplification. SDK-side; the
+  engine data model is unchanged (the only schema object added is one droppable read-only
+  `VIEW`). Details ↓.
+- **v0.3** — GPU subtree offload. Built + measured, then **PARKED**: a narrow ~1.1× win that
+  regresses high-core devices, so it ships gate-OFF. Algorithmic **work reduction** (decrypt /
+  combine), not concurrency, is the real next lever.
 
 ---
 
-## CHANGELOG.md draft entry (when published)
+## v0.2.5 — restore & correctness hardening (2026-06-30)
+
+The headline: during a recent-first restore the wallet now reports a **truthful, never-inflated
+balance and transaction list, and the whole thing survives being killed mid-restore** — kill the
+app mid-restore, reopen, and it resumes and converges to the *exact same* balance + tx history
+(field-validated). All SDK-side; the frozen engine and its on-disk data model are unchanged.
+
+### Added
+- **`SynchronizerState.isRecovering`** — a durable, self-correcting "this wallet is restoring"
+  signal derived from the persisted `recover_until` height (survives kill/restart; no flag to
+  keep in sync).
+- Slipstream-owned read-only `VIEW` `slipstream_v_tx_reconciled` — zero rows of its own,
+  droppable, data byte-identical to a stock `zcash_client_sqlite` DB (see the reconcile-view
+  rationale doc).
+
+### Changed
+- **Restore balance** is now `Σ account_balance_delta` over the wallet's **reconciled, mined**
+  transactions — it counts only settled value, so it **climbs 0 → true and can never over-count**
+  (no more 4 → 8 → 4), and stays consistent with the visible Activity by construction.
+- **Restore transactions** surface the moment their delta is final; the transiently-ambiguous
+  ones (a recent spend of a not-yet-scanned note) are held back, so no phantom "+receive" flashes.
+- **Init flow is derived by the SDK** (account exists ⇒ open, birthday ⇒ restore, none ⇒ new) —
+  clients no longer pass a `WalletInitMode`.
+
+### Fixed
+- **Mid-sync / mid-restore kill & resume** — hardened + field-proven: the restore identity and
+  progress are durable across an app kill, and the balance / tx list converge identically on resume.
+- **Network-stall resilience** — a transient server outage no longer restarts the whole pass: the
+  direct-connect path retries (capped backoff) and the displayed restore progress never regresses.
+- **Server-down at restore start** — if lightwalletd is unreachable when a restore is initiated,
+  `recover_until` falls back to the latest bundled checkpoint instead of `NULL`, so the wallet
+  keeps its "restoring" identity (banner + gating) instead of showing a raw, fluttering balance.
+- Removed an inert `slipstream_v_balance_overcount` view (it could not observe the over-count it
+  targeted); the recovery balance is derived from the reconcile set instead.
+
+**Deep dives (for the core team):** balance — `2026-06-30-balance-recovery-postmortem.md`;
+transactions / the one schema view — `2026-06-29-reconcile-view-rationale.md`.
+
+---
+
+## v0.2 (P8 — Hardening & Productization)
+
+Engine build at draft: `2026-06-16.t84-devmem`.
+
+### CHANGELOG.md draft entry (when published)
 
 ### Added
 - **`SlipstreamSynchronizer`** — an actor-based `Synchronizer` implementation backed by the
