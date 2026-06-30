@@ -72,6 +72,14 @@ pub fn create_reconcile_view(conn: &Connection) -> Result<(), SlipstreamError> {
         .map_err(|e| SlipstreamError::Wallet(format!("create reconcile view: {e}")))
 }
 
+// NOTE: an earlier `slipstream_v_balance_overcount` view (subtract a per-account nf-based
+// over-count from the live balance during recovery) was removed — it was structurally
+// inert: during the recent-first gap the spend's block is unscanned, so its nullifier is
+// not yet in `nullifier_map`, so the view found nothing while the balance still read ~2×.
+// The recovery balance is now derived SDK-side as Σ `account_balance_delta` over the
+// RECONCILED transactions of `slipstream_v_tx_reconciled` (see the SDK
+// `TransactionRepository.recoveryBalances()` and docs/slipstream/2026-06-29-balance-recovery-rethink.md).
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -673,6 +673,31 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertEqual(state.latestBlockHeight, 3_000_000)
     }
 
+    /// recoveryAccountBalance wraps the per-account net recovery balance (Σ of FINAL reconciled tx deltas)
+    /// into an `AccountBalance`: the whole net surfaces as orchard `spendableValue` so `total()` == net (the
+    /// headline) and available (spendable) == net; transparent is already folded into the delta sum so
+    /// `unshielded` stays zero; a net ≤ 0 clamps to a zero balance (never negative).
+    func testRecoveryAccountBalance() {
+        // 4.0052 ZEC net → surfaced as orchard spendable; total() == net, available == net.
+        let net = Zatoshi(400_520_000)
+        let balance = SlipstreamSynchronizer.recoveryAccountBalance(net: net)
+        XCTAssertEqual(balance.orchardBalance.spendableValue, net, "the whole net surfaces as orchard spendable")
+        XCTAssertEqual(balance.saplingBalance.total().amount, 0, "sapling bucket stays zero during recovery")
+        XCTAssertEqual(balance.unshielded.amount, 0, "transparent is already folded into the delta sum")
+        let available = balance.saplingBalance.spendableValue + balance.orchardBalance.spendableValue
+        XCTAssertEqual(available, net, "available (spendable) == net")
+        let total = balance.saplingBalance.total() + balance.orchardBalance.total() + balance.unshielded + balance.awaitingResolution
+        XCTAssertEqual(total, net, "headline total() + transparent == net")
+
+        // Zero net → zero balance.
+        XCTAssertEqual(SlipstreamSynchronizer.recoveryAccountBalance(net: .zero), .zero)
+
+        // Negative net (defensive) → clamps to zero, never negative.
+        let clamped = SlipstreamSynchronizer.recoveryAccountBalance(net: Zatoshi(-100_000_000))
+        let clampedTotal = clamped.saplingBalance.total() + clamped.orchardBalance.total() + clamped.unshielded
+        XCTAssertEqual(clampedTotal.amount, 0, "a negative net clamps to a zero balance")
+    }
+
     // MARK: - 7. T4.9 regression tests (F1 timeout-helper; F2 switchTo same-endpoint no-op)
 
     // ── 7a. withTaskTimeout helper ─────────────────────────────────────────────

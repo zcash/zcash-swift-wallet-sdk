@@ -155,13 +155,35 @@ public final class SlipstreamSynchronizer: Synchronizer {
     //     `.synced` immediately without waiting. A single post-sync summary fetch fires
     //     AFTER emitting .synced (never delays the .synced emission).
     private var cachedSummary: WalletSummary?
+    /// [#1755] Last recovery total we LOGGED (zatoshi), so the recovery-balance log fires once per change, not
+    /// every tick. The balance itself is recomputed from the live DB on EVERY recovery tick (the reconcile
+    /// state advances via BOTH scanning and enhancement — a transparent-heavy wallet updates during TIA
+    /// enhancement while `scannedBlocks` is stalled — and the engine emits no summary mid-pass, so any
+    /// scan/summary-keyed cache freezes the balance for the whole backfill: field syncLogsMac10, stuck 0 until
+    /// completion). The query is a cheap SUM over `v_transactions`; the value only moves on a real reconcile,
+    /// so the display does not churn. Cleared on wallet reset (alongside `cachedSummary`).
+    private var lastLoggedRecoveryTotal: Int64?
     /// [#1755] Mirrors the wallet backend's deep-recovery state (`recovery_progress` incomplete),
-    /// refreshed whenever a summary is fetched (tickPoll + getAccountsBalances). While true the SDK
-    /// HOLDS a frozen recent-done balance (see `recoveryFrozenBalances`); the Activity is gated
-    /// PER-TRANSACTION by the `slipstream_v_tx_reconciled` view (not held wholesale), so reconciled
-    /// txs surface immediately while only the provisional ones wait. Tracks the LIVE signal, so it
-    /// self-corrects across rewind / truncate / stop.
-    private var currentlyRecovering = false
+    /// refreshed whenever a summary is fetched (tickPoll + getAccountsBalances). Drives the "Restoring"
+    /// LABEL and the Activity gate: the Activity is gated PER-TRANSACTION by the `slipstream_v_tx_reconciled`
+    /// view (not held wholesale), so reconciled txs surface immediately while only the provisional ones
+    /// wait. (Balance is NOT special-cased — live is correct on a fresh restore; see tickPoll.) Tracks the
+    /// LIVE signal, so it self-corrects across rewind / truncate / stop.
+    private var currentlyRecovering = false {
+        didSet {
+            // [#1755] Log only true⇄false transitions (all 5 write sites funnel through here). One line
+            // per restore proves the engine's recovery→catch-up flip and the "Restoring"→"Syncing" label.
+            guard currentlyRecovering != oldValue else { return }
+            initializer.logger.info(
+                currentlyRecovering
+                    ? "[slipstream] recovery ACTIVE — restore backfill in progress (isRecovering=true)"
+                    : "[slipstream] recovery COMPLETE — switching to catch-up sync (isRecovering=false)",
+                file: #file,
+                function: #function,
+                line: #line
+            )
+        }
+    }
     /// [#1755] Previous tick's recovery state — detects the recovery→done transition so the Activity
     /// reveal (a re-fetch push) fires once even if the enhanced-tx counter didn't move that tick.
     private var wasRecovering = false
@@ -175,16 +197,6 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// can't visibly drop the progress bar (field: 9% → 1.8% → 100%, syncLogsMac3). Reset to 0 when
     /// recovery ends; not applied outside recovery, where a reorg can legitimately rewind.
     private var maxSurfacedSyncProgress: Float = 0
-    /// [#1755] "Spendable early, hold": the recent-done BALANCE snapshot, captured the FIRST time
-    /// spendable funds appear during a recovery (recent-first scan ⇒ this is the clean recent balance,
-    /// taken before the historic backfill adds its transient over-count) and HELD through the backfill.
-    /// The SDK surfaces this frozen balance instead of the live, inflating partial; cleared when recovery
-    /// ends so the reveal shows the final reconciled balance. (Can under-show a wallet whose funds sit in
-    /// OLD unspent notes — those appear at 100% — but never over-shows.) The Activity is gated
-    /// PER-TRANSACTION (not held wholesale): the `slipstream_v_tx_reconciled` view drops only the txs
-    /// whose delta is still provisional (a recent send whose historic input isn't linked yet would read
-    /// as a phantom +receive), revealing each as soon as its spend links — sooner AND correct.
-    private var recoveryFrozenBalances: [AccountUUID: AccountBalance]?
     private var summaryTask: Task<Void, Never>?
     private var lastSummaryFinishDate: Date?
     // [#1755] When set, syncing-time % is driven PURELY by the pass-local counter (no summary
@@ -431,23 +443,14 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // it is already true by the first read (the cold-launch balance read fires at scan=0/0).
         let recovering = currentlyRecovering
 
-        // [#1755] "Spendable early, hold" — capture the recent-done snapshot ONCE (the first spendable
-        // balance seen during recovery; recent-first guarantees it's the clean recent funds, taken
-        // BEFORE the historic backfill adds its transient over-count) and hold it through the backfill
-        // (the "appears at ~61%, rest is uninteresting historic" behaviour). Cleared when recovery ends.
-        if recovering, recoveryFrozenBalances == nil,
-            let liveBalances = cachedSummary?.accountBalances,
-            liveBalances.values.contains(where: {
-                ($0.saplingBalance.total() + $0.orchardBalance.total() + $0.unshielded + $0.awaitingResolution).amount > 0
-            }) {
-            recoveryFrozenBalances = liveBalances
-        }
-        if !recovering, recoveryFrozenBalances != nil {
-            recoveryFrozenBalances = nil
-        }
-        // Balances to surface this tick: the held recent-done snapshot while recovering (0 until
-        // captured), the live wallet balances otherwise.
-        let surfacedBalances: [AccountUUID: AccountBalance]? = recovering ? (recoveryFrozenBalances ?? [:]) : nil
+        // [#1755] During recovery surface the AS-RECOVERED balance: per account, Σ `account_balance_delta`
+        // over MINED, RECONCILED transactions (`recoveryAccountBalances()`). A tx is unreconciled exactly
+        // when its delta is transiently wrong (a dangling shielded spend), so summing only RECONCILED deltas
+        // can never over-count and converges to the true total as the backfill links spends — and it is
+        // consistent with the (reconciled) Activity list by construction (no "tx visible but balance 0").
+        // Recomputed from the live DB each recovery tick (the summary frontier is stale mid-pass, so it can't
+        // gate this); nil outside recovery ⇒ the live fallback below.
+        let surfacedBalances: [AccountUUID: AccountBalance]? = recovering ? await recoveryAccountBalances() : nil
 
         if snap.state == 3 {
             // Done: cancel any in-flight summary task + emit .synced immediately.
@@ -500,6 +503,16 @@ public final class SlipstreamSynchronizer: Synchronizer {
                 recovering: recovering,
                 floor: maxSurfacedSyncProgress
             )
+            // [#1755] Only fires when the floor actually masks a backward jump (transient whole-pass
+            // restart) — the exact event from syncLogsMac3 (9% → 1.8%). Silent on normal progress.
+            if surfacedProgress > progress {
+                initializer.logger.debug(
+                    "[slipstream] progress floor held: surfacing \(Int(surfacedProgress * 100))% (engine reported \(Int(progress * 100))%)",
+                    file: #file,
+                    function: #function,
+                    line: #line
+                )
+            }
             maxSurfacedSyncProgress = newFloor
             let spendable = snap.spendableHint != 0
 
@@ -728,15 +741,59 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // ── Accounts / Balances ────────────────────────────────────────────────────
 
     public func getAccountsBalances() async throws -> [AccountUUID: AccountBalance] {
-        // [#1755] During deep recovery the live summary is provisional (phantom-inflated) and the UI
-        // surfaces the held recent-done balance, so skip the getWalletSummary call entirely — it would
-        // otherwise be a scan-time parasite. The recovery flag is maintained by tickPoll + the boundary
-        // and idle/done summary fetches.
-        if currentlyRecovering { return recoveryFrozenBalances ?? [:] }
+        // [#1755] During deep recovery, surface the as-recovered balance (Σ reconciled tx deltas) WITHOUT a
+        // fresh getWalletSummary call (it would otherwise be a scan-time parasite). The recovery flag is
+        // maintained by tickPoll + the boundary and idle/done summary fetches.
+        if currentlyRecovering { return await recoveryAccountBalances() }
         let summary = try await initializer.rustBackend.getWalletSummary()
-        let recovering = SlipstreamSynchronizer.isRecovering(summary)
-        currentlyRecovering = recovering
-        return recovering ? (recoveryFrozenBalances ?? [:]) : (summary?.accountBalances ?? [:])
+        currentlyRecovering = SlipstreamSynchronizer.isRecovering(summary)
+        if let summary { cachedSummary = summary }
+        return currentlyRecovering ? await recoveryAccountBalances() : (summary?.accountBalances ?? [:])
+    }
+
+    /// [#1755] The balance to surface during a restore (design: docs/slipstream/2026-06-29-balance-recovery-rethink.md):
+    /// per account, Σ `account_balance_delta` over the wallet's MINED, RECONCILED transactions — the
+    /// as-recovered balance. A tx is unreconciled exactly when its delta is transiently wrong (a dangling
+    /// shielded spend from recent-first scanning), so summing only RECONCILED deltas can NEVER over-count;
+    /// it converges to the true total as the backfill links spends, and is consistent with the (reconciled)
+    /// Activity list by construction (no "tx visible but balance 0"). Stateless — no frozen snapshot, no
+    /// persistence; the live summary is never the recovery fallback (it is the thing that over-counts).
+    ///
+    /// Recomputed from the live DB on every call (the reconcile state advances via both scanning AND
+    /// enhancement, and the engine emits no summary mid-pass, so there is no cheap "checkpoint" signal that
+    /// reliably tracks it — a stale key froze the balance at 0 for the whole backfill: field syncLogsMac10).
+    /// The query is a cheap SUM over `v_transactions`; the surfaced value only moves on a real reconcile, so
+    /// it does not churn (the log fires once per change via `lastLoggedRecoveryTotal`). Early in recovery
+    /// nothing is reconciled yet ⇒ 0 (acceptable, "Restoring" banner gives context); it climbs as ranges
+    /// complete and as TIA enhancement links transparent/shielded receives.
+    private func recoveryAccountBalances() async -> [AccountUUID: AccountBalance] {
+        let accounts = Array((cachedSummary?.accountBalances ?? [:]).keys)
+        // No summary yet ⇒ accounts unknown ⇒ surface whatever the summary holds (empty ⇒ 0 early).
+        guard !accounts.isEmpty else { return cachedSummary?.accountBalances ?? [:] }
+
+        let net = (try? await transactionRepository.recoveryBalances()) ?? [:]
+        var balances: [AccountUUID: AccountBalance] = [:]
+        for account in accounts {
+            balances[account] = SlipstreamSynchronizer.recoveryAccountBalance(net: net[account] ?? .zero)
+        }
+
+        // Log only when the surfaced total CHANGES (a reconcile checkpoint), not every tick.
+        let total = net.values.reduce(Int64(0)) { $0 + Swift.max(0, $1.amount) }
+        if total != lastLoggedRecoveryTotal {
+            lastLoggedRecoveryTotal = total
+            initializer.logger.debug(
+                "[slipstream] balance: recovery \(zecString(total)) ZEC (Σ reconciled tx deltas, \(net.count) acct)",
+                file: #file,
+                function: #function,
+                line: #line
+            )
+        }
+        return balances
+    }
+
+    /// [#1755] Format a Zatoshi `amount` as a 4-dp ZEC string for diagnostic logs only.
+    private func zecString(_ amount: Int64) -> String {
+        String(format: "%.4f", Double(amount) / 100_000_000)
     }
 
     public func listAccounts() async throws -> [Account] {
@@ -797,6 +854,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
         //     `try?`: a restart hiccup must never fail an otherwise-successful import.
         forceCounterProgressUntilDone = true
         cachedSummary = nil
+        lastLoggedRecoveryTotal = nil
         initializer.logger.debug(
             "[#1755] importAccount: counter-driven progress until Done; isRunning=\(isRunning) "
             + (isRunning ? "→ restarting sync pass now to surface the re-scan" : "→ next start() will re-scan")
@@ -966,7 +1024,16 @@ public final class SlipstreamSynchronizer: Synchronizer {
     private func droppingUnreconciled(_ txs: [ZcashTransaction.Overview]) async -> [ZcashTransaction.Overview] {
         let unreconciled = (try? await transactionRepository.unreconciledTxids()) ?? []
         guard !unreconciled.isEmpty else { return txs }
-        return txs.filter { !unreconciled.contains($0.rawID) }
+        let kept = txs.filter { !unreconciled.contains($0.rawID) }
+        // [#1755] Fires only while the reconcile view is holding rows (active recovery) — proves
+        // provisional txs are gated and released as their spends link, not held wholesale.
+        initializer.logger.debug(
+            "[slipstream] reconcile: holding \(txs.count - kept.count) provisional tx(s), surfacing \(kept.count)/\(txs.count)",
+            file: #file,
+            function: #function,
+            line: #line
+        )
+        return kept
     }
 
     /// T8.3.6 (UX): populate `ZcashTransaction.Overview.state` on fetched transactions (the
@@ -1174,6 +1241,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
             //        cached values would be stale for any subsequent prepare()/start().
             cachedSummary = nil
             lastSummaryFinishDate = nil
+            lastLoggedRecoveryTotal = nil
 
             // 3b. Close Swift-side DB connections before deleting files — mirrors
             //     SDKSynchronizer.wipe() prewipe closure (SDKSynchronizer.swift:759-760).

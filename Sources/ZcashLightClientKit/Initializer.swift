@@ -458,7 +458,8 @@ public class Initializer {
         //   • no account + nil birthday  → NEW: start at a reorg-safe recent height, no recovery phase
         //     (recover_until = nil).
         // (A deliberate re-scan/resync is a separate, explicit action — `rewind(_:)` — not an init mode.)
-        if let seed, try await rustBackend.listAccounts().isEmpty {
+        let existingAccounts = try await rustBackend.listAccounts()
+        if let seed, existingAccounts.isEmpty {
             var chainTip: UInt32?
             var accountTreeState = checkpoint.treeState()
 
@@ -468,6 +469,18 @@ public class Initializer {
                 // RESTORE — recover_until = current chain tip.
                 if let latestBlockHeight = try? await lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor)) {
                     chainTip = UInt32(latestBlockHeight)
+                } else {
+                    // [#1755] Server unreachable at restore time: recover_until MUST still be a valid recent
+                    // height. A NULL recover_until makes the restore look like a NEW wallet — recovery_progress
+                    // reads complete ⇒ isRecovering=false ⇒ NO "Restoring" UI, the recovery gate never engages,
+                    // and the raw (transiently over-counted) balance is shown (syncLogsMac9: recover_until=unknown,
+                    // wallet showed 0 then a fluttering 8/5 with no banner). Fall back to the latest bundled
+                    // checkpoint — the best offline estimate of "now"; the [checkpoint..tip] gap is caught up as a
+                    // normal scan once the server is reachable, and recovery [birthday..checkpoint] keeps the
+                    // restore identity. max(.., birthday+1) guarantees a non-empty recovery even for a wallet
+                    // whose birthday is newer than the bundled checkpoints.
+                    let latestCheckpointHeight = checkpointSource.birthday(for: BlockHeight.max).height
+                    chainTip = UInt32(max(latestCheckpointHeight, self.walletBirthday + 1))
                 }
             } else {
                 // NEW — no prior history. Fetch a recent tree state below the reorg horizon so funds
@@ -489,12 +502,33 @@ public class Initializer {
                 }
             }
 
+            // [#1755] Surface the DERIVED init flow (clients no longer pass it) so a device log shows
+            // exactly which path each launch took — the first thing to check when validating a restore.
+            let recoverUntil = chainTip.map { "tip \($0)" } ?? "unknown"
+            logger.info(
+                walletBirthday != nil
+                    ? "[slipstream] init flow: RESTORE — birthday \(self.walletBirthday), recover_until=\(recoverUntil)"
+                    : "[slipstream] init flow: NEW — start height \(self.walletBirthday), recover_until=nil",
+                file: #file,
+                function: #function,
+                line: #line
+            )
+
             _ = try await rustBackend.createAccount(
                 seed: seed,
                 treeState: accountTreeState,
                 recoverUntil: chainTip,
                 name: name,
                 keySource: keySource
+            )
+        } else {
+            logger.info(
+                existingAccounts.isEmpty
+                    ? "[slipstream] init flow: OPEN — no seed supplied, not creating an account"
+                    : "[slipstream] init flow: EXISTING — \(existingAccounts.count) account(s) present, opening (no create)",
+                file: #file,
+                function: #function,
+                line: #line
             )
         }
 

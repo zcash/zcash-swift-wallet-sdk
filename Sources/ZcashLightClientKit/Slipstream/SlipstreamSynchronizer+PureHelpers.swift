@@ -100,6 +100,24 @@ extension SlipstreamSynchronizer {
         return !recovery.isComplete
     }
 
+    /// [#1755] Wrap a per-account net recovery balance (Σ of FINAL transaction deltas — see
+    /// `TransactionRepository.recoveryBalances()`) in an `AccountBalance` for the state stream during a
+    /// restore. The whole net (clamped ≥ 0) is surfaced as orchard `spendableValue` so every consumer reads
+    /// it correctly: `total()` == net (Zodl home `totalBalance`), available shielded == net (SmartBanner /
+    /// WalletBalances). The per-pool breakdown is intentionally collapsed to Orchard for the duration of
+    /// recovery — headline correctness over breakdown fidelity mid-restore (the "Restoring" banner is the
+    /// progress affordance). Transparent is already folded into the delta sum, so `unshielded` stays zero
+    /// here to avoid double-counting. Pure; net ≤ 0 yields a zero balance.
+    static func recoveryAccountBalance(net: Zatoshi) -> AccountBalance {
+        let clamped = Zatoshi(Swift.max(0, net.amount))
+        return AccountBalance(
+            saplingBalance: .zero,
+            orchardBalance: PoolBalance(spendableValue: clamped, changePendingConfirmation: .zero, valuePendingSpendability: .zero),
+            unshielded: .zero,
+            awaitingResolution: .zero
+        )
+    }
+
     /// [#1755] Monotonic recovery floor for the displayed sync %. A transient server outage that
     /// outlasts the engine's bounded reconnect forces a whole-pass restart, which resets the
     /// pass-local counter; during a recovery `recovery_progress` only advances, so the bar must never

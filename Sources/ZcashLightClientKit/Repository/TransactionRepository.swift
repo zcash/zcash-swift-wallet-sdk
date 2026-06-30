@@ -35,8 +35,19 @@ protocol TransactionRepository {
     /// phantom "+receive". Consumers hold these txs out of the Activity list until they reconcile. The
     /// default returns an empty set: a DB without the view (legacy / non-slipstream) holds nothing back.
     func unreconciledTxids() async throws -> Set<Data>
+
+    /// [#1755] Per-account as-recovered balance during a recent-first restore: Σ `account_balance_delta`
+    /// over the wallet's MINED transactions whose delta is final — excluding the txids the
+    /// `slipstream_v_tx_reconciled` view marks `reconciled = 0`. A tx is unreconciled exactly when it has a
+    /// dangling shielded spend (the backfill scanned the spend before its input's origin block), which is
+    /// the same condition that makes its delta transiently wrong. Summing only correct deltas can never
+    /// over-count and converges to the true total as the backfill links spends; it is consistent with the
+    /// (reconciled) Activity list by construction. Default empty: a DB without the view (legacy /
+    /// non-slipstream) reports nothing and the caller keeps the live summary.
+    func recoveryBalances() async throws -> [AccountUUID: Zatoshi]
 }
 
 extension TransactionRepository {
     func unreconciledTxids() async throws -> Set<Data> { [] }
+    func recoveryBalances() async throws -> [AccountUUID: Zatoshi] { [:] }
 }

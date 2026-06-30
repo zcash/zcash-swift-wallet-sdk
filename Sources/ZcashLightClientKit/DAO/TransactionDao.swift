@@ -136,6 +136,36 @@ class TransactionSQLDAO: TransactionRepository {
         }
     }
 
+    func recoveryBalances() async throws -> [AccountUUID: Zatoshi] {
+        // [#1755] Per-account as-recovered balance = Σ `account_balance_delta` over MINED transactions whose
+        // delta is final. A tx is `reconciled = 0` in the slipstream-owned `slipstream_v_tx_reconciled` view
+        // exactly when it has a dangling shielded spend (a recent-first restore scanned the spend before its
+        // input's origin block) — the same condition that makes its delta transiently wrong — so we exclude
+        // those and sum only correct deltas. Never over-counts; converges to the true total as the backfill
+        // links the dangling spends; consistent with the (reconciled) Activity list by construction.
+        // Defensive: a DB the slipstream engine never opened has no such view, so the query throws — we
+        // return empty (the caller keeps the live summary; legacy behavior).
+        do {
+            let sql = [
+                "SELECT vt.account_uuid, SUM(vt.account_balance_delta) AS balance",
+                "FROM v_transactions vt",
+                "WHERE vt.mined_height IS NOT NULL",
+                "AND NOT EXISTS (SELECT 1 FROM slipstream_v_tx_reconciled r WHERE r.txid = vt.txid AND r.reconciled = 0)",
+                "GROUP BY vt.account_uuid"
+            ].joined(separator: " ")
+            let statement = try connection().prepare(sql)
+            var result: [AccountUUID: Zatoshi] = [:]
+            for row in statement {
+                if let blob = row[0] as? Blob, let amount = row[1] as? Int64 {
+                    result[AccountUUID(id: blob.bytes)] = Zatoshi(amount)
+                }
+            }
+            return result
+        } catch {
+            return [:]
+        }
+    }
+
     @DBActor
     func blockForHeight(_ height: BlockHeight) async throws -> Block? {
         try blockDao.block(at: height)
