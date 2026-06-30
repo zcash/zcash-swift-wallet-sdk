@@ -90,6 +90,7 @@ use zip32::fingerprint::SeedFingerprint;
 mod derivation;
 mod eip681;
 mod ffi;
+mod ironwood_migration;
 mod tor;
 mod voting;
 
