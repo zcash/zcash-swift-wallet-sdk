@@ -12,6 +12,10 @@
 //! root for the full design rationale. Kept in lockstep with the equivalent
 //! module in `zcash-android-wallet-sdk/backend-lib`.
 
+use ffi_helpers::panic::catch_panic;
+
+use crate::{ptr_from_vec, unwrap_exc_or_null};
+
 pub(crate) const ZATOSHIS_PER_ZEC: u64 = 100_000_000;
 
 /// Upper bound on how many denomination outputs a single split plan may
@@ -121,6 +125,91 @@ pub(crate) fn plan_denominations(
         total_input_zatoshi,
         total_migratable_zatoshi,
     })
+}
+
+/// FFI representation of a [`DenominationPlan`].
+///
+/// `migration_outputs_ptr`/`migration_outputs_len` describe a heap-allocated
+/// `u64` array, freed (along with this struct) by
+/// [`zcashlc_free_denomination_plan`]. `has_orchard_change` indicates whether
+/// `orchard_change` should be read.
+#[repr(C)]
+pub struct FfiDenominationPlan {
+    migration_outputs_ptr: *mut u64,
+    migration_outputs_len: usize,
+    has_orchard_change: bool,
+    orchard_change: u64,
+    prep_fee_zatoshi: u64,
+    migration_fee_zatoshi: u64,
+    total_input_zatoshi: u64,
+    total_migratable_zatoshi: u64,
+}
+
+/// Plans how to split a spendable Orchard balance into round-ZEC-denominated
+/// outputs ahead of an Orchard -> Ironwood migration transfer. Pure
+/// arithmetic - does not touch the wallet DB or build any transaction.
+///
+/// Returns a pointer to an [`FfiDenominationPlan`] on success, or null on
+/// failure (e.g. the inputs would produce more than [`MAX_DENOMINATION_OUTPUTS`]
+/// outputs). On failure the error can be retrieved via
+/// `zcashlc_last_error_message`.
+///
+/// The returned pointer must be freed with [`zcashlc_free_denomination_plan`].
+///
+/// # Safety
+///
+/// - All zatoshi arguments must be non-negative.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_plan_orchard_denomination_split(
+    total_input_zatoshi: i64,
+    prep_fee_zatoshi: i64,
+    migration_fee_zatoshi: i64,
+    minimum_output_zatoshi: i64,
+) -> *mut FfiDenominationPlan {
+    let res = catch_panic(|| {
+        let to_u64 = |label: &str, value: i64| -> anyhow::Result<u64> {
+            u64::try_from(value).map_err(|_| anyhow::anyhow!("{label} must be non-negative"))
+        };
+
+        let plan = plan_denominations(
+            to_u64("total_input_zatoshi", total_input_zatoshi)?,
+            to_u64("prep_fee_zatoshi", prep_fee_zatoshi)?,
+            to_u64("migration_fee_zatoshi", migration_fee_zatoshi)?,
+            to_u64("minimum_output_zatoshi", minimum_output_zatoshi)?,
+        )
+        .map_err(|e| anyhow::anyhow!("Error planning denomination split: {e}"))?;
+
+        let (migration_outputs_ptr, migration_outputs_len) =
+            ptr_from_vec(plan.migration_outputs);
+
+        Ok(Box::into_raw(Box::new(FfiDenominationPlan {
+            migration_outputs_ptr,
+            migration_outputs_len,
+            has_orchard_change: plan.orchard_change.is_some(),
+            orchard_change: plan.orchard_change.unwrap_or(0),
+            prep_fee_zatoshi: plan.prep_fee_zatoshi,
+            migration_fee_zatoshi: plan.migration_fee_zatoshi,
+            total_input_zatoshi: plan.total_input_zatoshi,
+            total_migratable_zatoshi: plan.total_migratable_zatoshi,
+        })))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Frees an [`FfiDenominationPlan`].
+///
+/// # Safety
+///
+/// - `ptr` must be non-null and must point to a struct having the layout of
+///   [`FfiDenominationPlan`], as returned by
+///   [`zcashlc_plan_orchard_denomination_split`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_free_denomination_plan(ptr: *mut FfiDenominationPlan) {
+    if !ptr.is_null() {
+        let plan: Box<FfiDenominationPlan> = unsafe { Box::from_raw(ptr) };
+        crate::free_ptr_from_vec(plan.migration_outputs_ptr, plan.migration_outputs_len);
+        drop(plan);
+    }
 }
 
 #[cfg(test)]
