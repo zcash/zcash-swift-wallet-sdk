@@ -1,6 +1,6 @@
 //
 //  CompactBlockProgress.swift
-//  
+//
 //
 //  Created by Michal Fousek on 11.05.2023.
 //

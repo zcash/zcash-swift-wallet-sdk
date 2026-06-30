@@ -43,9 +43,9 @@ actor CompactBlockProcessor {
     private var serviceFailureRetryAttempts: Int = 0
     private var backoffTimer: Timer?
     private var consecutiveChainValidationErrors: Int = 0
-    
+
     private var compactBlockProgress: CompactBlockProgress = .zero
-    
+
     /// Compact Block Processor configuration
     ///
     /// - parameter fsBlockCacheRoot: absolute root path where the filesystem block cache will be stored.
@@ -281,7 +281,7 @@ extension CompactBlockProcessor {
         syncTask = Task(priority: .userInitiated) {
             await run()
         }
-        
+
         mempoolDetectionTask = Task {
             await watchMempool()
         }
@@ -300,7 +300,7 @@ extension CompactBlockProcessor {
     func latestHeight(mode: ServiceMode) async throws -> BlockHeight {
         try await blockDownloaderService.latestBlockHeight(mode: mode)
     }
-    
+
     func consensusBranchIdFor(_ height: Int32) -> Int32? {
         try? rustBackend.consensusBranchIdFor(height: height)
     }
@@ -356,7 +356,7 @@ extension CompactBlockProcessor {
         } catch {
             return await context.completion(.failure(error))
         }
-        
+
         await resetContext(restoreLastEnhancedHeight: false)
 
         await context.completion(.success(rewindBlockHeight))
@@ -382,7 +382,7 @@ extension CompactBlockProcessor {
         while !Task.isCancelled {
             do {
                 try await consumeMempoolStream()
-                
+
                 try await Task.sleep(nanoseconds: 500_000_000)
             } catch {
                 // Connection hammering prevention, wait 30s in case stream failed
@@ -390,14 +390,14 @@ extension CompactBlockProcessor {
             }
         }
     }
-    
+
     func consumeMempoolStream() async throws {
         let stream = try service.getMempoolStream()
-        
+
         do {
             for try await rawTransaction in stream {
                 let mempoolTransactions = try await resolveMempools(rawTransaction: rawTransaction)
-                
+
                 if !mempoolTransactions.isEmpty {
                     let height = BlockHeight(rawTransaction.height)
                     await send(event: .foundTransactions(mempoolTransactions, .init(uncheckedBounds: (lower: height, upper: height))))
@@ -405,12 +405,12 @@ extension CompactBlockProcessor {
             }
         } catch { }
     }
-    
+
     @DBActor
     func resolveMempools(rawTransaction: RawTransaction) async throws -> [ZcashTransaction.Overview] {
         let minedHeight = (rawTransaction.height == 0 || rawTransaction.height > UInt32.max)
         ? nil : UInt32(rawTransaction.height)
-        
+
         let txIdData = try await rustBackend.decryptAndStoreTransaction(
             txBytes: rawTransaction.data.bytes,
             minedHeight: minedHeight
@@ -419,7 +419,7 @@ extension CompactBlockProcessor {
         if let transaction = try? await transactionRepository.find(rawID: txIdData) {
             return [transaction]
         }
-        
+
         return []
     }
 }
@@ -458,7 +458,7 @@ extension CompactBlockProcessor {
             try await rewindDownloadBlockAction(to: nil)
 
             await latestBlocksDataProvider.reset()
-            
+
             await context.completion(nil)
         } catch {
             await context.completion(error)
@@ -478,26 +478,26 @@ extension CompactBlockProcessor {
     func updateService(_ container: DIContainer) {
         // LightWalletGRPCService
         let updatedLWDService = container.resolve(LightWalletService.self)
-        
+
         (actions[.processSuggestedScanRanges] as? ProcessSuggestedScanRangesAction)?.service = updatedLWDService
         (actions[.updateChainTip] as? UpdateChainTipAction)?.service = updatedLWDService
         (actions[.updateSubtreeRoots] as? UpdateSubtreeRootsAction)?.service = updatedLWDService
         (actions[.validateServer] as? ValidateServerAction)?.service = updatedLWDService
         self.service = updatedLWDService
-        
+
         // BlockDownloaderService
         let updatedDownloaderService = container.resolve(BlockDownloaderService.self)
 
         (actions[.rewind] as? RewindAction)?.downloaderService = updatedDownloaderService
         self.blockDownloaderService = updatedDownloaderService
-        
+
         // LatestBlocksDataProvider
         let updatedLBDProvider = container.resolve(LatestBlocksDataProvider.self)
 
         (actions[.scan] as? ScanAction)?.latestBlocksDataProvider = updatedLBDProvider
         (actions[.updateChainTip] as? UpdateChainTipAction)?.latestBlocksDataProvider = updatedLBDProvider
         self.latestBlocksDataProvider = updatedLBDProvider
-        
+
         // BlockDownloader
         let updatedBlockDownloader = container.resolve(BlockDownloader.self)
 
@@ -505,7 +505,7 @@ extension CompactBlockProcessor {
         (actions[.updateChainTip] as? UpdateChainTipAction)?.downloader = updatedBlockDownloader
         (actions[.rewind] as? RewindAction)?.downloader = updatedBlockDownloader
         self.blockDownloaderService = updatedDownloaderService
-        
+
         // BlockEnhancer
         let updatedEnhancer = container.resolve(BlockEnhancer.self)
 
@@ -515,10 +515,10 @@ extension CompactBlockProcessor {
         let updatedUTXOFetcher = container.resolve(UTXOFetcher.self)
 
         (actions[.fetchUTXO] as? FetchUTXOsAction)?.utxoFetcher = updatedUTXOFetcher
-        
+
         // TransactionEncoder
         let transactionEncoder = container.resolve(TransactionEncoder.self)
-        
+
         (actions[.txResubmission] as? TxResubmissionAction)?.transactionEncoder = transactionEncoder
     }
 }
@@ -913,11 +913,11 @@ extension CompactBlockProcessor {
     func getUnifiedAddress(accountUUID: AccountUUID) async throws -> UnifiedAddress {
         try await rustBackend.getCurrentAddress(accountUUID: accountUUID)
     }
-    
+
     func getSaplingAddress(accountUUID: AccountUUID) async throws -> SaplingAddress {
         try await getUnifiedAddress(accountUUID: accountUUID).saplingReceiver()
     }
-    
+
     func getTransparentAddress(accountUUID: AccountUUID) async throws -> TransparentAddress {
         try await getUnifiedAddress(accountUUID: accountUUID).transparentReceiver()
     }
@@ -930,7 +930,7 @@ extension CompactBlockProcessor {
 extension CompactBlockProcessor {
     func refreshUTXOs(tAddress: TransparentAddress, startHeight: BlockHeight) async throws -> RefreshedUTXOs {
         let dataDb = self.config.dataDb
-        
+
         // ServiceMode to resolve
         let stream: AsyncThrowingStream<UnspentTransactionOutputEntity, Error> = try blockDownloaderService.fetchUnspentTransactionOutputs(
             tAddress: tAddress.stringEncoded,
@@ -938,7 +938,7 @@ extension CompactBlockProcessor {
             mode: .direct
         )
         var utxos: [UnspentTransactionOutputEntity] = []
-        
+
         do {
             for try await utxo in stream {
                 utxos.append(utxo)
@@ -948,7 +948,7 @@ extension CompactBlockProcessor {
             throw error
         }
     }
-    
+
     private func storeUTXOs(_ utxos: [UnspentTransactionOutputEntity], in dataDb: URL) async -> RefreshedUTXOs {
         var refreshed: [UnspentTransactionOutputEntity] = []
         var skipped: [UnspentTransactionOutputEntity] = []

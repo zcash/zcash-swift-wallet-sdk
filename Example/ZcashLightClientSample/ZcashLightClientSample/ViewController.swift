@@ -19,7 +19,7 @@ class MainTableViewController: UITableViewController {
             action: #selector(wipe(_:))
         )
     }
-    
+
     @objc func wipe(_ sender: Any?) {
         let alert = UIAlertController(
             title: "Wipe the wallet?",
@@ -47,7 +47,7 @@ class MainTableViewController: UITableViewController {
         )
 
         alert.addAction(UIAlertAction(title: "No please! Have mercy!", style: UIAlertAction.Style.cancel, handler: nil))
-        
+
         self.present(alert, animated: true, completion: nil)
     }
 
@@ -79,7 +79,7 @@ class MainTableViewController: UITableViewController {
         alert.addAction(UIAlertAction(title: "Ok", style: UIAlertAction.Style.default, handler: nil))
         self.present(alert, animated: true, completion: nil)
     }
-    
+
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
         if let destination = segue.destination as? TransactionsTableViewController {
             if let id = segue.identifier, id == "Sent" {

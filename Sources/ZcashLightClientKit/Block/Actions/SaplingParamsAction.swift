@@ -1,6 +1,6 @@
 //
 //  SaplingParamsAction.swift
-//  
+//
 //
 //  Created by Michal Fousek on 05.05.2023.
 //
@@ -23,9 +23,9 @@ extension SaplingParamsAction: Action {
     func run(with context: ActionContext, didUpdate: @escaping (CompactBlockProcessor.Event) async -> Void) async throws -> ActionContext {
         logger.debug("Fetching sapling parameters")
         try await saplingParametersHandler.handleIfNeeded()
-        
+
         await context.update(state: .updateSubtreeRoots)
-        
+
         return context
     }
 

@@ -98,6 +98,6 @@ protocol TransactionEncoder {
     /// Tries to fetch the transaction for the given transaction ids.
     /// - Parameter txIds: an array of transaction ids to be fetched from the DB.
     func fetchTransactionsForTxIds(_ txIds: [Data]) async throws -> [ZcashTransaction.Overview]
-    
+
     func closeDBConnection()
 }

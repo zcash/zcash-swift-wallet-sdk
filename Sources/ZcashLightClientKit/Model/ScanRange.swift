@@ -16,7 +16,7 @@ struct ScanRange {
         case foundNote = 40
         case chainTip = 50
         case verify = 60
-        
+
         init(_ value: UInt8) {
             if let priority = Priority(rawValue: value) {
                 self = priority
@@ -25,7 +25,7 @@ struct ScanRange {
             }
         }
     }
-    
+
     let range: Range<BlockHeight>
     let priority: Priority
 }

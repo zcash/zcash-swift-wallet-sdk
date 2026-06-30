@@ -143,7 +143,7 @@ class LightWalletGRPCService: LightWalletService {
         let connectionBuilder = secure ?
         ClientConnection.usingPlatformAppropriateTLS(for: group) :
         ClientConnection.insecure(group: group)
-        
+
         let channel = connectionBuilder
             .withKeepalive(
                 ClientConnectionKeepalive(
@@ -162,9 +162,9 @@ class LightWalletGRPCService: LightWalletService {
                 timeLimit: self.singleCallTimeout
             )
         )
-        
+
         self.compactTxStreamerInternal = compactTxStreamerInstance
-        
+
         return compactTxStreamerInstance
     }
 
@@ -215,7 +215,7 @@ class LightWalletGRPCService: LightWalletService {
         guard mode == .direct else {
             throw ZcashError.grpcServiceCalledWithTorMode
         }
-        
+
         do {
             return try await compactTxStreamer.getLightdInfo(Empty())
         } catch {
@@ -242,7 +242,7 @@ class LightWalletGRPCService: LightWalletService {
             callOptions: Self.callOptions(timeLimit: self.streamingCallTimeout)
         )
         var iterator = stream.makeAsyncIterator()
-        
+
         return AsyncThrowingStream() {
             do {
                 guard let block = try await iterator.next() else { return nil }
@@ -275,12 +275,12 @@ class LightWalletGRPCService: LightWalletService {
 
         var txFilter = TxFilter()
         txFilter.hash = txId
-        
+
         do {
             let rawTx = try await compactTxStreamer.getTransaction(txFilter)
-            
+
             let isNotMined = rawTx.height == 0 || rawTx.height > UInt32.max
-            
+
             return (
                 tx:
                     ZcashTransaction.Fetched(
@@ -331,7 +331,7 @@ class LightWalletGRPCService: LightWalletService {
         guard !tAddresses.isEmpty else {
             return AsyncThrowingStream { continuation in continuation.finish() }
         }
-        
+
         let args = GetAddressUtxosArg.with { utxoArgs in
             utxoArgs.addresses = tAddresses
             utxoArgs.startHeight = UInt64(height)
@@ -359,7 +359,7 @@ class LightWalletGRPCService: LightWalletService {
             }
         }
     }
-    
+
     func blockStream(
         startHeight: BlockHeight,
         endHeight: BlockHeight,
@@ -388,11 +388,11 @@ class LightWalletGRPCService: LightWalletService {
             }
         }
     }
-    
+
     func getMempoolStream() throws -> AsyncThrowingStream<RawTransaction, Error> {
         let stream = compactTxStreamer.getMempoolStream(Empty())
         var iterator = stream.makeAsyncIterator()
-        
+
         return AsyncThrowingStream() {
             do {
                 guard let rawTransaction = try await iterator.next() else { return nil }
@@ -403,7 +403,7 @@ class LightWalletGRPCService: LightWalletService {
             }
         }
     }
-    
+
     func getSubtreeRoots(_ request: GetSubtreeRootsArg, mode: ServiceMode) throws -> AsyncThrowingStream<SubtreeRoot, Error> {
         guard mode == .direct else {
             throw ZcashError.grpcServiceCalledWithTorMode
@@ -414,7 +414,7 @@ class LightWalletGRPCService: LightWalletService {
             callOptions: Self.callOptions(timeLimit: self.streamingCallTimeout)
         )
         var iterator = stream.makeAsyncIterator()
-        
+
         return AsyncThrowingStream() {
             do {
                 guard let subtreeRoot = try await iterator.next() else { return nil }
@@ -444,7 +444,7 @@ class LightWalletGRPCService: LightWalletService {
             callOptions: Self.callOptions(timeLimit: self.streamingCallTimeout)
         )
         var iterator = stream.makeAsyncIterator()
-        
+
         return AsyncThrowingStream() {
             do {
                 guard let rawTransaction = try await iterator.next() else { return nil }
@@ -455,7 +455,7 @@ class LightWalletGRPCService: LightWalletService {
             }
         }
     }
-    
+
     func checkSingleUseTransparentAddresses(
         dbData: (String, UInt),
         networkType: NetworkType,
@@ -464,7 +464,7 @@ class LightWalletGRPCService: LightWalletService {
     ) async throws -> TransparentAddressCheckResult {
         .torRequired
     }
-    
+
     // swiftlint:disable:next function_parameter_count
     func updateTransparentAddressTransactions(
         address: String,
@@ -476,7 +476,7 @@ class LightWalletGRPCService: LightWalletService {
     ) async throws -> TransparentAddressCheckResult {
         .torRequired
     }
-    
+
     func fetchUTXOsByAddress(
         address: String,
         dbData: (String, UInt),
@@ -486,7 +486,7 @@ class LightWalletGRPCService: LightWalletService {
     ) async throws -> TransparentAddressCheckResult {
         .torRequired
     }
-    
+
     func closeConnections() async {
         stop()
     }
@@ -534,7 +534,7 @@ extension Error {
         guard let grpcError = self as? GRPCStatusTransformable else {
             return LightWalletServiceError.genericError(error: self)
         }
-        
+
         return LightWalletServiceError.mapCode(grpcError.makeGRPCStatus())
     }
 }

@@ -11,7 +11,7 @@ public struct SingleUseTransparentAddress: Equatable {
     let address: String
     let gapPosition: UInt32
     let gapLimit: UInt32
-    
+
     public init(address: String, gapPosition: UInt32, gapLimit: UInt32) {
         self.address = address
         self.gapPosition = gapPosition

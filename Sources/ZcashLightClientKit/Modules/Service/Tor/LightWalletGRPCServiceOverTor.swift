@@ -12,12 +12,12 @@ actor ServiceConnections {
     var endpointString: String?
     var groups: [String: TorLwdConn] = [:]
     var defaultTorLwdConn: TorLwdConn?
-    
+
     init(endpoint: LightWalletEndpoint, tor: TorClient) {
         self.tor = tor
         endpointString = String(format: "%@://%@:%d", endpoint.secure ? "https" : "http", endpoint.host, endpoint.port)
     }
-    
+
     func connectToLightwalletd(_ mode: ServiceMode) async throws -> TorLwdConn {
         guard let endpointString else {
             throw ZcashError.torServiceMissingEndpoint
@@ -29,31 +29,31 @@ actor ServiceConnections {
         } else if mode == .defaultTor {
             // defaultTor
             let connection: TorLwdConn
-            
+
             if let defaultTorLwdConn {
                 connection = defaultTorLwdConn
             } else {
                 connection = try await tor.connectToLightwalletd(endpoint: endpointString)
                 defaultTorLwdConn = connection
             }
-            
+
             return connection
         } else if case let .torInGroup(groupName) = mode {
             // torInGroup
             guard let torInGroup = groups[groupName] else {
                 let torInGroupNamed = try await tor.connectToLightwalletd(endpoint: endpointString)
-                
+
                 groups[groupName] = torInGroupNamed
-                
+
                 return torInGroupNamed
             }
-            
+
             return torInGroup
         } else {
             throw ZcashError.torServiceUnresolvedMode
         }
     }
-    
+
     func responseToTorFailure(_ mode: ServiceMode) async {
         if mode == .defaultTor {
             defaultTorLwdConn = nil
@@ -61,7 +61,7 @@ actor ServiceConnections {
             groups.removeValue(forKey: groupName)
         }
     }
-    
+
     func closeConnections() {
         groups.removeAll()
         defaultTorLwdConn = nil
@@ -80,7 +80,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
             tor: tor
         )
     }
-    
+
     convenience init(endpoint: LightWalletEndpoint, tor: TorClient, singleCallTimeout: Int64) {
         self.init(
             endpoint: endpoint,
@@ -89,7 +89,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
             tor: tor
         )
     }
-    
+
     init(
         endpoint: LightWalletEndpoint,
         singleCallTimeout: Int64,
@@ -112,7 +112,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
         guard mode != .direct else {
             return try await super.getInfo(mode: mode)
         }
-        
+
         do {
             return try await serviceConnections.connectToLightwalletd(mode).getInfo()
         } catch {
@@ -141,7 +141,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
             throw error
         }
     }
-    
+
     override func submit(spendTransaction: Data, mode: ServiceMode) async throws -> LightWalletServiceResponse {
         guard mode != .direct else {
             return try await super.submit(spendTransaction: spendTransaction, mode: mode)
@@ -154,7 +154,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
             throw ZcashError.serviceSubmitFailed(LightWalletServiceError.genericError(error: error))
         }
     }
-    
+
     override func fetchTransaction(txId: Data, mode: ServiceMode) async throws -> (tx: ZcashTransaction.Fetched?, status: TransactionStatus) {
         guard mode != .direct else {
             return try await super.fetchTransaction(txId: txId, mode: mode)
@@ -167,7 +167,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
             throw error
         }
     }
-    
+
     override func getTreeState(_ id: BlockID, mode: ServiceMode) async throws -> TreeState {
         guard mode != .direct else {
             return try await super.getTreeState(id, mode: mode)
@@ -180,7 +180,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
             throw error
         }
     }
-    
+
     override func checkSingleUseTransparentAddresses(
         dbData: (String, UInt),
         networkType: NetworkType,
@@ -202,7 +202,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
             throw error
         }
     }
-    
+
     override func updateTransparentAddressTransactions(
         address: String,
         start: BlockHeight,
@@ -235,7 +235,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
             throw error
         }
     }
-    
+
     override func fetchUTXOsByAddress(
         address: String,
         dbData: (String, UInt),
@@ -265,7 +265,7 @@ class LightWalletGRPCServiceOverTor: LightWalletGRPCService {
             throw error
         }
     }
-    
+
     override func closeConnections() async {
         await super.closeConnections()
         await serviceConnections.closeConnections()

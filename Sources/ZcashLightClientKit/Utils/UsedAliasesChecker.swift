@@ -1,6 +1,6 @@
 //
 //  UsedAliasesChecker.swift
-//  
+//
 //
 //  Created by Michal Fousek on 23.03.2023.
 //

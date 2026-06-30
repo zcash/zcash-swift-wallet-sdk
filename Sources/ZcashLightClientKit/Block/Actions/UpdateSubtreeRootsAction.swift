@@ -1,6 +1,6 @@
 //
-//  UpdateSubtreeRootsAction.swift
-//  
+//  Updatesubtreerootsaction.swift
+//
 //
 //  Created by Lukas Korba on 01.08.2023.
 //
@@ -12,7 +12,7 @@ final class UpdateSubtreeRootsAction {
     let rustBackend: ZcashRustBackendWelding
     var service: LightWalletService
     let logger: Logger
-    
+
     init(container: DIContainer, configProvider: CompactBlockProcessor.ConfigProvider) {
         self.configProvider = configProvider
         service = container.resolve(LightWalletService.self)
@@ -27,13 +27,13 @@ extension UpdateSubtreeRootsAction: Action {
     func run(with context: ActionContext, didUpdate: @escaping (CompactBlockProcessor.Event) async -> Void) async throws -> ActionContext {
         var request = GetSubtreeRootsArg()
         request.shieldedProtocol = .sapling
-        
+
         logger.debug("Attempt to get subtree roots, this may fail because lightwalletd may not support Spend before Sync.")
         // ServiceMode to resolve
         let stream = try service.getSubtreeRoots(request, mode: .direct)
 
         var saplingRoots: [SubtreeRoot] = []
-        
+
         do {
             for try await subtreeRoot in stream {
                 saplingRoots.append(subtreeRoot)
@@ -47,7 +47,7 @@ extension UpdateSubtreeRootsAction: Action {
         logger.debug("Sapling tree has \(saplingRoots.count) subtrees")
         do {
             try await rustBackend.putSaplingSubtreeRoots(startIndex: UInt64(request.startIndex), roots: saplingRoots)
-            
+
             await context.update(state: .updateChainTip)
         } catch {
             logger.debug("putSaplingSubtreeRoots failed with error \(error.localizedDescription)")

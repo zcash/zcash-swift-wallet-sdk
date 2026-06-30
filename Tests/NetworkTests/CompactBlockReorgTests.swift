@@ -108,7 +108,7 @@ class CompactBlockReorgTests: ZcashTestCase {
             isTorEnabled: false,
             isExchangeRateEnabled: false
         )
-        
+
         self.rustBackendMockHelper.rustBackendMock.putSaplingSubtreeRootsStartIndexRootsClosure = { _, _ in }
         self.rustBackendMockHelper.rustBackendMock.updateChainTipHeightClosure = { _ in }
 
@@ -120,7 +120,7 @@ class CompactBlockReorgTests: ZcashTestCase {
         mockContainer.mock(type: CompactBlockRepository.self, isSingleton: true) { _ in realCache }
 
         processor = CompactBlockProcessor(container: mockContainer, config: processorConfig)
-        
+
         syncStartedExpect = XCTestExpectation(description: "\(self.description) syncStartedExpect")
         stopNotificationExpectation = XCTestExpectation(description: "\(self.description) stopNotificationExpectation")
         updatedNotificationExpectation = XCTestExpectation(description: "\(self.description) updatedNotificationExpectation")
@@ -148,7 +148,7 @@ class CompactBlockReorgTests: ZcashTestCase {
         rustBackend = nil
         rustBackendMockHelper = nil
     }
-    
+
     func processorHandledReorg(event: CompactBlockProcessor.Event) {
         if case let .handledReorg(reorg, rewind) = event {
             XCTAssertTrue( reorg == 0 || reorg > self.network.constants.saplingActivationHeight)
@@ -159,7 +159,7 @@ class CompactBlockReorgTests: ZcashTestCase {
             XCTFail("CompactBlockProcessor reorg notification is malformed")
         }
     }
-    
+
     func processorFailed(event: CompactBlockProcessor.Event) {
         if case let .failed(error) = event {
             XCTFail("CompactBlockProcessor failed with Error: \(error)")
@@ -167,7 +167,7 @@ class CompactBlockReorgTests: ZcashTestCase {
             XCTFail("CompactBlockProcessor failed")
         }
     }
-    
+
     private func startProcessing() async {
         XCTAssertNotNil(processor)
 
@@ -182,7 +182,7 @@ class CompactBlockReorgTests: ZcashTestCase {
         await processorEventHandler.subscribe(to: processor, expectations: expectations)
         await processor.start()
     }
-    
+
     func testNotifiesReorg() async {
         await startProcessing()
 
@@ -196,7 +196,7 @@ class CompactBlockReorgTests: ZcashTestCase {
             enforceOrder: true
         )
     }
-    
+
     private func expectedBatches(currentHeight: BlockHeight, targetHeight: BlockHeight, batchSize: Int) -> Int {
         (abs(currentHeight - targetHeight) / batchSize)
     }

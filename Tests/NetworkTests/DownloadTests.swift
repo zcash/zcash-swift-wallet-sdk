@@ -35,7 +35,7 @@ class DownloadTests: ZcashTestCase {
             isTorEnabled: false,
             isExchangeRateEnabled: false
         )
-        
+
         mockContainer.mock(type: LatestBlocksDataProvider.self, isSingleton: true) { _ in LatestBlocksDataProviderMock() }
     }
 
@@ -56,14 +56,14 @@ class DownloadTests: ZcashTestCase {
         let blockCount = 100
         let activationHeight = network.constants.saplingActivationHeight
         let range = activationHeight ... activationHeight + blockCount
-        
+
         let processorConfig = CompactBlockProcessor.Configuration.standard(
             for: network,
             walletBirthday: network.constants.saplingActivationHeight
         )
 
         let compactBlockProcessor = CompactBlockProcessor(container: mockContainer, config: processorConfig)
-        
+
         do {
             try await compactBlockProcessor.blockDownloaderService.downloadBlockRange(range, mode: .direct)
         } catch {

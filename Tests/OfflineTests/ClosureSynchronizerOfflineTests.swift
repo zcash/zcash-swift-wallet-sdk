@@ -1,6 +1,6 @@
 //
 //  ClosureSynchronizerOfflineTests.swift
-//  
+//
 //
 //  Created by Michal Fousek on 20.03.2023.
 //
@@ -534,7 +534,7 @@ class ClosureSynchronizerOfflineTests: XCTestCase {
 
     func testGetTransparentBalanceSucceed() {
         let accountUUID = TestsData.mockedAccountUUID
-        
+
         let expectedBalance = [accountUUID: AccountBalance(saplingBalance: .zero, orchardBalance: .zero, unshielded: Zatoshi(200))]
 
         synchronizerMock.getAccountsBalancesClosure = {
@@ -577,7 +577,7 @@ class ClosureSynchronizerOfflineTests: XCTestCase {
 
     func testGetShieldedBalanceSucceed() {
         let accountUUID = TestsData.mockedAccountUUID
-        
+
         let expectedBalance = [
             accountUUID: AccountBalance(
                 saplingBalance:
@@ -595,7 +595,7 @@ class ClosureSynchronizerOfflineTests: XCTestCase {
                 unshielded: .zero
             )
         ]
-        
+
         synchronizerMock.getAccountsBalancesClosure = {
             return expectedBalance
         }
@@ -652,7 +652,7 @@ class ClosureSynchronizerOfflineTests: XCTestCase {
                 unshielded: .zero
             )
         ]
-        
+
         synchronizerMock.getAccountsBalancesClosure = {
             return expectedBalance
         }

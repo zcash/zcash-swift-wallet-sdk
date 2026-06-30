@@ -22,12 +22,12 @@ class TestCoordinator {
         case builderError
         case seedRequiredForMigration
     }
-    
+
     enum SyncThreshold {
         case upTo(height: BlockHeight)
         case latestHeight
     }
-    
+
     enum DarksideData {
         case `default`
         case predefined(dataset: DarksideDataset)
@@ -52,7 +52,7 @@ class TestCoordinator {
         singleCallTimeoutInMillis: 10000,
         streamingCallTimeoutInMillis: 1000000
     )
-    
+
     init(
         alias: ZcashSynchronizerAlias = .default,
         container: DIContainer,
@@ -85,21 +85,21 @@ class TestCoordinator {
         )
 
         let derivationTool = DerivationTool(networkType: network.networkType)
-        
+
         self.spendingKey = try derivationTool.deriveUnifiedSpendingKey(
             seed: Environment.seedBytes,
             accountIndex: Zip32AccountIndex(0)
         )
-        
+
         self.viewingKey = try derivationTool.deriveUnifiedFullViewingKey(from: spendingKey)
         self.birthday = walletBirthday
         self.network = network
-        
+
         let liveService = LightWalletServiceFactory(endpoint: endpoint).make()
         self.service = DarksideWalletService(endpoint: endpoint, service: liveService)
         self.synchronizer = SDKSynchronizer(initializer: initializer)
         subscribeToState(synchronizer: self.synchronizer)
-        
+
         if callPrepareInConstructor {
             if case .seedRequired = try await prepare(seed: Environment.seedBytes) {
                 throw TestCoordinator.CoordinatorError.seedRequiredForMigration
@@ -115,13 +115,13 @@ class TestCoordinator {
     func prepare(seed: [UInt8]) async throws -> Initializer.InitializationResult {
         return try await synchronizer.prepare(with: seed, walletBirthday: self.birthday, name: "", keySource: nil)
     }
-    
+
     func stop() async throws {
         await synchronizer.blockProcessor.stop()
         completionHandler = nil
         errorHandler = nil
     }
-    
+
     func setDarksideWalletState(_ state: DarksideData) throws {
         switch state {
         case .default:
@@ -132,18 +132,18 @@ class TestCoordinator {
             try service.useDataset(from: urlString)
         }
     }
-    
+
     func setLatestHeight(height: BlockHeight) throws {
         try service.applyStaged(nextLatestHeight: height)
     }
-    
+
     func sync(completion: @escaping (SDKSynchronizer) async throws -> Void, error: @escaping (Error?) async -> Void) async throws {
         self.completionHandler = completion
         self.errorHandler = error
-        
+
         try await synchronizer.start(retry: true)
     }
-    
+
     // MARK: notifications
     func subscribeToState(synchronizer: Synchronizer) {
         synchronizer.stateStream
@@ -161,13 +161,13 @@ class TestCoordinator {
             )
             .store(in: &cancellables)
     }
-    
+
     func synchronizerFailed(error: Error) {
         Task(priority: .high) {
             await self.errorHandler?(error)
         }
     }
-    
+
     func synchronizerSynced() throws {
         if case .stopped = self.synchronizer.latestState.internalSyncStatus {
             LoggerProxy.debug("WARNING: notification received after synchronizer was stopped")
@@ -190,27 +190,27 @@ extension TestCoordinator {
             try service.useDataset(urlString)
         }
     }
-    
+
     func stageBlockCreate(height: BlockHeight, count: Int = 1, nonce: Int = 0) throws {
         try service.stageBlocksCreate(from: height, count: count, nonce: nonce)
     }
-    
+
     func applyStaged(blockheight: BlockHeight) throws {
         try service.applyStaged(nextLatestHeight: blockheight)
     }
-    
+
     func stageTransaction(_ transaction: RawTransaction, at height: BlockHeight) throws {
         try service.stageTransaction(transaction, at: height)
     }
-    
+
     func stageTransaction(url: String, at height: BlockHeight) throws {
         try service.stageTransaction(from: url, at: height)
     }
-    
+
     func latestHeight(mode: ServiceMode) async throws -> BlockHeight {
         try await service.latestBlockHeight(mode: mode)
     }
-    
+
     func reset(saplingActivation: BlockHeight, startSaplingTreeSize: UInt32, startOrchardTreeSize: UInt32, branchID: String, chainName: String) async throws {
         await self.synchronizer.blockProcessor.stop()
 
@@ -241,7 +241,7 @@ extension TestCoordinator {
             chainName: chainName
         )
     }
-    
+
     func getIncomingTransactions() throws -> [RawTransaction]? {
         return try service.getIncomingTransactions()
     }
@@ -258,7 +258,7 @@ enum TemporaryDbBuilder {
     static func build() -> TemporaryTestDatabases {
         let tempUrl = try! __documentsDirectory()
         let timestamp = String(Int(Date().timeIntervalSince1970))
-        
+
         return TemporaryTestDatabases(
             fsCacheDbRoot: tempUrl.appendingPathComponent("fs_cache_\(timestamp)"),
             generalStorageURL: tempUrl.appendingPathComponent("general_storage_\(timestamp)"),

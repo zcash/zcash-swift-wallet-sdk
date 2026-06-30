@@ -1,6 +1,6 @@
 //
 //  SaplingParamsActionTests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 18.05.2023.
 //
@@ -18,7 +18,7 @@ final class SaplingParamsActionTests: ZcashTestCase {
 
         do {
             let context = ActionContextMock.default()
-            
+
             let nextContext = try await saplingParamsActionAction.run(with: context) { _ in }
 
             XCTAssertTrue(loggerMock.debugFileFunctionLineCalled, "logger.debug(...) is expected to be called.")
@@ -30,7 +30,7 @@ final class SaplingParamsActionTests: ZcashTestCase {
             XCTFail("testSaplingParamsAction_NextAction is not expected to fail. \(error)")
         }
     }
-    
+
     private func setupAction(
         _ saplingParametersHandlerMock: SaplingParametersHandlerMock = SaplingParametersHandlerMock(),
         _ loggerMock: LoggerMock = LoggerMock()

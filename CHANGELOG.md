@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+# 2.6.0-alpha.6
+
+## Added
+- `BlockEnhancer` now emits structured diagnostic logs at each step of an enhance cycle — cycle start with request count, per-request type and attempt, fetch response shape (status, whether a tx was returned, whether a `minedHeight` was set), the decision taken (`setTransactionStatus` or `decryptAndStoreTransaction`), per-attempt errors with error type, retry exhaustion, and cycle completion. Logs use opaque per-request correlation IDs (no transaction ids, addresses, or other PII) so production logs are debuggable for future stuck-transaction reports without exposing user-identifying data.
+
+## Fixed
+- `Synchronizer.deleteAccount(_:)` no longer fails with an `InvalidParameterName` error when deleting an account that is referenced by a cross-account transaction — for example, disconnecting a Keystone hardware-wallet account after funds were transferred between it and another account in the same wallet. Fixed upstream in `zcash_client_sqlite` 0.21.1 ([librustzcash#2426](https://github.com/zcash/librustzcash/pull/2426)); the bundled `libzcashlc` now builds against that version.
+- `BlockEnhancer` retry loop now covers the post-fetch write step (`setTransactionStatus` / `decryptAndStoreTransaction`) on the `.getStatus` and `.enhancement` branches. Previously `retry = false` was set immediately after the fetch returned, so a write failure short-circuited the loop after one attempt and the new "retry exhausted" diagnostic never fired — exactly the stuck-transaction signature this PR is meant to make diagnosable. The `.transactionsInvolvingAddress` branch already had the correct ordering; the three cases are now consistent.
+- `TxResubmissionAction.latestResolvedTime` now seeds to the current wall-clock time at construction instead of `0`. The previous zero-init made the 5-minute throttle a no-op on the action's first invocation (`diff = now - 0` is ~56 years, well over the 300s threshold), so the action could re-broadcast a freshly-submitted transaction during the very first sync cycle of the session. The throttle now engages on first invocation as intended.
+
 ## Changed
 - New wallets now use a recent tree state from the lightwalletd server as the wallet birthday, reducing unnecessary block scanning on first launch while retaining reorg safety. Falls back to the bundled checkpoint if the server is unreachable.
 - `Broadcaster` has been redesigned for multi-server submission (breaking change to the 2.6.0-alpha API; see MIGRATING.md):
@@ -19,10 +29,26 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Fixed
 - `LightWalletGRPCService` now shuts down its NIO event loop group in `stop()`, fixing a thread leak for every ephemeral connection (one per endpoint per `Broadcaster` submission attempt).
-
-## Fixed
 - `Synchronizer.submitTransactions` now verifies submit failures against the server before surfacing them: when the submit RPC returns a non-zero error code, the SDK immediately asks the same lightwalletd whether the tx is known via `GetTransaction`, and reclassifies the result as `TransactionSubmitResult.success` if the server reports the tx is in mempool or chain. This covers the cases that previously produced misleading failure UIs — Zebra's `MempoolError::InMempool` / `AlreadyQueued`, zcashd's `RPC_VERIFY_ALREADY_IN_CHAIN`, and any future "already known" variant we don't recognise — without depending on backend-specific error codes or message text.
 - `ZcashTransaction.Overview.State.init` now accepts an optional `expiryHeight:` argument and treats an unmined transaction whose `expiryHeight` is at or below the supplied `currentHeight` as `.expired` even when the `expiredUnmined` column hasn't been flipped to `true`. This makes the Swift-side state-machine resilient to lagging or missed updates of that column (in particular: sent transactions that were unmined when the wallet migrated across a consensus-rule change, which previously stayed reported as `.pending` indefinitely). Existing call sites that don't pass `expiryHeight` keep their prior behaviour.
+
+## Checkpoints
+
+Mainnet
+
+````
+Sources/ZcashLightClientKit/Resources/checkpoints/mainnet/3357500.json
+...
+Sources/ZcashLightClientKit/Resources/checkpoints/mainnet/3390000.json
+````
+
+Testnet
+
+````
+Sources/ZcashLightClientKit/Resources/checkpoints/testnet/4040000.json
+...
+Sources/ZcashLightClientKit/Resources/checkpoints/testnet/4090000.json
+````
 
 # 2.6.0-alpha.5
 

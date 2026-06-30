@@ -1,6 +1,6 @@
 //
 //  ValidateServerActionTests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 16.05.2023.
 //
@@ -17,32 +17,32 @@ final class ValidateServerActionTests: ZcashTestCase {
 
     override func setUp() {
         super.setUp()
-        
+
         underlyingChainName = "test"
         underlyingNetworkType = .testnet
         underlyingSaplingActivationHeight = nil
         underlyingConsensusBranchID = "c2d6d0b4"
     }
-    
+
     func testValidateServerAction_NextAction() async throws {
         let validateServerAction = setupAction()
-        
+
         do {
             let context = ActionContextMock.default()
             let nextContext = try await validateServerAction.run(with: context) { _ in }
-            
+
             let acResult = nextContext.checkStateIs(.fetchUTXO)
             XCTAssertTrue(acResult == .true, "Check of state failed with '\(acResult)'")
         } catch {
             XCTFail("testValidateServerAction_NextAction is not expected to fail. \(error)")
         }
     }
-    
+
     func testValidateServerAction_ChainNameError() async throws {
         underlyingChainName = "invalid"
-        
+
         let validateServerAction = setupAction()
-        
+
         do {
             _ = try await validateServerAction.run(with: ActionContextMock()) { _ in }
             XCTFail("testValidateServerAction_ChainNameError is expected to fail.")
@@ -55,12 +55,12 @@ final class ValidateServerActionTests: ZcashTestCase {
             """)
         }
     }
-    
+
     func testValidateServerAction_NetworkMatchError() async throws {
         underlyingNetworkType = .mainnet
 
         let validateServerAction = setupAction()
-        
+
         do {
             _ = try await validateServerAction.run(with: ActionContextMock()) { _ in }
             XCTFail("testValidateServerAction_NetworkMatchError is expected to fail.")
@@ -74,12 +74,12 @@ final class ValidateServerActionTests: ZcashTestCase {
             """)
         }
     }
-    
+
     func testValidateServerAction_SaplingActivationError() async throws {
         underlyingSaplingActivationHeight = 1
 
         let validateServerAction = setupAction()
-        
+
         do {
             _ = try await validateServerAction.run(with: ActionContextMock()) { _ in }
             XCTFail("testValidateServerAction_SaplingActivationError is expected to fail.")
@@ -93,7 +93,7 @@ final class ValidateServerActionTests: ZcashTestCase {
             """)
         }
     }
-    
+
     func testValidateServerAction_ConsensusBranchIDError_InvalidRemoteBranch() async throws {
         underlyingConsensusBranchID = "1 1"
 
@@ -110,7 +110,7 @@ final class ValidateServerActionTests: ZcashTestCase {
             """)
         }
     }
-    
+
     func testValidateServerAction_ConsensusBranchIDError_ValidRemoteBranch() async throws {
         underlyingConsensusBranchID = "1"
 
@@ -129,7 +129,7 @@ final class ValidateServerActionTests: ZcashTestCase {
             """)
         }
     }
-    
+
     private func setupAction() -> ValidateServerAction {
         let config: CompactBlockProcessor.Configuration = .standard(
             for: ZcashNetworkBuilder.network(for: underlyingNetworkType), walletBirthday: 0
@@ -140,7 +140,7 @@ final class ValidateServerActionTests: ZcashTestCase {
             XCTAssertEqual(height, 2, "")
             return -1026109260
         }
-        
+
         let lightWalletdInfoMock = LightWalletdInfoMock()
         lightWalletdInfoMock.underlyingConsensusBranchID = underlyingConsensusBranchID
         lightWalletdInfoMock.underlyingSaplingActivationHeight = UInt64(underlyingSaplingActivationHeight ?? config.saplingActivation)
@@ -149,7 +149,7 @@ final class ValidateServerActionTests: ZcashTestCase {
 
         let serviceMock = LightWalletServiceMock()
         serviceMock.getInfoModeReturnValue = lightWalletdInfoMock
-        
+
         mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in rustBackendMock }
         mockContainer.mock(type: LightWalletService.self, isSingleton: true) { _ in serviceMock }
         mockContainer.mock(type: SDKFlags.self, isSingleton: true) { _ in SDKFlags(torEnabled: false, exchangeRateEnabled: false) }

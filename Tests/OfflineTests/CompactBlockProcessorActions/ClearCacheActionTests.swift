@@ -1,6 +1,6 @@
 //
 //  ClearCacheActionTests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 22.05.2023.
 //
@@ -20,16 +20,16 @@ final class ClearCacheActionTests: ZcashTestCase {
             context.prevState = .idle
 
             let nextContext = try await clearCacheAction.run(with: context) { _ in }
-            
+
             XCTAssertTrue(compactBlockRepositoryMock.clearCalled, "storage.clear() is expected to be called.")
-            
+
             let acResult = nextContext.checkStateIs(.processSuggestedScanRanges)
             XCTAssertTrue(acResult == .true, "Check of state failed with '\(acResult)'")
         } catch {
             XCTFail("testClearCacheAction_MigrationLegacyCacheDB is not expected to fail. \(error)")
         }
     }
-    
+
     private func setupAction(
         _ compactBlockRepositoryMock: CompactBlockRepositoryMock = CompactBlockRepositoryMock()
     ) -> ClearCacheAction {

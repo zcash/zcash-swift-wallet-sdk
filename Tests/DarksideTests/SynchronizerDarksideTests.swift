@@ -30,7 +30,7 @@ class SynchronizerDarksideTests: ZcashTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        
+
         mockContainer.mock(type: CheckpointSource.self, isSingleton: true) { _ in
             return DarksideMainnetCheckpointSource()
         }
@@ -44,7 +44,7 @@ class SynchronizerDarksideTests: ZcashTestCase {
             walletBirthday: birthday,
             network: network
         )
-        
+
         try await coordinator.reset(
             saplingActivation: 663150,
             startSaplingTreeSize: 128607,
@@ -65,7 +65,7 @@ class SynchronizerDarksideTests: ZcashTestCase {
         try? FileManager.default.removeItem(at: coordinator.databases.fsCacheDbRoot)
         try? FileManager.default.removeItem(at: coordinator.databases.dataDB)
     }
-   
+
     func testFoundTransactions() async throws {
         coordinator.synchronizer.eventStream
             .map { event in
@@ -78,9 +78,9 @@ class SynchronizerDarksideTests: ZcashTestCase {
 
         try FakeChainBuilder.buildChain(darksideWallet: self.coordinator.service, branchID: branchID, chainName: chainName)
         let receivedTxHeight: BlockHeight = 663188
-    
+
         try coordinator.applyStaged(blockheight: receivedTxHeight + 1)
-        
+
         sleep(2)
         let preTxExpectation = XCTestExpectation(description: "pre receive")
 
@@ -90,12 +90,12 @@ class SynchronizerDarksideTests: ZcashTestCase {
             },
             error: self.handleError
         )
-        
+
         await fulfillment(of: [preTxExpectation], timeout: 5)
-        
+
         XCTAssertEqual(self.foundTransactions.count, 2)
     }
-    
+
     func testFoundManyTransactions() async throws {
         self.idGenerator.ids = [.deadbeef, .beefbeef, .beefdead]
         coordinator.synchronizer.eventStream
@@ -106,12 +106,12 @@ class SynchronizerDarksideTests: ZcashTestCase {
             .compactMap { $0 }
             .sink(receiveValue: { [weak self] transactions in self?.handleFoundTransactions(transactions: transactions) })
             .store(in: &cancellables)
-        
+
         try FakeChainBuilder.buildChain(darksideWallet: self.coordinator.service, branchID: branchID, chainName: chainName, length: 1000)
         let receivedTxHeight: BlockHeight = 663229
-    
+
         try coordinator.applyStaged(blockheight: receivedTxHeight + 1)
-        
+
         sleep(2)
         let firsTxExpectation = XCTestExpectation(description: "first sync")
 
@@ -121,16 +121,16 @@ class SynchronizerDarksideTests: ZcashTestCase {
             },
             error: self.handleError
         )
-        
+
         await fulfillment(of: [firsTxExpectation], timeout: 10)
-        
+
         XCTAssertEqual(self.foundTransactions.count, 5)
-        
+
         self.foundTransactions.removeAll()
-        
+
         try coordinator.applyStaged(blockheight: 663900)
         sleep(2)
-        
+
         let preTxExpectation = XCTestExpectation(description: "intermediate sync")
 
         try await coordinator.sync(
@@ -139,32 +139,32 @@ class SynchronizerDarksideTests: ZcashTestCase {
             },
             error: self.handleError
         )
-        
+
         await fulfillment(of: [preTxExpectation], timeout: 10)
-        
+
         XCTAssertTrue(self.foundTransactions.isEmpty)
-        
+
         let findManyTxExpectation = XCTestExpectation(description: "final sync")
-        
+
         try coordinator.applyStaged(blockheight: 664010)
         sleep(2)
-        
+
         try await coordinator.sync(
             completion: { _ in
                 findManyTxExpectation.fulfill()
             },
             error: self.handleError
         )
-        
+
         await fulfillment(of: [findManyTxExpectation], timeout: 10)
-        
+
         XCTAssertEqual(self.foundTransactions.count, 2)
     }
 
     func testLastStates() async throws {
         self.idGenerator.ids = [.deadbeef, .beefbeef, .beefdead]
         let uuids = self.idGenerator.ids
-        
+
         var cancellables: [AnyCancellable] = []
 
         var states: [SynchronizerState] = []
@@ -423,11 +423,11 @@ class SynchronizerDarksideTests: ZcashTestCase {
 
         await fulfillment(of: [secondSyncExpectation], timeout: 10)
     }
-    
+
     func handleFoundTransactions(transactions: [ZcashTransaction.Overview]) {
         self.foundTransactions.append(contentsOf: transactions)
     }
-    
+
     func handleError(_ error: Error?) async {
         _ = try? await coordinator.stop()
         guard let testError = error else {

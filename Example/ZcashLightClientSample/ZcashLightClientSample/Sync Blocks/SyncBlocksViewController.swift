@@ -85,7 +85,7 @@ class SyncBlocksViewController: UIViewController {
             break
         }
     }
-    
+
     @IBAction func startStop() {
         Task { @MainActor in
             await doStartStop()

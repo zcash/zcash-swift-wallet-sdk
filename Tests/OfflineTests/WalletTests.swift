@@ -23,14 +23,14 @@ class WalletTests: ZcashTestCase {
         dbData = try __dataDbURL()
         paramDestination = try __documentsDirectory().appendingPathComponent("parameters")
     }
-    
+
     override func tearDownWithError() throws {
         try super.tearDownWithError()
         if testFileManager.fileExists(atPath: dbData.absoluteString) {
             try testFileManager.trashItem(at: dbData, resultingItemURL: nil)
         }
     }
-    
+
     func testWalletInitialization() async throws {
         let mockContainer = DIContainer()
         mockContainer.isTestEnvironment = true
@@ -42,7 +42,7 @@ class WalletTests: ZcashTestCase {
         serviceMock.getTreeStateModeClosure = { _, _ in
             throw ZcashError.rustTorLwdGetTreeState("test")
         }
-        
+
         let wallet = Initializer(
             container: mockContainer,
             cacheDbURL: nil,
@@ -58,7 +58,7 @@ class WalletTests: ZcashTestCase {
             isTorEnabled: false,
             isExchangeRateEnabled: false
         )
-        
+
         let synchronizer = SDKSynchronizer(initializer: wallet)
         do {
             guard case .success = try await synchronizer.prepare(

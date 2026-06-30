@@ -13,7 +13,7 @@ import SQLite
 struct TestDbHandle {
     var originalDb: URL
     var readWriteDb: URL
-    
+
     init(originalDb: URL) {
         self.originalDb = originalDb
         // avoid files clashing because crashing tests failed to remove previous ones by incrementally changing the filename
@@ -22,15 +22,15 @@ struct TestDbHandle {
                 self.originalDb.lastPathComponent.appending("_\(Date().timeIntervalSince1970)")
             )
     }
-    
+
     func setUp() throws {
         try FileManager.default.copyItem(at: originalDb, to: readWriteDb)
     }
-    
+
     func dispose() {
         try? FileManager.default.removeItem(at: readWriteDb)
     }
-    
+
     func connectionProvider(readwrite: Bool = true) -> ConnectionProvider {
         SimpleConnectionProvider(path: self.readWriteDb.absoluteString, readonly: !readwrite)
     }
@@ -41,7 +41,7 @@ enum TestDbBuilder {
     enum TestBuilderError: Error {
         case generalError
     }
-    
+
     static func prePopulatedDataDbURL() -> URL? {
         Bundle.module.url(forResource: "test_data", withExtension: "db")
     }
@@ -53,12 +53,12 @@ enum TestDbBuilder {
     static func prePopulatedDarksideCacheDb() -> URL? {
         Bundle.module.url(forResource: "darkside_caches", withExtension: "db")
     }
-    
+
     static func prepopulatedDataDbProvider(rustBackend: ZcashRustBackend) async throws -> ConnectionProvider? {
         let provider = SimpleConnectionProvider(path: (rustBackend.dbData).0, readonly: true)
 
         let initResult = try await rustBackend.initDataDb(seed: Environment.seedBytes)
-        
+
         switch initResult {
         case .success: return provider
         case .seedRequired:
@@ -67,10 +67,10 @@ enum TestDbBuilder {
             throw ZcashError.compactBlockProcessorDataDbInitFailed("Relevant seed value required")
         }
     }
-    
+
     static func transactionRepository(rustBackend: ZcashRustBackend) async throws -> TransactionRepository? {
         guard let provider = try await prepopulatedDataDbProvider(rustBackend: rustBackend) else { return nil }
-        
+
         return TransactionSQLDAO(dbProvider: provider)
     }
 
@@ -79,12 +79,12 @@ enum TestDbBuilder {
 
         return TransactionSQLDAO(dbProvider: provider, traceClosure: closure)
     }
-        
+
     static func seed(db: CompactBlockRepository, with blockRange: CompactBlockRange) async throws {
         guard let blocks = StubBlockCreator.createBlockRange(blockRange) else {
             throw TestBuilderError.generalError
         }
-        
+
         try await db.write(blocks: blocks)
     }
 }
@@ -96,7 +96,7 @@ class InMemoryDbProvider: ConnectionProvider {
     init(readonly: Bool = false) throws {
         self.readonly = readonly
     }
-    
+
     func connection() throws -> Connection {
         guard let conn else {
             let newConnection = try Connection(.inMemory, readonly: readonly)
@@ -142,10 +142,10 @@ enum StubBlockCreator {
             }
             blocks.append(block)
         }
-        
+
         return blocks
     }
-    
+
     static func randomData(ofLength length: Int) -> Data? {
         var bytes = [UInt8](repeating: 0, count: length)
         let status = SecRandomCopyBytes(kSecRandomDefault, length, &bytes)

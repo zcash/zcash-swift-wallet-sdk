@@ -1,6 +1,6 @@
 //
 //  EnhanceAction.swift
-//  
+//
 //
 //  Created by Michal Fousek on 05.05.2023.
 //
@@ -11,7 +11,7 @@ final class EnhanceAction {
     var blockEnhancer: BlockEnhancer
     let configProvider: CompactBlockProcessor.ConfigProvider
     let logger: Logger
-    
+
     init(container: DIContainer, configProvider: CompactBlockProcessor.ConfigProvider) {
         blockEnhancer = container.resolve(BlockEnhancer.self)
         self.configProvider = configProvider
@@ -64,7 +64,7 @@ extension EnhanceAction: Action {
         }
         let enhanceRangeStart = max(firstUnenhancedHeight, lastEnhancedHeight + 1)
         let enhanceRangeEnd = min(latestBlockHeight, lastScannedHeight)
-        
+
         // This may happen:
         // For example whole enhance range is 0...2100 Without this force enhance is done for ranges: 0...1000, 1001...2000. And that's it.
         // Last 100 blocks isn't enhanced.

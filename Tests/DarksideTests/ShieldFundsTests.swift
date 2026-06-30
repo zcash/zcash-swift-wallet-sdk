@@ -28,13 +28,13 @@ class ShieldFundsTests: ZcashTestCase {
         mockContainer.mock(type: CheckpointSource.self, isSingleton: true) { _ in
             return DarksideMainnetCheckpointSource()
         }
-        
+
         self.coordinator = try await TestCoordinator(
             container: mockContainer,
             walletBirthday: birthday,
             network: network
         )
-        
+
         try await coordinator.reset(
             saplingActivation: birthday,
             startSaplingTreeSize: 1120954,
@@ -42,7 +42,7 @@ class ShieldFundsTests: ZcashTestCase {
             branchID: self.branchID,
             chainName: self.chainName
         )
-        
+
         try coordinator.service.clearAddedUTXOs()
     }
 
@@ -92,7 +92,7 @@ class ShieldFundsTests: ZcashTestCase {
     // TODO: [#1518] Fix the test, https://github.com/Electric-Coin-Company/zcash-swift-wallet-sdk/issues/1518
     func _testShieldFunds() async throws {
         let accountUUID = TestsData.mockedAccountUUID
-        
+
         // 1. load the dataset
         try coordinator.service.useDataset(from: "https://raw.githubusercontent.com/zcash-hackworks/darksidewalletd-test-data/master/shield-funds/1631000.txt")
 
@@ -100,7 +100,7 @@ class ShieldFundsTests: ZcashTestCase {
         try coordinator.stageBlockCreate(height: birthday + 1, count: 200, nonce: 0)
 
         sleep(1)
-        
+
         let utxoHeight = BlockHeight(1631177)
         var shouldContinue = false
         var initialTotalBalance = Zatoshi(-1)

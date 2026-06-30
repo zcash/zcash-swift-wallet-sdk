@@ -48,11 +48,11 @@ enum LightWalletEndpointBuilder {
     static var `default`: LightWalletEndpoint {
         LightWalletEndpoint(address: Constants.address, port: 9067, secure: false)
     }
-    
+
     static var publicTestnet: LightWalletEndpoint {
         LightWalletEndpoint(address: "testnet.zec.rocks", port: 443, secure: true)
     }
-    
+
     static var eccTestnet: LightWalletEndpoint {
         LightWalletEndpoint(address: "lightwalletd.testnet.electriccoin.co", port: 9067, secure: true)
     }
@@ -82,7 +82,7 @@ enum MockDbInit {
     static func emptyFile(at path: String) -> Bool {
         FileManager.default.createFile(atPath: path, contents: Data("".utf8), attributes: nil)
     }
-    
+
     static func destroy(at path: String) throws {
         try FileManager.default.removeItem(atPath: path)
     }
@@ -121,7 +121,7 @@ func copyParametersToDocuments() throws -> (spend: URL, output: URL) {
     let outputURL = try __documentsDirectory().appendingPathComponent("sapling-output.params", isDirectory: false)
     try FileManager.default.copyItem(at: try __spendParamsURL(), to: spendURL)
     try FileManager.default.copyItem(at: try __outputParamsURL(), to: outputURL)
-    
+
     return (spendURL, outputURL)
 }
 

@@ -22,7 +22,7 @@ class Z2TReceiveTests: ZcashTestCase {
     let branchID = "2bb40e60"
     let chainName = "main"
     var cancellables: [AnyCancellable] = []
-    
+
     let network = DarksideWalletDNetwork()
 
     override func setUp() async throws {
@@ -31,13 +31,13 @@ class Z2TReceiveTests: ZcashTestCase {
         mockContainer.mock(type: CheckpointSource.self, isSingleton: true) { _ in
             return DarksideMainnetCheckpointSource()
         }
-        
+
         self.coordinator = try await TestCoordinator(
             container: mockContainer,
             walletBirthday: birthday,
             network: network
         )
-        
+
         try await coordinator.reset(
             saplingActivation: 663150,
             startSaplingTreeSize: 128607,
@@ -57,7 +57,7 @@ class Z2TReceiveTests: ZcashTestCase {
         try? FileManager.default.removeItem(at: coordinator.databases.fsCacheDbRoot)
         try? FileManager.default.removeItem(at: coordinator.databases.dataDB)
     }
-    
+
     func subscribeToFoundTransactions() {
         coordinator.synchronizer.eventStream
             .filter { event in
@@ -78,10 +78,10 @@ class Z2TReceiveTests: ZcashTestCase {
         2. applyStaged(received_Tx_height)
         */
         try coordinator.applyStaged(blockheight: receivedTxHeight)
-        
+
         sleep(2)
         let preTxExpectation = XCTestExpectation(description: "pre receive")
-        
+
         /*
         3. sync up to received_Tx_height
         */
@@ -96,7 +96,7 @@ class Z2TReceiveTests: ZcashTestCase {
             await handleError(error)
         }
         await fulfillment(of: [preTxExpectation, foundTransactionsExpectation], timeout: 5)
-        
+
         let sendExpectation = XCTestExpectation(description: "sendToAddress")
         let sendAmount = Zatoshi(10000)
         /*

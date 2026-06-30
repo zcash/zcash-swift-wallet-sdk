@@ -68,7 +68,7 @@ public struct DefaultResourceProvider: ResourceProvider {
             return URL(fileURLWithPath: "file://\(ZcashSDK.outputParamFilename)")
         }
     }
-    
+
     init(network: ZcashNetwork) {
         self.network = network
     }

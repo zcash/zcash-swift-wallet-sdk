@@ -22,7 +22,7 @@ public protocol KeyDeriving {
     /// - Parameter ufvk: UTF-8 encoded String containing a valid UFVK
     /// - Returns: the corresponding default `UnifiedAddress`
     func deriveUnifiedAddressFrom(ufvk: String) throws -> UnifiedAddress
-    
+
     /// Given the seed bytes and ZIP 32 account index, return the corresponding UnifiedSpendingKey.
     /// - Parameter seed: `[Uint8]` seed bytes
     /// - Parameter accountIndex: the ZIP 32 index of the account
@@ -81,7 +81,7 @@ public protocol KeyDeriving {
 
 public class DerivationTool: KeyDeriving {
     let backend: ZcashKeyDerivationBackendWelding
-    
+
     public init(networkType: NetworkType) {
         self.backend = ZcashKeyDerivationBackend(networkType: networkType)
     }
@@ -101,7 +101,7 @@ public class DerivationTool: KeyDeriving {
     public func deriveUnifiedAddressFrom(ufvk: String) throws -> UnifiedAddress {
         try backend.deriveUnifiedAddressFrom(ufvk: ufvk)
     }
-    
+
     /// Given a spending key, return the associated viewing key.
     /// - Parameter spendingKey: the `UnifiedSpendingKey` from which to derive the `UnifiedFullViewingKey` from.
     /// - Returns: the viewing key that corresponds to the spending key.

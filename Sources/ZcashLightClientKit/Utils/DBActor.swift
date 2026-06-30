@@ -14,7 +14,7 @@ enum DBActor {
 
     actor Actor { }
     static let shared = Actor()
-    
+
     static var sharedUnownedExecutor: UnownedSerialExecutor {
         shared.unownedExecutor
     }

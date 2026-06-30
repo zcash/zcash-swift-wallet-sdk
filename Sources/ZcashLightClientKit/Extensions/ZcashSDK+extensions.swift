@@ -13,7 +13,7 @@ public extension ConsensusBranchID {
     func toString() -> String {
         String(format: "%02x", self)
     }
-    
+
     static func fromString(_ str: String) -> ConsensusBranchID? {
         guard let bitpattern = UInt32(str, radix: 16) else { return nil }
         return Int32(bitPattern: bitpattern)

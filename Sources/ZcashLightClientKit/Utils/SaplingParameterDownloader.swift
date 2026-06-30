@@ -33,7 +33,7 @@ public enum SaplingParameterDownloader {
         try isSpendParamsSHA1Valid(url: resultURL)
         return resultURL
     }
-    
+
     /// Download an Output parameter from default host and stores it at given URL
     /// - Parameters:
     ///     - at: The destination URL for the download
@@ -68,12 +68,12 @@ public enum SaplingParameterDownloader {
     ) async throws -> (spend: URL, output: URL) {
         if retryEnabled {
             var retryAttempts = 3
-            
+
             while retryAttempts > 0 {
                 do {
                     async let spendResultURL = ensureSpendParameter(at: spendURL, sourceURL: spendSourceURL, logger: logger)
                     async let outputResultURL = ensureOutputParameter(at: outputURL, sourceURL: outputSourceURL, logger: logger)
-                    
+
                     let results = try await [spendResultURL, outputResultURL]
                     return (spend: results[0], output: results[1])
                 } catch {
@@ -82,14 +82,14 @@ public enum SaplingParameterDownloader {
                 }
             }
         }
-        
+
         async let spendResultURL = ensureSpendParameter(at: spendURL, sourceURL: spendSourceURL, logger: logger)
         async let outputResultURL = ensureOutputParameter(at: outputURL, sourceURL: outputSourceURL, logger: logger)
-        
+
         let results = try await [spendResultURL, outputResultURL]
         return (spend: results[0], output: results[1])
     }
-        
+
     static func ensureSpendParameter(at url: URL, sourceURL: URL, logger: Logger) async throws -> URL {
         if isFilePresent(url: url) {
             try isSpendParamsSHA1Valid(url: url)
@@ -98,7 +98,7 @@ public enum SaplingParameterDownloader {
             return try await downloadSpendParameter(url, sourceURL: sourceURL, logger: logger)
         }
     }
-    
+
     static func ensureOutputParameter(at url: URL, sourceURL: URL, logger: Logger) async throws -> URL {
         if isFilePresent(url: url) {
             try isOutputParamsSHA1Valid(url: url)
@@ -107,11 +107,11 @@ public enum SaplingParameterDownloader {
             return try await downloadOutputParameter(url, sourceURL: sourceURL, logger: logger)
         }
     }
-    
+
     static func isFilePresent(url: URL) -> Bool {
         (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil
     }
-    
+
     static func isSpendParamsSHA1Valid(url: URL) throws {
         if Insecure.SHA1.hash(data: try Data(contentsOf: url)).hexString != Constants.spendParamFileSHA1 {
             try? FileManager.default.removeItem(at: url)

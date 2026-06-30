@@ -561,7 +561,7 @@ public protocol Synchronizer: AnyObject {
     ///
     /// - Throws an error lwd related (fetching the transaction) or decryption related.
     func enhanceTransactionBy(txId: TxId) async throws -> Void
-    
+
     /// Deletes the specified account, and all transactions that exclusively involve it, from the wallet database.
     /// - Parameter accountUUID: The account which is required to be deleted.
     ///
@@ -690,7 +690,7 @@ public enum SyncStatus: Equatable {
         default: return false
         }
     }
-    
+
     /// Indicates that this Synchronizer is actively preparing to start,
     /// which usually involves setting up database tables, migrations or
     /// taking other maintenance steps that need to occur after an upgrade.
@@ -704,22 +704,22 @@ public enum SyncStatus: Equatable {
 
     /// Indicates that this Synchronizer was succesfully stopped via `stop()` method.
     case stopped
-    
+
     case error(_ error: Error)
-    
+
     public var isSyncing: Bool {
         if case .syncing = self {
             return true
         }
-        
+
         return false
     }
-    
+
     public var isSynced: Bool {
         if case .upToDate = self {
             return true
         }
-        
+
         return false
     }
 
@@ -727,7 +727,7 @@ public enum SyncStatus: Equatable {
         if case .unprepared = self {
             return false
         }
-        
+
         return true
     }
 
@@ -750,7 +750,7 @@ enum InternalSyncStatus: Equatable {
 
     /// Indicates that this Synchronizer is actively processing new blocks (consists of fetch, scan and enhance operations)
     case syncing(Float, Bool)
-    
+
     /// Indicates that this Synchronizer is fully up to date and ready for all wallet functions.
     /// When set, a UI element may want to turn green.
     case synced
@@ -763,20 +763,20 @@ enum InternalSyncStatus: Equatable {
     case disconnected
 
     case error(_ error: Error)
-    
+
     public var isSyncing: Bool {
         if case .syncing = self {
             return true
         }
-        
+
         return false
     }
-    
+
     public var isSynced: Bool {
         if case .synced = self {
             return true
         }
-        
+
         return false
     }
 
@@ -784,7 +784,7 @@ enum InternalSyncStatus: Equatable {
         if case .unprepared = self {
             return false
         }
-        
+
         return true
     }
 

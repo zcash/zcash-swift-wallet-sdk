@@ -41,7 +41,7 @@ extension LightWalletServiceError: Equatable {
             default:
                 return false
             }
-            
+
         case .invalidBlock:
             switch rhs {
             case .invalidBlock:
@@ -58,7 +58,7 @@ extension LightWalletServiceError: Equatable {
             }
         case .genericError:
             return false
-        
+
         case .timeOut:
             switch rhs {
             case .timeOut:
@@ -153,7 +153,7 @@ enum ServiceMode: Equatable {
     /// Tor connection is used, each time a new one, not held in memory, used only once.
     case uniqueTor
 
-    /// Helper method that generates a tagged group for a given transaction ID with a prefix. 
+    /// Helper method that generates a tagged group for a given transaction ID with a prefix.
     static func txIdGroup(prefix: String, txId: Data) -> ServiceMode {
         torInGroup("\(prefix)-\(txId.hexEncodedString())")
     }
@@ -179,7 +179,7 @@ protocol LightWalletService: AnyObject {
     ///     For instance if 1..5 is given, then every block in that will be fetched, including 1 and 5.
     /// - Throws: `serviceBlockRangeFailed` when GRPC call fails.
     func blockRange(_ range: CompactBlockRange, mode: ServiceMode) throws -> AsyncThrowingStream<ZcashCompactBlock, Error>
-    
+
     /// Submits a raw transaction over lightwalletd.
     /// - Parameter spendTransaction: data representing the transaction to be sent
     /// - Throws: `serviceSubmitFailed` when GRPC call fails.
@@ -209,7 +209,7 @@ protocol LightWalletService: AnyObject {
     /// Used for potential closure of channels or connections.
     /// Example:` LightWalletGRPCServiceOverTor` inherits `LightWalletService` and closes Tor connections.
     func closeConnections() async
-    
+
     /// Returns a stream of information about roots of subtrees of the Sapling and Orchard
     /// note commitment trees.
     ///
@@ -220,16 +220,16 @@ protocol LightWalletService: AnyObject {
     func getTreeState(_ id: BlockID, mode: ServiceMode) async throws -> TreeState
 
     func getTaddressTxids(_ request: TransparentAddressBlockFilter, mode: ServiceMode) throws -> AsyncThrowingStream<RawTransaction, Error>
-    
+
     func getMempoolStream() throws -> AsyncThrowingStream<RawTransaction, Error>
-    
+
     func checkSingleUseTransparentAddresses(
         dbData: (String, UInt),
         networkType: NetworkType,
         accountUUID: AccountUUID,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult
-    
+
     // swiftlint:disable:next function_parameter_count
     func updateTransparentAddressTransactions(
         address: String,
@@ -239,7 +239,7 @@ protocol LightWalletService: AnyObject {
         networkType: NetworkType,
         mode: ServiceMode
     ) async throws -> TransparentAddressCheckResult
-    
+
     func fetchUTXOsByAddress(
         address: String,
         dbData: (String, UInt),

@@ -1,6 +1,6 @@
 //
 //  Dependencies.swift
-//  
+//
 //
 //  Created by Michal Fousek on 01.05.2023.
 //
@@ -120,7 +120,7 @@ enum Dependencies {
 
         container.register(type: LightWalletService.self, isSingleton: true) { di in
             let torClient = di.resolve(TorClient.self)
-            
+
             return LightWalletGRPCServiceOverTor(endpoint: endpoint, tor: torClient)
         }
 
@@ -170,11 +170,11 @@ enum Dependencies {
         container.register(type: SyncSessionIDGenerator.self, isSingleton: false) { _ in
             UniqueSyncSessionIDGenerator()
         }
-        
+
         container.register(type: ZcashFileManager.self, isSingleton: true) { _ in
             FileManager.default
         }
-        
+
         container.register(type: TransactionEncoder.self, isSingleton: true) { di in
             let service = di.resolve(LightWalletService.self)
             let logger = di.resolve(Logger.self)
@@ -196,7 +196,7 @@ enum Dependencies {
             )
         }
     }
-    
+
     static func setupCompactBlockProcessor(
         in container: DIContainer,
         config: CompactBlockProcessor.Configuration
@@ -238,7 +238,7 @@ enum Dependencies {
                 logger: logger
             )
         }
-        
+
         container.register(type: BlockEnhancer.self, isSingleton: true) { di in
             let blockDownloaderService = di.resolve(BlockDownloaderService.self)
             let rustBackend = di.resolve(ZcashRustBackendWelding.self)
@@ -258,14 +258,14 @@ enum Dependencies {
                 sdkFlags: sdkFlags
             )
         }
-        
+
         container.register(type: UTXOFetcher.self, isSingleton: true) { di in
             let blockDownloaderService = di.resolve(BlockDownloaderService.self)
             let utxoFetcherConfig = UTXOFetcherConfig(walletBirthdayProvider: config.walletBirthdayProvider)
             let rustBackend = di.resolve(ZcashRustBackendWelding.self)
             let metrics = di.resolve(SDKMetrics.self)
             let logger = di.resolve(Logger.self)
-            
+
             return UTXOFetcherImpl(
                 blockDownloaderService: blockDownloaderService,
                 config: utxoFetcherConfig,
@@ -274,7 +274,7 @@ enum Dependencies {
                 logger: logger
             )
         }
-        
+
         container.register(type: SaplingParametersHandler.self, isSingleton: true) { di in
             let rustBackend = di.resolve(ZcashRustBackendWelding.self)
             let logger = di.resolve(Logger.self)
@@ -284,7 +284,7 @@ enum Dependencies {
                 spendParamsURL: config.spendParamsURL,
                 saplingParamsSourceURL: config.saplingParamsSourceURL
             )
-            
+
             return SaplingParametersHandlerImpl(
                 config: saplingParametersHandlerConfig,
                 rustBackend: rustBackend,

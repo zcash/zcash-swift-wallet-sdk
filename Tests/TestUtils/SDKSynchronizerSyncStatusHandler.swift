@@ -1,6 +1,6 @@
 //
 //  SDKSynchronizerStateHandler.swift
-//  
+//
 //
 //  Created by Michal Fousek on 15.03.2023.
 //

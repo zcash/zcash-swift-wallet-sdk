@@ -24,7 +24,7 @@ struct Block: Codable {
 
     let height: BlockHeight
     let time: Int
-    
+
     static let table = Table("blocks")
 }
 

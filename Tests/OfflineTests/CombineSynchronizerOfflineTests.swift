@@ -1,6 +1,6 @@
 //
 //  CombineSynchronizerOfflineTests.swift
-//  
+//
 //
 //  Created by Michal Fousek on 20.03.2023.
 //
@@ -212,14 +212,14 @@ class CombineSynchronizerOfflineTests: XCTestCase {
         synchronizerMock.stopClosure = {
             stopCalled = true
         }
-        
+
         synchronizer.stop()
         XCTAssertTrue(stopCalled)
     }
 
     func testGetSaplingAddressSucceed() {
         let testAccount = TestsData.mockedAccountUUID
-        
+
         synchronizerMock.getSaplingAddressAccountUUIDClosure = { account in
             XCTAssertEqual(account, testAccount)
             return self.data.saplingAddress
@@ -625,7 +625,7 @@ class CombineSynchronizerOfflineTests: XCTestCase {
 
     func testGetTransparentBalanceSucceed() {
         let accountUUID = TestsData.mockedAccountUUID
-        
+
         let expectedBalance = [accountUUID: AccountBalance(saplingBalance: .zero, orchardBalance: .zero, unshielded: Zatoshi(100))]
 
         synchronizerMock.getAccountsBalancesClosure = {
@@ -699,7 +699,7 @@ class CombineSynchronizerOfflineTests: XCTestCase {
                 unshielded: .zero
             )
         ]
-        
+
         synchronizerMock.getAccountsBalancesClosure = {
             return expectedBalance
         }
@@ -753,7 +753,7 @@ class CombineSynchronizerOfflineTests: XCTestCase {
 
     func testGetShieldedVerifiedBalanceSucceed() {
         let accountUUID = TestsData.mockedAccountUUID
-        
+
         let expectedBalance = [
             accountUUID: AccountBalance(
                 saplingBalance:
@@ -771,7 +771,7 @@ class CombineSynchronizerOfflineTests: XCTestCase {
                 unshielded: .zero
             )
         ]
-        
+
         synchronizerMock.getAccountsBalancesClosure = {
             return expectedBalance
         }

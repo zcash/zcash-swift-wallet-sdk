@@ -25,7 +25,7 @@ extension UTXO: UnspentTransactionOutputEntity {
             prevoutTxId = newValue
         }
     }
-    
+
     var index: Int {
         get {
             prevoutIndex

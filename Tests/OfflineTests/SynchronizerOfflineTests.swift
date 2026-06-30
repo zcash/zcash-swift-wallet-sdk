@@ -1,6 +1,6 @@
 //
 //  SynchronizerOfflineTests.swift
-//  
+//
 //
 //  Created by Michal Fousek on 23.03.2023.
 //
@@ -392,7 +392,7 @@ class SynchronizerOfflineTests: ZcashTestCase {
         XCTAssertFalse(InternalSyncStatus.synced.isDifferent(from: .synced))
         XCTAssertFalse(InternalSyncStatus.unprepared.isDifferent(from: .unprepared))
     }
-    
+
     func testInternalSyncStatusMap_SyncingLowerBound() {
         let synchronizerState = synchronizerState(
             for:
@@ -425,7 +425,7 @@ class SynchronizerOfflineTests: ZcashTestCase {
             XCTFail("Syncing is expected to be 90% (0.9) but received \(data).")
         }
     }
-    
+
     func testInternalSyncStatusMap_FetchingUpperBound() {
         let synchronizerState = synchronizerState(for: InternalSyncStatus.syncing(1, false))
 

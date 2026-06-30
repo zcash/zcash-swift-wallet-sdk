@@ -1,6 +1,6 @@
 //
 //  SyncControlData.swift
-//  
+//
 //
 //  Created by Michal Fousek on 23.11.2022.
 //
@@ -14,7 +14,7 @@ struct SyncControlData: Equatable {
     let latestScannedHeight: BlockHeight?
     /// The height from the enhancement must start
     let firstUnenhancedHeight: BlockHeight?
-    
+
     static var empty: SyncControlData {
         SyncControlData(
             latestBlockHeight: 0,

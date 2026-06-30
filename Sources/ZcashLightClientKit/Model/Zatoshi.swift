@@ -13,9 +13,9 @@ public struct Zatoshi {
         public static let maxZecSupply: Int64 = 21_000_000
         public static let maxZatoshi: Int64 = Constants.oneZecInZatoshi * Constants.maxZecSupply
     }
-    
+
     public static var zero: Zatoshi { Zatoshi() }
-    
+
     public static let decimalHandler = NSDecimalNumberHandler(
         roundingMode: NSDecimalNumber.RoundingMode.bankers,
         scale: 8,
@@ -24,7 +24,7 @@ public struct Zatoshi {
         raiseOnUnderflow: true,
         raiseOnDivideByZero: true
     )
-    
+
     @Clamped(-Constants.maxZatoshi...Constants.maxZatoshi)
     public var amount: Int64 = 0
 
@@ -53,10 +53,10 @@ public struct Zatoshi {
         if let number = formatter.number(from: decimalString) {
             return Zatoshi.from(decimal: number.decimalValue)
         }
-        
+
         return nil
     }
-    
+
     public static func + (left: Zatoshi, right: Zatoshi) -> Zatoshi {
         Zatoshi(left.amount + right.amount)
     }
@@ -103,7 +103,7 @@ extension Zatoshi: Codable {
             throw ZcashError.zatoshiDecode(error)
         }
     }
-    
+
     public func encode(to encoder: Encoder) throws {
         do {
             var container = encoder.container(keyedBy: CodingKeys.self)

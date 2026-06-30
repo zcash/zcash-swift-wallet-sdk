@@ -144,7 +144,7 @@ struct TxFilter {
   fileprivate var _block: BlockID? = nil
 }
 
-/// RawTransaction contains the complete transaction data. It also optionally includes 
+/// RawTransaction contains the complete transaction data. It also optionally includes
 /// the block height in which the transaction was included, or, when returned
 /// by GetMempoolStream(), the latest block height.
 struct RawTransaction {

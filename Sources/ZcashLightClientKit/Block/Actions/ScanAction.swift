@@ -1,6 +1,6 @@
 //
 //  ScanAction.swift
-//  
+//
 //
 //  Created by Michal Fousek on 05.05.2023.
 //
@@ -11,7 +11,7 @@ final class ScanAction {
     enum Constants {
         static let reportDelay = 5
     }
-    
+
     let configProvider: CompactBlockProcessor.ConfigProvider
     let blockScanner: BlockScanner
     let rustBackend: ZcashRustBackendWelding
@@ -53,7 +53,7 @@ extension ScanAction: Action {
         }
 
         let batchRange = batchRangeStart...batchRangeEnd
-        
+
         logger.debug("Starting scan blocks with range: \(batchRange.lowerBound)...\(batchRange.upperBound)")
         logger.sync("Starting scan blocks with range \(batchRange.lowerBound)...\(batchRange.upperBound)")
 
@@ -67,7 +67,7 @@ extension ScanAction: Action {
                 // ScanAction is controlled locally so it must report back the updated scanned height
                 await context.update(lastScannedHeight: lastScannedHeight)
             }
-            
+
             // This is a simple change that reduced the synchronization time significantly while affecting the UX only a bit.
             // The frequency of UI progress update is lowered x5 times.
             // Proper solution is handled in
@@ -82,7 +82,7 @@ extension ScanAction: Action {
                     let composedDenominator = Float(scanProgress.denominator) + Float(recoveryProgress?.denominator ?? 0)
 
                     logger.debug("progress ratio: \(composedNumerator)/\(composedDenominator)")
-                    
+
                     let progress: Float
                     if composedDenominator == 0 {
                         progress = 1.0

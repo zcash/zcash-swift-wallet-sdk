@@ -23,13 +23,13 @@ extension DbAccount: Hashable {
         hasher.combine(accountIndex.index)
         hasher.combine(ufvk)
     }
-    
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         guard
             lhs.accountIndex == rhs.accountIndex,
             lhs.ufvk == rhs.ufvk
         else { return false }
-        
+
         return true
     }
 }

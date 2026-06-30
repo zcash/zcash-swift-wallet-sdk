@@ -74,7 +74,7 @@ final class UnifiedTypecodesTests: XCTestCase {
             """,
             networkType: .testnet
         )
-        
+
         XCTAssertEqual(try ua.availableReceiverTypecodes(), [.sapling, .p2pkh])
     }
 }

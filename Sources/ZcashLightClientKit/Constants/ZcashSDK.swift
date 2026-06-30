@@ -14,7 +14,7 @@ public protocol ZcashNetwork {
 public enum NetworkType: Equatable, Codable, Hashable {
     case mainnet
     case testnet
-    
+
     var networkId: UInt32 {
         switch self {
         case .mainnet:  return 1
@@ -31,7 +31,7 @@ extension NetworkType {
         default:        return nil
         }
     }
-    
+
     static func forNetworkId(_ id: UInt32) -> NetworkType? {
         switch id {
         case 1: return .mainnet
@@ -89,7 +89,7 @@ public enum ZcashSDK {
 
     /// Default size of batches of blocks to request from the compact block service. Which was used both for scanning and downloading.
     public static let DefaultBatchSize = 100
-    
+
     /// Default batch size for enhancing transactions for the compact block processor
     public static let DefaultEnhanceBatch = 1000
 
@@ -105,7 +105,7 @@ public enum ZcashSDK {
     // TODO: [#1304] smart retry logic, https://github.com/zcash/ZcashLightClientKit/issues/1304
     public static let defaultRetries = Int.max
 
-    /// The communication errors are usually false positive and another try will continue the work, 
+    /// The communication errors are usually false positive and another try will continue the work,
     /// in case the service is trully down we cap the amount of retries by this value.
     public static let serviceFailureRetries = 3
 
@@ -197,7 +197,7 @@ public enum ZcashSDKMainnetConstants: NetworkConstants {
 
     /// Default Name for Compact Block caches db
     public static let defaultCacheDbName = "caches.db"
-    
+
     public static let defaultDbNamePrefix = "ZcashSdk_mainnet_"
 }
 
@@ -216,7 +216,7 @@ public enum ZcashSDKTestnetConstants: NetworkConstants {
     public static let defaultCacheDbName = "caches.db"
 
     public static let defaultFsBlockDbRootName = "fs_cache"
-    
+
     public static let defaultDbNamePrefix = "ZcashSdk_testnet_"
 }
 

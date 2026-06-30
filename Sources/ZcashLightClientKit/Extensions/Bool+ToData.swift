@@ -1,6 +1,6 @@
 //
 //  Bool+ToData.swift
-//  
+//
 //
 //  Created by Michal Fousek on 21.05.2023.
 //

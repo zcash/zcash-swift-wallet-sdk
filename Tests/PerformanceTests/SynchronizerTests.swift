@@ -1,6 +1,6 @@
 //
 //  SynchronizerTests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 13.12.2022.
 //
@@ -13,7 +13,7 @@ import XCTest
 class SynchronizerTests: ZcashTestCase {
     class MockLatestBlockHeightProvider: LatestBlockHeightProvider {
         let birthday: BlockHeight
-        
+
         init(birthday: BlockHeight) {
             self.birthday = birthday
         }
@@ -76,25 +76,25 @@ class SynchronizerTests: ZcashTestCase {
                 isTorEnabled: false,
                 isExchangeRateEnabled: false
             )
-            
+
             try? FileManager.default.removeItem(at: databases.fsCacheDbRoot)
             try? FileManager.default.removeItem(at: databases.dataDB)
-            
+
             synchronizer = SDKSynchronizer(initializer: initializer)
-            
+
             guard let synchronizer else { fatalError("Synchronizer not initialized.") }
-            
+
             _ = try await synchronizer.prepare(with: seedBytes, walletBirthday: birthday, name: "", keySource: nil)
-            
+
             let syncSyncedExpectation = XCTestExpectation(description: "synchronizerSynced Expectation")
             sdkSynchronizerInternalSyncStatusHandler.subscribe(to: synchronizer.stateStream, expectations: [.synced: syncSyncedExpectation])
-            
+
             await (synchronizer.blockProcessor.service as? LightWalletGRPCService)?.latestBlockHeightProvider = MockLatestBlockHeightProvider(
                 birthday: self.birthday + 99
             )
-            
+
             try await synchronizer.start()
-            
+
             await fulfillment(of: [syncSyncedExpectation], timeout: 100)
         }
     }

@@ -1,6 +1,6 @@
 //
 //  ZcashFileManager.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 23.05.2023.
 //

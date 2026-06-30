@@ -1,6 +1,6 @@
 //
 //  RewindAction.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 09.08.2023.
 //
@@ -19,7 +19,7 @@ final class RewindAction {
         downloaderService = container.resolve(BlockDownloaderService.self)
         logger = container.resolve(Logger.self)
     }
-    
+
     private func update(context: ActionContext) async -> ActionContext {
         await context.update(state: .processSuggestedScanRanges)
         return context
@@ -34,7 +34,7 @@ extension RewindAction: Action {
             return await update(context: context)
         }
         var rewindHeight = BlockHeight(requestedRewindHeight)
-        
+
         logger.debug("Executing rewind.")
         let rewindResult = try await rustBackend.rewindToHeight(height: rewindHeight)
         switch rewindResult {
@@ -54,7 +54,7 @@ extension RewindAction: Action {
 
         // clear cache
         try await downloaderService.rewind(to: rewindHeight)
-        
+
         return await update(context: context)
     }
 

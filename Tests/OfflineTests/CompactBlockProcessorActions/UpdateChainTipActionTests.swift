@@ -1,6 +1,6 @@
 //
 //  UpdateChainTipActionTests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 25.08.2023.
 //
@@ -17,7 +17,7 @@ final class UpdateChainTipActionTests: ZcashTestCase {
 
     override func setUp() {
         super.setUp()
-        
+
         underlyingChainName = "test"
         underlyingNetworkType = .testnet
         underlyingSaplingActivationHeight = nil
@@ -32,7 +32,7 @@ final class UpdateChainTipActionTests: ZcashTestCase {
         loggerMock.debugFileFunctionLineClosure = { _, _, _, _ in }
         blockDownloaderMock.stopDownloadClosure = { }
         latestBlocksDataProvider.updateClosure = { _ in }
-        
+
         let updateChainTipAction = await setupAction(loggerMock, blockDownloaderMock, latestBlocksDataProvider)
 
         do {
@@ -42,7 +42,7 @@ final class UpdateChainTipActionTests: ZcashTestCase {
             context.updateLastChainTipUpdateTimeClosure = { _ in }
 
             let nextContext = try await updateChainTipAction.run(with: context) { _ in }
-            
+
             XCTAssertTrue(blockDownloaderMock.stopDownloadCallsCount == 1, "downloader.stopDownload() is expected to be called exactly once.")
 
             let acResult = nextContext.checkStateIs(.clearCache)
@@ -51,7 +51,7 @@ final class UpdateChainTipActionTests: ZcashTestCase {
             XCTFail("testUpdateChainTipAction_UpdateChainTipTimeTriggered is not expected to fail. \(error)")
         }
     }
-    
+
     func testUpdateChainTipAction_UpdateChainTipPrevActionTriggered() async throws {
         let loggerMock = LoggerMock()
         let blockDownloaderMock = BlockDownloaderMock()
@@ -70,7 +70,7 @@ final class UpdateChainTipActionTests: ZcashTestCase {
             context.updateLastChainTipUpdateTimeClosure = { _ in }
 
             let nextContext = try await updateChainTipAction.run(with: context) { _ in }
-            
+
             XCTAssertTrue(blockDownloaderMock.stopDownloadCallsCount == 1, "downloader.stopDownload() is expected to be called exactly once.")
 
             let acResult = nextContext.checkStateIs(.clearCache)
@@ -79,7 +79,7 @@ final class UpdateChainTipActionTests: ZcashTestCase {
             XCTFail("testUpdateChainTipAction_UpdateChainTipPrevActionTriggered is not expected to fail. \(error)")
         }
     }
-    
+
     func testUpdateChainTipAction_UpdateChainTipSkipped() async throws {
         let loggerMock = LoggerMock()
         let blockDownloaderMock = BlockDownloaderMock()
@@ -96,16 +96,16 @@ final class UpdateChainTipActionTests: ZcashTestCase {
             context.updateLastChainTipUpdateTimeClosure = { _ in }
 
             let nextContext = try await updateChainTipAction.run(with: context) { _ in }
-            
+
             XCTAssertFalse(blockDownloaderMock.stopDownloadCalled, "downloader.stopDownload() is not expected to be called.")
-            
+
             let acResult = nextContext.checkStateIs(.download)
             XCTAssertTrue(acResult == .true, "Check of state failed with '\(acResult)'")
         } catch {
             XCTFail("testUpdateChainTipAction_UpdateChainTipSkipped is not expected to fail. \(error)")
         }
     }
-    
+
     private func setupAction(
         _ loggerMock: LoggerMock = LoggerMock(),
         _ blockDownloaderMock: BlockDownloaderMock = BlockDownloaderMock(),
@@ -121,9 +121,9 @@ final class UpdateChainTipActionTests: ZcashTestCase {
             XCTAssertEqual(height, 2, "")
             return -1026109260
         }
-        
+
         rustBackendMock.updateChainTipHeightClosure = { _ in }
-        
+
         let lightWalletdInfoMock = LightWalletdInfoMock()
         lightWalletdInfoMock.underlyingConsensusBranchID = underlyingConsensusBranchID
         lightWalletdInfoMock.underlyingSaplingActivationHeight = UInt64(underlyingSaplingActivationHeight ?? config.saplingActivation)
@@ -133,7 +133,7 @@ final class UpdateChainTipActionTests: ZcashTestCase {
         let serviceMock = LightWalletServiceMock()
         serviceMock.getInfoModeReturnValue = lightWalletdInfoMock
         serviceMock.latestBlockHeightModeReturnValue = 1
-        
+
         mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in rustBackendMock }
         mockContainer.mock(type: LightWalletService.self, isSingleton: true) { _ in serviceMock }
         mockContainer.mock(type: Logger.self, isSingleton: true) { _ in loggerMock }

@@ -12,7 +12,7 @@ final class TxResubmissionAction {
         static let thresholdToTrigger = TimeInterval(300.0)
     }
 
-    var latestResolvedTime: TimeInterval = 0
+    var latestResolvedTime: TimeInterval = Date().timeIntervalSince1970
     let transactionRepository: TransactionRepository
     var transactionEncoder: TransactionEncoder
     let submitPlanStore: SubmitPlanStoring

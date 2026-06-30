@@ -14,25 +14,25 @@ public struct TxId: Equatable, Hashable, Identifiable {
         guard txId.count == 64 else {
             throw ZcashError.txIdNot32Bytes
         }
-        
+
         var bytes: [UInt8] = []
         bytes.reserveCapacity(txId.count / 2)
-        
+
         var index = txId.startIndex
-        
+
         while index < txId.endIndex {
             let nextIndex = txId.index(index, offsetBy: 2)
             let byteString = txId[index..<nextIndex]
-            
+
             if let byte = UInt8(byteString, radix: 16) {
                 bytes.append(byte)
             } else {
                 throw ZcashError.txIdInvalidHexEncoding
             }
-            
+
             index = nextIndex
         }
-        
+
         return bytes.reversed()
     }
 

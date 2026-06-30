@@ -35,7 +35,7 @@ class RewindRescanTests: ZcashTestCase {
             walletBirthday: birthday,
             network: network
         )
-        
+
         try await coordinator.reset(
             saplingActivation: 663150,
             startSaplingTreeSize: 128607,
@@ -55,20 +55,20 @@ class RewindRescanTests: ZcashTestCase {
         try? FileManager.default.removeItem(at: coordinator.databases.fsCacheDbRoot)
         try? FileManager.default.removeItem(at: coordinator.databases.dataDB)
     }
-    
+
     func handleError(_ error: Error?) {
         guard let testError = error else {
             XCTFail("failed with nil error")
             return
         }
-        
+
         XCTFail("Failed with error: \(testError)")
     }
-    
+
     func testBirthdayRescan() async throws {
         // 1 sync and get spendable funds
         try FakeChainBuilder.buildChain(darksideWallet: coordinator.service, branchID: branchID, chainName: chainName)
-        
+
         let accountUUID = TestsData.mockedAccountUUID
         try coordinator.applyStaged(blockheight: defaultLatestHeight + 50)
         var accountBalance = try await coordinator.synchronizer.getAccountsBalances()[accountUUID]
@@ -124,7 +124,7 @@ class RewindRescanTests: ZcashTestCase {
         // TODO: [#1247] needs to review this to properly solve, https://github.com/zcash/ZcashLightClientKit/issues/1247
 //        let lastScannedHeight = try await coordinator.synchronizer.initializer.transactionRepository.lastScannedHeight()
 //        XCTAssertEqual(lastScannedHeight, self.birthday)
-        
+
         // check that the balance is cleared
         accountBalance = try await coordinator.synchronizer.getAccountsBalances()[accountUUID]
         var expectedVerifiedBalance = accountBalance?.saplingBalance.spendableValue ?? .zero
@@ -132,7 +132,7 @@ class RewindRescanTests: ZcashTestCase {
         XCTAssertEqual(initialVerifiedBalance, expectedVerifiedBalance)
         XCTAssertEqual(initialTotalBalance, expectedBalance)
         let secondScanExpectation = XCTestExpectation(description: "rescan")
-        
+
         do {
             try await coordinator.sync(
                 completion: { _ in
@@ -145,7 +145,7 @@ class RewindRescanTests: ZcashTestCase {
         }
 
         await fulfillment(of: [secondScanExpectation], timeout: 12)
-        
+
         // verify that the balance still adds up
         accountBalance = try await coordinator.synchronizer.getAccountsBalances()[accountUUID]
         expectedVerifiedBalance = accountBalance?.saplingBalance.spendableValue ?? .zero
@@ -164,7 +164,7 @@ class RewindRescanTests: ZcashTestCase {
             chainName: chainName,
             length: 10000
         )
-        
+
         let accountUUID = TestsData.mockedAccountUUID
         let newChaintTip = defaultLatestHeight + 10000
         try coordinator.applyStaged(blockheight: newChaintTip)
@@ -172,7 +172,7 @@ class RewindRescanTests: ZcashTestCase {
         let spendableValue = try await coordinator.synchronizer.getAccountsBalances()[accountUUID]?.saplingBalance.spendableValue
         let initialVerifiedBalance: Zatoshi = spendableValue ?? .zero
         let firstSyncExpectation = XCTestExpectation(description: "first sync expectation")
-        
+
         do {
             try await coordinator.sync(
                 completion: { _ in
@@ -191,7 +191,7 @@ class RewindRescanTests: ZcashTestCase {
         // 2 check that there are no unconfirmed funds
         XCTAssertTrue(verifiedBalance > network.constants.defaultFee())
         XCTAssertEqual(verifiedBalance, totalBalance)
-        
+
         // rewind to birthday
         let targetHeight: BlockHeight = newChaintTip - 8000
 
@@ -223,7 +223,7 @@ class RewindRescanTests: ZcashTestCase {
         XCTAssertEqual(initialVerifiedBalance, expectedVerifiedBalance)
 
         let secondScanExpectation = XCTestExpectation(description: "rescan")
-        
+
         do {
             try await coordinator.sync(
                 completion: { _ in
@@ -236,14 +236,14 @@ class RewindRescanTests: ZcashTestCase {
         }
 
         await fulfillment(of: [secondScanExpectation], timeout: 20)
-        
+
         // verify that the balance still adds up
         accountBalance = try await coordinator.synchronizer.getAccountsBalances()[accountUUID]
         expectedVerifiedBalance = accountBalance?.saplingBalance.spendableValue ?? .zero
         let expectedBalance = accountBalance?.saplingBalance.total() ?? .zero
         XCTAssertEqual(verifiedBalance, expectedVerifiedBalance)
         XCTAssertEqual(totalBalance, expectedBalance)
-        
+
         // try to spend the funds
         let sendExpectation = XCTestExpectation(description: "after rewind expectation")
         do {
@@ -260,23 +260,23 @@ class RewindRescanTests: ZcashTestCase {
         }
         await fulfillment(of: [sendExpectation], timeout: 15)
     }
-    
+
     func testRescanToTransaction() async throws {
         // 1 sync and get spendable funds
         try FakeChainBuilder.buildChain(darksideWallet: coordinator.service, branchID: branchID, chainName: chainName)
-        
+
         try coordinator.applyStaged(blockheight: defaultLatestHeight + 50)
-      
+
         sleep(1)
         let firstSyncExpectation = XCTestExpectation(description: "first sync expectation")
-        
+
         try await coordinator.sync(
             completion: { _ in
                 firstSyncExpectation.fulfill()
             },
             error: handleError
         )
-        
+
         await fulfillment(of: [firstSyncExpectation], timeout: 12)
         let accountUUID = TestsData.mockedAccountUUID
         var accountBalance = try await coordinator.synchronizer.getAccountsBalances()[accountUUID]
@@ -285,7 +285,7 @@ class RewindRescanTests: ZcashTestCase {
         // 2 check that there are no unconfirmed funds
         XCTAssertTrue(verifiedBalance > network.constants.defaultFee())
         XCTAssertEqual(verifiedBalance, totalBalance)
-        
+
         // rewind to transaction
         guard let transaction = try await coordinator.synchronizer.allTransactions().first else {
             XCTFail("failed to get a transaction to rewind to")
@@ -320,18 +320,18 @@ class RewindRescanTests: ZcashTestCase {
         // TODO: [#1247] needs to review this to properly solve, https://github.com/zcash/ZcashLightClientKit/issues/1247
 //        let lastScannedHeight = try await coordinator.synchronizer.initializer.transactionRepository.lastScannedHeight()
 //        XCTAssertLessThanOrEqual(lastScannedHeight, transaction.anchor(network: network) ?? -1)
-        
+
         let secondScanExpectation = XCTestExpectation(description: "rescan")
-        
+
         try await coordinator.sync(
             completion: { _ in
                 secondScanExpectation.fulfill()
             },
             error: handleError
         )
-        
+
         await fulfillment(of: [secondScanExpectation], timeout: 12)
-        
+
         // verify that the balance still adds up
         accountBalance = try await coordinator.synchronizer.getAccountsBalances()[accountUUID]
         let expectedVerifiedBalance = accountBalance?.saplingBalance.spendableValue ?? .zero
@@ -346,17 +346,17 @@ class RewindRescanTests: ZcashTestCase {
         let notificationHandler = SDKSynchonizerListener()
         let foundTransactionsExpectation = XCTestExpectation(description: "found transactions expectation")
         let transactionMinedExpectation = XCTestExpectation(description: "transaction mined expectation")
-        
+
         // 0 subscribe to updated transactions events
         notificationHandler.subscribeToSynchronizer(coordinator.synchronizer)
         // 1 sync and get spendable funds
         try FakeChainBuilder.buildChain(darksideWallet: coordinator.service, branchID: branchID, chainName: chainName)
-        
+
         try coordinator.applyStaged(blockheight: defaultLatestHeight + 10)
-        
+
         sleep(1)
         let firstSyncExpectation = XCTestExpectation(description: "first sync expectation")
-        
+
         do {
             try await coordinator.sync(
                 completion: { _ in
@@ -370,16 +370,16 @@ class RewindRescanTests: ZcashTestCase {
 
         await fulfillment(of: [firstSyncExpectation], timeout: 12)
         // 2 check that there are no unconfirmed funds
-        
+
         let accountUUID = TestsData.mockedAccountUUID
         var accountBalance = try await coordinator.synchronizer.getAccountsBalances()[accountUUID]
         let verifiedBalance: Zatoshi = accountBalance?.saplingBalance.spendableValue ?? .zero
         let totalBalance: Zatoshi = accountBalance?.saplingBalance.total() ?? .zero
         XCTAssertTrue(verifiedBalance > network.constants.defaultFee())
         XCTAssertEqual(verifiedBalance, totalBalance)
-        
+
         let maxBalance = verifiedBalance - Zatoshi(10000)
-        
+
         // 3 create a transaction for the max amount possible
         // 4 send the transaction
         let spendingKey = coordinator.spendingKey
@@ -401,29 +401,29 @@ class RewindRescanTests: ZcashTestCase {
             XCTFail("transaction creation failed")
             return
         }
-        
+
         notificationHandler.synchronizerMinedTransaction = { transaction in
             XCTAssertNotNil(transaction.rawID)
             XCTAssertNotNil(pendingTx.rawID)
             XCTAssertEqual(transaction.rawID, pendingTx.rawID)
             transactionMinedExpectation.fulfill()
         }
-        
+
         // 5 apply to height
         // 6 mine the block
         guard let rawTx = try coordinator.getIncomingTransactions()?.first else {
             XCTFail("no incoming transaction after")
             return
         }
-        
+
         let latestHeight = try await coordinator.latestHeight(mode: .direct)
         let sentTxHeight = latestHeight + 1
-        
+
         notificationHandler.transactionsFound = { txs in
             let foundTx = txs.first(where: { $0.rawID == pendingTx.rawID })
             XCTAssertNotNil(foundTx)
             XCTAssertEqual(foundTx?.minedHeight, sentTxHeight)
-            
+
             foundTransactionsExpectation.fulfill()
         }
         try coordinator.stageBlockCreate(height: sentTxHeight, count: 100)
@@ -431,7 +431,7 @@ class RewindRescanTests: ZcashTestCase {
         try coordinator.stageTransaction(rawTx, at: sentTxHeight)
         try coordinator.applyStaged(blockheight: sentTxHeight)
         sleep(2)
-        
+
         // TODO: [#1247] needs to review this to properly solve, https://github.com/zcash/ZcashLightClientKit/issues/1247
 //        let mineExpectation = XCTestExpectation(description: "mineTxExpectation")
 
@@ -451,12 +451,12 @@ class RewindRescanTests: ZcashTestCase {
 //        }
 //
 //        await fulfillment(of: [mineExpectation, transactionMinedExpectation, foundTransactionsExpectation], timeout: 5)
-        
+
         // 7 advance to confirmation
         let advanceToConfirmationHeight = sentTxHeight + 10
 
         try coordinator.applyStaged(blockheight: advanceToConfirmationHeight)
-        
+
         sleep(2)
 
         let rewindExpectation = XCTestExpectation(description: "RewindExpectation")

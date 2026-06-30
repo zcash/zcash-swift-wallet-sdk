@@ -17,7 +17,7 @@ public struct LightWalletEndpoint {
     public let secure: Bool
     public let singleCallTimeoutInMillis: Int64
     public let streamingCallTimeoutInMillis: Int64
-    
+
     /**
     initializes a LightWalletEndpoint
     - Parameters:
@@ -106,7 +106,7 @@ public class Initializer {
         case success
         case seedRequired
     }
-    
+
     public enum LoggingPolicy {
         case `default`(OSLogger.LogLevel)
         case custom(Logger)
@@ -178,7 +178,7 @@ public class Initializer {
         isExchangeRateEnabled: Bool
     ) {
         let container = DIContainer()
-        
+
         // It's not possible to fail from constructor. Technically it's possible but it can be pain for the client apps to handle errors thrown
         // from constructor. So `parsingError` is just stored in initializer and `SDKSynchronizer.prepare()` throw this error if it exists.
         let (updatedURLs, parsingError) = Self.setup(
@@ -198,7 +198,7 @@ public class Initializer {
             isTorEnabled: isTorEnabled,
             isExchangeRateEnabled: isExchangeRateEnabled
         )
-        
+
         self.init(
             container: container,
             cacheDbURL: cacheDbURL,
@@ -266,7 +266,7 @@ public class Initializer {
             isExchangeRateEnabled: isExchangeRateEnabled
         )
     }
-    
+
     private init(
         container: DIContainer,
         cacheDbURL: URL?,
@@ -301,7 +301,7 @@ public class Initializer {
         self.urlsParsingError = urlsParsingError
         self.logger = container.resolve(Logger.self)
     }
-    
+
     // swiftlint:disable:next function_parameter_count
     private static func setup(
         container: DIContainer,
@@ -328,11 +328,11 @@ public class Initializer {
             spendParamsURL: spendParamsURL,
             outputParamsURL: outputParamsURL
         )
-        
+
         // It's not possible to fail from constructor. Technically it's possible but it can be pain for the client apps to handle errors thrown
         // from constructor. So `parsingError` is just stored in initializer and `SDKSynchronizer.prepare()` throw this error if it exists.
         let (updatedURLs, parsingError) = Self.tryToUpdateURLs(with: alias, urls: urls)
-        
+
         Dependencies.setup(
             in: container,
             urls: updatedURLs,
@@ -343,7 +343,7 @@ public class Initializer {
             isTorEnabled: isTorEnabled,
             isExchangeRateEnabled: isExchangeRateEnabled
         )
-        
+
         return (updatedURLs, parsingError)
     }
 
@@ -429,7 +429,7 @@ public class Initializer {
     ///
     /// - Parameter seed: ZIP-32 Seed bytes for the wallet that will be initialized
     /// - Throws: `InitializerError.dataDbInitFailed` if the creation of the dataDb fails
-    /// `InitializerError.accountInitFailed` if the account table can't be initialized. 
+    /// `InitializerError.accountInitFailed` if the account table can't be initialized.
     func initialize(
         with seed: [UInt8]?,
         walletBirthday: BlockHeight?,
@@ -534,7 +534,7 @@ public class Initializer {
 
         return .success
     }
-    
+
     /**
     checks if the provided address is a valid sapling address
     */

@@ -17,7 +17,7 @@ protocol SentNoteEntity {
     var value: Int { get }
     var memo: Data? { get }
 }
-    
+
 extension SentNoteEntity {
     static func == (lhs: Self, rhs: Self) -> Bool {
         guard lhs.id == rhs.id,
@@ -30,7 +30,7 @@ extension SentNoteEntity {
             lhs.memo == rhs.memo else { return false }
         return true
     }
-            
+
     func hash(into hasher: inout Hasher) {
         hasher.combine(id)
         hasher.combine(transactionId)

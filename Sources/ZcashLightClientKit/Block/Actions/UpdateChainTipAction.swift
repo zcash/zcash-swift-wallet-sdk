@@ -1,6 +1,6 @@
 //
 //  UpdateChainTipAction.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 01.08.2023.
 //
@@ -14,7 +14,7 @@ final class UpdateChainTipAction {
     var latestBlocksDataProvider: LatestBlocksDataProvider
     let logger: Logger
     let sdkFlags: SDKFlags
-    
+
     init(container: DIContainer) {
         service = container.resolve(LightWalletService.self)
         downloader = container.resolve(BlockDownloader.self)
@@ -23,7 +23,7 @@ final class UpdateChainTipAction {
         logger = container.resolve(Logger.self)
         sdkFlags = container.resolve(SDKFlags.self)
     }
-    
+
     func updateChainTip(_ context: ActionContext, time: TimeInterval) async throws {
         // called each sync, right after getInfo in ValidateServerAction
         let latestBlockHeight = try await service.latestBlockHeight(mode: await sdkFlags.ifTor(.defaultTor))
@@ -51,7 +51,7 @@ extension UpdateChainTipAction: Action {
         } else if await context.prevState == .txResubmission {
             await context.update(state: .download)
         }
-        
+
         return context
     }
 

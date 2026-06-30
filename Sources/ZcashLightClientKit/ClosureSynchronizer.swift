@@ -1,6 +1,6 @@
 //
 //  ClosureSynchronizer.swift
-//  
+//
 //
 //  Created by Michal Fousek on 20.03.2023.
 //
@@ -116,7 +116,7 @@ public protocol ClosureSynchronizer {
         pczt: Pczt,
         completion: @escaping (Result<Pczt, Error>) -> Void
     )
-    
+
     func createTransactionFromPCZT(
         pcztWithProofs: Pczt,
         pcztWithSigs: Pczt,
@@ -170,6 +170,6 @@ public protocol ClosureSynchronizer {
      */
     func rewind(_ policy: RewindPolicy) -> CompletablePublisher<Error>
     func wipe() -> CompletablePublisher<Error>
-    
+
     func rescanFrom(height: BlockHeight, completion: @escaping (Error?) -> Void)
 }

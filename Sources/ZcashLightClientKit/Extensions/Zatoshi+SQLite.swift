@@ -1,6 +1,6 @@
 //
 //  Zatoshi+SQLite.swift
-//  
+//
 //
 //  Created by Francisco Gindre on 6/20/22.
 //

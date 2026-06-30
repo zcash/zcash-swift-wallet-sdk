@@ -44,7 +44,7 @@ class CompactBlockRepositoryTests: ZcashTestCase {
         let latestHeight = try await compactBlockRepository.latestHeight()
         XCTAssertEqual(latestHeight, BlockHeight.empty())
     }
-    
+
     func testStoreThousandBlocks() async throws {
         let compactBlockRepository: CompactBlockRepository = FSCompactBlockRepository(
             fsBlockDbRoot: testTempDirectory,
@@ -64,14 +64,14 @@ class CompactBlockRepositoryTests: ZcashTestCase {
         let startHeight = self.network.constants.saplingActivationHeight
         let blockCount = Int(1_000)
         let finalHeight = startHeight + blockCount
-        
+
         try await TestDbBuilder.seed(db: compactBlockRepository, with: startHeight...finalHeight)
-        
+
         let latestHeight = try await compactBlockRepository.latestHeight()
         XCTAssertNotEqual(initialHeight, latestHeight)
         XCTAssertEqual(latestHeight, finalHeight)
     }
-    
+
     func testStoreOneBlockFromEmpty() async throws {
         let compactBlockRepository: CompactBlockRepository = FSCompactBlockRepository(
             fsBlockDbRoot: testTempDirectory,
@@ -93,11 +93,11 @@ class CompactBlockRepositoryTests: ZcashTestCase {
             return
         }
         try await compactBlockRepository.write(blocks: [block])
-        
+
         let result = try await compactBlockRepository.latestHeight()
         XCTAssertEqual(result, expectedHeight)
     }
-    
+
     func testRewindTo() async throws {
         let compactBlockRepository: CompactBlockRepository = FSCompactBlockRepository(
             fsBlockDbRoot: testTempDirectory,
@@ -116,10 +116,10 @@ class CompactBlockRepositoryTests: ZcashTestCase {
         let startHeight = self.network.constants.saplingActivationHeight
         let blockCount = Int(1_000)
         let finalHeight = startHeight + blockCount
-        
+
         try await TestDbBuilder.seed(db: compactBlockRepository, with: startHeight...finalHeight)
         let rewindHeight = BlockHeight(finalHeight - 233)
-        
+
         try await compactBlockRepository.rewind(to: rewindHeight)
         let latestHeight = try await compactBlockRepository.latestHeight()
         XCTAssertEqual(latestHeight, rewindHeight)

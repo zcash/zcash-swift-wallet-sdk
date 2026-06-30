@@ -1,6 +1,6 @@
 //
 //  ProcessSuggestedScanRangesActionTests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 25.08.2023.
 //
@@ -17,7 +17,7 @@ final class ProcessSuggestedScanRangesActionTests: ZcashTestCase {
 
     override func setUp() {
         super.setUp()
-        
+
         underlyingChainName = "test"
         underlyingNetworkType = .testnet
         underlyingSaplingActivationHeight = nil
@@ -26,13 +26,13 @@ final class ProcessSuggestedScanRangesActionTests: ZcashTestCase {
 
     func testProcessSuggestedScanRangesAction_EmptyScanRanges() async throws {
         let loggerMock = LoggerMock()
-        
+
         loggerMock.debugFileFunctionLineClosure = { _, _, _, _ in }
         loggerMock.syncFileFunctionLineClosure = { _, _, _, _ in }
 
         let tupple = setupAction(loggerMock)
         tupple.rustBackendMock.suggestScanRangesClosure = { [] }
-        
+
         let processSuggestedScanRangesActionAction = tupple.action
 
         do {
@@ -46,23 +46,23 @@ final class ProcessSuggestedScanRangesActionTests: ZcashTestCase {
             XCTFail("testProcessSuggestedScanRangesAction_EmptyScanRanges is not expected to fail. \(error)")
         }
     }
-    
+
     func testProcessSuggestedScanRangesAction_ChainTipScanRange() async throws {
         let loggerMock = LoggerMock()
-        
+
         loggerMock.infoFileFunctionLineClosure = { _, _, _, _ in }
         loggerMock.debugFileFunctionLineClosure = { _, _, _, _ in }
         loggerMock.syncFileFunctionLineClosure = { _, _, _, _ in }
 
         let sdkMetricsMock = SDKMetricsMock()
-        
+
         sdkMetricsMock.actionDetailForClosure = { _, _ in }
 
         let tupple = setupAction(loggerMock, sdkMetricsMock)
         tupple.rustBackendMock.suggestScanRangesClosure = {
             [ScanRange(range: 0..<10, priority: .chainTip)]
         }
-        
+
         let processSuggestedScanRangesActionAction = tupple.action
 
         do {
@@ -80,7 +80,7 @@ final class ProcessSuggestedScanRangesActionTests: ZcashTestCase {
                     nextContextMock.updateRequestedRewindHeightCalled,
                     "context.update(requestedRewindHeight:) is not expected to be called"
                 )
-                
+
                 let enhancedValue = nextContextMock.updateLastEnhancedHeightReceivedLastEnhancedHeight
                 let value = String(describing: enhancedValue)
                 XCTAssertNil(
@@ -95,20 +95,20 @@ final class ProcessSuggestedScanRangesActionTests: ZcashTestCase {
                 loggerMock.debugFileFunctionLineCalled,
                 "logger.debug() is not expected to be called."
             )
-            
+
             if let syncArguments = loggerMock.syncFileFunctionLineReceivedArguments {
                 XCTAssertFalse(syncArguments.message.contains("Setting the total range for Spend before Sync to"))
             } else {
                 XCTFail("`syncArguments` unavailable.")
             }
-            
+
             let acResult = nextContext.checkStateIs(.download)
             XCTAssertTrue(acResult == .true, "Check of state failed with '\(acResult)'")
         } catch {
             XCTFail("testProcessSuggestedScanRangesAction_ChainTipScanRange is not expected to fail. \(error)")
         }
     }
-    
+
     // swiftlint:disable large_tuple
     private func setupAction(
         _ loggerMock: LoggerMock = LoggerMock(),
@@ -127,7 +127,7 @@ final class ProcessSuggestedScanRangesActionTests: ZcashTestCase {
             XCTAssertEqual(height, 2, "")
             return -1026109260
         }
-        
+
         let lightWalletdInfoMock = LightWalletdInfoMock()
         lightWalletdInfoMock.underlyingConsensusBranchID = underlyingConsensusBranchID
         lightWalletdInfoMock.underlyingSaplingActivationHeight = UInt64(underlyingSaplingActivationHeight ?? config.saplingActivation)
@@ -148,7 +148,7 @@ final class ProcessSuggestedScanRangesActionTests: ZcashTestCase {
             rustBackendMock: rustBackendMock
         )
     }
-    
+
     func testScanRangePriorities() {
         XCTAssertEqual(ScanRange.Priority(0), .ignored)
         XCTAssertEqual(ScanRange.Priority(10), .scanned)

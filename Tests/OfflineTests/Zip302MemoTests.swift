@@ -128,7 +128,7 @@ class Zip302MemoTests: XCTestCase {
         eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeryyyyyyyyyyyyyyyyyyyyyyyyyy loooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo\
         ong meeeeeeeeeeeeeeeeeeemooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo but it's just short is it😛
         """
-        
+
         XCTAssertThrowsError(try Memo(string: almostTooLongString)) { err in
             guard let error = err as? ZcashError else {
                 XCTFail("Expected `ZcashError.memoTextInputTooLong kind of error but found \(err)")
@@ -250,7 +250,7 @@ class Zip302MemoTests: XCTestCase {
         eeeeeeeeeeeeeeeeeeeeeeeeeeeeryyyyyyyyyyyyyyyyyyyyyyyyyy looooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooong \
         meeeeeeeeeeeeeeeeemooooooooooooooooooooooooooooooooooooooong. Visibly fit, but it exceeds the byte limit. 👩‍👩‍👧‍👧
         """
-        
+
         // this assertion proves that the count of visible characters is within the limit
         XCTAssertEqual(MemoBytes.capacity, tooLongStringThatVisiblyFits.count)
         XCTAssertTrue(Memo.length(for: tooLongStringThatVisiblyFits) > MemoBytes.capacity)

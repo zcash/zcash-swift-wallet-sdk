@@ -1,6 +1,6 @@
 //
 //  CompactBlockFsStorage.swift
-//  
+//
 //
 //  Created by Francisco Gindre on 12/15/22.
 //

@@ -1,6 +1,6 @@
 //
 //  LatestBlocksDataProvider.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 11.04.2023.
 //
@@ -12,7 +12,7 @@ protocol LatestBlocksDataProvider {
     var maxScannedHeight: BlockHeight { get async }
     var latestBlockHeight: BlockHeight { get async }
     var walletBirthday: BlockHeight { get async }
-    
+
     func reset() async
     func updateScannedData() async
     func updateBlockData() async
@@ -24,7 +24,7 @@ actor LatestBlocksDataProviderImpl: LatestBlocksDataProvider {
     let service: LightWalletService
     let rustBackend: ZcashRustBackendWelding
     let sdkFlags: SDKFlags
-    
+
     // Valid values are stored here after Synchronizer's `prepare` is called.
     private(set) var fullyScannedHeight: BlockHeight = .zero
     private(set) var maxScannedHeight: BlockHeight = .zero
@@ -38,14 +38,14 @@ actor LatestBlocksDataProviderImpl: LatestBlocksDataProvider {
         self.rustBackend = rustBackend
         self.sdkFlags = sdkFlags
     }
-    
+
     func reset() async {
         fullyScannedHeight = .zero
         maxScannedHeight = .zero
         latestBlockHeight = .zero
         walletBirthday = .zero
     }
-    
+
     func updateScannedData() async {
         fullyScannedHeight = (try? await rustBackend.fullyScannedHeight()) ?? walletBirthday
         maxScannedHeight = (try? await rustBackend.maxScannedHeight()) ?? walletBirthday
@@ -61,7 +61,7 @@ actor LatestBlocksDataProviderImpl: LatestBlocksDataProvider {
     func updateWalletBirthday(_ walletBirthday: BlockHeight) async {
         self.walletBirthday = walletBirthday
     }
-    
+
     func update(_ newLatestBlockHeight: BlockHeight) async {
         if latestBlockHeight < newLatestBlockHeight {
             latestBlockHeight = newLatestBlockHeight

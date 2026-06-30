@@ -338,7 +338,7 @@ public enum Recipient: Equatable, StringEncoded {
             throw ZcashError.recipientInvalidInput
         }
     }
-    
+
     static func forEncodedAddress(encoded: String) -> (Recipient, NetworkType)? {
         return DerivationTool.getAddressMetadata(encoded).map { metadata in
             switch metadata.addressType {

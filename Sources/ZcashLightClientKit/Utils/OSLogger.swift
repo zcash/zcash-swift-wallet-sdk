@@ -1,6 +1,6 @@
 //
 //  OSLogger.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 26.01.2023.
 //
@@ -10,7 +10,7 @@ import os
 
 public class OSLogger: Logger {
     public let alias: ZcashSynchronizerAlias?
-    
+
     public enum LogLevel: Int {
         case debug
         case info
@@ -20,9 +20,9 @@ public class OSLogger: Logger {
     }
 
     public let oslog: OSLog?
-    
+
     var level: LogLevel
-    
+
     public init(
         logLevel: LogLevel,
         category: String = "sdkLogs",
@@ -59,7 +59,7 @@ public class OSLogger: Logger {
             line: line
         )
     }
-    
+
     public func info(
         _ message: String,
         file: StaticString = #file,
@@ -127,7 +127,7 @@ public class OSLogger: Logger {
             line: line
         )
     }
-    
+
     public func sync(
         _ message: String,
         file: StaticString = #file,
@@ -153,9 +153,9 @@ public class OSLogger: Logger {
         line: Int = #line
     ) {
         guard let oslog else { return }
-        
+
         let fileName = (String(describing: file) as NSString).lastPathComponent
-        
+
         os_log(
             "[%{public}@] %{public}@ - %{public}@ - Line: %{public}d -> %{public}@",
             log: oslog,

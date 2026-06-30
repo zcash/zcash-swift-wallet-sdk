@@ -1,6 +1,6 @@
 //
 //  FetchUTXOsAction.swift
-//  
+//
 //
 //  Created by Michal Fousek on 05.05.2023.
 //

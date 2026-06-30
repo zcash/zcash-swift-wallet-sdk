@@ -1,6 +1,6 @@
 //
 //  CompactBlockProcessorEventHandler.swift
-//  
+//
 //
 //  Created by Michal Fousek on 09.02.2023.
 //

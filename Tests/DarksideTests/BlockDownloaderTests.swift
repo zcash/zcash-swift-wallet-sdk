@@ -28,7 +28,7 @@ class BlockDownloaderTests: ZcashTestCase {
         mockContainer.mock(type: CheckpointSource.self, isSingleton: true) { _ in
             return DarksideMainnetCheckpointSource()
         }
-        
+
         testTempDirectory = Environment.uniqueTestTempDirectory
 
         service = LightWalletServiceFactory(endpoint: LightWalletEndpointBuilder.default).make()
@@ -53,13 +53,13 @@ class BlockDownloaderTests: ZcashTestCase {
 
         downloader = BlockDownloaderServiceImpl(service: service, storage: storage)
         darksideWalletService = DarksideWalletService(endpoint: LightWalletEndpointBuilder.default, service: service as! LightWalletGRPCService)
-        
+
         try FakeChainBuilder.buildChain(darksideWallet: darksideWalletService, branchID: branchID, chainName: chainName)
         try darksideWalletService.applyStaged(nextLatestHeight: 663250)
 
         sleep(2)
     }
-    
+
     override func tearDown() {
         super.tearDown()
         try? testFileManager.removeItem(at: testTempDirectory)
@@ -74,22 +74,22 @@ class BlockDownloaderTests: ZcashTestCase {
     func testSmallDownload() async {
         let lowerRange: BlockHeight = self.network.constants.saplingActivationHeight
         let upperRange: BlockHeight = self.network.constants.saplingActivationHeight + 99
-        
+
         let range = CompactBlockRange(uncheckedBounds: (lowerRange, upperRange))
         do {
             try await downloader.downloadBlockRange(range, mode: .direct)
-            
+
             // check what was 'stored'
             let latestHeight = try await self.storage.latestHeight()
             XCTAssertEqual(latestHeight, upperRange)
-            
+
             let resultHeight = try await self.downloader.lastDownloadedBlockHeight()
             XCTAssertEqual(resultHeight, upperRange)
         } catch {
             XCTFail("testSmallDownload() shouldn't fail \(error)")
         }
     }
-    
+
     func testFailure() async {
         let awfulDownloader = BlockDownloaderServiceImpl(
             service: AwfulLightWalletService(
@@ -98,10 +98,10 @@ class BlockDownloaderTests: ZcashTestCase {
             ),
             storage: ZcashConsoleFakeStorage()
         )
-        
+
         let lowerRange: BlockHeight = self.network.constants.saplingActivationHeight
         let upperRange: BlockHeight = self.network.constants.saplingActivationHeight + 99
-        
+
         let range = CompactBlockRange(uncheckedBounds: (lowerRange, upperRange))
 
         do {

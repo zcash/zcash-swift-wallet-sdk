@@ -31,7 +31,7 @@ class ReOrgTests: ZcashTestCase {
     let mockLatestHeight = BlockHeight(663250)
     let targetLatestHeight = BlockHeight(663251)
     let walletBirthday = BlockHeight(663150)
-    
+
     var birthday: BlockHeight = 663150
     var reorgExpectation = XCTestExpectation(description: "reorg")
     var coordinator: TestCoordinator!
@@ -47,7 +47,7 @@ class ReOrgTests: ZcashTestCase {
         mockContainer.mock(type: CheckpointSource.self, isSingleton: true) { _ in
             return DarksideMainnetCheckpointSource()
         }
-        
+
         self.coordinator = try await TestCoordinator(
             container: mockContainer,
             walletBirthday: self.birthday,
@@ -92,11 +92,11 @@ class ReOrgTests: ZcashTestCase {
 
         print("reorgHeight: \(reorgHeight)")
         print("rewindHeight: \(rewindHeight)")
-        
+
         XCTAssertTrue(reorgHeight > 0)
         XCTAssertNoThrow(rewindHeight > 0)
     }
-    
+
     func testBasicReOrg() async throws {
         let mockLatestHeight = BlockHeight(663200)
         let targetLatestHeight = BlockHeight(663202)
@@ -113,7 +113,7 @@ class ReOrgTests: ZcashTestCase {
             targetHeight: targetLatestHeight
         )
     }
-    
+
     func testTenPlusBlockReOrg() async throws {
         let mockLatestHeight = BlockHeight(663200)
         let targetLatestHeight = BlockHeight(663250)
@@ -130,7 +130,7 @@ class ReOrgTests: ZcashTestCase {
             targetHeight: targetLatestHeight
         )
     }
-    
+
     func basicReOrgTest(
         baseDataset: DarksideDataset,
         reorgDataset: DarksideDataset,
@@ -147,7 +147,7 @@ class ReOrgTests: ZcashTestCase {
                 branchID: branchID,
                 chainName: chainName
             )
-            
+
             try coordinator.resetBlocks(dataset: .predefined(dataset: .beforeReOrg))
             try coordinator.applyStaged(blockheight: firstLatestHeight)
             sleep(1)
@@ -157,7 +157,7 @@ class ReOrgTests: ZcashTestCase {
         }
 
         let firstSyncExpectation = XCTestExpectation(description: "firstSyncExpectation")
-        
+
         /**
         download and sync blocks from walletBirthday to firstLatestHeight
         */
@@ -169,9 +169,9 @@ class ReOrgTests: ZcashTestCase {
             },
             error: self.handleError
         )
-       
+
         await fulfillment(of: [firstSyncExpectation], timeout: 5)
-        
+
         guard let syncedSynchronizer = synchronizer else {
             XCTFail("nil synchronizer")
             return
@@ -187,13 +187,13 @@ class ReOrgTests: ZcashTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
-        
+
         /**
         trigger reorg!
         */
         try coordinator.resetBlocks(dataset: .predefined(dataset: reorgDataset))
         try coordinator.applyStaged(blockheight: targetHeight)
-     
+
         /**
         request latest height -> receive targetHeight!
         download that block
@@ -201,7 +201,7 @@ class ReOrgTests: ZcashTestCase {
         rewind 10 blocks and request blocks targetHeight-10 to targetHeight
         */
         let secondSyncExpectation = XCTestExpectation(description: "second sync")
-        
+
         sleep(2)
         try await coordinator.sync(
             completion: { _ in
@@ -209,11 +209,11 @@ class ReOrgTests: ZcashTestCase {
             },
             error: self.handleError
         )
-        
+
         // now reorg should happen and reorg notifications and idle notification should be triggered
-        
+
         await fulfillment(of: [reorgExpectation, secondSyncExpectation], timeout: 5)
-        
+
         // now everything should be fine. latest block should be targetHeight
 
         do {
@@ -223,7 +223,7 @@ class ReOrgTests: ZcashTestCase {
             XCTFail("Unexpected error: \(error)")
         }
     }
-    
+
     func handleError(_ error: Error?) {
         guard let testError = error else {
             XCTFail("failed with nil error")

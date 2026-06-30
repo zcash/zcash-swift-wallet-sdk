@@ -1,6 +1,6 @@
 //
 //  ActionContextStateTests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 15.06.2023.
 //
@@ -12,9 +12,9 @@ import XCTest
 final class ActionContextStateTests: ZcashTestCase {
     func testPreviousState() async throws {
         let syncContext = ActionContextImpl(state: .idle)
-        
+
         await syncContext.update(state: .clearCache)
-        
+
         let currentState = await syncContext.state
         let prevState = await syncContext.prevState
 
@@ -32,7 +32,7 @@ final class ActionContextStateTests: ZcashTestCase {
             XCTFail("syncContext.prevState is not expected to be nil.")
         }
     }
-    
+
     func testActionContextReset_DefaultBehaviour() async throws {
         let testCoordinator: TestCoordinator! = try await TestCoordinator(
             alias: .default,
@@ -43,11 +43,11 @@ final class ActionContextStateTests: ZcashTestCase {
         )
 
         await testCoordinator.synchronizer.blockProcessor.context.update(lastEnhancedHeight: 1_500_000)
-        
+
         let contextLastEnhancedHeight = await testCoordinator.synchronizer.blockProcessor.context.lastEnhancedHeight
-        
+
         XCTAssertEqual(contextLastEnhancedHeight, 1_500_000)
-        
+
         await testCoordinator.synchronizer.blockProcessor.resetContext()
 
         let contextLastEnhancedHeightAfterReset = await testCoordinator.synchronizer.blockProcessor.context.lastEnhancedHeight
@@ -61,7 +61,7 @@ final class ActionContextStateTests: ZcashTestCase {
             """
         )
     }
-    
+
     func testActionContextReset_LastEnhancedHeightReset() async throws {
         let testCoordinator: TestCoordinator! = try await TestCoordinator(
             alias: .default,
@@ -72,11 +72,11 @@ final class ActionContextStateTests: ZcashTestCase {
         )
 
         await testCoordinator.synchronizer.blockProcessor.context.update(lastEnhancedHeight: 1_500_000)
-        
+
         let contextLastEnhancedHeight = await testCoordinator.synchronizer.blockProcessor.context.lastEnhancedHeight
-        
+
         XCTAssertEqual(contextLastEnhancedHeight, 1_500_000)
-        
+
         await testCoordinator.synchronizer.blockProcessor.resetContext(restoreLastEnhancedHeight: false)
 
         let contextLastEnhancedHeightAfterReset = await testCoordinator.synchronizer.blockProcessor.context.lastEnhancedHeight

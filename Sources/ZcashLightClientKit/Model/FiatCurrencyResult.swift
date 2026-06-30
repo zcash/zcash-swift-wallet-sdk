@@ -18,11 +18,11 @@ public struct FiatCurrencyResult: Equatable {
         /// Fetch of the value ended up as success so new value in returned.
         case success
     }
-    
+
     public let date: Date
     public let rate: NSDecimalNumber
     public var state: State
-    
+
     public init(date: Date, rate: NSDecimalNumber, state: State) {
         self.date = date
         self.rate = rate

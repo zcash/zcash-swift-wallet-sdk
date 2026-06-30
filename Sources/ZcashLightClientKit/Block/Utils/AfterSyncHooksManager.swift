@@ -1,6 +1,6 @@
 //
 //  AfterSyncHooksManager.swift
-//  
+//
 //
 //  Created by Michal Fousek on 20.02.2023.
 //

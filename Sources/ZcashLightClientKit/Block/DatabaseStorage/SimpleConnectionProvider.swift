@@ -13,7 +13,7 @@ class SimpleConnectionProvider: ConnectionProvider {
     let path: String
     let readonly: Bool
     var db: Connection?
-    
+
     init(path: String, readonly: Bool = false) {
         self.path = path
         self.readonly = readonly

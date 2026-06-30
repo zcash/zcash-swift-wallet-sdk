@@ -48,7 +48,7 @@ protocol BlockDownloaderService {
     func fetchUnspentTransactionOutputs(tAddress: String, startHeight: BlockHeight, mode: ServiceMode) throws -> AsyncThrowingStream<UnspentTransactionOutputEntity, Error>
 
     func fetchUnspentTransactionOutputs(tAddresses: [String], startHeight: BlockHeight, mode: ServiceMode) throws -> AsyncThrowingStream<UnspentTransactionOutputEntity, Error>
-    
+
     func closeConnections()
 }
 
@@ -63,7 +63,7 @@ data; although, by default the SDK uses gRPC and SQL.
 class BlockDownloaderServiceImpl {
     let lightwalletService: LightWalletService
     let storage: CompactBlockRepository
-    
+
     init(service: LightWalletService, storage: CompactBlockRepository) {
         self.lightwalletService = service
         self.storage = storage
@@ -76,7 +76,7 @@ extension BlockDownloaderServiceImpl: BlockDownloaderService {
             await lightwalletService.closeConnections()
         }
     }
-            
+
     func fetchUnspentTransactionOutputs(
         tAddresses: [String],
         startHeight: BlockHeight,
@@ -84,15 +84,15 @@ extension BlockDownloaderServiceImpl: BlockDownloaderService {
     ) throws -> AsyncThrowingStream<UnspentTransactionOutputEntity, Error> {
         try lightwalletService.fetchUTXOs(for: tAddresses, height: startHeight, mode: mode)
     }
-    
+
     func fetchUnspentTransactionOutputs(tAddress: String, startHeight: BlockHeight, mode: ServiceMode) throws -> AsyncThrowingStream<UnspentTransactionOutputEntity, Error> {
         try lightwalletService.fetchUTXOs(for: tAddress, height: startHeight, mode: mode)
     }
-    
+
     func latestBlockHeight(mode: ServiceMode) async throws -> BlockHeight {
         try await lightwalletService.latestBlockHeight(mode: mode)
     }
-    
+
     func downloadBlockRange( _ heightRange: CompactBlockRange, mode: ServiceMode) async throws {
         let stream: AsyncThrowingStream<ZcashCompactBlock, Error> = try lightwalletService.blockRange(heightRange, mode: mode)
         do {
@@ -113,7 +113,7 @@ extension BlockDownloaderServiceImpl: BlockDownloaderService {
     func lastDownloadedBlockHeight() async throws -> BlockHeight {
         try await self.storage.latestHeight()
     }
-    
+
     func fetchTransaction(txId: Data, mode: ServiceMode) async throws -> (tx: ZcashTransaction.Fetched?, status: TransactionStatus) {
         try await lightwalletService.fetchTransaction(txId: txId, mode: mode)
     }

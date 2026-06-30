@@ -15,7 +15,7 @@ public class SDKSynchronizer: Synchronizer {
     private enum Constants {
         static let fixWitnessesLastVersionCall = "ud_fixWitnessesLastVersionCall"
     }
-    
+
     public var alias: ZcashSynchronizerAlias { initializer.alias }
 
     private lazy var streamsUpdateQueue = { DispatchQueue(label: "streamsUpdateQueue_\(initializer.alias.description)") }()
@@ -28,7 +28,7 @@ public class SDKSynchronizer: Synchronizer {
 
     private let exchangeRateUSDSubject = CurrentValueSubject<FiatCurrencyResult?, Never>(nil)
     public var exchangeRateUSDStream: AnyPublisher<FiatCurrencyResult?, Never> { exchangeRateUSDSubject.eraseToAnyPublisher() }
-    
+
     let metrics: SDKMetrics
     public let logger: Logger
     var exchangeRateTor: TorClient?
@@ -206,21 +206,21 @@ public class SDKSynchronizer: Synchronizer {
             await sdkFlags.sdkStarted()
             let walletSummary = try? await initializer.rustBackend.getWalletSummary()
             let recoveryProgress = walletSummary?.recoveryProgress
-            
+
             var syncProgress: Float = 0.0
             var areFundsSpendable = false
-            
+
             if let scanProgress = walletSummary?.scanProgress {
                 let composedNumerator = Float(scanProgress.numerator) + Float(recoveryProgress?.numerator ?? 0)
                 let composedDenominator = Float(scanProgress.denominator) + Float(recoveryProgress?.denominator ?? 0)
-                
+
                 let progress: Float
                 if composedDenominator == 0 {
                     progress = 1.0
                 } else {
                     progress = composedNumerator / composedDenominator
                 }
-                
+
                 // this shouldn't happen but if it does, we need to get notified by clients and work on a fix
                 if progress > 1.0 {
                     throw ZcashError.rustScanProgressOutOfRange("\(progress)")
@@ -244,7 +244,7 @@ public class SDKSynchronizer: Synchronizer {
         // exit fast on client side.
         Task(priority: .high) {
             await sdkFlags.sdkStopped()
-            
+
             let status = await self.status
             guard status != .stopped, status != .disconnected else {
                 logger.info("attempted to stop when status was: \(status)")
@@ -258,7 +258,7 @@ public class SDKSynchronizer: Synchronizer {
     }
 
     // MARK: Witnesses Fix
-    
+
     private func resolveWitnessesFix() async {
         let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
 
@@ -310,7 +310,7 @@ public class SDKSynchronizer: Synchronizer {
 
             case .syncProgress:
                 break
-                
+
             case let .storedUTXOs(utxos):
                 self?.storedUTXOs(utxos: utxos)
 
@@ -340,7 +340,7 @@ public class SDKSynchronizer: Synchronizer {
 
     private func foundTransactions(transactions: [ZcashTransaction.Overview], in range: CompactBlockRange) {
         guard !transactions.isEmpty else { return }
-        
+
         streamsUpdateQueue.async { [weak self] in
             self?.eventSubject.send(.foundTransactions(transactions, range))
         }
@@ -362,7 +362,7 @@ public class SDKSynchronizer: Synchronizer {
     public func listAccounts() async throws -> [Account] {
         try await initializer.rustBackend.listAccounts()
     }
-    
+
     // swiftlint:disable:next function_parameter_count
     public func importAccount(
         ufvk: String,
@@ -382,7 +382,7 @@ public class SDKSynchronizer: Synchronizer {
             await httpTor?.sleep()
             stopped = true
         }
-        
+
         // called when a new account is imported
         let chainTip = try? await UInt32(
             initializer.lightWalletService.latestBlockHeight(
@@ -395,7 +395,7 @@ public class SDKSynchronizer: Synchronizer {
         guard let chainTip else {
             throw ZcashError.synchronizerNotPrepared
         }
-        
+
         let checkpoint = checkpointSource.birthday(for: birthday ?? BlockHeight(chainTip))
 
         let accountUUID = try await initializer.rustBackend.importAccount(
@@ -413,7 +413,7 @@ public class SDKSynchronizer: Synchronizer {
         if stopped {
             try await start(retry: false)
         }
-        
+
         return accountUUID
     }
 
@@ -547,7 +547,7 @@ public class SDKSynchronizer: Synchronizer {
             pczt: pczt
         )
     }
-    
+
     public func createTransactionFromPCZT(pcztWithProofs: Pczt, pcztWithSigs: Pczt) async throws -> AsyncThrowingStream<TransactionSubmitResult, Error> {
         let transactions = try await sdkBroadcaster.createTransactionFromPCZT(
             pcztWithProofs: pcztWithProofs,
@@ -561,7 +561,7 @@ public class SDKSynchronizer: Synchronizer {
     public func fetchTxidsWithMemoContaining(searchTerm: String) async throws -> [Data] {
         try await transactionRepository.fetchTxidsWithMemoContaining(searchTerm: searchTerm)
     }
-    
+
     public func allReceivedTransactions() async throws -> [ZcashTransaction.Overview] {
         try await enhanceRawTransactionsWithState(
             rawTransactions: try await transactionRepository.findReceived(offset: 0, limit: Int.max)
@@ -585,18 +585,18 @@ public class SDKSynchronizer: Synchronizer {
             rawTransactions: try await transactionRepository.find(from: transaction, limit: limit, kind: .all)
         )
     }
-    
+
     private func enhanceRawTransactionsWithState(rawTransactions: [ZcashTransaction.Overview]) async throws -> [ZcashTransaction.Overview] {
         var latestKnownBlockHeight = await latestBlocksDataProvider.latestBlockHeight
         if latestKnownBlockHeight == 0 {
             latestKnownBlockHeight = try await initializer.rustBackend.maxScannedHeight() ?? .zero
         }
-        
+
         return rawTransactions.map { rawTransaction in
             var copyOfRawTransaction = rawTransaction
-            
+
             copyOfRawTransaction.state = rawTransaction.getState(for: latestKnownBlockHeight)
-            
+
             return copyOfRawTransaction
         }
     }
@@ -641,21 +641,21 @@ public class SDKSynchronizer: Synchronizer {
             guard await sdkFlags.exchangeRateEnabled else {
                 return
             }
-            
+
             // ignore refresh request when one is already in flight
             if let latestState = await exchangeRateTor?.cachedFiatCurrencyResult?.state, latestState == .fetching {
                 return
             }
-            
+
             // broadcast cached value but update the state
             if let cachedFiatCurrencyResult = await exchangeRateTor?.cachedFiatCurrencyResult {
                 var fetchingState = cachedFiatCurrencyResult
                 fetchingState.state = .fetching
                 await exchangeRateTor?.updateCachedFiatCurrencyResult(fetchingState)
-                
+
                 exchangeRateUSDSubject.send(fetchingState)
             }
-            
+
             do {
                 if exchangeRateTor == nil {
                     logger.info("Bootstrapping Tor client for fetching exchange rates")
@@ -669,7 +669,7 @@ public class SDKSynchronizer: Synchronizer {
                 var errorState = await exchangeRateTor?.cachedFiatCurrencyResult
                 errorState?.state = .error
                 await exchangeRateTor?.updateCachedFiatCurrencyResult(errorState)
-                
+
                 exchangeRateUSDSubject.send(errorState)
             }
         }
@@ -709,7 +709,7 @@ public class SDKSynchronizer: Synchronizer {
 
         try await initializer.rustBackend.truncateToChainState(chainState: checkpoint.treeState())
     }
-    
+
     // MARK: Rewind
 
     public func rewind(_ policy: RewindPolicy) -> AnyPublisher<Void, Error> {
@@ -825,7 +825,7 @@ public class SDKSynchronizer: Synchronizer {
             let service: LightWalletGRPCService
             let url: String
         }
-        
+
         struct CheckResult {
             let id: String
             let info: LightWalletdInfo?
@@ -836,9 +836,9 @@ public class SDKSynchronizer: Synchronizer {
             let service: Service
             var blockTime: TimeInterval
         }
-        
+
         let torClient = initializer.container.resolve(TorClient.self)
-        
+
         // Initialize services for the endpoints
         let services = endpoints.map {
             Service(
@@ -851,7 +851,7 @@ public class SDKSynchronizer: Synchronizer {
         // Parallel part
         var checkResults: [String: CheckResult] = [:]
         let sdkFlagsRef = sdkFlags
-        
+
         await withTaskGroup(of: CheckResult.self) { group in
             for service in services {
                 group.addTask {
@@ -882,21 +882,21 @@ public class SDKSynchronizer: Synchronizer {
                     )
                 }
             }
-            
+
             var tmpResults: [String: CheckResult] = [:]
-            
+
             for await result in group {
                 // rule out results where calls failed
                 guard let info = result.info, result.latestBlockHeight != nil else {
                     continue
                 }
-                
+
                 // rule out if mismatch of networks
                 guard (info.chainName == "main" && network == .mainnet)
                     || (info.chainName == "test" && network == .testnet) else {
                     continue
                 }
-                
+
                 // rule out mismatch of consensus branch IDs
                 guard let localBranchID = await blockProcessor.consensusBranchIdFor(Int32(info.blockHeight)) else {
                     continue
@@ -905,7 +905,7 @@ public class SDKSynchronizer: Synchronizer {
                 guard let remoteBranchID = ConsensusBranchID.fromString(info.consensusBranchID) else {
                     continue
                 }
-                
+
                 guard remoteBranchID == localBranchID else {
                     continue
                 }
@@ -917,7 +917,7 @@ public class SDKSynchronizer: Synchronizer {
                 guard info.blockHeight + ZcashSDK.syncedThresholdBlocks >= info.estimatedHeight else {
                     continue
                 }
-                
+
                 tmpResults[result.id] = result
             }
 
@@ -941,9 +941,9 @@ public class SDKSynchronizer: Synchronizer {
             guard let info = serviceDict.value.info else {
                 continue
             }
-            
+
             let service = serviceDict.value.service
-            
+
             guard info.blockHeight >= nBlocksToFetch else {
                 continue
             }
@@ -971,14 +971,14 @@ public class SDKSynchronizer: Synchronizer {
                 if blockTime < fetchThresholdSeconds {
                     var value = serviceDict.value
                     value.blockTime = blockTime
-                    
+
                     blockResults[serviceDict.key] = value
                 }
             } catch {
                 continue
             }
         }
-        
+
         // return what's left
         let sortedServers = blockResults.sorted {
             $0.value.blockTime < $1.value.blockTime
@@ -990,11 +990,11 @@ public class SDKSynchronizer: Synchronizer {
 
         return finalResult
     }
-    
+
     public func estimateBirthdayHeight(for date: Date) -> BlockHeight {
         initializer.container.resolve(CheckpointSource.self).estimateBirthdayHeight(for: date)
     }
-    
+
     public func estimateTimestamp(for height: BlockHeight) -> TimeInterval? {
         initializer.container.resolve(CheckpointSource.self).estimateTimestamp(for: height)
     }
@@ -1030,12 +1030,12 @@ public class SDKSynchronizer: Synchronizer {
 
         await sdkFlags.exchangeRateFlagUpdate(enabled)
     }
-    
+
     private func enableAndStartupTorClient() async throws {
         let torClient = initializer.container.resolve(TorClient.self)
         try await torClient.prepare()
     }
-    
+
     private func disableAndCleanupTorClients() async throws {
         await sdkFlags.torClientInitializationSuccessfullyDoneFlagUpdate(nil)
 
@@ -1051,7 +1051,7 @@ public class SDKSynchronizer: Synchronizer {
         let lwdService = initializer.container.resolve(LightWalletService.self)
         await lwdService.closeConnections()
     }
-    
+
     public func isTorSuccessfullyInitialized() async -> Bool? {
         await sdkFlags.torClientInitializationSuccessfullyDone
     }
@@ -1059,25 +1059,25 @@ public class SDKSynchronizer: Synchronizer {
     public func httpRequestOverTor(for request: URLRequest, retryLimit: UInt8 = 3) async throws -> (data: Data, response: HTTPURLResponse) {
         let torEnabled = await sdkFlags.torEnabled
         let exchangeRateEnabled = await sdkFlags.exchangeRateEnabled
-        
+
         guard torEnabled || exchangeRateEnabled else {
             throw ZcashError.torNotEnabled
         }
-        
+
         if httpTor == nil {
             logger.info("Bootstrapping Tor client for making http requests")
             if let torService = initializer.container.resolve(LightWalletService.self) as? LightWalletGRPCServiceOverTor {
                 httpTor = try await torService.tor.isolatedClient()
             }
         }
-        
+
         guard let httpTor else {
             throw ZcashError.torClientUnavailable
         }
-        
+
         return try await httpTor.isolatedClient().httpRequest(for: request, retryLimit: retryLimit)
     }
-    
+
     public func debugDatabase(sql: String) -> String {
         transactionRepository.debugDatabase(sql: sql)
     }
@@ -1096,7 +1096,7 @@ public class SDKSynchronizer: Synchronizer {
 
     public func checkSingleUseTransparentAddresses(accountUUID: AccountUUID) async throws -> TransparentAddressCheckResult {
         let dbData = initializer.dataDbURL.osStr()
-        
+
         return try await initializer.lightWalletService.checkSingleUseTransparentAddresses(
             dbData: dbData,
             networkType: network.networkType,
@@ -1104,10 +1104,10 @@ public class SDKSynchronizer: Synchronizer {
             mode: await sdkFlags.ifTor(.uniqueTor)
         )
     }
-    
+
     public func updateTransparentAddressTransactions(address: String) async throws -> TransparentAddressCheckResult {
         let dbData = initializer.dataDbURL.osStr()
-        
+
         return try await initializer.lightWalletService.updateTransparentAddressTransactions(
             address: address,
             start: 0,
@@ -1117,10 +1117,10 @@ public class SDKSynchronizer: Synchronizer {
             mode: await sdkFlags.ifTor(.uniqueTor)
         )
     }
-    
+
     public func fetchUTXOsBy(address: String, accountUUID: AccountUUID) async throws -> TransparentAddressCheckResult {
         let dbData = initializer.dataDbURL.osStr()
-        
+
         return try await initializer.lightWalletService.fetchUTXOsByAddress(
             address: address,
             dbData: dbData,
@@ -1147,7 +1147,7 @@ public class SDKSynchronizer: Synchronizer {
             )
         }
     }
-    
+
     public func deleteAccount(_ accountUUID: AccountUUID) async throws {
         try await initializer.rustBackend.deleteAccount(accountUUID)
     }
@@ -1162,7 +1162,7 @@ public class SDKSynchronizer: Synchronizer {
         }
 
         let torClient = initializer.container.resolve(TorClient.self)
-        
+
         // Validation of the server is first because any custom endpoint can be passed here
         // Extra instance of the service is created with lower timeout for a single call
         initializer.container.register(type: LightWalletService.self, isSingleton: true) { _ in
@@ -1173,18 +1173,18 @@ public class SDKSynchronizer: Synchronizer {
             container: initializer.container,
             configProvider: CompactBlockProcessor.ConfigProvider(config: await blockProcessor.config)
         )
- 
+
         do {
             _ = try await validateSever.run(with: ActionContextImpl(state: .idle)) { _ in }
         } catch {
             throw ZcashError.synchronizerServerSwitch
         }
-        
+
         // The `ValidateServerAction` confirmed the server is ok and we can continue
         // final instance of the service will be instantiated and propagated to the all parties
 
         // SWITCH TO NEW ENDPOINT
-        
+
         // LightWalletService dependency update
         initializer.container.register(type: LightWalletService.self, isSingleton: true) { _ in
             LightWalletGRPCServiceOverTor(endpoint: endpoint, tor: torClient)
@@ -1208,11 +1208,11 @@ public class SDKSynchronizer: Synchronizer {
 
             return LatestBlocksDataProviderImpl(service: service, rustBackend: rustBackend, sdkFlags: sdkFlags)
         }
-        
+
         // TransactionEncoder dependency update
         let config = await blockProcessor.config
         let fsBlockDbRoot = initializer.fsBlockDbRoot
-        
+
         initializer.container.register(type: TransactionEncoder.self, isSingleton: true) { di in
             let service = di.resolve(LightWalletService.self)
             let logger = di.resolve(Logger.self)
@@ -1233,13 +1233,13 @@ public class SDKSynchronizer: Synchronizer {
                 sdkFlags: sdkFlags
             )
         }
-        
+
         // CompactBlockProcessor dependency update
         Dependencies.setupCompactBlockProcessor(
             in: initializer.container,
             config: await blockProcessor.config
         )
-        
+
         // INITIALIZER
         initializer.lightWalletService = initializer.container.resolve(LightWalletService.self)
         initializer.blockDownloaderService = initializer.container.resolve(BlockDownloaderService.self)
@@ -1248,10 +1248,10 @@ public class SDKSynchronizer: Synchronizer {
         // SELF
         self.latestBlocksDataProvider = initializer.container.resolve(LatestBlocksDataProvider.self)
         self.transactionEncoder = initializer.container.resolve(TransactionEncoder.self)
-        
+
         // COMPACT BLOCK PROCESSOR
         await blockProcessor.updateService(initializer.container)
-        
+
         // Start synchronization
         if status != .unprepared {
             try await start(retry: true)

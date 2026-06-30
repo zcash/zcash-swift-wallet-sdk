@@ -1,6 +1,6 @@
 //
 //  RewindActionTests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 25.08.2023.
 //
@@ -17,16 +17,16 @@ final class RewindActionTests: ZcashTestCase {
 
     override func setUp() {
         super.setUp()
-        
+
         underlyingChainName = "test"
         underlyingNetworkType = .testnet
         underlyingSaplingActivationHeight = nil
         underlyingConsensusBranchID = "c2d6d0b4"
     }
-    
+
     func testRewindAction_requestedRewindHeightNil() async throws {
         let blockDownloaderMock = BlockDownloaderMock()
-        
+
         let rewindActionAction = await setupAction(blockDownloaderMock)
 
         do {
@@ -45,16 +45,16 @@ final class RewindActionTests: ZcashTestCase {
             XCTFail("testRewindAction_requestedRewindHeightNil is not expected to fail. \(error)")
         }
     }
-    
+
     func testRewindAction_FullPass() async throws {
         let blockDownloaderMock = BlockDownloaderMock()
         let loggerMock = LoggerMock()
         let blockDownloaderServiceMock = BlockDownloaderServiceMock()
-        
+
         loggerMock.debugFileFunctionLineClosure = { _, _, _, _ in }
         blockDownloaderMock.rewindLatestDownloadedBlockHeightClosure = { _ in }
         blockDownloaderServiceMock.rewindToClosure = { _ in }
-        
+
         let rewindActionAction = await setupAction(
             blockDownloaderMock,
             loggerMock,
@@ -86,23 +86,23 @@ final class RewindActionTests: ZcashTestCase {
             XCTFail("testRewindAction_FullPass is not expected to fail. \(error)")
         }
     }
-    
+
     private func setupAction(
         _ blockDownloaderMock: BlockDownloaderMock = BlockDownloaderMock(),
         _ loggerMock: LoggerMock = LoggerMock(),
         _ blockDownloaderServiceMock: BlockDownloaderServiceMock = BlockDownloaderServiceMock()
     ) async -> RewindAction {
         let rustBackendMock = ZcashRustBackendWeldingMock()
-        
+
         rustBackendMock.consensusBranchIdForHeightClosure = { height in
             XCTAssertEqual(height, 2, "")
             return -1026109260
         }
-        
+
         rustBackendMock.rewindToHeightHeightClosure = { height in
             return RewindResult.success(height)
         }
-        
+
         mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in rustBackendMock }
         mockContainer.mock(type: BlockDownloaderService.self, isSingleton: true) { _ in blockDownloaderServiceMock }
         mockContainer.mock(type: BlockDownloader.self, isSingleton: true) { _ in blockDownloaderMock }

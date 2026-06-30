@@ -1,6 +1,6 @@
 //
 //  ZcashKeyDerivationBackend.swift
-//  
+//
 //
 //  Created by Francisco Gindre on 4/7/23.
 //
@@ -107,7 +107,7 @@ struct ZcashKeyDerivationBackend: ZcashKeyDerivationBackendWelding {
             [CChar](ufvk.utf8CString),
             nil
         )
-        
+
         guard let ffiAddressPtr else {
             throw ZcashError.rustDeriveAddressFromUfvk(
                 ZcashKeyDerivationBackend.lastErrorMessage(fallback: "`deriveAddressFromUfvk` failed with unknown error")
@@ -115,10 +115,10 @@ struct ZcashKeyDerivationBackend: ZcashKeyDerivationBackendWelding {
         }
 
         defer { zcashlc_free_ffi_address(ffiAddressPtr) }
-        
+
         return ffiAddressPtr.pointee.unsafeToUnifiedAddress(networkType)
     }
-    
+
     func deriveUnifiedSpendingKey(
         from seed: [UInt8],
         accountIndex: Zip32AccountIndex
@@ -142,7 +142,7 @@ struct ZcashKeyDerivationBackend: ZcashKeyDerivationBackendWelding {
 
         return boxedSlice.unsafeToUnifiedSpendingKey(network: networkType)
     }
-    
+
     func deriveUnifiedFullViewingKey(from spendingKey: UnifiedSpendingKey) throws -> UnifiedFullViewingKey {
         let extfvk = try spendingKey.bytes.withUnsafeBufferPointer { uskBufferPtr -> UnsafeMutablePointer<CChar> in
             guard let extfvk = zcashlc_spending_key_to_full_viewing_key(

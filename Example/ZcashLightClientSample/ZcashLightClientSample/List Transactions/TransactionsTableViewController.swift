@@ -23,7 +23,7 @@ class TransactionsTableViewController: UITableViewController {
             }
         }
     }
-    
+
     var selectedTx: TransactionDetailModel?
     var selectedRow: Int?
 
@@ -80,4 +80,4 @@ extension TransactionsTableViewController {
         }
     }
 }
- 
+

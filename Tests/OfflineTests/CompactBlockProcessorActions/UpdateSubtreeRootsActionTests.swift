@@ -1,6 +1,6 @@
 //
 //  UpdateSubtreeRootsActionTests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 25.08.2023.
 //
@@ -17,16 +17,16 @@ final class UpdateSubtreeRootsActionTests: ZcashTestCase {
 
     override func setUp() {
         super.setUp()
-        
+
         underlyingChainName = "test"
         underlyingNetworkType = .testnet
         underlyingSaplingActivationHeight = nil
         underlyingConsensusBranchID = "c2d6d0b4"
     }
-    
+
     func testUpdateSubtreeRootsAction_getSubtreeRootsTimeout() async throws {
         let loggerMock = LoggerMock()
-        
+
         loggerMock.debugFileFunctionLineClosure = { _, _, _, _ in }
 
         let tupple = setupAction(loggerMock)
@@ -40,7 +40,7 @@ final class UpdateSubtreeRootsActionTests: ZcashTestCase {
 
         do {
             let context = ActionContextMock.default()
-            
+
             _ = try await updateSubtreeRootsActionAction.run(with: context) { _ in }
             XCTFail("The test is expected to fail but continued.")
         } catch ZcashError.serviceSubtreeRootsStreamFailed(LightWalletServiceError.timeOut) {
@@ -55,10 +55,10 @@ final class UpdateSubtreeRootsActionTests: ZcashTestCase {
             )
         }
     }
-    
+
     func testUpdateSubtreeRootsAction_RootsAvailablePutRootsSuccess() async throws {
         let loggerMock = LoggerMock()
-        
+
         loggerMock.debugFileFunctionLineClosure = { _, _, _, _ in }
 
         let tupple = setupAction(loggerMock)
@@ -69,7 +69,7 @@ final class UpdateSubtreeRootsActionTests: ZcashTestCase {
                 continuation.finish()
             }
         }
-        
+
         tupple.rustBackendMock.putSaplingSubtreeRootsStartIndexRootsClosure = { _, _ in }
         tupple.rustBackendMock.putOrchardSubtreeRootsStartIndexRootsClosure = { _, _ in }
 
@@ -84,10 +84,10 @@ final class UpdateSubtreeRootsActionTests: ZcashTestCase {
             XCTFail("testUpdateSubtreeRootsAction_RootsAvailablePutRootsSuccess is not expected to fail. \(error)")
         }
     }
-    
+
     func testUpdateSubtreeRootsAction_RootsAvailablePutSaplingRootsFailure() async throws {
         let loggerMock = LoggerMock()
-        
+
         loggerMock.infoFileFunctionLineClosure = { _, _, _, _ in }
         loggerMock.debugFileFunctionLineClosure = { _, _, _, _ in }
 
@@ -99,15 +99,15 @@ final class UpdateSubtreeRootsActionTests: ZcashTestCase {
                 continuation.finish()
             }
         }
-        
+
         tupple.rustBackendMock.putSaplingSubtreeRootsStartIndexRootsThrowableError = "putSaplingFailed"
         tupple.rustBackendMock.putOrchardSubtreeRootsStartIndexRootsClosure = { _, _ in }
 
         do {
             let context = ActionContextMock.default()
-            
+
             _ = try await updateSubtreeRootsActionAction.run(with: context) { _ in }
-            
+
             XCTFail("updateSubtreeRootsActionAction.run(with:) is excpected to fail but didn't.")
         } catch ZcashError.compactBlockProcessorPutSaplingSubtreeRoots {
             // this is expected result of this test
@@ -130,7 +130,7 @@ final class UpdateSubtreeRootsActionTests: ZcashTestCase {
                 continuation.finish()
             }
         }
-        
+
         tupple.rustBackendMock.putSaplingSubtreeRootsStartIndexRootsClosure = { _, _ in }
         tupple.rustBackendMock.putOrchardSubtreeRootsStartIndexRootsThrowableError = "putOrchardFailed"
 
@@ -164,7 +164,7 @@ final class UpdateSubtreeRootsActionTests: ZcashTestCase {
             XCTAssertEqual(height, 2, "")
             return -1026109260
         }
-        
+
         let lightWalletdInfoMock = LightWalletdInfoMock()
         lightWalletdInfoMock.underlyingConsensusBranchID = underlyingConsensusBranchID
         lightWalletdInfoMock.underlyingSaplingActivationHeight = UInt64(underlyingSaplingActivationHeight ?? config.saplingActivation)

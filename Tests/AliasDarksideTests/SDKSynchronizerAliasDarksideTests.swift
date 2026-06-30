@@ -1,6 +1,6 @@
 //
 //  SDKSynchronizerAliasDarksideTests.swift
-//  
+//
 //
 //  Created by Michal Fousek on 28.03.2023.
 //

@@ -17,7 +17,7 @@ extension EncodedTransaction: Hashable {
         hasher.combine(transactionId)
         hasher.combine(raw)
     }
-    
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         guard lhs.transactionId == rhs.transactionId else { return false }
         guard lhs.raw == rhs.raw else { return false }

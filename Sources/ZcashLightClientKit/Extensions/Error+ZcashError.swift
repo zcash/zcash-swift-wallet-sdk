@@ -1,6 +1,6 @@
 //
 //  Error+ZcashError.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 09.05.2023.
 //

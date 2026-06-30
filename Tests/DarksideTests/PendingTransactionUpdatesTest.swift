@@ -28,13 +28,13 @@ class PendingTransactionUpdatesTest: ZcashTestCase {
         mockContainer.mock(type: CheckpointSource.self, isSingleton: true) { _ in
             return DarksideMainnetCheckpointSource()
         }
-        
+
         self.coordinator = try await TestCoordinator(
             container: mockContainer,
             walletBirthday: birthday,
             network: network
         )
-        
+
         try await coordinator.reset(
             saplingActivation: 663150,
             startSaplingTreeSize: 128607,
@@ -53,19 +53,19 @@ class PendingTransactionUpdatesTest: ZcashTestCase {
         try? FileManager.default.removeItem(at: coordinator.databases.fsCacheDbRoot)
         try? FileManager.default.removeItem(at: coordinator.databases.dataDB)
     }
-    
+
     // TODO: [#1518] Fix the test, https://github.com/Electric-Coin-Company/zcash-swift-wallet-sdk/issues/1518
     func _testPendingTransactionMinedHeightUpdated() async throws {
         /*
         1. create fake chain
         */
         LoggerProxy.info("1. create fake chain")
-        
+
         try FakeChainBuilder.buildChain(darksideWallet: coordinator.service, branchID: branchID, chainName: chainName)
-        
+
         try coordinator.applyStaged(blockheight: 663188)
         sleep(2)
-        
+
         let firstSyncExpectation = XCTestExpectation(description: "first sync")
 
         /*
@@ -83,12 +83,12 @@ class PendingTransactionUpdatesTest: ZcashTestCase {
             await handleError(error)
         }
         await fulfillment(of: [firstSyncExpectation], timeout: 5)
-        
+
         sleep(1)
-        
+
         let sendExpectation = XCTestExpectation(description: "send expectation")
         var pendingEntity: ZcashTransaction.Overview?
-        
+
         /*
         2. send transaction to recipient address
         */
@@ -105,15 +105,15 @@ class PendingTransactionUpdatesTest: ZcashTestCase {
         } catch {
             await self.handleError(error)
         }
-        
+
         await fulfillment(of: [sendExpectation], timeout: 11)
-        
+
         guard let pendingUnconfirmedTx = pendingEntity else {
             XCTFail("no pending transaction after sending")
             try await coordinator.stop()
             return
         }
-        
+
         XCTAssertTrue(
             pendingUnconfirmedTx.isPending(currentHeight: 633188),
             "pending transaction evaluated as confirmed when it shouldn't"
@@ -122,7 +122,7 @@ class PendingTransactionUpdatesTest: ZcashTestCase {
             pendingUnconfirmedTx.minedHeight,
             "pending transaction evaluated as mined when it shouldn't"
         )
-        
+
         XCTAssertTrue(
             pendingUnconfirmedTx.isPending(currentHeight: 663188),
             "pending transaction evaluated as not pending when it should be"
@@ -137,15 +137,15 @@ class PendingTransactionUpdatesTest: ZcashTestCase {
             try await coordinator.stop()
             return
         }
-        
+
         let sentTxHeight: BlockHeight = 663189
-        
+
         /*
         4. stage transaction at sentTxHeight
         */
         LoggerProxy.info("4. stage transaction at \(sentTxHeight)")
         try coordinator.stageBlockCreate(height: sentTxHeight)
-        
+
         try coordinator.stageTransaction(incomingTx, at: sentTxHeight)
 
         /*
@@ -153,15 +153,15 @@ class PendingTransactionUpdatesTest: ZcashTestCase {
         */
         LoggerProxy.info("5. applyHeight(\(sentTxHeight))")
         try coordinator.applyStaged(blockheight: sentTxHeight)
-        
+
         sleep(2)
-        
+
         /*
         6. sync to latest height
         */
         LoggerProxy.info("6. sync to latest height")
         let secondSyncExpectation = XCTestExpectation(description: "after send expectation")
-        
+
         do {
             try await coordinator.sync(
                 completion: { _ in
@@ -189,7 +189,7 @@ class PendingTransactionUpdatesTest: ZcashTestCase {
 //        XCTAssertEqual(afterStagePendingTx.minedHeight, sentTxHeight)
 //        XCTAssertNotNil(afterStagePendingTx.minedHeight, "pending transaction shown as unmined when it has been mined")
 //        XCTAssertTrue(afterStagePendingTx.isPending(currentHeight: sentTxHeight))
-        
+
         /*
         7. stage 15  blocks from sentTxHeight
         */
@@ -199,15 +199,15 @@ class PendingTransactionUpdatesTest: ZcashTestCase {
         let lastStageHeight = sentTxHeight + 14
         LoggerProxy.info("applyStaged(\(lastStageHeight))")
         try coordinator.applyStaged(blockheight: lastStageHeight)
-        
+
         sleep(2)
         let syncToConfirmExpectation = XCTestExpectation(description: "sync to confirm expectation")
-        
+
         /*
         8. last sync to latest height
         */
         LoggerProxy.info("last sync to latest height: \(lastStageHeight)")
-        
+
         do {
             try await coordinator.sync(
                 completion: { _ in
@@ -231,7 +231,7 @@ class PendingTransactionUpdatesTest: ZcashTestCase {
 //        XCTAssertEqual(clearedTransaction!.value.amount, afterStagePendingTx.value.amount)
 //        XCTAssertNil(supposedlyPendingUnexistingTransaction)
     }
-    
+
     func handleError(_ error: Error?) async {
         _ = try? await coordinator.stop()
         guard let testError = error else {

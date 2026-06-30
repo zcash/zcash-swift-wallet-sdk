@@ -19,11 +19,11 @@ extension BlockID {
         self = BlockID()
         self.height = height
     }
-    
+
     init(height: BlockHeight) {
         self.init(height: UInt64(height))
     }
-    
+
     func compactBlockHeight() -> BlockHeight? {
         BlockHeight(exactly: self.height)
     }
@@ -37,7 +37,7 @@ extension BlockRange {
             self.end = BlockID(height: UInt64(endHeight))
         }
     }
-    
+
     var compactBlockRange: CompactBlockRange {
         return Int(self.start.height) ... Int(self.end.height)
     }

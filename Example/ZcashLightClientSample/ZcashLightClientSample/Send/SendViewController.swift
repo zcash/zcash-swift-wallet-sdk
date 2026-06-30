@@ -23,7 +23,7 @@ class SendViewController: UIViewController {
     @IBOutlet weak var synchronizerStatusLabel: UILabel!
     @IBOutlet weak var memoField: UITextView!
     @IBOutlet weak var charactersLeftLabel: UILabel!
-    
+
     let characterLimit: Int = 512
     var wallet = Initializer.shared
 
@@ -33,7 +33,7 @@ class SendViewController: UIViewController {
     var closureSynchronizer: ClosureSynchronizer!
 
     var cancellables: [AnyCancellable] = []
-    
+
     override func viewDidLoad() {
         super.viewDidLoad()
         synchronizer = AppDelegate.shared.sharedSynchronizer
@@ -52,7 +52,7 @@ class SendViewController: UIViewController {
             loggerProxy.debug("Prepare result: \(result)")
         }
     }
-    
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         closureSynchronizer.start(retry: false) { [weak self] error in
@@ -66,7 +66,7 @@ class SendViewController: UIViewController {
             }
         }
     }
-    
+
     @objc func viewTapped(_ recognizer: UITapGestureRecognizer) {
         let point = recognizer.location(in: self.view)
         if addressTextField.isFirstResponder && !addressTextField.frame.contains(point) {
@@ -78,7 +78,7 @@ class SendViewController: UIViewController {
             memoField.resignFirstResponder()
         }
     }
-    
+
     func setUp() {
         Task { @MainActor in
             await updateBalance()
@@ -102,7 +102,7 @@ class SendViewController: UIViewController {
             )
             .store(in: &cancellables)
     }
-    
+
     func updateBalance() async {
         Task { @MainActor in
             guard let account = try? await synchronizer.listAccounts().first else {
@@ -116,15 +116,15 @@ class SendViewController: UIViewController {
             )
         }
     }
-    
+
     func format(balance: Zatoshi = Zatoshi()) -> String {
         "Zec \(balance.formattedString ?? "0.0")"
     }
-    
+
     func toggleSendButton() async {
         sendButton.isEnabled = await isFormValid()
     }
-    
+
     func maxFundsOn() {
         Task { @MainActor in
             guard let account = try? await synchronizer.listAccounts().first else {
@@ -137,11 +137,11 @@ class SendViewController: UIViewController {
             amountTextField.isEnabled = false
         }
     }
-    
+
     func maxFundsOff() {
         amountTextField.isEnabled = true
     }
-    
+
     func isFormValid() async -> Bool {
         switch synchronizer.latestState.syncStatus {
         case .upToDate:
@@ -152,7 +152,7 @@ class SendViewController: UIViewController {
             return false
         }
     }
-    
+
     func isBalanceValid() async -> Bool {
         guard let account = try? await synchronizer.listAccounts().first else {
             return false
@@ -160,7 +160,7 @@ class SendViewController: UIViewController {
         let balance = (try? await synchronizer.getAccountsBalances()[account.id])?.saplingBalance.spendableValue ?? .zero
         return balance > .zero
     }
-    
+
     func isAmountValid() async -> Bool {
         guard let account = try? await synchronizer.listAccounts().first else {
             return false
@@ -173,17 +173,17 @@ class SendViewController: UIViewController {
         else {
             return false
         }
-        
+
         return true
     }
-    
+
     func isRecipientValid() -> Bool {
         guard let addr = self.addressTextField.text else {
             return false
         }
         return wallet.isValidSaplingAddress(addr) || wallet.isValidTransparentAddress(addr)
     }
-    
+
     @IBAction func maxFundsValueChanged(_ sender: Any) {
         if maxFunds.isOn {
             maxFundsOn()
@@ -191,7 +191,7 @@ class SendViewController: UIViewController {
             maxFundsOff()
         }
     }
-    
+
     @IBAction func send(_ sender: Any) {
         Task { @MainActor in
             guard await isFormValid() else {
@@ -230,7 +230,7 @@ class SendViewController: UIViewController {
             self.present(alert, animated: true, completion: nil)
         }
     }
-    
+
     func send() {
         Task { @MainActor in
             guard
@@ -255,7 +255,7 @@ class SendViewController: UIViewController {
             KRProgressHUD.dismiss()
         }
     }
-    
+
     func fail(_ error: Error) {
         let alert = UIAlertController(
             title: "Send failed!",
@@ -267,9 +267,9 @@ class SendViewController: UIViewController {
         alert.addAction(action)
         self.present(alert, animated: true, completion: nil)
     }
-    
+
     func cancel() {}
-    
+
     func textForCharacterCount(_ count: Int) -> String {
         "\(count) of \(characterLimit) bytes left"
     }
@@ -282,14 +282,14 @@ extension SendViewController: UITextFieldDelegate {
         }
         return true
     }
-    
+
     func textFieldDidEndEditing(_ textField: UITextField) {
         textField.resignFirstResponder()
         Task { @MainActor in
             await toggleSendButton()
         }
     }
-    
+
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
         if textField == amountTextField {
             addressTextField.becomeFirstResponder()
@@ -305,7 +305,7 @@ extension SendViewController: UITextViewDelegate {
         let userPressedDelete = text.isEmpty && range.length > 0
         return textView.text.utf8.count < characterLimit || userPressedDelete
     }
-    
+
     func textViewDidChange(_ textView: UITextView) {
         self.charactersLeftLabel.text = textForCharacterCount(textView.text.utf8.count)
     }

@@ -1,6 +1,6 @@
 //
 //  SyncSessionIDGenerator.swift
-//  
+//
 //
 //  Created by Francisco Gindre on 3/31/23.
 //

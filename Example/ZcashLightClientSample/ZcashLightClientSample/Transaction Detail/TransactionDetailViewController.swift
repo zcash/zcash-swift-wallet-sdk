@@ -29,7 +29,7 @@ final class TransactionDetailModel {
     var created: Date?
     var zatoshi: Zatoshi
     var memo: Memo?
-    
+
     init(sendTransaction transaction: ZcashTransaction.Overview, memos: [Memo]) {
         self.transaction = .sent(transaction)
         self.id = transaction.rawID
@@ -55,7 +55,7 @@ final class TransactionDetailModel {
         self.memo = memos.first
         self.created = Date(timeIntervalSince1970: transaction.blockTime ?? Date().timeIntervalSince1970)
     }
-    
+
     init(pendingTransaction transaction: ZcashTransaction.Overview, memos: [Memo]) {
         self.transaction = .pending(transaction)
         self.id = transaction.rawID
@@ -65,7 +65,7 @@ final class TransactionDetailModel {
         self.zatoshi = transaction.value
         self.memo = memos.first
     }
-    
+
     init(transaction: ZcashTransaction.Overview, memos: [Memo]) {
         if transaction.minedHeight == nil {
             self.transaction = .pending(transaction)
@@ -136,10 +136,10 @@ class TransactionDetailViewController: UITableViewController {
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        
+
         setup()
     }
-    
+
     func setup() {
         guard model != nil else { return }
         idLabel.text = model.id?.toHexStringTxId()
@@ -165,12 +165,12 @@ class TransactionDetailViewController: UITableViewController {
     func didLoad(memos: [Memo]) {
         memoLabel.text = memos.first?.toString()
     }
-    
+
     func formatMemo(_ memo: Data?) -> String {
         guard let memo = memo, let string = String(bytes: memo, encoding: .utf8) else { return "No Memo" }
         return string
     }
-    
+
     func heightToString(height: BlockHeight?) -> String {
         guard let height else { return "NULL" }
         return String(height)

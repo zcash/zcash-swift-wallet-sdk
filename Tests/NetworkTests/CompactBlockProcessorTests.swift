@@ -67,7 +67,7 @@ class CompactBlockProcessorTests: ZcashTestCase {
             info.estimatedHeight = UInt64(mockLatestHeight)
             info.saplingActivationHeight = UInt64(network.constants.saplingActivationHeight)
         })
-        
+
         Dependencies.setup(
             in: mockContainer,
             urls: Initializer.URLs(
@@ -85,14 +85,14 @@ class CompactBlockProcessorTests: ZcashTestCase {
             isTorEnabled: false,
             isExchangeRateEnabled: false
         )
-        
+
         mockContainer.mock(type: LatestBlocksDataProvider.self, isSingleton: true) { [self] _ in
             LatestBlocksDataProviderImpl(service: service, rustBackend: self.rustBackend, sdkFlags: sdkFlags)
         }
         mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in self.rustBackend }
         mockContainer.mock(type: LightWalletService.self, isSingleton: true) { _ in service }
         try await mockContainer.resolve(CompactBlockRepository.self).create()
-        
+
         processor = CompactBlockProcessor(container: mockContainer, config: processorConfig)
 
         let dbInit = try await rustBackend.initDataDb(seed: nil)
@@ -101,7 +101,7 @@ class CompactBlockProcessorTests: ZcashTestCase {
             XCTFail("Failed to initDataDb. Expected `.success` got: \(dbInit)")
             return
         }
-        
+
         syncStartedExpectation = XCTestExpectation(description: "\(self.description) syncStartedExpectation")
         stopNotificationExpectation = XCTestExpectation(description: "\(self.description) stopNotificationExpectation")
         updatedNotificationExpectation = XCTestExpectation(description: "\(self.description) updatedNotificationExpectation")
@@ -127,7 +127,7 @@ class CompactBlockProcessorTests: ZcashTestCase {
         rustBackend = nil
         testTempDirectory = nil
     }
-    
+
     func processorFailed(event: CompactBlockProcessor.Event) {
         if case let .failed(error) = event {
             XCTFail("CompactBlockProcessor failed with Error: \(error)")
@@ -135,7 +135,7 @@ class CompactBlockProcessorTests: ZcashTestCase {
             XCTFail("CompactBlockProcessor failed")
         }
     }
-    
+
     private func startProcessing() async {
         XCTAssertNotNil(processor)
 
@@ -152,7 +152,7 @@ class CompactBlockProcessorTests: ZcashTestCase {
 
     func testStartNotifiesSuscriptors() async {
         await startProcessing()
-   
+
         await fulfillment(
             of: [
                 syncStartedExpectation,
@@ -170,34 +170,34 @@ class CompactBlockProcessorTests: ZcashTestCase {
             batchSize: processorConfig.batchSize
         )
         updatedNotificationExpectation.expectedFulfillmentCount = expectedUpdates
-        
+
         await startProcessing()
         await fulfillment(of: [updatedNotificationExpectation, finishedNotificationExpectation], timeout: 300)
     }
-    
+
     private func expectedBatches(currentHeight: BlockHeight, targetHeight: BlockHeight, batchSize: Int) -> Int {
         (abs(currentHeight - targetHeight) / batchSize)
     }
-    
+
     func testDetermineLowerBoundPastBirthday() async {
         let errorHeight = 781_906
-        
+
         let walletBirthday = 781_900
-        
+
         let result = await processor.determineLowerBound(errorHeight: errorHeight, consecutiveErrors: 1, walletBirthday: walletBirthday)
         let expected = 781_886
-        
+
         XCTAssertEqual(result, expected)
     }
-    
+
     func testDetermineLowerBound() async {
         let errorHeight = 781_906
-        
+
         let walletBirthday = 780_900
-        
+
         let result = await processor.determineLowerBound(errorHeight: errorHeight, consecutiveErrors: 0, walletBirthday: walletBirthday)
         let expected = 781_896
-        
+
         XCTAssertEqual(result, expected)
     }
 }

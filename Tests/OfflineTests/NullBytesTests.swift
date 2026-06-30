@@ -16,7 +16,7 @@ class NullBytesTests: XCTestCase {
         // this is a valid zAddr. if you send ZEC to it, you will be contributing to Human Rights Foundation. see more ways to help at https://paywithz.cash/
         let validZaddr = "zs1gqtfu59z20s9t20mxlxj86zpw6p69l0ev98uxrmlykf2nchj2dw8ny5e0l22kwmld2afc37gkfp"
         let zAddrWithNullBytes = "\(validZaddr)\0something else that makes the address invalid"
-        
+
         XCTAssertFalse(DerivationTool(networkType: networkType).isValidSaplingAddress(zAddrWithNullBytes))
     }
 
@@ -53,7 +53,7 @@ class NullBytesTests: XCTestCase {
 //
 //        XCTAssertNoThrow(try DerivationTool(networkType: networkType)deriveSaplingExtendedFullViewingKey(goodSpendingKeys, networkType: networkType))
     }
-    
+
     func testCheckNullBytes() throws {
         // this is a valid zAddr. if you send ZEC to it, you will be contributing to Human Rights Foundation. see more ways to help at https://paywithz.cash/
         let validZaddr = "zs1gqtfu59z20s9t20mxlxj86zpw6p69l0ev98uxrmlykf2nchj2dw8ny5e0l22kwmld2afc37gkfp"

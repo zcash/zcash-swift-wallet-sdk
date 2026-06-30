@@ -1,6 +1,6 @@
 //
 //  Action.swift
-//  
+//
 //
 //  Created by Michal Fousek on 05.05.2023.
 //
@@ -16,7 +16,7 @@ protocol ActionContext {
     var lastChainTipUpdateTime: TimeInterval { get async }
     var lastScannedHeight: BlockHeight? { get async }
     var lastEnhancedHeight: BlockHeight? { get async }
-    
+
     func update(state: CBPState) async
     func update(syncControlData: SyncControlData) async
     func update(processedHeight: BlockHeight) async

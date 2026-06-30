@@ -1,6 +1,6 @@
 //
 //  BundleCheckpointURLProvider.swift
-//  
+//
 //
 //  Created by Francisco Gindre on 2023-10-30.
 //

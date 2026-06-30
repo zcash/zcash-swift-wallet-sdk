@@ -63,7 +63,11 @@ final class TxResubmissionActionTests: ZcashTestCase {
             SubmitPlanExecutor(endpointSubmitter: self.endpointSubmitter, logger: submissionLifecycleLogger())
         }
 
-        return TxResubmissionAction(container: mockContainer)
+        let action = TxResubmissionAction(container: mockContainer)
+        // Push the throttle back so tests exercise the resubmit branch.
+        // The first-invocation throttle is covered by its own test.
+        action.latestResolvedTime = 0
+        return action
     }
 
     private func makeContext() -> ActionContextMock {
@@ -210,6 +214,24 @@ final class TxResubmissionActionTests: ZcashTestCase {
 
         let remaining = await submitPlanStore.allPlannedTransactionIds()
         XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testFreshActionThrottlesFirstInvocation() async throws {
+        let rawID = Data(repeating: 0x0F, count: 32)
+        let candidate = makeOverview(rawID: rawID)
+        let action = setupAction(candidates: [candidate])
+        // Undo the test-only push: a freshly constructed action should not
+        // resubmit on its first invocation, even when candidates are present.
+        action.latestResolvedTime = Date().timeIntervalSince1970
+        transactionRepository.findRawIDClosure = { _ in candidate }
+
+        _ = try await action.run(with: makeContext()) { _ in }
+
+        XCTAssertTrue(
+            transactionEncoder.submittedTransactions.isEmpty,
+            "Fresh action must not resubmit before the throttle window elapses"
+        )
+        XCTAssertTrue(endpointSubmitter.recordedSubmissions().isEmpty)
     }
 
     func testUnknownRepositoryErrorKeepsPlanDuringPruning() async throws {

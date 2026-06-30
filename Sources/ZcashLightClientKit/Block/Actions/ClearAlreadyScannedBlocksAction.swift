@@ -1,6 +1,6 @@
 //
 //  ClearCacheForLastScannedBatch.swift
-//  
+//
 //
 //  Created by Michal Fousek on 08.05.2023.
 //
@@ -10,7 +10,7 @@ import Foundation
 final class ClearAlreadyScannedBlocksAction {
     let storage: CompactBlockRepository
     let transactionRepository: TransactionRepository
-    
+
     init(container: DIContainer) {
         storage = container.resolve(CompactBlockRepository.self)
         transactionRepository = container.resolve(TransactionRepository.self)
@@ -24,7 +24,7 @@ extension ClearAlreadyScannedBlocksAction: Action {
         guard let lastScannedHeight = await context.lastScannedHeight else {
             throw ZcashError.compactBlockProcessorLastScannedHeight
         }
-        
+
         try await storage.clear(upTo: lastScannedHeight)
 
         await context.update(state: .enhance)

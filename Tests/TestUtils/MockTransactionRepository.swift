@@ -49,7 +49,7 @@ class MockTransactionRepository {
 
     func referenceArray() -> [Kind] {
         var template: [Kind] = []
-        
+
         for _ in 0 ..< sentCount {
             template.append(.sent)
         }
@@ -59,7 +59,7 @@ class MockTransactionRepository {
 
         return template.shuffled()
     }
-    
+
     func randomBlockHeight() -> BlockHeight {
         BlockHeight.random(in: network.constants.saplingActivationHeight ... 1_000_000)
     }
@@ -76,11 +76,11 @@ extension MockTransactionRepository: TransactionRepository {
     func fetchTxidsWithMemoContaining(searchTerm: String) async throws -> [Data] {
         []
     }
-    
+
     func findForResubmission(upTo: ZcashLightClientKit.BlockHeight) async throws -> [ZcashLightClientKit.ZcashTransaction.Overview] {
         []
     }
-    
+
     func getTransactionOutputs(for rawID: Data) async throws -> [ZcashLightClientKit.ZcashTransaction.Output] {
         []
     }
@@ -222,7 +222,7 @@ extension MockTransactionRepository: TransactionRepository {
     func findMemos(for transaction: ZcashLightClientKit.ZcashTransaction.Overview) throws -> [ZcashLightClientKit.Memo] {
         throw MockTransactionRepositoryError.notImplemented
     }
-    
+
     func debugDatabase(sql: String) -> String {
         ""
     }
@@ -237,7 +237,7 @@ extension Array {
         for index in 0 ..< self.count where function(self[index]) {
             idx.append(index)
         }
-        
+
         guard !idx.isEmpty else { return nil }
         return idx
     }

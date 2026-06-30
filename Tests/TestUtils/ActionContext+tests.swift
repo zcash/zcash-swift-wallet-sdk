@@ -1,6 +1,6 @@
 //
 //  ActionContext+tests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 24.08.2023.
 //
@@ -25,15 +25,15 @@ extension ActionContext {
         if nextContextMock.updateStateCallsCount != 1 {
             return .called(nextContextMock.updateStateCallsCount)
         }
-        
+
         guard let updateStateReceivedState = nextContextMock.updateStateReceivedState else {
             return .nilState
         }
-        
+
         if updateStateReceivedState != expectedState {
             return .wrongState(updateStateReceivedState)
         }
-        
+
         return .true
     }
 }

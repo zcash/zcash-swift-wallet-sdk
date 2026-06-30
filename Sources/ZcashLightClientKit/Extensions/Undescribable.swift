@@ -1,6 +1,6 @@
 //
 //  undescribable.swift
-//  
+//
 //
 //  Created by Francisco Gindre on 8/30/22.
 //
@@ -11,11 +11,11 @@ extension Undescribable {
     public var description: String {
         return "--redacted--"
     }
-    
+
     public var debugDescription: String {
         return "--redacted--"
     }
-    
+
     public var customMirror: Mirror {
         return Mirror(reflecting: "--redacted--")
     }

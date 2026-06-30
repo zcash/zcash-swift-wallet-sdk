@@ -19,10 +19,10 @@ class ZcashRustBackendTests: XCTestCase {
     wlm5t9q0l6wmzcrvcf5ed6dqzvct3e2ge7f6qdvzhp02m7sp5a0qjssrwpdh7u6tq89hl3wchuq8ljq8r8rwd6xdwh3nry9at80z7amnj3s6ah4jevnvfr08gxpws523z95g6dmn4wm6l3658\
     kd4xcq9rc0qn
     """
-    
+
     let recipientAddress = "ztestsapling1ctuamfer5xjnnrdr3xdazenljx0mu0gutcf9u9e74tr2d3jwjnt0qllzxaplu54hgc2tyjdc2p6"
     let zpend: Int = 500_000
-    
+
     let networkType = NetworkType.testnet
 
     override func setUp() {
@@ -33,14 +33,14 @@ class ZcashRustBackendTests: XCTestCase {
 
         rustBackend = ZcashRustBackend.makeForTests(dbData: dbData, fsBlockDbRoot: Environment.uniqueTestTempDirectory, networkType: .testnet)
     }
-    
+
     override func tearDown() {
         super.tearDown()
         try? FileManager.default.removeItem(at: dbData!)
         dataDbHandle.dispose()
         rustBackend = nil
     }
-    
+
     func testInitWithShortSeedAndFail() async throws {
         let seed = "testreferencealice"
         var treeState = TreeState()

@@ -1,6 +1,6 @@
 //
 //  FsBlockStorageTests.swift
-//  
+//
 //
 //  Created by Francisco Gindre on 12/15/22.
 //
@@ -132,7 +132,7 @@ final class FsBlockStorageTests: ZcashTestCase {
             XCTFail("no filename")
             return
         }
-        
+
         XCTAssertEqual(ZcashCompactBlockDescriptor.live.height(filename), 1000)
 
         guard let lastStoredBlock = contents.last else {
@@ -414,7 +414,7 @@ final class FsBlockStorageTests: ZcashTestCase {
             return
         }
         let mockBackend = await RustBackendMockHelper(rustBackend: rustBackend)
-        
+
         mockBackend.rustBackendMock.writeBlocksMetadataBlocksThrowableError = ZcashError.rustWriteBlocksMetadataAllocationProblem
 
         do {

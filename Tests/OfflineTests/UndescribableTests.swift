@@ -1,6 +1,6 @@
 //
 //  UndescribableTests.swift
-//  
+//
 //
 //  Created by Francisco Gindre on 8/30/22.
 //
@@ -96,7 +96,7 @@ final class UndescribableTests: XCTestCase {
 
         var str = ""
         debugPrint(key, to: &str)
-        
+
         XCTAssertEqual(str, "--redacted--\n")
     }
 }

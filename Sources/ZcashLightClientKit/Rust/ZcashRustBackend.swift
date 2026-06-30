@@ -42,21 +42,21 @@ public struct ConfirmationsPolicy {
     /// NonZero, zero for default; if this is set to zero, `trusted` must also be set to zero
     let untrusted: UInt32
     let allowZeroConfShielding: Bool
-    
+
     init(trusted: UInt32 = 3, untrusted: UInt32 = 10, allowZeroConfShielding: Bool = true) {
         self.trusted = trusted
         self.untrusted = untrusted
         self.allowZeroConfShielding = allowZeroConfShielding
     }
-    
+
     public static func defaultTransferPolicy() -> Self {
         ConfirmationsPolicy.init()
     }
-    
+
     public static func defaultShieldingPolicy() -> Self {
         ConfirmationsPolicy.init(trusted: 1, untrusted: 1, allowZeroConfShielding: true)
     }
-    
+
     public func toBackend() -> libzcashlc.ConfirmationsPolicy {
         var libzcashlcConfirmationsPolicy = libzcashlc.ConfirmationsPolicy()
         libzcashlcConfirmationsPolicy.trusted = self.trusted
@@ -137,7 +137,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             let accountUUID = AccountUUID(id: accountUUIDPtr.uuidArray)
 
             let account = try await getAccount(for: accountUUID)
-            
+
             accounts.append(account)
         }
 
@@ -154,20 +154,20 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             networkType.networkId,
             accountUUID.id
         )
-        
+
         guard let accountPtr else {
             throw ZcashError.rustImportAccountUfvk(lastErrorMessage(fallback: "`getAccount` failed with unknown error"))
         }
-        
+
         defer { zcashlc_free_account(accountPtr) }
 
         guard let validAccount = accountPtr.pointee.unsafeToAccount() else {
             throw ZcashError.rustUUIDAccountNotFound(lastErrorMessage(fallback: "`getAccount` failed with unknown error"))
         }
-        
+
         return validAccount
     }
-    
+
     // swiftlint:disable:next function_parameter_count
     @DBActor func importAccount(
         ufvk: String,
@@ -180,19 +180,19 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         keySource: String?
     ) async throws -> AccountUUID {
         var rUntil: Int64 = -1
-        
+
         if let recoverUntil {
             rUntil = Int64(recoverUntil)
         }
 
         let treeStateBytes = try treeState.serializedData(partial: false).bytes
-        
+
         var kSource: [CChar]?
 
         if let keySource {
             kSource = [CChar](keySource.utf8CString)
         }
-        
+
         let index: UInt32 = zip32AccountIndex?.index ?? UINT32_MAX
 
         let uuidPtr = zcashlc_import_account_ufvk(
@@ -209,16 +209,16 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             seedFingerprint,
             index
         )
-        
+
         guard let uuidPtr else {
             throw ZcashError.rustImportAccountUfvk(lastErrorMessage(fallback: "`importAccount` failed with unknown error"))
         }
-        
+
         defer { zcashlc_free_ffi_uuid(uuidPtr) }
 
         return uuidPtr.pointee.unsafeToAccountUUID()
     }
-    
+
     @DBActor
     func createAccount(
         seed: [UInt8],
@@ -228,13 +228,13 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         keySource: String?
     ) async throws -> UnifiedSpendingKey {
         var rUntil: Int64 = -1
-        
+
         if let recoverUntil {
             rUntil = Int64(recoverUntil)
         }
-        
+
         let treeStateBytes = try treeState.serializedData(partial: false).bytes
-        
+
         var kSource: [CChar]?
 
         if let keySource {
@@ -339,7 +339,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             count: Int(proposal.pointee.len)
         ))
     }
-    
+
     @DBActor
     func createPCZTFromProposal(
         accountUUID: AccountUUID,
@@ -357,7 +357,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
                 accountUUID.id
             )
         }
-        
+
         guard let pcztPtr else {
             throw ZcashError.rustCreatePCZTFromProposal(lastErrorMessage(fallback: "`createPCZTFromProposal` failed with unknown error"))
         }
@@ -416,7 +416,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             guard let bufferPtr = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
                 return nil
             }
-            
+
             return zcashlc_add_proofs_to_pczt(
                 bufferPtr,
                 UInt(pczt.count),
@@ -448,12 +448,12 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             guard let pcztWithProofsBufferPtr = pcztWithProofsBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
                 return nil
             }
-            
+
             return pcztWithSigs.withUnsafeBytes { pcztWithSigsBuffer in
                 guard let pcztWithSigsBufferPtr = pcztWithSigsBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
                     return nil
                 }
-                
+
                 return zcashlc_extract_and_store_from_pczt(
                     dbData.0,
                     dbData.1,
@@ -477,7 +477,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         guard txidPtr.pointee.len == 32 else {
             throw ZcashError.rustTxidPtrIncorrectLength(lastErrorMessage(fallback: "`extractAndStoreTxFromPCZT` failed with unknown error"))
         }
-        
+
         defer { zcashlc_free_boxed_slice(txidPtr) }
 
         return Data(
@@ -974,7 +974,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             let accountBalance = summaryPtr.pointee.account_balances.advanced(by: i).pointee
             accountBalances[AccountUUID(id: accountBalance.uuidArray)] = accountBalance.toAccountBalance()
         }
-        
+
         // Modify spendable `accountBalances` if chainTip hasn't been updated yet
         if await !sdkFlags.chainTipUpdated {
             accountBalances.forEach { key, _ in
@@ -1094,11 +1094,11 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         }
 
         defer { zcashlc_free_boxed_slice(proposal) }
-        
+
         guard proposal.pointee.ptr != nil else {
             return nil
         }
-        
+
         return try FfiProposal(serializedBytes: Data(
             bytes: proposal.pointee.ptr,
             count: Int(proposal.pointee.len)
@@ -1155,7 +1155,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
         return branchId
     }
-    
+
     // swiftlint:disable:next cyclomatic_complexity
     @DBActor func transactionDataRequests() async throws -> [TransactionDataRequest] {
         let tDataRequestsPtr = zcashlc_transaction_data_requests(
@@ -1176,7 +1176,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             let tDataRequestPtr = tDataRequestsPtr.pointee.ptr.advanced(by: i).pointee
 
             var tDataRequest: TransactionDataRequest?
-            
+
             if tDataRequestPtr.tag == 0 {
                 tDataRequest = TransactionDataRequest.getStatus(FfiTxId(tuple: tDataRequestPtr.get_status).array)
             } else if tDataRequestPtr.tag == 1 {
@@ -1233,11 +1233,11 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
         return transactionDataRequests
     }
-    
+
     @DBActor
     func setTransactionStatus(txId: Data, status: TransactionStatus) async throws {
         var transactionStatus = FfiTransactionStatus()
-        
+
         switch status {
         case .txidNotRecognized:
             transactionStatus.tag = 0
@@ -1257,12 +1257,12 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             transactionStatus
         )
     }
-    
+
     @DBActor
     func fixWitnesses() async {
         zcashlc_fix_witnesses(dbData.0, dbData.1, networkType.networkId)
     }
-    
+
     @DBActor
     func getSingleUseTransparentAddress(accountUUID: AccountUUID) async throws -> SingleUseTransparentAddress {
         let singleUseTaddrPtr = zcashlc_get_single_use_taddr(
@@ -1286,7 +1286,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             gapLimit: singleUseTaddrPtr.pointee.gap_limit
         )
     }
-    
+
     @DBActor
     func deleteAccount(_ accountUUID: AccountUUID) async throws {
         let success = zcashlc_delete_account(
@@ -1295,7 +1295,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             networkType.networkId,
             accountUUID.id
         )
-        
+
         guard success else {
             throw ZcashError.rustDeleteAccount(
                 lastErrorMessage(fallback: "`deleteAccount` failed with unknown error")
@@ -1385,7 +1385,7 @@ extension FfiAccount {
         guard uuidArray != [UInt8](repeating: 0, count: 16) else {
             return nil
         }
-        
+
         // Invalid ZIP 32 account index
         if hd_account_index == UInt32.max {
             return .init(

@@ -43,7 +43,7 @@ class BlockStreamingTest: ZcashTestCase {
             isTorEnabled: false,
             isExchangeRateEnabled: false
         )
-        
+
         mockContainer.mock(type: LatestBlocksDataProvider.self, isSingleton: true) { _ in LatestBlocksDataProviderMock() }
         mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in self.rustBackend }
 
@@ -120,7 +120,7 @@ class BlockStreamingTest: ZcashTestCase {
 
         var blocks: [ZcashCompactBlock] = []
         let stream = try service.blockStream(startHeight: startHeight, endHeight: latestBlockHeight, mode: .direct)
-        
+
         do {
             for try await compactBlock in stream {
                 blocks.append(compactBlock)
@@ -163,7 +163,7 @@ class BlockStreamingTest: ZcashTestCase {
         await fulfillment(of: [expectation], timeout: 5)
         await action.stop()
     }
-    
+
     func testStreamTimeout() async throws {
         try await makeDependencies(timeout: 100)
 

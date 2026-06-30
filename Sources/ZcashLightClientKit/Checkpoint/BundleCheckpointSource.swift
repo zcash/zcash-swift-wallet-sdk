@@ -9,9 +9,9 @@ import Foundation
 
 struct BundleCheckpointSource: CheckpointSource {
     var network: NetworkType
-    
+
     var saplingActivation: Checkpoint
-    
+
     init(network: NetworkType) {
         self.network = network
         self.saplingActivation = if network == .mainnet { Checkpoint.mainnetMin } else { Checkpoint.testnetMin }
@@ -23,14 +23,14 @@ struct BundleCheckpointSource: CheckpointSource {
             checkpointDirectory: BundleCheckpointURLProvider.default.url(self.network)
         ) ?? saplingActivation
     }
-    
+
     func birthday(for height: BlockHeight) -> Checkpoint {
         Checkpoint.birthday(
             with: height,
             checkpointDirectory: BundleCheckpointURLProvider.default.url(self.network)
         ) ?? saplingActivation
     }
-    
+
     // swiftlint:disable:next cyclomatic_complexity
     func estimateBirthdayHeight(for date: Date) -> BlockHeight {
         // the average time between 2500 blocks during last 10 checkpoints (estimated March 31, 2025) is 52.33 hours for mainnet
@@ -48,7 +48,7 @@ struct BundleCheckpointSource: CheckpointSource {
         guard date.timeIntervalSince1970 < latestCheckpointTime else {
             return latestCheckpoint.height
         }
-        
+
         // Phase 1, estimate possible height
         let nowTimeIntervalSince1970 = Date().timeIntervalSince1970
         let timeDiff = (nowTimeIntervalSince1970 - date.timeIntervalSince1970) - (nowTimeIntervalSince1970 - latestCheckpointTime)
@@ -60,7 +60,7 @@ struct BundleCheckpointSource: CheckpointSource {
         guard Int(heightToLookAround) > saplingActivationHeight else {
             return saplingActivationHeight
         }
-        
+
         // Phase 2, load checkpoint and evaluate against given date
         guard let loadedCheckpoint = Checkpoint.birthday(
             with: BlockHeight(heightToLookAround),
@@ -74,13 +74,13 @@ struct BundleCheckpointSource: CheckpointSource {
         if hoursApart < 0 && abs(hoursApart) < avgIntervalTime {
             return loadedCheckpoint.height
         }
-        
+
         if hoursApart < 0 {
             // loaded checkpoint is lower, increase until reached the one
             var closestHeight = loadedCheckpoint.height
             while abs(hoursApart) > avgIntervalTime {
                 heightToLookAround += blockInterval
-                
+
                 if let loadedCheckpoint = Checkpoint.birthday(
                     with: BlockHeight(heightToLookAround),
                     checkpointDirectory: BundleCheckpointURLProvider.default.url(self.network)
@@ -101,7 +101,7 @@ struct BundleCheckpointSource: CheckpointSource {
             // loaded checkpoint is higher, descrease until reached the one
             while hoursApart > 0 {
                 heightToLookAround -= blockInterval
-                
+
                 if let loadedCheckpoint = Checkpoint.birthday(
                     with: BlockHeight(heightToLookAround),
                     checkpointDirectory: BundleCheckpointURLProvider.default.url(self.network)
@@ -118,7 +118,7 @@ struct BundleCheckpointSource: CheckpointSource {
 
         return saplingActivationHeight
     }
-    
+
     func estimateTimestamp(for height: BlockHeight) -> TimeInterval? {
         let blockInterval: BlockHeight = network == .mainnet ? 2500 : 10_000
         var checkpointHeight = (height / blockInterval) * blockInterval
@@ -131,26 +131,26 @@ struct BundleCheckpointSource: CheckpointSource {
         if checkpointHeight < saplingActivationHeight {
             checkpointHeight = saplingActivationHeight
         }
-        
+
         var checkpoint: Checkpoint?
-        
+
         while checkpoint == nil || checkpointHeight > blockInterval {
             checkpoint = Checkpoint.birthday(
                 with: BlockHeight(checkpointHeight),
                 checkpointDirectory: BundleCheckpointURLProvider.default.url(self.network)
             )
-            
+
             if let checkpoint {
                 return TimeInterval(checkpoint.time)
             }
-            
+
             checkpointHeight -= blockInterval
-            
+
             if checkpointHeight < saplingActivationHeight {
                 checkpointHeight = saplingActivationHeight
             }
         }
-        
+
         return nil
     }
 }

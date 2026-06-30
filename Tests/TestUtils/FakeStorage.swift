@@ -12,7 +12,7 @@ class ZcashConsoleFakeStorage: CompactBlockRepository {
     func create() throws {}
 
     func clear(upTo height: ZcashLightClientKit.BlockHeight) async throws { }
-    
+
     func clear() async throws {}
 
     func write(blocks: [ZcashCompactBlock]) async throws {
@@ -39,21 +39,21 @@ class ZcashConsoleFakeStorage: CompactBlockRepository {
     func rewind(to height: BlockHeight) async throws {
         fakeRewind(to: height)
     }
-    
+
     var latestBlockHeight: BlockHeight = 0
     var delay = DispatchTimeInterval.milliseconds(300)
-    
+
     init(latestBlockHeight: BlockHeight = 0) {
         self.latestBlockHeight = latestBlockHeight
     }
-    
+
     private func fakeSave(blocks: [ZcashCompactBlock]) {
         blocks.forEach {
             LoggerProxy.debug("saving block \($0)")
             self.latestBlockHeight = $0.height
         }
     }
-    
+
     private func fakeRewind(to height: BlockHeight) {
         LoggerProxy.debug("rewind to \(height)")
         self.latestBlockHeight = min(self.latestBlockHeight, height)
@@ -73,11 +73,11 @@ struct SandblastSimulator {
             .enumerated()
             .map { sandblastedBlock in
                 let height = range.lowerBound + sandblastedBlock.offset
-                
+
                 var block = sandblastedBlock.element
-                
+
                 block.height = UInt64(height)
-                
+
                 return block
             }
             .asZcashCompactBlocks()

@@ -1,6 +1,6 @@
 //
 //  AsyncToClosureGateway.swift
-//  
+//
 //
 //  Created by Michal Fousek on 03.04.2023.
 //

@@ -40,9 +40,9 @@ class TransactionEnhancementTests: ZcashTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        
+
         logger = OSLogger(logLevel: .debug)
-        
+
         syncStartedExpect = XCTestExpectation(description: "\(self.description) syncStartedExpect")
         stopNotificationExpectation = XCTestExpectation(description: "\(self.description) stopNotificationExpectation")
         updatedNotificationExpectation = XCTestExpectation(description: "\(self.description) updatedNotificationExpectation")
@@ -50,7 +50,7 @@ class TransactionEnhancementTests: ZcashTestCase {
         afterReorgIdleNotification = XCTestExpectation(description: "\(self.description) afterReorgIdleNotification")
         reorgNotificationExpectation = XCTestExpectation(description: "\(self.description) reorgNotificationExpectation")
         txFoundNotificationExpectation = XCTestExpectation(description: "\(self.description) txFoundNotificationExpectation")
-        
+
         waitExpectation = XCTestExpectation(description: "\(self.description) waitExpectation")
 
         let checkpointSource = CheckpointSourceFactory.fromBundle(for: network.networkType)
@@ -92,7 +92,7 @@ class TransactionEnhancementTests: ZcashTestCase {
             XCTFail("Failed to create account. Error: \(error)")
             return
         }
-        
+
         guard case .success = dbInit else {
             XCTFail("Failed to initDataDb. Expected `.success` got: \(String(describing: dbInit))")
             return
@@ -100,7 +100,7 @@ class TransactionEnhancementTests: ZcashTestCase {
 
         let service = DarksideWalletService()
         darksideWalletService = service
-        
+
         let storage = FSCompactBlockRepository(
             fsBlockDbRoot: testTempDirectory,
             metadataStore: FSMetadataStore.live(
@@ -113,9 +113,9 @@ class TransactionEnhancementTests: ZcashTestCase {
             logger: logger
         )
         try! await storage.create()
-        
+
         downloader = BlockDownloaderServiceImpl(service: service, storage: storage)
-        
+
         Dependencies.setup(
             in: mockContainer,
             urls: Initializer.URLs(
@@ -133,12 +133,12 @@ class TransactionEnhancementTests: ZcashTestCase {
             isTorEnabled: false,
             isExchangeRateEnabled: false
         )
-        
+
         mockContainer.mock(type: LatestBlocksDataProvider.self, isSingleton: true) { [self] _ in
             LatestBlocksDataProviderImpl(service: service, rustBackend: self.rustBackend, sdkFlags: sdkFlags)
         }
         mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in self.rustBackend }
-        
+
         processor = CompactBlockProcessor(
             container: mockContainer,
             config: processorConfig
@@ -167,7 +167,7 @@ class TransactionEnhancementTests: ZcashTestCase {
         downloader = nil
         testTempDirectory = nil
     }
-    
+
     private func startProcessing() async throws {
         XCTAssertNotNil(processor)
 
@@ -182,10 +182,10 @@ class TransactionEnhancementTests: ZcashTestCase {
         await processorEventHandler.subscribe(to: processor, expectations: expectations)
         await processor.start()
     }
-    
+
     func testBasicEnhancement() async throws {
         let targetLatestHeight = BlockHeight(663200)
-        
+
         do {
             try FakeChainBuilder.buildChain(darksideWallet: darksideWalletService, branchID: branchID, chainName: chainName)
 
@@ -226,7 +226,7 @@ class TransactionEnhancementTests: ZcashTestCase {
             timeout: 30
         )
     }
-    
+
     func processorFailed(event: CompactBlockProcessor.Event) {
         if case let .failed(error) = event {
             XCTFail("CompactBlockProcessor failed with Error: \(error)")

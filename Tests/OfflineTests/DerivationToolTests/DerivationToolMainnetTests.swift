@@ -19,7 +19,7 @@ class DerivationToolMainnetTests: XCTestCase {
         """,
         networkType: .mainnet
     )
-    
+
     let expectedSpendingKey = UnifiedSpendingKey(
         network: .mainnet,
         bytes: Data(base64Encoded: """
@@ -56,17 +56,17 @@ class DerivationToolMainnetTests: XCTestCase {
 
         XCTAssertEqual(expectedViewingKey, viewingKey)
     }
-    
+
     // TODO: [#1518] Fix the test, https://github.com/Electric-Coin-Company/zcash-swift-wallet-sdk/issues/1518
     func _testDeriveViewingKeyFromSpendingKeys() throws {
         let viewingKey = try derivationTool.deriveUnifiedFullViewingKey(from: expectedSpendingKey)
         XCTAssertEqual(expectedViewingKey, viewingKey)
     }
-    
+
     // TODO: [#1518] Fix the test, https://github.com/Electric-Coin-Company/zcash-swift-wallet-sdk/issues/1518
     func _testDeriveSpendingKeysFromSeed() throws {
         let seedBytes = [UInt8](seedData)
-        
+
         let spendingKey = try derivationTool.deriveUnifiedSpendingKey(seed: seedBytes, accountIndex: Zip32AccountIndex(0))
 
         XCTAssertEqual(expectedSpendingKey, spendingKey)
@@ -85,7 +85,7 @@ class DerivationToolMainnetTests: XCTestCase {
             expectedTransparentAddress
         )
     }
-    
+
     func testIsValidViewingKey() {
         XCTAssertTrue(
             ZcashKeyDerivationBackend(networkType: .mainnet).isValidSaplingExtendedFullViewingKey(
@@ -96,14 +96,14 @@ class DerivationToolMainnetTests: XCTestCase {
                 """
             )
         )
-        
+
         XCTAssertFalse(
             ZcashKeyDerivationBackend(networkType: .mainnet).isValidSaplingExtendedFullViewingKey(
                 "zxviews1q0dm7hkzky5skvnd9ldwj2u8fz2ry94s5q8p9lyp3j96yckudmp087d2jr2rnfuvjp7f56v78vpe658vljjddj7s645q399jd7"
             )
         )
     }
-    
+
     func testDeriveQuiteALotOfUnifiedKeysFromSeed() throws {
         let numberOfAccounts: Int = 10
         var ufvks: [UnifiedFullViewingKey] = []
@@ -116,7 +116,7 @@ class DerivationToolMainnetTests: XCTestCase {
         XCTAssertEqual(ufvks.count, numberOfAccounts)
         XCTAssertEqual(ufvks[0], expectedViewingKey)
     }
-    
+
     func testShouldFailOnInvalidChecksumAddresses() {
         let testAddress = "t14oHp2v54vfmdgQ3v3SNuQga8JKHTNi2a1"
         XCTAssertFalse(DerivationTool(networkType: .mainnet).isValidTransparentAddress(testAddress))

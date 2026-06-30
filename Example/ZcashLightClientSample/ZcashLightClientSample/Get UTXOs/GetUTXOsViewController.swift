@@ -20,10 +20,10 @@ class GetUTXOsViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        
+
         updateUI()
     }
-    
+
     func updateUI() {
         let synchronizer = SDKSynchronizer.shared
 
@@ -33,12 +33,12 @@ class GetUTXOsViewController: UIViewController {
             }
 
             let tAddress = (try? await synchronizer.getTransparentAddress(accountUUID: account.id))?.stringEncoded ?? "no t-address found"
-            
+
             self.transparentAddressLabel.text = tAddress
-            
+
             // swiftlint:disable:next force_try
             let balance = try! await AppDelegate.shared.sharedSynchronizer.getAccountsBalances()[account.id]?.unshielded ?? .zero
-            
+
             self.totalBalanceLabel.text = NumberFormatter.zcashNumberFormatter.string(from: NSNumber(value: balance.amount))
             self.verifiedBalanceLabel.text = NumberFormatter.zcashNumberFormatter.string(from: NSNumber(value: balance.amount))
         }
@@ -54,7 +54,7 @@ extension GetUTXOsViewController: UITextFieldDelegate {
         updateUI()
         return true
     }
-    
+
     func textFieldDidEndEditing(_ textField: UITextField) {
         updateUI()
     }

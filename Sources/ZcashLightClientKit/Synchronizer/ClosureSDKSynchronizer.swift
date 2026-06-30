@@ -1,6 +1,6 @@
 //
 //  ClosureSDKSynchronizer.swift
-//  
+//
 //
 //  Created by Michal Fousek on 20.03.2023.
 //
@@ -216,7 +216,7 @@ extension ClosureSDKSynchronizer: ClosureSynchronizer {
             await self.synchronizer.receivedTransactions
         }
     }
-    
+
     public func paginatedTransactions(of kind: TransactionKind) -> PaginatedTransactionRepository { synchronizer.paginatedTransactions(of: kind) }
 
     public func getMemos(for transaction: ZcashTransaction.Overview, completion: @escaping (Result<[Memo], Error>) -> Void) {
@@ -282,7 +282,7 @@ extension ClosureSDKSynchronizer: ClosureSynchronizer {
      */
     public func rewind(_ policy: RewindPolicy) -> CompletablePublisher<Error> { synchronizer.rewind(policy) }
     public func wipe() -> CompletablePublisher<Error> { synchronizer.wipe() }
-    
+
     public func rescanFrom(height: BlockHeight, completion: @escaping (Error?) -> Void) {
         AsyncToClosureGateway.executeThrowingAction(completion) {
             try await self.synchronizer.rescanFrom(height: height)

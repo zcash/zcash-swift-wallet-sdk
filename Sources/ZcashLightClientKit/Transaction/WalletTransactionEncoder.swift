@@ -19,7 +19,7 @@ class WalletTransactionEncoder: TransactionEncoder {
     private let dataDbURL: URL
     private let fsBlockDbRoot: URL
     private let networkType: NetworkType
-    
+
     init(
         rustBackend: ZcashRustBackendWelding,
         dataDb: URL,
@@ -43,10 +43,10 @@ class WalletTransactionEncoder: TransactionEncoder {
         self.logger = logger
         self.sdkFlags = sdkFlags
     }
-    
+
     convenience init(initializer: Initializer) {
         let sdkFlags = initializer.container.resolve(SDKFlags.self)
-        
+
         self.init(
             rustBackend: initializer.rustBackend,
             dataDb: initializer.dataDbURL,
@@ -164,7 +164,7 @@ class WalletTransactionEncoder: TransactionEncoder {
     func ensureParams(spend: URL, output: URL) -> Bool {
         let readableSpend = FileManager.default.isReadableFile(atPath: spend.path)
         let readableOutput = FileManager.default.isReadableFile(atPath: output.path)
-        
+
         // TODO: [#713] change this to something that makes sense, https://github.com/zcash/ZcashLightClientKit/issues/713
         return readableSpend && readableOutput
     }

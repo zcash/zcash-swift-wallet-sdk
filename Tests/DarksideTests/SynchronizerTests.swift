@@ -26,18 +26,18 @@ final class SynchronizerTests: ZcashTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
-        
+
         mockContainer.mock(type: CheckpointSource.self, isSingleton: true) { _ in
             return DarksideMainnetCheckpointSource()
         }
-        
+
         // don't use an exact birthday, users never do.
         self.coordinator = try await TestCoordinator(
             container: mockContainer,
             walletBirthday: birthday + 50,
             network: network
         )
-        
+
         try await coordinator.reset(
             saplingActivation: 663150,
             startSaplingTreeSize: 128607,

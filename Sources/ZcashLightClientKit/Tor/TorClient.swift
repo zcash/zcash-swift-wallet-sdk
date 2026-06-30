@@ -25,7 +25,7 @@ public actor TorClient {
 
     deinit {
         guard let runtime = underlyingRuntime else { return }
-        
+
         zcashlc_free_tor_runtime(runtime)
     }
 
@@ -35,16 +35,16 @@ public actor TorClient {
 
     func close() throws {
         guard let runtime = underlyingRuntime else { return }
-        
+
         zcashlc_free_tor_runtime(runtime)
-        
+
         underlyingRuntime = nil
     }
 
     public func updateCachedFiatCurrencyResult(_ result: FiatCurrencyResult?) async {
         cachedFiatCurrencyResult = result
     }
-    
+
     private func resolveRuntime() throws -> OpaquePointer {
         if let runtime = underlyingRuntime {
             return runtime
@@ -62,11 +62,11 @@ public actor TorClient {
 
         let rawDir = torDir.osPathStr()
         let runtimePtr = zcashlc_create_tor_runtime(rawDir.0, rawDir.1)
-        
+
         guard let runtimePtr else {
             throw ZcashError.rustTorClientInit(lastErrorMessage(fallback: "`TorClient` init failed with unknown error"))
         }
-        
+
         underlyingRuntime = runtimePtr
 
         return runtimePtr
@@ -109,7 +109,7 @@ public actor TorClient {
     public func sleep() {
         try? setDormant(mode: Soft)
     }
-    
+
     public func wake() {
         try? setDormant(mode: Normal)
     }
@@ -255,10 +255,10 @@ public class TorLwdConn {
         )
 
         var response = SendResponse()
-        
+
         if !success {
             let err = lastErrorMessage(fallback: "`TorLwdConn.submit` failed with unknown error")
-            
+
             if err.hasPrefix("Failed to submit transaction (") && err.contains(")") {
                 guard let startOfCode = err.firstIndex(of: "(") else {
                     throw ZcashError.rustTorLwdSubmit(err)
@@ -277,7 +277,7 @@ public class TorLwdConn {
                 throw ZcashError.rustTorLwdSubmit(err)
             }
         }
-        
+
         return response
     }
 
@@ -297,7 +297,7 @@ public class TorLwdConn {
 
         guard let txPtr else {
             let lastErrorMessage = lastErrorMessage(fallback: "`TorLwdConn.fetchTransaction` failed with unknown error")
-            
+
             if lastErrorMessage.contains("No such mempool or main chain transaction") {
                 return (tx: nil, status: .txidNotRecognized)
             } else if lastErrorMessage.contains("Transaction not found") {
@@ -328,28 +328,28 @@ public class TorLwdConn {
             status: isNotMined ? .notInMainChain : .mined(Int(height))
         )
     }
-    
+
     /// Gets a lightwalletd server info
     /// - Returns: LightWalletdInfo
     func getInfo() throws -> LightWalletdInfo {
         let infoPtr = zcashlc_tor_lwd_conn_get_info(conn)
-        
+
         guard let infoPtr else {
             throw ZcashError.rustTorLwdGetInfo(
                 lastErrorMessage(fallback: "`TorLwdConn.getInfo` failed with unknown error")
             )
         }
-        
+
         defer { zcashlc_free_boxed_slice(infoPtr) }
 
         let slice = infoPtr.pointee
         guard let rawPtr = slice.ptr else {
             throw ZcashError.rustTorLwdGetInfo("`TorLwdConn.getInfo` Null pointer in FfiBoxedSlice")
         }
-        
+
         let buffer = UnsafeBufferPointer<UInt8>(start: rawPtr, count: Int(slice.len))
         let data = Data(buffer: buffer)
-        
+
         do {
             let info = try LightdInfo(serializedBytes: data)
             return info
@@ -362,42 +362,42 @@ public class TorLwdConn {
     /// - Returns: Block
     func latestBlock() throws -> BlockID {
         var height: UInt32 = 0
-        
+
         let blockIDPtr = zcashlc_tor_lwd_conn_latest_block(conn, &height)
-        
+
         guard let blockIDPtr else {
             throw ZcashError.rustTorLwdLatestBlockHeight(
                 lastErrorMessage(fallback: "`TorLwdConn.latestBlockHeight` failed with unknown error")
             )
         }
-        
+
         defer { zcashlc_free_boxed_slice(blockIDPtr) }
-        
+
         return BlockID(height: BlockHeight(height))
     }
-    
+
     /// Gets a tree state for a given height
     /// - Parameter height: heght for what a tree state is requested
     /// - Returns: TreeState
     func getTreeState(height: BlockHeight) throws -> TreeState {
         let treeStatePtr = zcashlc_tor_lwd_conn_get_tree_state(conn, UInt32(height))
-        
+
         guard let treeStatePtr else {
             throw ZcashError.rustTorLwdGetTreeState(
                 lastErrorMessage(fallback: "`TorLwdConn.getTreeState` failed with unknown error")
             )
         }
-        
+
         defer { zcashlc_free_boxed_slice(treeStatePtr) }
 
         let slice = treeStatePtr.pointee
         guard let rawPtr = slice.ptr else {
             throw ZcashError.rustTorLwdGetTreeState("`TorLwdConn.getTreeState` Null pointer in FfiBoxedSlice")
         }
-        
+
         let buffer = UnsafeBufferPointer<UInt8>(start: rawPtr, count: Int(slice.len))
         let data = Data(buffer: buffer)
-        
+
         do {
             let treeState = try TreeState(serializedBytes: data)
             return treeState
@@ -405,7 +405,7 @@ public class TorLwdConn {
             throw ZcashError.rustTorLwdGetTreeState("`TorLwdConn.getTreeState` Failed to decode protobuf TreeState: \(error)")
         }
     }
-    
+
     func checkSingleUseTransparentAddresses(
         dbData: (String, UInt),
         networkType: NetworkType,
@@ -418,7 +418,7 @@ public class TorLwdConn {
             networkType.networkId,
             accountUUID.id
         )
-        
+
         guard let addressCheckResultPtr else {
             throw ZcashError.rustCheckSingleUseTransparentAddresses(
                 lastErrorMessage(fallback: "`checkSingleUseTransparentAddresses` failed with unknown error")
@@ -435,7 +435,7 @@ public class TorLwdConn {
             )
         }
     }
-    
+
     func updateTransparentAddressTransactions(
         address: String,
         start: BlockHeight,
@@ -452,7 +452,7 @@ public class TorLwdConn {
             UInt32(start),
             Int64(end)
         )
-        
+
         guard let addressCheckResultPtr else {
             throw ZcashError.rustUpdateTransparentAddressTransactions(
                 lastErrorMessage(fallback: "`updateTransparentAddressTransactions` failed with unknown error")
@@ -484,7 +484,7 @@ public class TorLwdConn {
             accountUUID.id,
             address
         )
-        
+
         guard let addressCheckResultPtr else {
             throw ZcashError.rustFetchUTXOsByAddress(
                 lastErrorMessage(fallback: "`fetchUTXOsByAddress` failed with unknown error")

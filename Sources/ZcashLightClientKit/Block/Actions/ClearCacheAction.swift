@@ -1,6 +1,6 @@
 //
 //  ClearCacheAction.swift
-//  
+//
 //
 //  Created by Michal Fousek on 05.05.2023.
 //
@@ -20,9 +20,9 @@ extension ClearCacheAction: Action {
 
     func run(with context: ActionContext, didUpdate: @escaping (CompactBlockProcessor.Event) async -> Void) async throws -> ActionContext {
         try await storage.clear()
-        
+
         await context.update(state: .processSuggestedScanRanges)
-        
+
         return context
     }
 

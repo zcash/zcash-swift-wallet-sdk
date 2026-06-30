@@ -28,7 +28,7 @@ class SaplingParametersViewController: UIViewController {
         self.outputPath.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(outputPathTapped(_:))))
         self.outputPath.isUserInteractionEnabled = true
         self.spendPath.isUserInteractionEnabled = true
-        
+
         self.updateButtons()
     }
 
@@ -60,7 +60,7 @@ class SaplingParametersViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "OK", style: UIAlertAction.Style.default, handler: nil))
         self.present(alert, animated: true, completion: nil)
     }
-    
+
     @objc func outputPathTapped(_ gesture: UIGestureRecognizer) {
         loggerProxy.event("copied to clipboard:\(self.outputPath.text ?? "")")
 
@@ -75,11 +75,11 @@ class SaplingParametersViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "OK", style: UIAlertAction.Style.default, handler: nil))
         self.present(alert, animated: true, completion: nil)
     }
-    
+
     @IBAction func download(_ sender: Any) {
         let outputParameter = try! outputParamsURLHelper()
         let spendParameter = try! spendParamsURLHelper()
-        
+
         Task { @MainActor in
             do {
                 let urls = try await SaplingParameterDownloader.downloadParamsIfnotPresent(
@@ -98,11 +98,11 @@ class SaplingParametersViewController: UIViewController {
             }
         }
     }
-    
+
     func fileExists(_ path: String) -> Bool {
         (try? FileManager.default.attributesOfItem(atPath: path)) != nil
     }
-    
+
     func showError(_ error: Error) {
         let alert = UIAlertController(
             title: "Download Failed",
@@ -113,11 +113,11 @@ class SaplingParametersViewController: UIViewController {
         alert.addAction(UIAlertAction(title: "OK", style: UIAlertAction.Style.default, handler: nil))
         self.present(alert, animated: true, completion: nil)
     }
-    
+
     @IBAction func deleteFiles(_ sender: Any) {
         let spendParamURL = try! spendParamsURLHelper()
         let outputParamURL = try! outputParamsURLHelper()
-        
+
         try? FileManager.default.removeItem(at: spendParamURL)
         try? FileManager.default.removeItem(at: outputParamURL)
         self.updateColor()

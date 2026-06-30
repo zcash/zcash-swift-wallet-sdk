@@ -33,11 +33,11 @@ struct DarksideMainnetCheckpointSource: CheckpointSource {
     func birthday(for height: BlockHeight) -> Checkpoint {
         treeState
     }
-    
+
     func estimateBirthdayHeight(for date: Date) -> ZcashLightClientKit.BlockHeight {
         663150
     }
-    
+
     func estimateTimestamp(for height: ZcashLightClientKit.BlockHeight) -> TimeInterval? {
         1576821833
     }

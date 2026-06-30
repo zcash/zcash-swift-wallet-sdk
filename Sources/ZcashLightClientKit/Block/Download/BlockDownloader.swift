@@ -52,7 +52,7 @@ protocol BlockDownloader {
     /// called before then nothing is downloaded.
     /// - Parameter range: Wait until blocks from `range` are downloaded.
     func waitUntilRequestedBlocksAreDownloaded(in range: CompactBlockRange) async throws
-    
+
     /// Updates the internal in memory value of latest downloaded block height. This way the `BlockDownloader` works with the current latest height and can
     /// continue on parallel downloading of next batch.
     func update(latestDownloadedBlockHeight: BlockHeight, force: Bool) async
@@ -223,7 +223,7 @@ extension BlockDownloaderImpl: BlockDownloader {
     func rewind(latestDownloadedBlockHeight: BlockHeight?) async {
         self.latestDownloadedBlockHeight = latestDownloadedBlockHeight ?? -1
     }
-    
+
     func update(latestDownloadedBlockHeight: BlockHeight, force: Bool = false) async {
         if latestDownloadedBlockHeight >= self.latestDownloadedBlockHeight || force {
             self.latestDownloadedBlockHeight = latestDownloadedBlockHeight

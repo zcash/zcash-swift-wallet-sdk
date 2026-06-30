@@ -1,6 +1,6 @@
 //
 //  DownloadAction.swift
-//  
+//
 //
 //  Created by Michal Fousek on 05.05.2023.
 //
@@ -50,7 +50,7 @@ extension DownloadAction: Action {
         let downloadLimit = await context.syncControlData.latestBlockHeight >= potentialDownloadLimit ? potentialDownloadLimit : batchRangeEnd
 
         logger.debug("Starting download with range: \(batchRangeStart)...\(batchRangeEnd)")
-        
+
         await downloader.update(latestDownloadedBlockHeight: batchRangeStart, force: true)
         try await downloader.setSyncRange(lastScannedHeight...latestBlockHeight, batchSize: config.batchSize)
         await downloader.setDownloadLimit(downloadLimit)

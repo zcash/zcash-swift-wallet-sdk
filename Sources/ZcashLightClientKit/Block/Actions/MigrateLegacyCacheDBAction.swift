@@ -1,6 +1,6 @@
 //
 //  MigrateLegacyCacheDB.swift
-//  
+//
 //
 //  Created by Michal Fousek on 10.05.2023.
 //

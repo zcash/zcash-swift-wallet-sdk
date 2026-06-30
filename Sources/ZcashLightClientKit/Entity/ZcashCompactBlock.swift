@@ -83,7 +83,7 @@ extension ZcashCompactBlock: Equatable {
         if lhs.height != rhs.height {
             return false
         }
-        
+
         return lhs.data == rhs.data
     }
 }

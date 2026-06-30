@@ -11,13 +11,13 @@ import ZcashLightClientKit
 import PaginatedTableView
 class PaginatedTransactionsViewController: UIViewController {
     static let cellIdentifier = "TransactionCell"
-    
+
     @IBOutlet weak var tableView: PaginatedTableView!
 
     // swiftlint:disable:next implicitly_unwrapped_optional
     var paginatedRepository: PaginatedTransactionRepository!
     var transactions: [ZcashTransaction.Overview] = []
-    
+
     override func viewDidLoad() {
         super.viewDidLoad()
         // Add paginated delegates only
@@ -25,12 +25,12 @@ class PaginatedTransactionsViewController: UIViewController {
         self.tableView.firstPage = 0
         tableView.paginatedDelegate = self
         tableView.paginatedDataSource = self
-        
+
         // More settings
         tableView.enablePullToRefresh = true
         tableView.loadData(refresh: true)
     }
-    
+
     func loadMore(_ pageNumber: Int, _ pageSize: Int, onSuccess: ((Bool) -> Void)?, onError: ((Error) -> Void)?) {
         Task {
             // Call your api here
@@ -56,23 +56,23 @@ class PaginatedTransactionsViewController: UIViewController {
             }
         }
     }
-    
+
     var selectedRow: Int?
-    
+
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         selectedRow = indexPath.row
-        
+
         tableView.deselectRow(at: indexPath, animated: true)
-        
+
         if shouldPerformSegue(withIdentifier: "TransactionDetail", sender: self) {
             performSegue(withIdentifier: "TransactionDetail", sender: self)
         }
     }
-    
+
     override func shouldPerformSegue(withIdentifier identifier: String, sender: Any?) -> Bool {
         identifier == "TransactionDetail" && selectedRow != nil
     }
-    
+
     override func prepare(for segue: UIStoryboardSegue, sender: Any?) {
         if let destination = segue.destination as? TransactionDetailViewController, let row = selectedRow {
             let transaction = transactions[row]
@@ -86,17 +86,17 @@ extension PaginatedTransactionsViewController: PaginatedTableViewDataSource {
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
         transactions.count
     }
-    
+
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: Self.cellIdentifier, for: indexPath)
-        
+
         let transaction = transactions[indexPath.row]
         cell.detailTextLabel?.text = transaction.rawID.toHexStringTxId()
         cell.textLabel?.text = transaction.blockTime?.description
-        
+
         return cell
     }
-    
+
     func numberOfSections(in tableView: UITableView) -> Int {
         1
     }

@@ -90,3 +90,5 @@ BuildSupport/products/
 .claude/settings.local.json
 .remember/
 .worktrees/
+
+**/*.pyc

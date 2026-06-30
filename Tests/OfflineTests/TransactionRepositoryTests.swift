@@ -21,18 +21,18 @@ class TransactionRepositoryTests: XCTestCase {
         )
         transactionRepository = try! await TestDbBuilder.transactionRepository(rustBackend: rustBackend)
     }
-    
+
     override func tearDown() {
         super.tearDown()
         transactionRepository = nil
     }
-    
+
     func testCount() async throws {
         let count = try await self.transactionRepository.countAll()
         XCTAssertNotNil(count)
         XCTAssertEqual(count, 21)
     }
-    
+
     func testCountUnmined() async throws {
         let count = try await self.transactionRepository.countUnmined()
         XCTAssertNotNil(count)
@@ -50,7 +50,7 @@ class TransactionRepositoryTests: XCTestCase {
         XCTAssertEqual(transactions[2].minedHeight, 663229)
         XCTAssertEqual(transactions[2].isSentTransaction, false)
     }
-    
+
     // TODO: [#1518] Fix the test, https://github.com/Electric-Coin-Company/zcash-swift-wallet-sdk/issues/1518
     func _testFindByTxId() async throws {
         let id = Data(fromHexEncodedString: "01af48bcc4e9667849a073b8b5c539a0fc19de71aac775377929dc6567a36eff")!
@@ -59,21 +59,21 @@ class TransactionRepositoryTests: XCTestCase {
         XCTAssertEqual(transaction.minedHeight, 663922)
         XCTAssertEqual(transaction.index, 1)
     }
-    
+
     // TODO: [#1518] Fix the test, https://github.com/Electric-Coin-Company/zcash-swift-wallet-sdk/issues/1518
     func _testFindAllSentTransactions() async throws {
         let transactions = try await self.transactionRepository.find(offset: 0, limit: Int.max, kind: .sent)
         XCTAssertEqual(transactions.count, 13)
         transactions.forEach { XCTAssertEqual($0.isSentTransaction, true) }
     }
-    
+
     // TODO: [#1518] Fix the test, https://github.com/Electric-Coin-Company/zcash-swift-wallet-sdk/issues/1518
     func _testFindAllReceivedTransactions() async throws {
         let transactions = try await self.transactionRepository.find(offset: 0, limit: Int.max, kind: .received)
         XCTAssertEqual(transactions.count, 8)
         transactions.forEach { XCTAssertEqual($0.isSentTransaction, false) }
     }
-    
+
     // TODO: [#1518] Fix the test, https://github.com/Electric-Coin-Company/zcash-swift-wallet-sdk/issues/1518
     func _testFindAllTransactions() async throws {
         let transactions = try await self.transactionRepository.find(offset: 0, limit: Int.max, kind: .all)
@@ -194,7 +194,7 @@ class TransactionRepositoryTests: XCTestCase {
         XCTAssertEqual(memos.count, 1)
         XCTAssertEqual(memos[0].toString(), "Some funds")
     }
-    
+
     // TODO: [#1518] Fix the test, https://github.com/Electric-Coin-Company/zcash-swift-wallet-sdk/issues/1518
     func _testFindAllPerformance() {
         // This is an example of a performance test case.
@@ -212,7 +212,7 @@ class TransactionRepositoryTests: XCTestCase {
             wait(for: [expectation], timeout: 2)
         }
     }
-    
+
     // TODO: [#1518] Fix the test, https://github.com/Electric-Coin-Company/zcash-swift-wallet-sdk/issues/1518
     func _testFindAllFrom() async throws {
         let rawID = Data(fromHexEncodedString: "5d9b91e31a6d3f94844a4c330e727a2d5d0643f6caa6c75573b28aefe859e8d2")!

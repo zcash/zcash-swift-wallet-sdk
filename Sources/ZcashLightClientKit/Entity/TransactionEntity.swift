@@ -49,7 +49,7 @@ public enum ZcashTransaction {
                 }
             }
         }
-        
+
         public var id: Data { rawID }
 
         public let accountUUID: AccountUUID
@@ -138,7 +138,7 @@ extension ZcashTransaction.Output {
             }
             value = Zatoshi(try row.get(Column.value))
             isChange = try row.get(Column.isChange)
-            
+
             if
                 let outputRecipient = try row.get(Column.toAddress),
                 let metadata = DerivationTool.getAddressMetadata(outputRecipient)
@@ -196,7 +196,7 @@ extension ZcashTransaction.Overview {
             self.sentNoteCount = try row.get(Column.sentNoteCount)
             self.value = Zatoshi(try row.get(Column.value))
             self.isExpiredUmined = try row.get(Column.expiredUnmined)
-            
+
             if let blockTime = try row.get(Column.blockTime) {
                 self.blockTime = TimeInterval(blockTime)
             } else {

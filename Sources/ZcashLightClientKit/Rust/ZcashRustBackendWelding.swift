@@ -397,7 +397,7 @@ protocol ZcashRustBackendWelding {
 
     /// Get an ephemeral single use transparent address
     func getSingleUseTransparentAddress(accountUUID: AccountUUID) async throws -> SingleUseTransparentAddress
-    
+
     /// Attempts to delete an account defined by UUID
     func deleteAccount(_ accountUUID: AccountUUID) async throws
 }

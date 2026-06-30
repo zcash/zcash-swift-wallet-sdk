@@ -1,6 +1,6 @@
 //
 //  ScanActionTests.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 18.05.2023.
 //
@@ -36,21 +36,21 @@ final class ScanActionTests: ZcashTestCase {
                 }
             }
             XCTAssertTrue(loggerMock.debugFileFunctionLineCalled, "logger.debug(...) is expected to be called.")
-            
+
             let acResult = nextContext.checkStateIs(.clearAlreadyScannedBlocks)
             XCTAssertTrue(acResult == .true, "Check of state failed with '\(acResult)'")
         } catch {
             XCTFail("testScanAction_NextAction is not expected to fail. \(error)")
         }
     }
-    
+
     func testScanAction_EarlyOutForNoDownloadAndScanRangeSet() async throws {
         let blockScannerMock = BlockScannerMock()
         let loggerMock = LoggerMock()
 
         let scanAction = setupAction(blockScannerMock, loggerMock)
         let syncContext = ActionContextMock.default()
-        
+
         do {
             _ = try await scanAction.run(with: syncContext) { _ in }
             XCTAssertFalse(loggerMock.debugFileFunctionLineCalled, "logger.debug(...) is not expected to be called.")
@@ -58,7 +58,7 @@ final class ScanActionTests: ZcashTestCase {
             XCTFail("testScanAction_EarlyOutForNoDownloadAndScanRangeSet is not expected to fail. \(error)")
         }
     }
-    
+
     func testScanAction_StartRangeHigherThanEndRange() async throws {
         let blockScannerMock = BlockScannerMock()
         let loggerMock = LoggerMock()
@@ -80,7 +80,7 @@ final class ScanActionTests: ZcashTestCase {
             XCTFail("testScanAction_StartRangeHigherThanEndRange is not expected to fail. \(error)")
         }
     }
-    
+
     func testScanAction_EndRangeProperlySetLowerThanBatchSize() async throws {
         let blockScannerMock = BlockScannerMock()
         let loggerMock = LoggerMock()
@@ -105,7 +105,7 @@ final class ScanActionTests: ZcashTestCase {
             XCTFail("testScanAction_EndRangeProperlySetLowerThanBatchSize is not expected to fail. \(error)")
         }
     }
-    
+
     func testScanAction_EndRangeProperlySetBatchSize() async throws {
         let blockScannerMock = BlockScannerMock()
         let loggerMock = LoggerMock()
@@ -130,7 +130,7 @@ final class ScanActionTests: ZcashTestCase {
             XCTFail("testScanAction_EndRangeProperlySetBatchSize is not expected to fail. \(error)")
         }
     }
-    
+
     private func setupAction(
         _ blockScannerMock: BlockScannerMock,
         _ loggerMock: LoggerMock,
@@ -151,7 +151,7 @@ final class ScanActionTests: ZcashTestCase {
         let config: CompactBlockProcessor.Configuration = .standard(
             for: ZcashNetworkBuilder.network(for: .testnet), walletBirthday: 0
         )
-        
+
         return ScanAction(
             container: mockContainer,
             configProvider: CompactBlockProcessor.ConfigProvider(config: config)

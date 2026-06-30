@@ -1,6 +1,6 @@
 //
 //  NumberFormatter+Zcash.swift
-//  
+//
 //  Created by Lukáš Korba on 02.06.2022.
 //  modified by Francisco Gindre on 6/17/22.
 //

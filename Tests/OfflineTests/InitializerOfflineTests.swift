@@ -1,6 +1,6 @@
 //
 //  InitializerOfflineTests.swift
-//  
+//
 //
 //  Created by Michal Fousek on 24.03.2023.
 //

@@ -1,6 +1,6 @@
 //
 //  ProcessSuggestedScanRangesAction.swift
-//  
+//
 //
 //  Created by Lukáš Korba on 02.08.2023.
 //
@@ -12,7 +12,7 @@ final class ProcessSuggestedScanRangesAction {
     var service: LightWalletService
     let logger: Logger
     let metrics: SDKMetrics
-    
+
     init(container: DIContainer) {
         service = container.resolve(LightWalletService.self)
         rustBackend = container.resolve(ZcashRustBackendWelding.self)
@@ -29,22 +29,22 @@ extension ProcessSuggestedScanRangesAction: Action {
         let scanRanges = try await rustBackend.suggestScanRanges()
 
         logger.sync("CALL suggestScanRanges \(scanRanges)")
-        
+
         for scanRange in scanRanges {
             metrics.actionDetail("range \(scanRange.priority) \(scanRange.range)", for: .processSuggestedScanRanges)
         }
-        
+
         if let firstRange = scanRanges.first {
             logger.sync("PROCESSING range \(firstRange.priority) \(firstRange.range)")
             let rangeStartExclusive = firstRange.range.lowerBound - 1
             let rangeEndInclusive = firstRange.range.upperBound - 1
-            
+
             let syncControlData = SyncControlData(
                 latestBlockHeight: rangeEndInclusive,
                 latestScannedHeight: rangeStartExclusive,
                 firstUnenhancedHeight: rangeStartExclusive + 1
             )
-            
+
             logger.debug("""
                 Init numbers:
                 latestBlockHeight [BC]:         \(rangeEndInclusive)
@@ -61,7 +61,7 @@ extension ProcessSuggestedScanRangesAction: Action {
         } else {
             await context.update(state: .txResubmission)
         }
-        
+
         return context
     }
 

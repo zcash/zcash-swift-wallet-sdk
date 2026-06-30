@@ -30,7 +30,7 @@ class DarksideSanityCheckTests: ZcashTestCase {
         mockContainer.mock  (type: CheckpointSource.self, isSingleton: true) { _ in
             return DarksideMainnetCheckpointSource()
         }
-        
+
         self.coordinator = try await TestCoordinator(
             container: mockContainer,
             walletBirthday: birthday,
@@ -44,7 +44,7 @@ class DarksideSanityCheckTests: ZcashTestCase {
             branchID: self.branchID,
             chainName: self.chainName
         )
-        
+
         try self.coordinator.resetBlocks(dataset: .default)
     }
 
@@ -57,11 +57,11 @@ class DarksideSanityCheckTests: ZcashTestCase {
         try? FileManager.default.removeItem(at: coordinator.databases.fsCacheDbRoot)
         try? FileManager.default.removeItem(at: coordinator.databases.dataDB)
     }
-    
+
     func testDarkside() async throws {
 //        let expectedFirstBlock = (height: BlockHeight(663150), hash: "0000000002fd3be4c24c437bd22620901617125ec2a3a6c902ec9a6c06f734fc")
         let expectedLastBlock = (height: BlockHeight(663200), hash: "2fc7b4682f5ba6ba6f86e170b40f0aa9302e1d3becb2a6ee0db611ff87835e4a")
-        
+
         try coordinator.service.addTreeState(
             // swiftlint:disable line_length
             try TreeState(jsonString:
@@ -78,9 +78,9 @@ class DarksideSanityCheckTests: ZcashTestCase {
         try coordinator.applyStaged(blockheight: expectedLastBlock.height)
 
         sleep(1)
-        
+
         let syncExpectation = XCTestExpectation(description: "sync to \(expectedLastBlock.height)")
-        
+
         try await coordinator.sync(
             completion: { _ in
                 syncExpectation.fulfill()
@@ -94,7 +94,7 @@ class DarksideSanityCheckTests: ZcashTestCase {
                 return
             }
         )
-        
+
         await fulfillment(of: [syncExpectation], timeout: 5)
 
         // TODO: [#1247] needs to review this to properly solve, https://github.com/zcash/ZcashLightClientKit/issues/1247

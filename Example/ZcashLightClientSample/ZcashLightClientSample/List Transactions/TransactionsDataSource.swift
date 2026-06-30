@@ -17,9 +17,9 @@ class TransactionsDataSource: NSObject {
         case cleared
         case all
     }
-    
+
     static let cellIdentifier = "TransactionCell"
-    
+
     // swiftlint:disable:next implicitly_unwrapped_optional
     var synchronizer: Synchronizer!
     var transactions: [TransactionDetailModel] = []

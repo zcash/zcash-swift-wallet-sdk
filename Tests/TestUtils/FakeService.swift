@@ -24,7 +24,7 @@ class MockLightWalletService: LightWalletService {
     func getTaddressTxids(_ request: ZcashLightClientKit.TransparentAddressBlockFilter, mode: ServiceMode) throws -> AsyncThrowingStream<ZcashLightClientKit.RawTransaction, any Error> {
         try service.getTaddressTxids(request, mode: mode)
     }
-    
+
     var connectionStateChange: ((ZcashLightClientKit.ConnectionState, ZcashLightClientKit.ConnectionState) -> Void)? {
         get { service.connectionStateChange }
         set { service.connectionStateChange = newValue }
@@ -52,14 +52,14 @@ class MockLightWalletService: LightWalletService {
     }
 
     private var service: LightWalletService
-    
+
     var latestHeight: BlockHeight
 
     init(latestBlockHeight: BlockHeight, service: LightWalletService) {
         self.latestHeight = latestBlockHeight
         self.service = service
     }
-    
+
     func latestBlockHeight(mode: ServiceMode) async throws -> BlockHeight {
         latestHeight
     }
@@ -74,7 +74,7 @@ class MockLightWalletService: LightWalletService {
     func blockRange(_ range: CompactBlockRange, mode: ServiceMode) throws -> AsyncThrowingStream<ZcashCompactBlock, Error> {
         try service.blockRange(range, mode: mode)
     }
-    
+
     func submit(spendTransaction: Data, mode: ServiceMode) async throws -> LightWalletServiceResponse {
         LightWalletServiceMockResponse(errorCode: 0, errorMessage: "", unknownFields: UnknownStorage())
     }
@@ -86,15 +86,15 @@ class MockLightWalletService: LightWalletService {
     func getSubtreeRoots(_ request: ZcashLightClientKit.GetSubtreeRootsArg, mode: ServiceMode) throws -> AsyncThrowingStream<ZcashLightClientKit.SubtreeRoot, Error> {
         try service.getSubtreeRoots(request, mode: mode)
     }
-    
+
     func getTreeState(_ id: BlockID, mode: ServiceMode) async throws -> TreeState {
         try await service.getTreeState(id, mode: mode)
     }
-    
+
     func getMempoolStream() throws -> AsyncThrowingStream<RawTransaction, any Error> {
         try service.getMempoolStream()
     }
-    
+
     func checkSingleUseTransparentAddresses(
         dbData: (String, UInt),
         networkType: NetworkType,
@@ -103,11 +103,11 @@ class MockLightWalletService: LightWalletService {
     ) async throws -> TransparentAddressCheckResult {
         .notFound
     }
-    
+
     func updateTransparentAddressTransactions(address: String, start: BlockHeight, end: BlockHeight, dbData: (String, UInt), networkType: NetworkType, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
         .notFound
     }
-    
+
     func fetchUTXOsByAddress(address: String, dbData: (String, UInt), networkType: NetworkType, accountUUID: AccountUUID, mode: ServiceMode) async throws -> TransparentAddressCheckResult {
         .notFound
     }

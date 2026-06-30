@@ -12,7 +12,7 @@ import XCTest
 class PagedTransactionRepositoryTests: XCTestCase {
     var pagedTransactionRepository: PaginatedTransactionRepository!
     var transactionRepository: TransactionRepository!
-    
+
     override func setUp() {
         super.setUp()
         transactionRepository = MockTransactionRepository(
