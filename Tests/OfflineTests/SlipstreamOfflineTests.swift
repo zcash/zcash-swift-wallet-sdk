@@ -466,6 +466,59 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertFalse(shouldEmitFound(lastCount: 3, newCount: 3, hasSyncDone: true, storedPositive: false))
     }
 
+    // MARK: - reconciledVisible pure-helper unit tests ([#1755] vanishing-tx fix)
+    //
+    // The reconcile filter (`slipstream_v_tx_reconciled`) must hold provisional txs back ONLY during an
+    // active recovery. On a synced wallet a mined tx the view flags unreconciled (transiently OR, as seen
+    // in the field with a Keystone send, persistently) must still show — dropping a confirmed tx is the
+    // "vanishing transaction" bug.
+
+    private func reconcileTestOverview(rawID: Data) -> ZcashTransaction.Overview {
+        ZcashTransaction.Overview(
+            accountUUID: AccountUUID(id: [UInt8](repeating: 0, count: 16)),
+            blockTime: nil,
+            expiryHeight: nil,
+            fee: Zatoshi(10000),
+            index: nil,
+            isShielding: false,
+            hasChange: true,
+            memoCount: 0,
+            minedHeight: 100,
+            raw: nil,
+            rawID: rawID,
+            receivedNoteCount: 0,
+            sentNoteCount: 0,
+            value: Zatoshi(10),
+            isExpiredUmined: false,
+            totalSpent: nil,
+            totalReceived: nil
+        )
+    }
+
+    /// Not recovering → every tx passes, even one the view flags unreconciled (the vanishing-tx fix).
+    func testReconciledVisibleNotRecoveringShowsAll() {
+        let a = reconcileTestOverview(rawID: Data(repeating: 1, count: 32))
+        let b = reconcileTestOverview(rawID: Data(repeating: 2, count: 32))
+        let kept = SlipstreamSynchronizer.reconciledVisible([a, b], unreconciled: [a.rawID], recovering: false)
+        XCTAssertEqual(kept.map(\.rawID), [a.rawID, b.rawID], "outside recovery nothing is held back")
+    }
+
+    /// Recovering + a flagged tx → that tx is held back, the rest surface.
+    func testReconciledVisibleRecoveringHoldsUnreconciled() {
+        let a = reconcileTestOverview(rawID: Data(repeating: 1, count: 32))
+        let b = reconcileTestOverview(rawID: Data(repeating: 2, count: 32))
+        let kept = SlipstreamSynchronizer.reconciledVisible([a, b], unreconciled: [a.rawID], recovering: true)
+        XCTAssertEqual(kept.map(\.rawID), [b.rawID], "during recovery the unreconciled tx is held")
+    }
+
+    /// Recovering but nothing flagged → every tx passes.
+    func testReconciledVisibleRecoveringEmptySetShowsAll() {
+        let a = reconcileTestOverview(rawID: Data(repeating: 1, count: 32))
+        let b = reconcileTestOverview(rawID: Data(repeating: 2, count: 32))
+        let kept = SlipstreamSynchronizer.reconciledVisible([a, b], unreconciled: [], recovering: true)
+        XCTAssertEqual(kept.count, 2, "empty unreconciled set holds nothing back")
+    }
+
     // MARK: - 6. composeProgress pure-helper unit tests (T4.8)
     //
     // Oracle: ScanAction.swift lines ~81-99.

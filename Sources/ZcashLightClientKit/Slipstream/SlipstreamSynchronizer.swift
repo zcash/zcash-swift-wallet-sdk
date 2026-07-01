@@ -1043,19 +1043,28 @@ public final class SlipstreamSynchronizer: Synchronizer {
         await droppingUnreconciled(try await enhanceWithState(transactionRepository.find(from: transaction, limit: limit, kind: .all)))
     }
 
-    /// [#1755] Drop the transactions whose `account_balance_delta` is not yet final — those a recent-first
-    /// restore scanned the spend of before its input's origin block, so a self-send's change reads as a
-    /// phantom "+receive" until the spend links. The set comes from the slipstream-owned
-    /// `slipstream_v_tx_reconciled` view via the repository; a synced wallet (or any DB without the view)
-    /// yields an empty set, so this is a no-op outside an active recovery — the full list renders at once,
-    /// engine running or not. This replaces the old wholesale "hold the Activity empty during recovery"
-    /// gate: reconciled txs (genuine receives, already-linked sends) are surfaced as soon as they appear.
+    /// [#1755] During a recent-first RESTORE the scheduler scans a recent block that spends an older note
+    /// before that note's origin block, so a self-send's change reads as a phantom "+receive" until the
+    /// spend links. `slipstream_v_tx_reconciled` flags those still-provisional txs, and we hold them out of
+    /// the Activity list until their delta is final (genuine receives + already-linked sends still surface
+    /// as soon as they appear).
+    ///
+    /// GATED ON `currentlyRecovering`: outside an active recovery this is a hard no-op — and we skip the
+    /// view query entirely (this is the Activity-fetch hot path). A mined tx on an up-to-date wallet is real
+    /// and must never be hidden. In the field the view was seen flagging a fresh Keystone send whose
+    /// just-spent note stayed unlinked even after full sync AND an app restart, dropping the confirmed tx
+    /// from Activity indefinitely — the "vanishing transaction" bug. The earlier "empty set outside
+    /// recovery" assumption did not hold, so the recovery scope is now explicit (the transient dangling this
+    /// guards against is a property of recent-first recovery scanning, not of a synced wallet).
     private func droppingUnreconciled(_ txs: [ZcashTransaction.Overview]) async -> [ZcashTransaction.Overview] {
+        let recovering = currentlyRecovering
+        // Optimization + fix: outside recovery `reconciledVisible` returns `txs` unchanged, so skip the
+        // view query rather than fetch-then-discard on every Activity refresh.
+        guard recovering else { return txs }
         let unreconciled = (try? await transactionRepository.unreconciledTxids()) ?? []
-        guard !unreconciled.isEmpty else { return txs }
-        let kept = txs.filter { !unreconciled.contains($0.rawID) }
-        // [#1755] Fires only while the reconcile view is holding rows (active recovery) — proves
-        // provisional txs are gated and released as their spends link, not held wholesale.
+        let kept = Self.reconciledVisible(txs, unreconciled: unreconciled, recovering: recovering)
+        // [#1755] Fires only during recovery now — provisional txs are gated and released as their spends
+        // link, not held wholesale.
         initializer.logger.debug(
             "[slipstream] reconcile: holding \(txs.count - kept.count) provisional tx(s), surfacing \(kept.count)/\(txs.count)",
             file: #file,
@@ -1063,6 +1072,18 @@ public final class SlipstreamSynchronizer: Synchronizer {
             line: #line
         )
         return kept
+    }
+
+    /// Pure: which txs the Activity list shows. Outside recovery (or with nothing flagged) every tx passes;
+    /// during recovery the unreconciled txids (a dangling shielded spend per `slipstream_v_tx_reconciled`)
+    /// are held back until their delta is final. Static + pure so it is unit-testable.
+    static func reconciledVisible(
+        _ txs: [ZcashTransaction.Overview],
+        unreconciled: Set<Data>,
+        recovering: Bool
+    ) -> [ZcashTransaction.Overview] {
+        guard recovering, !unreconciled.isEmpty else { return txs }
+        return txs.filter { !unreconciled.contains($0.rawID) }
     }
 
     /// T8.3.6 (UX): populate `ZcashTransaction.Overview.state` on fetched transactions (the
