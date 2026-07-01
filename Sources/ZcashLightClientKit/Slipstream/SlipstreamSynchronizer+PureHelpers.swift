@@ -100,6 +100,35 @@ extension SlipstreamSynchronizer {
         return !recovery.isComplete
     }
 
+    /// [#1755 fail-safe] Resolve the recovery gate from the engine's TERMINAL state plus the live
+    /// summary signal, so a finished or dead pass can never leave `isRecovering` stuck true and wedge
+    /// normal balance/Activity. The engine's own state is the definite signal the lagging summary can't
+    /// deliver in time — `isRecovering(summary)` only flips false once a *fresh* summary reports
+    /// `recovery_progress` complete, which never arrives if scanning stalls or the pass dies:
+    ///   - **Done (3):** the pass caught up to the chain tip ⇒ the recovery range
+    ///     `[birthday, recover_until ≤ tip]` is fully scanned ⇒ recovery is complete ⇒ `false`. Clears a
+    ///     "Restoring 100%" banner the instant the engine finishes, without waiting for the next summary.
+    ///   - **Error (2):** a dead pass will NEVER complete recovery, so release the gate (show the wallet's
+    ///     balance + Activity and the error, not a frozen "Restoring") and **latch** the release so a later
+    ///     summary — still reading "incomplete" — can't re-raise "Restoring" until the app restarts the pass
+    ///     (`start()` clears the latch). With the pass-lock fix a panic `Error(2)` is rare; failing OPEN here
+    ///     means even an unforeseen dead pass can't wedge day-to-day use.
+    ///   - **Disconnected (0) / Syncing (1):** NOT terminal — recovery resumes on reconnect / keeps
+    ///     progressing — so honor the live summary signal (unless already released by an Error this run).
+    /// Returns the resolved gate and the (possibly newly-latched) `releasedByError`.
+    static func resolveRecoveryGate(
+        state: UInt8,
+        liveSummaryRecovering: Bool,
+        releasedByError: Bool
+    ) -> (recovering: Bool, releasedByError: Bool) {
+        switch state {
+        case 3: return (false, false)   // Done — complete; a clean finish also clears any prior Error release.
+        case 2: return (false, true)    // Error — release the gate and latch it until the next start().
+        default:                        // 0 Disconnected / 1 Syncing — honor the live signal, respecting the latch.
+            return (releasedByError ? false : liveSummaryRecovering, releasedByError)
+        }
+    }
+
     /// [#1755] Wrap a per-account net recovery balance (Σ of FINAL transaction deltas — see
     /// `TransactionRepository.recoveryBalances()`) in an `AccountBalance` for the state stream during a
     /// restore. The whole net (clamped ≥ 0) is surfaced as orchard `spendableValue` so every consumer reads

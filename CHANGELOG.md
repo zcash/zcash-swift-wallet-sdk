@@ -6,6 +6,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Fixed
+- Slipstream recovery ("Restoring") state can no longer wedge normal wallet operation. `SlipstreamSynchronizer` now resolves the recovery gate from the engine's terminal state instead of only a lagging wallet-summary read: a completed pass (`Done`) clears `isRecovering` the instant the engine finishes — so a "Restoring 100%" banner can no longer stay stuck after a restore completes — and a terminally-failed pass (`Error`) releases the gate (surfacing the wallet's balance + Activity plus the error) rather than holding it forever. A transient disconnect still stays "recovering" and resumes on reconnect.
+- Fixed a Slipstream sync crash (`rustSlipstreamSyncFailed`, engine `Error(2)`) that could occur after importing an account (e.g. a Keystone hardware wallet) into a running wallet: `importAccount` restarted the sync pass while the previous one was still winding down, running two passes against the same wallet database concurrently. The engine now serializes passes so a restart can't overlap. (See the `libzcashlc` CHANGELOG.)
+
 # 2.6.0-alpha.6
 
 ## Added
