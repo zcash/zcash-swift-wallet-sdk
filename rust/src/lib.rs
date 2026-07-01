@@ -4370,6 +4370,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
             state: std::sync::Arc::new(std::sync::Mutex::new(SyncState::Idle)),
             events: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             task: None,
+            pass_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             endpoint: slipstream_core::config::Endpoint {
                 host: host.to_string(),
                 port: server_port,
@@ -4510,7 +4511,11 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         let sup_events = std::sync::Arc::clone(&h.events);
         h.task = Some(slipstream_core::ffi_handle::spawn_supervised(
             &h.runtime,
-            slipstream_core::session::run_session(session_config, reporter),
+            slipstream_core::session::run_session(
+                session_config,
+                reporter,
+                std::sync::Arc::clone(&h.pass_lock),
+            ),
             sup_state,
             sup_events,
         ));

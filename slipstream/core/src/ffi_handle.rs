@@ -91,6 +91,17 @@ pub struct SlipstreamHandle {
     /// of the `JoinHandle` (the abort is observed by the supervisor as a cancellation
     /// and deliberately ignored — `stop()` already set the state to Idle).
     pub task: Option<AbortHandle>,
+    /// Serializes overlapping sync passes on this handle. `session::run_session` holds this for
+    /// the WHOLE pass (acquired as its outermost local). On a `start()`-while-running restart the
+    /// host aborts the previous task (`zcashlc_slipstream_start`), but tokio's `abort()` is
+    /// ASYNCHRONOUS — the old pass keeps running until its next await. This lock makes the new
+    /// pass wait until the aborted old pass has unwound and dropped the guard; because guards drop
+    /// in reverse acquisition order, the old pass's `WalletSession` (and its `data.db` connection)
+    /// is already closed by then, so two passes never touch `data.db` concurrently. Without it the
+    /// `importAccount` restart raced two passes on one DB → panic → `SyncState::Error(2)` (Keystone
+    /// restore field failure, 2026-06-30). The host always abort()s the old task before spawning the
+    /// new one, so the old holder is guaranteed to release — no deadlock.
+    pub pass_lock: Arc<tokio::sync::Mutex<()>>,
     /// Server endpoint — set at open; used for start.
     pub endpoint: Endpoint,
     /// Wallet db path — set at open.
@@ -229,6 +240,7 @@ mod tests {
             state: std::sync::Arc::new(Mutex::new(SyncState::Syncing)),
             events: std::sync::Arc::new(Mutex::new(Vec::new())),
             task: None,
+            pass_lock: Arc::new(tokio::sync::Mutex::new(())),
             endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
             wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
             network: zcash_protocol::consensus::Network::TestNetwork,
@@ -272,6 +284,7 @@ mod tests {
             state: std::sync::Arc::new(Mutex::new(SyncState::Idle)),
             events: std::sync::Arc::new(Mutex::new(Vec::new())),
             task: None,
+            pass_lock: Arc::new(tokio::sync::Mutex::new(())),
             endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
             wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
             network: zcash_protocol::consensus::Network::TestNetwork,
@@ -300,6 +313,7 @@ mod tests {
             state: Arc::new(Mutex::new(SyncState::Idle)),
             events: Arc::new(Mutex::new(Vec::new())),
             task: None,
+            pass_lock: Arc::new(tokio::sync::Mutex::new(())),
             endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
             wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
             network: zcash_protocol::consensus::Network::TestNetwork,
@@ -442,6 +456,7 @@ mod tests {
             state: Arc::new(Mutex::new(SyncState::Idle)),
             events: Arc::new(Mutex::new(Vec::new())),
             task: None,
+            pass_lock: Arc::new(tokio::sync::Mutex::new(())),
             endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
             wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
             network: zcash_protocol::consensus::Network::TestNetwork,

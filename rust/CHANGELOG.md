@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+- Serialized overlapping Slipstream sync passes on a handle. `zcashlc_slipstream_start` cancels the previous task with tokio's non-blocking `abort()`, so an `importAccount`-triggered restart-while-running could run two `run_session` passes against the same `data.db` concurrently — a panic (surfaced as `SyncState::Error(2)` → `rustSlipstreamSyncFailed`). `run_session` now holds a per-handle `pass_lock` for the whole pass (acquired as its outermost local), so a restart's new pass cannot open the wallet DB until the aborted old pass has fully unwound and closed its connection. Fixes the "Syncing Error" hit on Keystone (imported / watch-only) wallets after restore.
+
 ## 2.6.0-alpha.6 - 2026-06-26
 
 ### Fixed
