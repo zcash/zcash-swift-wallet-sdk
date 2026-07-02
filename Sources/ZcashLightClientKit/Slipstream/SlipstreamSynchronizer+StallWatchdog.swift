@@ -11,7 +11,7 @@
 //  `Logger.error` per stall episode, carrying the full last snapshot. It never
 //  restarts anything: recovery policy stays with the app.
 //
-//  Pure decision logic (`isSyncStalled` / `watchdogSignature`) lives in
+//  The pure decision predicate (`isSyncStalled`) lives in
 //  SlipstreamSynchronizer+PureHelpers.swift and is unit-tested in OfflineTests.
 //
 
@@ -57,9 +57,9 @@ extension SlipstreamSynchronizer {
     }
 
     /// B4: re-arms the stall watchdog for a new run/handle (start, switchTo, wipe).
+    /// (The stall clock itself is engine-owned and resets with the pass; only the
+    /// once-per-episode log flag lives in Swift.)
     func resetStallWatchdog() {
-        watchdogLastSignature = nil
-        watchdogLastChangeDate = Date()
         watchdogStallLogged = false
     }
 }

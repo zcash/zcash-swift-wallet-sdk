@@ -196,30 +196,6 @@ extension SlipstreamSynchronizer {
 
     // ── B4 (#1755 failure-path hardening): stall watchdog ─────────────────────
 
-    /// Signature of every engine progress counter the poll loop can observe.
-    /// Two consecutive snapshots with EQUAL signatures mean the engine made zero
-    /// observable progress between the ticks.
-    /// (Named "signature" — the natural alternative collides with the
-    /// `print_function_usage` lint regex.)
-    struct ProgressSignature: Equatable {
-        let fetched: UInt64
-        let scanned: UInt64
-        let enhanced: UInt64
-        let rangesCompleted: UInt64
-        let chainTip: UInt64
-    }
-
-    /// Extracts the stall-watchdog progress signature from an engine snapshot.
-    static func watchdogSignature(_ snap: SlipstreamSnapshot) -> ProgressSignature {
-        ProgressSignature(
-            fetched: snap.fetchedBlocks,
-            scanned: snap.scannedBlocks,
-            enhanced: snap.enhancedTxs,
-            rangesCompleted: snap.rangesCompleted,
-            chainTip: snap.chainTip
-        )
-    }
-
     /// Pure staleness predicate: the engine claims to be Syncing (`state == 1`) but
     /// NO progress counter has changed for at least `threshold` seconds.
     ///
@@ -231,8 +207,8 @@ extension SlipstreamSynchronizer {
     /// - Parameters:
     ///   - state: `snap.state` (0=idle, 1=syncing, 2=error, 3=done). Only Syncing
     ///     can stall silently; Done/Error/Idle are legitimate steady states.
-    ///   - secondsSinceLastCounterChange: elapsed wall time since the watchdog
-    ///     progress signature last changed.
+    ///   - secondsSinceLastCounterChange: elapsed wall time since any engine counter
+    ///     last moved (the engine-stamped `snap.stalledSeconds`, Phase D).
     ///   - threshold: the stall window (`stallWatchdogThresholdSeconds`, 120 s — far
     ///     above any legitimate counter gap: the slowest observed device chunk is
     ///     ~36 s on iPad A10, and treestate/scan boundaries bump counters within it).

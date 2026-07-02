@@ -108,11 +108,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // Syncing while NO engine counter moves — the sync task hung (transport stall)
     // or died (panic — now also surfaced by the Rust-side B1 supervisor). The
     // watchdog only LOGS (Logger.error, once per stall episode); it never restarts
-    // anything. Methods live in SlipstreamSynchronizer+StallWatchdog.swift; pure
-    // decision logic in +PureHelpers.swift (isSyncStalled / watchdogSignature).
-    // State is `internal` (not private) so the extension file can reach it.
-    var watchdogLastSignature: ProgressSignature?
-    var watchdogLastChangeDate = Date()
+    // anything. The stall FACT is engine-owned (`snap.stalledSeconds`, Phase D) —
+    // Swift keeps only the once-per-episode log policy. Methods live in
+    // SlipstreamSynchronizer+StallWatchdog.swift; the pure predicate is
+    // `isSyncStalled` (+PureHelpers.swift). State is `internal` (not private) so
+    // the extension file can reach it.
     var watchdogStallLogged = false
     /// Logger accessor for same-class extensions in other files (`initializer` is
     /// fileprivate; the StallWatchdog extension needs the injected logger).
