@@ -595,48 +595,6 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertEqual(floor, 0.0, accuracy: 1e-6, "floor resets when not recovering")
     }
 
-    // MARK: - [#1755 fail-safe] resolveRecoveryGate
-
-    /// Done (3) is the DEFINITE completion signal — it clears the gate even if the lagging summary still
-    /// reads "recovering", so a "Restoring 100%" banner can't stay stuck after the engine finishes.
-    func testResolveRecoveryGateDoneCompletesRegardlessOfLiveSummary() {
-        let gate = SlipstreamSynchronizer.resolveRecoveryGate(state: 3, liveSummaryRecovering: true, releasedByError: false)
-        XCTAssertFalse(gate.recovering, "Done ⇒ recovery complete, even if the summary lags")
-        XCTAssertFalse(gate.releasedByError, "a clean Done clears any prior Error release")
-    }
-
-    /// Error (2) = a dead pass that will never complete recovery — release the gate AND latch it.
-    func testResolveRecoveryGateErrorReleasesAndLatches() {
-        let gate = SlipstreamSynchronizer.resolveRecoveryGate(state: 2, liveSummaryRecovering: true, releasedByError: false)
-        XCTAssertFalse(gate.recovering, "a dead pass releases the gate so the wallet isn't wedged on 'Restoring'")
-        XCTAssertTrue(gate.releasedByError, "the release latches so a later stale summary can't re-wedge")
-    }
-
-    /// After an Error release, a later Syncing tick whose summary still reads "recovering" must NOT
-    /// re-raise "Restoring" — the latch holds until start() clears it.
-    func testResolveRecoveryGateLatchHoldsAcrossLaterTicks() {
-        let gate = SlipstreamSynchronizer.resolveRecoveryGate(state: 1, liveSummaryRecovering: true, releasedByError: true)
-        XCTAssertFalse(gate.recovering, "the Error-release latch keeps the gate closed")
-        XCTAssertTrue(gate.releasedByError, "the latch persists (only start() clears it)")
-    }
-
-    /// Non-terminal Syncing (1) honors the live summary signal in both directions.
-    func testResolveRecoveryGateSyncingHonorsLiveSummary() {
-        let active = SlipstreamSynchronizer.resolveRecoveryGate(state: 1, liveSummaryRecovering: true, releasedByError: false)
-        XCTAssertTrue(active.recovering, "Syncing with an incomplete recovery ⇒ recovering")
-
-        let done = SlipstreamSynchronizer.resolveRecoveryGate(state: 1, liveSummaryRecovering: false, releasedByError: false)
-        XCTAssertFalse(done.recovering, "Syncing with a complete recovery ⇒ not recovering")
-    }
-
-    /// A transient Disconnected (0) is NOT terminal — recovery resumes on reconnect — so the live signal
-    /// stands (unlike Error, which releases the gate).
-    func testResolveRecoveryGateDisconnectedKeepsLiveSignal() {
-        let gate = SlipstreamSynchronizer.resolveRecoveryGate(state: 0, liveSummaryRecovering: true, releasedByError: false)
-        XCTAssertTrue(gate.recovering, "a transient disconnect mid-restore stays 'recovering' (resumes on reconnect)")
-        XCTAssertFalse(gate.releasedByError)
-    }
-
     /// If the composed ratio somehow exceeds 1.0, it is clamped to 1.0.
     func testComposeProgressClampAboveOne() {
         // Force numerator > denominator (numerator=120, denominator=100 → raw=1.2).

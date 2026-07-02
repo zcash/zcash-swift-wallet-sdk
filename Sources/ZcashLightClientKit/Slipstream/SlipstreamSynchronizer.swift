@@ -166,15 +166,16 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // [audit SDK-1] The in-flight detached `engine.stop()` from `stop()`; awaited at the top of
     // `start()` so a rapid stop→start can't have the stop land after (and kill) the new pass.
     private var pendingStopTask: Task<Void, Never>?
-    /// [#1755] Mirrors the wallet backend's deep-recovery state (`recovery_progress` incomplete),
-    /// refreshed whenever a summary is fetched (tickPoll + getAccountsBalances). Drives the "Restoring"
+    /// [#1755] Mirrors the wallet's deep-recovery state. Seeded from the persisted summary at
+    /// prepare()/start(); ENGINE-OWNED during a run (tickPoll adopts `snap.isRecovering`, which embeds
+    /// the terminal fail-safe latch — Done/Error force it 0). Drives the "Restoring"
     /// LABEL and the Activity gate: the Activity is gated PER-TRANSACTION by the `slipstream_v_tx_reconciled`
     /// view (not held wholesale), so reconciled txs surface immediately while only the provisional ones
     /// wait. (Balance is NOT special-cased — live is correct on a fresh restore; see tickPoll.) Tracks the
     /// LIVE signal, so it self-corrects across rewind / truncate / stop.
     private var currentlyRecovering = false {
         didSet {
-            // [#1755] Log only true⇄false transitions (all 5 write sites funnel through here). One line
+            // [#1755] Log only true⇄false transitions (every write site funnels through here). One line
             // per restore proves the engine's recovery→catch-up flip and the "Restoring"→"Syncing" label.
             guard currentlyRecovering != oldValue else { return }
             initializer.logger.info(
@@ -186,19 +187,6 @@ public final class SlipstreamSynchronizer: Synchronizer {
                 line: #line
             )
         }
-    }
-    /// [#1755 fail-safe] Latched true when a pass terminally fails (`Error(2)`) so the recovery gate
-    /// stays released — an async summary fetch (still reading "incomplete recovery") must not re-raise
-    /// "Restoring" on a wallet whose pass died. Cleared on the next `start()` (a retry can recover) and
-    /// on a clean `Done`. See `resolveRecoveryGate`.
-    private var recoveryReleasedByError = false
-
-    /// [#1755 fail-safe] Set the recovery gate from a live summary read, honoring the Error-release
-    /// latch so a dead pass's stale "incomplete" summary can't re-wedge "Restoring". The summary-fetch
-    /// write sites funnel through here; the poll uses `resolveRecoveryGate` directly (it also knows the
-    /// engine state — the definite completion signal).
-    private func setRecoveryGate(fromLiveSummary recovering: Bool) {
-        currentlyRecovering = recoveryReleasedByError ? false : recovering
     }
 
     /// [#1755] Previous tick's recovery state — detects the recovery→done transition so the Activity
@@ -354,9 +342,6 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // counter starts at 0 for the few new blocks. A fresh wallet has no summary → 0%,
         // as before; balance carries the warm value from prepare().
         let (warmProgress, warmSpendable) = SlipstreamSynchronizer.summaryProgress(cachedSummary)
-        // [#1755 fail-safe] A new / retry run may legitimately recover again — clear any Error-release
-        // latch left by a prior dead pass so the live signal governs the gate from here.
-        recoveryReleasedByError = false
         let startRecovering = SlipstreamSynchronizer.isRecovering(cachedSummary)
         currentlyRecovering = startRecovering
         stateSubject.send(SynchronizerState(
@@ -473,7 +458,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
         //
         // [Engine API v2 / Phase D] The recovery gate is ENGINE-OWNED: `snap.isRecovering` carries
         // the scheduler-computed flag WITH the fail-safe latch built in (terminal Done/Error force
-        // 0 — the resolveRecoveryGate/releasedByError machinery this replaces retires in Phase E).
+        // 0 — the engine-side successor of the Swift resolveRecoveryGate/releasedByError machinery,
+        // deleted in Phase E).
         // First-seconds guard (ENGINE_API_V2.md §0 known gap): before the scheduler's FIRST suggest
         // round the flag reads 0 even mid-restore, so adopt the snapshot only once the scheduler has
         // spoken (flag set, a pass denominator exists, or a terminal state) — until then keep
@@ -726,9 +712,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
             // Only update state if the task was not cancelled (e.g. by Done or wipe).
             guard !Task.isCancelled else { return }
             self?.cachedSummary = result ?? self?.cachedSummary
-            // [#1755] Maintain the recovery gate from this LIVE summary (idle/done refresh). This is the
-            // robust reveal at completion: a synced fetch flips the flag false → next tick reveals.
-            self?.setRecoveryGate(fromLiveSummary: SlipstreamSynchronizer.isRecovering(self?.cachedSummary))
+            // [Phase E] Summary fetches refresh BALANCES only — the recovery gate is engine-owned
+            // (tickPoll adopts `snap.isRecovering`); a stale summary must never write the gate.
             self?.lastSummaryFinishDate = Date()
             self?.summaryTask = nil
         }
@@ -759,8 +744,6 @@ public final class SlipstreamSynchronizer: Synchronizer {
             guard !Task.isCancelled else { return }
             // Update the shared cache so the next tick emits fresh balances.
             self?.cachedSummary = result ?? self?.cachedSummary
-            // [#1755] Maintain the recovery gate from this LIVE boundary summary.
-            self?.setRecoveryGate(fromLiveSummary: SlipstreamSynchronizer.isRecovering(self?.cachedSummary))
             self?.lastSummaryFinishDate = Date()
             self?.boundarySummaryTask = nil
         }
@@ -771,12 +754,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
     public func getAccountsBalances() async throws -> [AccountUUID: AccountBalance] {
         // [#1755] During deep recovery, surface the as-recovered balance (Σ reconciled tx deltas) WITHOUT a
         // fresh getWalletSummary call (it would otherwise be a scan-time parasite). The recovery flag is
-        // maintained by tickPoll + the boundary and idle/done summary fetches.
+        // engine-owned: seeded by prepare()/start(), adopted from the snapshot on every poll tick.
         if currentlyRecovering { return await recoveryAccountBalances() }
         let summary = try await initializer.rustBackend.getWalletSummary()
-        setRecoveryGate(fromLiveSummary: SlipstreamSynchronizer.isRecovering(summary))
         if let summary { cachedSummary = summary }
-        return currentlyRecovering ? await recoveryAccountBalances() : (summary?.accountBalances ?? [:])
+        return summary?.accountBalances ?? [:]
     }
 
     /// [#1755] The balance to surface during a restore (design: docs/slipstream/2026-06-29-balance-recovery-rethink.md):
@@ -1233,7 +1215,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
                     try await initializer.rustBackend.truncateToChainState(chainState: checkpoint.treeState())
                 }
                 // [audit SDK-5] Mirror `wipe()`'s cache resets: after a truncate the cached summary
-                // (and the recovery-log/latch state derived from it) describes PRE-rewind data —
+                // (and the recovery-log state derived from it) describes PRE-rewind data —
                 // serving it would show stale balances until the next pass. Engine COUNTERS are NOT
                 // reset here on purpose: the handle survives a rewind, so `enhancedTxs` /
                 // `rangesCompleted` stay monotonic and the SDK mirrors must keep tracking them
@@ -1241,7 +1223,6 @@ public final class SlipstreamSynchronizer: Synchronizer {
                 cachedSummary = nil
                 lastSummaryFinishDate = nil
                 lastLoggedRecoveryTotal = nil
-                recoveryReleasedByError = false
                 subject.send(completion: .finished)
             } catch {
                 subject.send(completion: .failure(error))
@@ -1301,8 +1282,6 @@ public final class SlipstreamSynchronizer: Synchronizer {
             cachedSummary = nil
             lastSummaryFinishDate = nil
             lastLoggedRecoveryTotal = nil
-            // [#1755 fail-safe] Clear the Error-release latch on wipe (a fresh wallet starts clean).
-            recoveryReleasedByError = false
 
             // 3b. Close Swift-side DB connections before deleting files — mirrors
             //     SDKSynchronizer.wipe() prewipe closure (SDKSynchronizer.swift:759-760).
