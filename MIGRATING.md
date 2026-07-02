@@ -1,4 +1,32 @@
 # Migrating from previous versions to _Unreleased_
+
+## `WalletInitMode` removed — `prepare()` derives the init flow
+
+The `WalletInitMode` enum is gone. `prepare(with:walletBirthday:...)` no longer takes a
+`for walletMode:` parameter — the SDK derives the flow itself:
+
+- an account already exists in `data.db` → open the existing wallet;
+- no account + a (past) birthday → **restore**: `recover_until` is set to the current chain tip, so
+  the `[birthday … tip]` backfill is tracked as recovery (`SynchronizerState.isRecovering`);
+- no account + `nil` birthday → **new wallet**: starts at a reorg-safe recent height, no recovery phase.
+
+A deliberate re-scan is an explicit action — `rewind(_:)` — not an init mode. Update call sites:
+
+```swift
+// OLD:
+try await synchronizer.prepare(with: seed, walletBirthday: birthday, for: .restoreWallet, ...)
+// NEW:
+try await synchronizer.prepare(with: seed, walletBirthday: birthday, ...)
+```
+
+## `prepare` now validates the seed against the existing wallet
+
+If the wallet database already contains seed-derived account(s) and the seed passed to `prepare`
+does not match them, `prepare` throws `ZcashError.initializerSeedMismatch` (`ZINIT0006`) instead of
+silently opening the old wallet (which desynced the app's stored seed from the on-disk account).
+Restoring a different wallet requires `wipe()` first. Wallets whose only accounts are imported
+(hardware-wallet UFVKs) are exempt — there is no seed-derived account to compare.
+
 PendingDb is no longer used. Wallet developers should take care about deleting
 the database file since the SDK will no longer require it or any of the
 information stored. 

@@ -47,6 +47,11 @@ enum ZcashErrorDefinition {
     /// Can't set `isExcludedFromBackup` flag to `generalStorageURL`.
     // sourcery: code="ZINIT0005"
     case initializerCantSetNoBackupFlagToGeneralStorageURL(_ generalStorageURL: URL, _ error: Error)
+    /// The seed passed to `prepare` does not match the seed-derived account(s) already stored in
+    /// `data.db`. Restoring a different wallet requires wiping first — proceeding would desync the
+    /// keychain seed from the on-disk account (funds shown/received for an address the seed cannot spend).
+    // sourcery: code="ZINIT0006"
+    case initializerSeedMismatch
 
     // MARK: - LightWalletService
 

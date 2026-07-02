@@ -6,7 +6,31 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Added
+- `ZcashError.initializerSeedMismatch` (`ZINIT0006`): `prepare(with:walletBirthday:)` now validates the
+  supplied seed against the wallet database's existing seed-derived account(s) and throws instead of
+  silently opening the old wallet. Previously, restoring a *different* seed over an existing `data.db`
+  no-op'd: the keychain held the new seed while the database kept the old account, so the app displayed
+  — and could receive funds to — an address the new seed cannot spend, and sends failed
+  (`ZRUST0002`). Wallets whose only accounts are imported (e.g. hardware-wallet UFVKs, which have no
+  seed-derived account to compare) are exempt and behave as before. Apps should treat this error as
+  "wipe first, then restore".
+- A freshly submitted transaction now surfaces in `eventStream` immediately: `submitTransactions`
+  emits `foundTransactions` right after a successful broadcast instead of waiting for the engine's
+  next mempool/scan round, so a new send appears in the app's Activity as pending without delay.
+
 ## Fixed
+- `rewind(_:)` on the Slipstream synchronizer now resets its cached wallet summary (and the
+  recovery-log/latch state derived from it) after truncating, matching `wipe()`. Previously the first
+  balance/summary reads after a rewind could serve pre-rewind cached values until the next sync pass.
+- A rapid `stop()` → `start()` on the Slipstream synchronizer can no longer abort the freshly started
+  pass: `stop()`'s detached engine-stop is now awaited at the top of `start()` so the old stop cannot
+  land after (and cancel) the new run.
+- The Slipstream engine now sets a 5s SQLite `busy_timeout` on its side connections (and the SDK's
+  read connections do the same), so concurrent reads during engine writes wait briefly instead of
+  failing with `SQLITE_BUSY`.
+- The Slipstream engine rejects server-supplied block heights that exceed the `u32` range
+  (misbehaving server) instead of silently truncating them into the reorg-recovery height.
 - Slipstream recovery ("Restoring") state can no longer wedge normal wallet operation. `SlipstreamSynchronizer` now resolves the recovery gate from the engine's terminal state instead of only a lagging wallet-summary read: a completed pass (`Done`) clears `isRecovering` the instant the engine finishes — so a "Restoring 100%" banner can no longer stay stuck after a restore completes — and a terminally-failed pass (`Error`) releases the gate (surfacing the wallet's balance + Activity plus the error) rather than holding it forever. A transient disconnect still stays "recovering" and resumes on reconnect.
 - Fixed a Slipstream sync crash (`rustSlipstreamSyncFailed`, engine `Error(2)`) that could occur after importing an account (e.g. a Keystone hardware wallet) into a running wallet: `importAccount` restarted the sync pass while the previous one was still winding down, running two passes against the same wallet database concurrently. The engine now serializes passes so a restart can't overlap. (See the `libzcashlc` CHANGELOG.)
 - Fixed a mined, confirmed transaction disappearing from the Slipstream Activity list — a Zodl↔Keystone transfer that showed while pending, then vanished and did not return even after an app restart. The read-side reconciliation filter (`slipstream_v_tx_reconciled`, introduced for the recent-first restore "phantom +receive" fix) was applied to `allTransactions()` unconditionally on the assumption it was a no-op outside recovery. That assumption did not hold: the view can flag a fresh send whose just-spent note is not linked yet even on a fully-synced wallet, which dropped the confirmed transaction indefinitely. `SlipstreamSynchronizer` now gates the filter on `currentlyRecovering` — outside an active recovery it is a hard no-op (and skips the view query on the Activity-fetch hot path) so mined transactions always surface, while the phantom-receive protection during a restore is unchanged.

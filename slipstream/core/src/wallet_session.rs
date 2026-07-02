@@ -42,6 +42,14 @@ impl WalletSession {
         }
         {
             let conn = Connection::open(db_path).map_err(|e| wallet_err("pre-open", e))?;
+            // [audit ENG-1] busy_timeout is per-CONNECTION (never persisted in the file): set it on
+            // every connection we open, so a WAL checkpoint or the Swift SDK's concurrent reader
+            // (which carries its own 5s timeout) surfaces as a short wait, never an instant
+            // SQLITE_BUSY error. The main WalletDb connection is opened internally by
+            // zcash_client_sqlite (no public conn access); single-writer discipline makes writer
+            // contention impossible there — these side connections are the ones that can race.
+            conn.busy_timeout(std::time::Duration::from_secs(5))
+                .map_err(|e| wallet_err("set busy_timeout", e))?;
             // Note 1: pragma_update_and_check in rusqlite 0.37 takes Option<&str> for schema_name
             // (not Option<DatabaseName> as in older versions) — plan code compiles as-written.
             let mode: String = conn
@@ -62,6 +70,9 @@ impl WalletSession {
         // with no FFI change. WAL (set above) permits this short side connection.
         {
             let conn = Connection::open(db_path).map_err(|e| wallet_err("reconcile view open", e))?;
+            // [audit ENG-1] same per-connection timeout as the pre-open connection above.
+            conn.busy_timeout(std::time::Duration::from_secs(5))
+                .map_err(|e| wallet_err("set busy_timeout (reconcile)", e))?;
             crate::reconcile::create_reconcile_view(&conn)?;
         }
         Ok(Self { network, db, db_path: db_path.to_path_buf() })

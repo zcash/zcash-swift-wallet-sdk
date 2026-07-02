@@ -21,6 +21,8 @@ public enum ZcashErrorCode: String {
     case initializerGeneralStorageCantCreate = "ZINIT0004"
     /// Can't set `isExcludedFromBackup` flag to `generalStorageURL`.
     case initializerCantSetNoBackupFlagToGeneralStorageURL = "ZINIT0005"
+    /// The seed passed to `prepare` does not match the seed-derived account(s) already stored in
+    case initializerSeedMismatch = "ZINIT0006"
     /// Unknown GRPC Service error
     case serviceUnknownError = "ZSRVC0001"
     /// LightWalletService.getInfo failed.

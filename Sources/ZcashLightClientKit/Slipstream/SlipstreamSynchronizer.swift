@@ -163,6 +163,9 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// completion). The query is a cheap SUM over `v_transactions`; the value only moves on a real reconcile,
     /// so the display does not churn. Cleared on wallet reset (alongside `cachedSummary`).
     private var lastLoggedRecoveryTotal: Int64?
+    // [audit SDK-1] The in-flight detached `engine.stop()` from `stop()`; awaited at the top of
+    // `start()` so a rapid stop→start can't have the stop land after (and kill) the new pass.
+    private var pendingStopTask: Task<Void, Never>?
     /// [#1755] Mirrors the wallet backend's deep-recovery state (`recovery_progress` incomplete),
     /// refreshed whenever a summary is fetched (tickPoll + getAccountsBalances). Drives the "Restoring"
     /// LABEL and the Activity gate: the Activity is gated PER-TRANSACTION by the `slipstream_v_tx_reconciled`
@@ -310,6 +313,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
         guard latestState.internalSyncStatus.isPrepared else {
             throw ZcashError.synchronizerNotPrepared
         }
+        // [audit SDK-1] A `stop()` detaches its `engine.stop()` into a Task; if one is still
+        // in flight, let it land BEFORE this run's `engine.start()` so the actor can't order
+        // the old stop after the new start (which would abort the fresh pass).
+        await pendingStopTask?.value
+        pendingStopTask = nil
         let birthday = BlockHeight(initializer.walletBirthday)
         // Parity with SDKSynchronizer.start (SDKSynchronizer.swift:198/204): re-enables
         // `SDKFlags.chainTipUpdated` when the SDK was stopped less than 120 s ago, so a
@@ -370,7 +378,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // `SDKFlags.chainTipUpdated` so spendable balances are re-masked until the next
         // pass refreshes the wallet DB chain tip ([#1591] stale-tip protection).
         let sdkFlags = initializer.container.resolve(SDKFlags.self)
-        Task {
+        // [audit SDK-1] Track the detached stop so a rapid follow-on `start()` can await it.
+        // Without this, the engine actor could order the NEW pass's `engine.start()` BEFORE this
+        // task's `engine.stop()` — the late stop then killed the freshly-started pass (recovered
+        // only at the next poll/start, but a needless dead window on quick background→foreground).
+        pendingStopTask = Task {
             await sdkFlags.sdkStopped()
             await engine.stop()
         }
@@ -1233,6 +1245,16 @@ public final class SlipstreamSynchronizer: Synchronizer {
                     let checkpoint = checkpointSource.birthday(for: currentHeight)
                     try await initializer.rustBackend.truncateToChainState(chainState: checkpoint.treeState())
                 }
+                // [audit SDK-5] Mirror `wipe()`'s cache resets: after a truncate the cached summary
+                // (and the recovery-log/latch state derived from it) describes PRE-rewind data —
+                // serving it would show stale balances until the next pass. Engine COUNTERS are NOT
+                // reset here on purpose: the handle survives a rewind, so `enhancedTxs` /
+                // `rangesCompleted` stay monotonic and the SDK mirrors must keep tracking them
+                // (mirrors reset only where the handle dies: `wipe()` / `switchTo()`).
+                cachedSummary = nil
+                lastSummaryFinishDate = nil
+                lastLoggedRecoveryTotal = nil
+                recoveryReleasedByError = false
                 subject.send(completion: .finished)
             } catch {
                 subject.send(completion: .failure(error))
@@ -1563,6 +1585,15 @@ private extension SlipstreamSynchronizer {
         try await enhanceWithState(transactionRepository.findReceived(offset: 0, limit: Int.max))
     }
 
+    /// [audit SDK-8] Emits `foundTransactions` right after a successful broadcast so the app's
+    /// Activity shows the pending tx immediately (same fetch + reconcile-gate pipeline as the
+    /// poll-loop emissions; the poll loop later re-confirms once the engine sees the tx).
+    private func emitPostSubmitTransactions() async {
+        let txs = await droppingUnreconciled(await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []))
+        guard !txs.isEmpty else { return }
+        eventSubject.send(.foundTransactions(txs, nil))
+    }
+
     // [#1755] Mirrors SDKSynchronizer.submitTransactions after zcash #1757 (multiserver
     // submission): consumes [CreatedTransaction] (was [ZcashTransaction.Overview]) and adopts the
     // "trust the network over the submit-side error" recovery branch. Submission is shared SDK
@@ -1579,6 +1610,13 @@ private extension SlipstreamSynchronizer {
             } else {
                 do {
                     try await self.transactionEncoder.submit(transaction: transaction.encodedTransaction)
+                    // [audit SDK-8] Surface the just-broadcast tx NOW. `foundTransactions`
+                    // otherwise fires only when the engine sees the tx (next mempool round /
+                    // mined+enhanced), so a fresh send was invisible in Activity until then —
+                    // the "live pending state not appearing" field bug. The created tx is
+                    // already stored in data.db by the encoder, so a re-fetch includes it;
+                    // fire-and-forget so the submit stream is never delayed.
+                    Task { await self.emitPostSubmitTransactions() }
                     return TransactionSubmitResult.success(txId: transaction.txId)
                 } catch ZcashError.serviceSubmitFailed(let error) {
                     submitFailed = true

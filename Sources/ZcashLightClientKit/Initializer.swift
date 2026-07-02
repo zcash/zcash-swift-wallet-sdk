@@ -459,6 +459,21 @@ public class Initializer {
         //     (recover_until = nil).
         // (A deliberate re-scan/resync is a separate, explicit action — `rewind(_:)` — not an init mode.)
         let existingAccounts = try await rustBackend.listAccounts()
+        // Seed↔account integrity guard: `initialize` is idempotent for an existing wallet, so
+        // restoring a DIFFERENT seed over existing accounts previously no-op'd silently — the
+        // keychain held seed B while data.db kept seed A's account, the app showed A's balance AND
+        // receive address (funds receivable but unspendable), and sends failed ZRUST0002. Validate
+        // the caller's seed against the stored derived account(s) before opening. Imported-only
+        // wallets (no derived account) are exempt: relevance cannot be evaluated for them
+        // (`SeedRelevance::NoDerivedAccounts` also reads as false, and throwing would break the
+        // hardware-wallet-only + new-seed flow).
+        if let seed, !existingAccounts.isEmpty {
+            let hasDerivedAccount = existingAccounts.contains { $0.seedFingerprint != nil && $0.hdAccountIndex != nil }
+            if hasDerivedAccount {
+                let seedIsRelevant = try await rustBackend.isSeedRelevantToAnyDerivedAccount(seed: seed)
+                guard seedIsRelevant else { throw ZcashError.initializerSeedMismatch }
+            }
+        }
         if let seed, existingAccounts.isEmpty {
             var chainTip: UInt32?
             var accountTreeState = checkpoint.treeState()

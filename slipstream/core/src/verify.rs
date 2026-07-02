@@ -17,11 +17,18 @@ impl Continuity {
     /// Verifies heights are consecutive and prev_hash links hold; advances self.
     pub fn verify_blocks(&mut self, blocks: &[CompactBlock]) -> Result<(), SlipstreamError> {
         for b in blocks {
+            // [audit ENG-3] `b.height` is a server-supplied u64; a silent `as u32` wrap on hostile
+            // input would feed a wrong height into reorg recovery (`truncate_to_height(at - 10)`).
+            // Reject out-of-range heights as a misbehaving server instead.
+            let height_u32 = u32::try_from(b.height).map_err(|_| {
+                tracing::warn!(height = b.height, "block height exceeds u32 range");
+                SlipstreamError::MisbehavingServer
+            })?;
             if let Some(h) = self.last_height
                 && b.height != h + 1
             {
                 return Err(SlipstreamError::Discontinuity {
-                    at: b.height as u32,
+                    at: height_u32,
                     detail: format!("expected height {}, got {}", h + 1, b.height),
                 });
             }
@@ -33,7 +40,7 @@ impl Continuity {
                 && &b.prev_hash != prev
             {
                 return Err(SlipstreamError::Discontinuity {
-                    at: b.height as u32,
+                    at: height_u32,
                     detail: "prev-hash mismatch".into(),
                 });
             }

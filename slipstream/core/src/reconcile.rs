@@ -46,6 +46,22 @@ pub const RECONCILE_VIEW_NAME: &str = "slipstream_v_tx_reconciled";
 /// non-wallet `tl.txid` simply has no `t` to match. The test is "is the note
 /// received yet", NOT "is the nullifier still tracked", so it is robust to
 /// `prune_tracked_nullifiers` timing.
+///
+/// KNOWN INVARIANT — the view is APPROXIMATE mid-restore and MUST stay
+/// recovery-scoped on the read side ([audit P0-B, verified against a field
+/// data.db 2026-07-01]): a nullifier at *our* tx's locator is not necessarily
+/// *our* spend. Two classes can never link and stay `reconciled = 0` forever:
+///   1. an external RECEIVE — the tx that pays us also carries the SENDER's
+///      spends, whose notes are never ours;
+///   2. spends of pre-birthday notes — the origin block is below the wallet
+///      birthday and will never be scanned.
+/// Mid-restore these are indistinguishable (from the DB alone) from "our note,
+/// origin not yet scanned" — the case this view exists for. Consumers must
+/// therefore apply the unreconciled set only WHILE recovery is active (the SDK
+/// gates on `isRecovering`); after the backfill completes, nothing more can
+/// link, and permanently-dangling rows are expected residue, not an error.
+/// (nf-NULL on imported/UFVK accounts was ruled out on the same field DB: all
+/// notes, including the hardware-wallet account's, had `nf` populated.)
 pub const RECONCILE_VIEW_SQL: &str = "CREATE VIEW IF NOT EXISTS slipstream_v_tx_reconciled AS
 SELECT t.txid AS txid,
        NOT EXISTS (
