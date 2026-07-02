@@ -48,6 +48,23 @@ pub(crate) fn reorg_backoff_ms(consecutive: u64) -> u64 {
     consecutive.saturating_mul(500).min(3_000)
 }
 
+/// [API v2 §4.4 / Phase E] The wallet's GLOBAL scan position in permille: how much of
+/// `[birthday, tip]` is NOT in the remaining scan queue. Seeds the session-monotonic
+/// permille floor so the blessed progress never reads pass-local on a fresh handle —
+/// the raw pass ratio would flash a 99.9%-synced wallet's UI to ~0% on every cold-launch
+/// catch-up (the SDK used to mask this with its own summary-derived floor; this is that
+/// floor's engine-owned successor). `None` when the inputs cannot express a position
+/// (no tip advertised yet, no accounts, or a tip below the birthday).
+pub(crate) fn global_floor_permille(tip: u64, birthday: Option<u64>, remaining: u64) -> Option<u64> {
+    let birthday = birthday?;
+    if tip == 0 || tip < birthday {
+        return None;
+    }
+    let span = tip - birthday + 1;
+    let scanned = span.saturating_sub(remaining);
+    Some(scanned.saturating_mul(1000) / span)
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct SyncReport {
     pub ranges_processed: u64,
@@ -115,6 +132,11 @@ pub async fn run_to_completion(
     // backfill window). A read failure degrades to "not recovering" rather than failing the
     // pass — the flag is presentation state, never correctness state.
     let recover_until: Option<u64> = session.max_recover_until().unwrap_or_default();
+    // [API v2 §4.4 / Phase E] The wallet's oldest birthday, read once per pass alongside the
+    // recovery ceiling: with the chain tip and the remaining queue it seeds the global permille
+    // floor each suggest round (below). A read failure degrades to "no seed" — presentation
+    // state, never correctness state.
+    let wallet_birthday: Option<u64> = session.min_birthday().unwrap_or_default();
     loop {
         let ranges = session.suggest_scan_ranges()?;
         // [API v2 §4.4] Recompute the recovery flag on every suggest round: still recovering
@@ -150,6 +172,15 @@ pub async fn run_to_completion(
                 })
                 .sum();
             p.set_pass_total(scanned_so_far_in_pass + sum_remaining);
+            // [API v2 §4.4 / Phase E] Seed the session-monotonic floor with the GLOBAL position.
+            // fetch_max semantics: the seed can only RAISE the floor, and re-seeding every suggest
+            // round tracks global progress as ranges complete. Two behaviours fall out for free:
+            // a cold-launch catch-up starts at ~99.9% instead of flashing 0% (the old Swift
+            // summary floor), and a relaunched restore RESUMES near its true position instead of
+            // 0% (the old Swift monotonic floor could not survive a relaunch).
+            if let Some(seed) = global_floor_permille(p.chain_tip(), wallet_birthday, sum_remaining) {
+                let _ = p.permille_floor(seed);
+            }
         }
 
         // block_range() returns a Range<BlockHeight> where .end is END-EXCLUSIVE
@@ -408,6 +439,41 @@ mod tests {
         assert_eq!(r.enhance.txs_stored, 0);
         assert_eq!(r.enhance.statuses_set, 0);
         assert_eq!(r.enhance.skipped, 0);
+    }
+
+    /// [API v2 §4.4 / Phase E] Cold-launch catch-up: a 99.9%-synced wallet must seed a
+    /// near-1000 floor, so the blessed permille can never flash ~0% while the small pass runs.
+    #[test]
+    fn global_floor_catch_up_seeds_near_complete() {
+        // tip 2.0M, birthday 1.0M (span 1_000_001), 3_000 blocks left to scan.
+        let seed = global_floor_permille(2_000_000, Some(1_000_000), 3_000).unwrap();
+        assert!((990..=1000).contains(&seed), "catch-up must seed near 1000, got {seed}");
+    }
+
+    /// A fresh from-birthday restore has (almost) the whole span in the queue — the seed
+    /// must stay ~0 so the restore bar still climbs 0→100% off the pass counters.
+    #[test]
+    fn global_floor_fresh_restore_seeds_zero() {
+        let seed = global_floor_permille(2_000_000, Some(1_000_000), 1_000_001).unwrap();
+        assert_eq!(seed, 0, "fresh restore must not pre-raise the floor");
+    }
+
+    /// A relaunched half-done restore resumes near its true global position (the property
+    /// the old Swift monotonic floor could not deliver across a relaunch).
+    #[test]
+    fn global_floor_relaunched_restore_resumes_position() {
+        let seed = global_floor_permille(2_000_000, Some(1_000_000), 500_000).unwrap();
+        assert_eq!(seed, 500, "half the span remaining ⇒ ~500‰");
+    }
+
+    /// Degenerate inputs cannot express a position: no seed (floor untouched).
+    #[test]
+    fn global_floor_degenerate_inputs_yield_none() {
+        assert_eq!(global_floor_permille(0, Some(1_000_000), 10), None, "no tip yet");
+        assert_eq!(global_floor_permille(2_000_000, None, 10), None, "no accounts");
+        assert_eq!(global_floor_permille(999, Some(1_000), 10), None, "tip below birthday");
+        // Remaining exceeding the span clamps to 0 rather than underflowing.
+        assert_eq!(global_floor_permille(1_100, Some(1_000), 5_000), Some(0));
     }
 
     #[test]

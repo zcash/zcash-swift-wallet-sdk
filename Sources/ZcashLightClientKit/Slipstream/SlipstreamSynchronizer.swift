@@ -197,11 +197,6 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// spends, without the per-tick re-fetch churn. Reset to -1 at each recovery start so the first
     /// reveal always fires (clearing any pre-recovery phantom list on macOS/iPad).
     private var lastSurfacedReconciledCount = -1
-    /// [#1755] Highest sync % surfaced during the current recovery — a monotonic floor so a
-    /// whole-pass restart (a transient server outage that outlasted the engine's bounded reconnect)
-    /// can't visibly drop the progress bar (field: 9% → 1.8% → 100%, syncLogsMac3). Reset to 0 when
-    /// recovery ends; not applied outside recovery, where a reorg can legitimately rewind.
-    private var maxSurfacedSyncProgress: Float = 0
     private var summaryTask: Task<Void, Never>?
     private var lastSummaryFinishDate: Date?
     // [#1755] When set, syncing-time % is driven PURELY by the pass-local counter (no summary
@@ -274,8 +269,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // immediately (widget stays hidden), instead of [:]/0% until the first sync tick
         // resolves seconds later. A genuinely fresh wallet has no summary yet → cold
         // .disconnected, as before (a real restore legitimately starts at 0 balance/0%).
-        // `cachedSummary` is seeded here so start() + the first ticks inherit the warm
-        // values (and the syncingProgress floor has a baseline).
+        // `cachedSummary` is seeded here so start() + the pre-first-suggest ticks inherit
+        // the warm values.
         cachedSummary = try? await initializer.rustBackend.getWalletSummary()
         // [#1755] Seed the recovery gate from the persisted summary so the FIRST balance/Activity read
         // is correct without waiting for a poll: a synced wallet (recovery complete) shows its real
@@ -508,19 +503,27 @@ public final class SlipstreamSynchronizer: Synchronizer {
             // until the re-scan reaches Done — see `forceCounterProgressUntilDone`. The floor would
             // otherwise mask the re-scan (the cached summary lags the new account, and the idle/Tor
             // refetch re-raises a stale ~100% floor).
-            // [Engine API v2 / Phase D] Blessed engine progress: `progress_permille` already
-            // embodies the pass-counter ratio, Done→100%, the session-monotonic floor AND the
-            // warm-start across passes (begin_pass never resets the floor) — the summaryProgress
-            // warm-seed and the Swift monotonicRecoveryProgress floor this replaces retire in
-            // Phase E. The importAccount branch below deliberately bypasses every floor (the
-            // re-scan must read as a genuine 0→100% climb), which is exactly why the engine keeps
-            // the raw counters exported alongside the blessed value.
+            // [Engine API v2 / Phase E] Blessed engine progress: `progress_permille` embodies the
+            // pass-counter ratio, Done→100%, the session-monotonic floor, AND the global floor
+            // the scheduler seeds each suggest round (tip−birthday span vs remaining queue) — so
+            // a cold-launch catch-up reads ~99.9% instead of pass-local 0%, and a relaunched
+            // restore resumes its true position. The Swift floors it replaced (summaryProgress
+            // syncing floor + monotonicRecoveryProgress) are deleted. The importAccount branch
+            // below deliberately bypasses every floor (the re-scan must read as a genuine 0→100%
+            // climb), which is exactly why the engine keeps the raw counters exported alongside
+            // the blessed value.
             let surfacedProgress: Float
             if forceCounterProgressUntilDone {
                 surfacedProgress = SlipstreamSynchronizer.counterProgress(
                     scanned: snap.scannedBlocks,
                     total: snap.passTotalBlocks
                 )
+            } else if snap.passTotalBlocks == 0 && snap.progressPermille == 0 {
+                // Pre-first-suggest hold (mirror of the D-2 isRecovering guard): before the
+                // scheduler's first suggest round the engine floor is unseeded — on a Tor cold
+                // start that window can span several ticks — so hold the warm summary value
+                // start() emitted rather than dipping to 0% and snapping back.
+                surfacedProgress = SlipstreamSynchronizer.summaryProgress(cachedSummary).progress
             } else {
                 surfacedProgress = Float(snap.progressPermille) / 1000
             }
@@ -846,9 +849,9 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // the range — this is what made the balance appear), but two things stop it surfacing as a
         // SmartBanner, and we fix both:
         //
-        //  1. Bypass the progress FLOOR for this re-scan. While syncing, % = `max(passLocalCounter,
-        //     summaryFloor)` where `summaryFloor` is the cached `WalletSummary`. On a just-synced
-        //     wallet that floor is ~1.0 and MASKS the re-scan. Re-fetching the summary here does NOT
+        //  1. Bypass the progress FLOOR for this re-scan. The blessed `progress_permille` is
+        //     session-monotonic and, on a just-synced wallet, already folded/seeded at ~1.0 —
+        //     which MASKS the re-scan. Re-fetching the summary here does NOT
         //     help — right after importAccount the scan queue isn't updated for the new account (that
         //     happens in the next pass's `update_chain_tip`), so `getWalletSummary` still reports
         //     ~100%; worse, the idle/Tor-bootstrap summary refetch in the poll loop would re-raise

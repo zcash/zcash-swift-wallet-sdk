@@ -81,7 +81,7 @@ extension SlipstreamSynchronizer {
     /// summary exists yet (a genuinely fresh wallet). Wraps `composeProgress` with the
     /// summary's `scanProgress`/`recoveryProgress`. Used to (a) warm the cold-launch
     /// emissions (`prepare`/`start`) so balance + progress show real values immediately,
-    /// and (b) FLOOR the pass-local counter during a pass (see `syncingProgress`).
+    /// and (b) hold the pre-first-suggest ticks (before the engine seeds its global floor).
     static func summaryProgress(_ summary: WalletSummary?) -> (progress: Float, spendable: Bool) {
         guard let summary else { return (0.0, false) }
         return composeProgress(
@@ -116,30 +116,6 @@ extension SlipstreamSynchronizer {
             unshielded: .zero,
             awaitingResolution: .zero
         )
-    }
-
-    /// [#1755] Monotonic recovery floor for the displayed sync %. A transient server outage that
-    /// outlasts the engine's bounded reconnect forces a whole-pass restart, which resets the
-    /// pass-local counter; during a recovery `recovery_progress` only advances, so the bar must never
-    /// drop (field: 9% → 1.8% → 100%, syncLogsMac3). Returns the value to surface and the new floor.
-    /// Outside recovery the floor resets to 0 and the current value passes through unchanged (a
-    /// steady-state reorg may legitimately rewind, so the floor is intentionally not applied there).
-    static func monotonicRecoveryProgress(current: Float, recovering: Bool, floor: Float) -> (surfaced: Float, floor: Float) {
-        guard recovering else { return (current, 0) }
-        let surfaced = max(current, floor)
-        return (surfaced, surfaced)
-    }
-
-    /// T8.3.5: the % to show while `state == 1` (Syncing). The engine reports PASS-LOCAL
-    /// progress (`counterProgress(scanned, passTotal)`) — correct for a from-birthday
-    /// restore, but MISLEADING for a small catch-up pass on an already-synced wallet: a
-    /// few new blocks read as "0% synced", so a cold launch flashes the restore widget at
-    /// 0%. We FLOOR the pass-local value with the wallet's global summary progress, so a
-    /// near-synced wallet never drops below ~100% (the widget stays hidden) while a real
-    /// restore (summary ≈ 0 at the start) still climbs 0→100% off the pass-local counter.
-    /// Cheap — `summaryFloor` is the already-cached value; no `getWalletSummary` call here.
-    static func syncingProgress(scanned: UInt64, passTotal: UInt64, summaryFloor: Float) -> Float {
-        max(counterProgress(scanned: scanned, total: passTotal), summaryFloor)
     }
 
     /// T8.3.5: the `SynchronizerState` that `prepare()` emits right after opening the

@@ -93,6 +93,20 @@ impl WalletSession {
         Ok(max.and_then(|v| u64::try_from(v).ok()))
     }
 
+    /// [API v2 §4.4 / Phase E] The wallet's oldest account birthday: MIN(`accounts.birthday_height`),
+    /// or `None` when no accounts exist. With the chain tip and the remaining scan queue it seeds the
+    /// global permille floor once per suggest round (`scheduler::global_floor_permille`). Same
+    /// short-side-connection pattern as `max_recover_until`.
+    pub fn min_birthday(&self) -> Result<Option<u64>, SlipstreamError> {
+        let conn = Connection::open(&self.db_path).map_err(|e| wallet_err("birthday open", e))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| wallet_err("birthday busy_timeout", e))?;
+        let min: Option<i64> = conn
+            .query_row("SELECT MIN(birthday_height) FROM accounts", [], |row| row.get(0))
+            .map_err(|e| wallet_err("birthday query", e))?;
+        Ok(min.and_then(|v| u64::try_from(v).ok()))
+    }
+
     /// Keyless import: UFVK string + birthday treestate (server-provided at
     /// birthday-1). No-op if any account already exists.
     pub fn ensure_account(

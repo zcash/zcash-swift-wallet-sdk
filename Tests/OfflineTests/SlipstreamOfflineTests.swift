@@ -571,30 +571,6 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertFalse(spendable)
     }
 
-    /// [#1755] Monotonic recovery floor: during a recovery the displayed % never drops, even when a
-    /// whole-pass restart resets the pass-local counter. Mirrors the field arc 9% → (restart) →
-    /// would-be 1.8% → held at 9% → 100% (syncLogsMac3).
-    func testMonotonicRecoveryProgressNeverRegressesDuringRecovery() {
-        var (surfaced, floor) = SlipstreamSynchronizer.monotonicRecoveryProgress(current: 0.09, recovering: true, floor: 0.0)
-        XCTAssertEqual(surfaced, 0.09, accuracy: 1e-6)
-
-        // Whole-pass restart resets the pass-local counter to 1.8% — the bar must HOLD at 9%.
-        (surfaced, floor) = SlipstreamSynchronizer.monotonicRecoveryProgress(current: 0.018, recovering: true, floor: floor)
-        XCTAssertEqual(surfaced, 0.09, accuracy: 1e-6, "must not regress across a pass restart")
-
-        // Then it climbs past the floor to completion.
-        (surfaced, floor) = SlipstreamSynchronizer.monotonicRecoveryProgress(current: 1.0, recovering: true, floor: floor)
-        XCTAssertEqual(surfaced, 1.0, accuracy: 1e-6)
-    }
-
-    /// Outside recovery the floor is inert: the current value passes through and the floor resets to
-    /// 0, so a legitimate steady-state rewind (reorg) is never masked.
-    func testMonotonicRecoveryProgressInertOutsideRecovery() {
-        let (surfaced, floor) = SlipstreamSynchronizer.monotonicRecoveryProgress(current: 0.4, recovering: false, floor: 0.9)
-        XCTAssertEqual(surfaced, 0.4, accuracy: 1e-6, "no clamping outside recovery")
-        XCTAssertEqual(floor, 0.0, accuracy: 1e-6, "floor resets when not recovering")
-    }
-
     /// If the composed ratio somehow exceeds 1.0, it is clamped to 1.0.
     func testComposeProgressClampAboveOne() {
         // Force numerator > denominator (numerator=120, denominator=100 → raw=1.2).
@@ -616,67 +592,32 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertTrue(spendable, "spendable must be true when scan.isComplete is true")
     }
 
-    // MARK: - 6b. T8.3.5 warm-start progress helpers (summaryProgress + syncingProgress floor)
+    // MARK: - 6b. T8.3.5 warm-start progress helper (summaryProgress)
 
-    /// summaryProgress(nil) → (0.0, false): a genuinely fresh wallet has no summary, so it
-    /// contributes no floor and the cold restore path is preserved.
+    /// summaryProgress(nil) → (0.0, false): a genuinely fresh wallet has no summary, so the
+    /// warm prepare()/start() emissions (and the pre-first-suggest hold) correctly read 0%.
     func testSummaryProgressNilIsZero() {
         let (progress, spendable) = SlipstreamSynchronizer.summaryProgress(nil)
         XCTAssertEqual(progress, 0.0, accuracy: Float.ulpOfOne)
         XCTAssertFalse(spendable)
     }
 
-    /// Restore: with no summary floor (fresh wallet, floor 0), the pass-local counter is
-    /// reported verbatim — the from-birthday restore bar is unchanged by T8.3.5.
-    func testSyncingProgressRestoreUsesPassLocalCounter() {
-        let progress = SlipstreamSynchronizer.syncingProgress(scanned: 250, passTotal: 1000, summaryFloor: 0.0)
-        XCTAssertEqual(progress, 0.25, accuracy: 1e-5)
-    }
-
-    /// Cold-launch catch-up (THE T8.3.5 fix): the pass covers only a few new blocks
-    /// (pass-local 0/5 = 0%), but the wallet is 99% synced globally → floored to 0.99, so
-    /// the widget stays hidden (>98%) instead of flashing 0%.
-    func testSyncingProgressCatchUpFlooredToSummary() {
-        let progress = SlipstreamSynchronizer.syncingProgress(scanned: 0, passTotal: 5, summaryFloor: 0.99)
-        XCTAssertEqual(progress, 0.99, accuracy: 1e-5)
-    }
-
-    /// When the live pass-local counter is AHEAD of a (stale) summary floor, the live value
-    /// wins — a restore mid-flight keeps climbing past a lagging summary.
-    func testSyncingProgressLivePassLocalDominatesStaleFloor() {
-        let progress = SlipstreamSynchronizer.syncingProgress(scanned: 600, passTotal: 1000, summaryFloor: 0.3)
-        XCTAssertEqual(progress, 0.6, accuracy: 1e-5)
-    }
-
     // MARK: - 6c. importAccount re-scan visibility ([#1755] truncation/old-birthday fix)
     //
     // Importing an account with an older birthday on an already-synced wallet adds a large
-    // [birthday, tip] recovery range to re-scan. The bug: the syncing-time progress FLOOR is the
-    // cached summary, which on a synced wallet is ~1.0 — so `max(passLocalCounter, floor)` pins
-    // progress at ~100%, masking the whole re-scan; the SmartBanner (shown only below 0.98) never
-    // appears. The fix sets a flag (`forceCounterProgressUntilDone`) so the poll loop
-    // drives % PURELY from the pass-local counter (no floor at all) until the re-scan reaches Done.
-    // A one-time summary clear is NOT enough — the idle/Tor-bootstrap summary refetch re-raises a
-    // stale ~100% floor before scanning starts (the field bug). With the flag, % == counterProgress,
-    // which equals syncingProgress(..., summaryFloor: 0). These tests pin that contract: floor 0
-    // (≡ the flag's counter-only path) reveals the re-scan; a stale high floor masks it.
+    // [birthday, tip] recovery range to re-scan. Every progress floor — today the ENGINE's
+    // session-monotonic permille, folded/seeded to ~1.0 on a synced wallet — would pin % at
+    // ~100% and mask the whole re-scan (the SmartBanner shows only below 0.98). importAccount
+    // therefore sets `forceCounterProgressUntilDone`: the poll loop drives % PURELY from the
+    // raw pass-local counters (bypassing the blessed permille entirely) until the re-scan
+    // reaches Done. This test pins the counter-only contract the flag relies on.
 
-    /// THE BUG: ~50k of a ~650k (≈15-month) re-scan is 7.7% pass-local, but a STALE pre-import
-    /// floor (~0.99) clamps it back up — progress stays above the 0.98 banner threshold, so the
-    /// re-scan is invisible. (This is exactly why the floor MUST be refreshed after importAccount.)
-    func testSyncingProgressLargeRescanMaskedByStaleFloor() {
-        let progress = SlipstreamSynchronizer.syncingProgress(scanned: 50_000, passTotal: 650_000, summaryFloor: 0.99)
-        XCTAssertEqual(progress, 0.99, accuracy: 1e-5)
-        XCTAssertGreaterThan(progress, 0.98, "a stale high floor masks the large re-scan — the bug")
-    }
-
-    /// THE FIX: clearing the cached summary after importAccount sets the floor to 0 (this is exactly
-    /// `summaryProgress(nil)`), so the pass-local counter drives a visible 0→100% climb and the
-    /// banner (below 0.98) appears.
-    func testSyncingProgressLargeRescanVisibleWithFreshFloor() {
-        let progress = SlipstreamSynchronizer.syncingProgress(scanned: 50_000, passTotal: 650_000, summaryFloor: 0.0)
+    /// ~50k of a ~650k (≈15-month) re-scan is 7.7% pass-local — the counter-only path keeps it
+    /// below the 0.98 banner threshold, so the re-scan is visible as a genuine 0→100% climb.
+    func testCounterProgressLargeRescanVisibleWithoutFloor() {
+        let progress = SlipstreamSynchronizer.counterProgress(scanned: 50_000, total: 650_000)
         XCTAssertEqual(progress, 50_000.0 / 650_000.0, accuracy: 1e-5)
-        XCTAssertLessThan(progress, 0.98, "a cleared (0) floor reveals the large re-scan — the fix")
+        XCTAssertLessThan(progress, 0.98, "counter-only progress reveals the large re-scan")
     }
 
     /// CONVERGENCE: once the next pass updates the scan queue (`update_chain_tip`), the wallet's
