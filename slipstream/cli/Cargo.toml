@@ -1,6 +1,6 @@
 [package]
 name = "slipstream-cli"
-version = "0.0.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"

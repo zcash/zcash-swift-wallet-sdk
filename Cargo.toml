@@ -96,7 +96,8 @@ zcash_keys = { version = "0.14", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
 
 [features]
-# Phase B / v0.3 (GPU Orchard subtree offload). Forwards to slipstream-core's `gpu`
+# Phase B / v0.4 (GPU Orchard subtree offload; renumbered from v0.3 — that slot is now the
+# engine API v2 era). Forwards to slipstream-core's `gpu`
 # feature (links wgpu via slipstream-gpuhash). OFF by default → the released libzcashlc
 # has ZERO wgpu (B0.1, verified via cargo tree). Enable for local-FFI device builds:
 #   ./Scripts/init-local-ffi.sh --gpu     (full, all slices)
