@@ -59,8 +59,26 @@ impl WalletSession {
             conn.pragma_update(None, "synchronous", "NORMAL")
                 .map_err(|e| wallet_err("set synchronous", e))?;
         }
-        let mut db = WalletDb::for_path(db_path, network, zcash_client_sqlite::util::SystemClock, rand::rngs::OsRng)
-            .map_err(|e| wallet_err("open wallet db", e))?;
+        // [B4-12 / ZRUST0096] Open the MAIN wallet connection ourselves so it gets a
+        // busy_timeout — upstream's `for_path` sets NONE, so any competing writer (a host
+        // `importAccount` landing mid-pass, or a restart's orphaned write-behind commit:
+        // `spawn_blocking` is uncancellable by abort, so it can outlive the pass that
+        // spawned it) surfaced as an immediate SQLITE_BUSY → non-transient Wallet error →
+        // Error state (the Keystone delete→re-import field failure, 2026-07-02). 15 s —
+        // the worst observed device commit is a few seconds (A10): WAITING beats dying.
+        // Mirrors upstream `for_path` otherwise (array vtab module, then wrap).
+        let wallet_conn = Connection::open(db_path).map_err(|e| wallet_err("open wallet db", e))?;
+        wallet_conn
+            .busy_timeout(std::time::Duration::from_secs(15))
+            .map_err(|e| wallet_err("set busy_timeout (wallet)", e))?;
+        rusqlite::vtab::array::load_module(&wallet_conn)
+            .map_err(|e| wallet_err("load array vtab", e))?;
+        let mut db = WalletDb::from_connection(
+            wallet_conn,
+            network,
+            zcash_client_sqlite::util::SystemClock,
+            rand::rngs::OsRng,
+        );
         zcash_client_sqlite::wallet::init::init_wallet_db(&mut db, None)
             .map_err(|e| wallet_err("init/migrations", e))?;
         // [#1755] Install the slipstream-owned, read-side reconciliation view
