@@ -24,15 +24,14 @@ extension SlipstreamSynchronizer {
     /// stall episode (the episode flag re-arms as soon as any counter moves
     /// again). Never restarts anything — visibility only.
     func checkStallWatchdog(_ snap: SlipstreamSnapshot) {
-        let signature = Self.watchdogSignature(snap)
-        if watchdogLastSignature != signature {
-            watchdogLastSignature = signature
-            watchdogLastChangeDate = Date()
+        // [Engine API v2 §4.4 / Phase D] The stall FACT is engine-owned now: `snap.stalledSeconds`
+        // is stamped by the engine's own counters (0 unless state == Syncing). The watchdog keeps
+        // only the POLICY — the once-per-episode loud log — re-armed whenever progress resumes.
+        let elapsed = TimeInterval(snap.stalledSeconds)
+        if elapsed < Self.stallWatchdogThresholdSeconds {
             watchdogStallLogged = false
             return
         }
-
-        let elapsed = Date().timeIntervalSince(watchdogLastChangeDate)
         guard
             Self.isSyncStalled(
                 state: snap.state,

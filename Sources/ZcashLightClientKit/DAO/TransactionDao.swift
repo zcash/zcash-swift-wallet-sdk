@@ -146,13 +146,11 @@ class TransactionSQLDAO: TransactionRepository {
         // Defensive: a DB the slipstream engine never opened has no such view, so the query throws — we
         // return empty (the caller keeps the live summary; legacy behavior).
         do {
-            let sql = [
-                "SELECT vt.account_uuid, SUM(vt.account_balance_delta) AS balance",
-                "FROM v_transactions vt",
-                "WHERE vt.mined_height IS NOT NULL",
-                "AND NOT EXISTS (SELECT 1 FROM slipstream_v_tx_reconciled r WHERE r.txid = vt.txid AND r.reconciled = 0)",
-                "GROUP BY vt.account_uuid"
-            ].joined(separator: " ")
+            // [Engine API v2 §4.2 / Phase D] The Σ-reconciled-deltas query is engine-owned now:
+            // `slipstream_v_recovery_balance` (installed at WalletSession.open) IS this exact
+            // query, crate-tested against the 4→8→4 restore replay. Consume the view instead of
+            // inlining its SQL, so every host — and this SDK — reads one definition.
+            let sql = "SELECT account_uuid, balance_zat FROM slipstream_v_recovery_balance"
             let statement = try connection().prepare(sql)
             var result: [AccountUUID: Zatoshi] = [:]
             for row in statement {

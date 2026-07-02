@@ -39,6 +39,15 @@ public struct SlipstreamSnapshot {
     /// Monotonically increases. Swift observes changes to trigger ONE balance-summary fetch
     /// per range boundary while Syncing (F2 — boundary balance refresh).
     public let rangesCompleted: UInt64
+    // ── Engine API v2 fields (ENGINE_API_V2.md §4.4) ──
+    /// 1 while the wallet is inside its recovery (restore backfill) window. Engine-computed,
+    /// fail-safe latch built in: terminal Done/Error force 0.
+    public let isRecovering: UInt8
+    /// Blessed progress, 0...1000, session-monotonic (never regresses while the handle lives;
+    /// Done forces 1000). Replaces host-side progress math.
+    public let progressPermille: UInt16
+    /// Seconds since last forward progress while syncing; 0 otherwise.
+    public let stalledSeconds: UInt32
 
     init(_ cSnapshot: FfiSlipstreamSnapshot) {
         chainTip = cSnapshot.chain_tip
@@ -50,6 +59,9 @@ public struct SlipstreamSnapshot {
         passTotalBlocks = cSnapshot.pass_total_blocks
         spendableHint = cSnapshot.spendable_hint
         rangesCompleted = cSnapshot.ranges_completed
+        isRecovering = cSnapshot.is_recovering
+        progressPermille = cSnapshot.progress_permille
+        stalledSeconds = cSnapshot.stalled_seconds
     }
 
     /// Memberwise initializer for tests (avoids a direct dependency on `FfiSlipstreamSnapshot` / libzcashlc in test targets).
@@ -62,7 +74,10 @@ public struct SlipstreamSnapshot {
         state: UInt8,
         passTotalBlocks: UInt64 = 0,
         spendableHint: UInt8 = 0,
-        rangesCompleted: UInt64 = 0
+        rangesCompleted: UInt64 = 0,
+        isRecovering: UInt8 = 0,
+        progressPermille: UInt16 = 0,
+        stalledSeconds: UInt32 = 0
     ) {
         self.chainTip = chainTip
         self.fetchedBlocks = fetchedBlocks
@@ -73,6 +88,9 @@ public struct SlipstreamSnapshot {
         self.passTotalBlocks = passTotalBlocks
         self.spendableHint = spendableHint
         self.rangesCompleted = rangesCompleted
+        self.isRecovering = isRecovering
+        self.progressPermille = progressPermille
+        self.stalledSeconds = stalledSeconds
     }
 }
 

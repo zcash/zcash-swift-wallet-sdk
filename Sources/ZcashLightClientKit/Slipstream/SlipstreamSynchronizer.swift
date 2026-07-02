@@ -471,17 +471,16 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // refreshed by every LIVE summary fetch (prepare, getAccountsBalances, boundary, idle/done), so
         // it is already true by the first read (the cold-launch balance read fires at scan=0/0).
         //
-        // [#1755 fail-safe] Resolve the gate against the engine's TERMINAL state FIRST, so a finished
-        // (Done) or dead (Error) pass can't leave it stuck true and wedge normal balance/Activity — the
-        // definite signal the async summary fetch lags behind. `currentlyRecovering` here is the live
-        // summary-maintained value; `resolveRecoveryGate` overrides it on Done/Error. See its doc.
-        let gate = SlipstreamSynchronizer.resolveRecoveryGate(
-            state: snap.state,
-            liveSummaryRecovering: currentlyRecovering,
-            releasedByError: recoveryReleasedByError
-        )
-        currentlyRecovering = gate.recovering
-        recoveryReleasedByError = gate.releasedByError
+        // [Engine API v2 / Phase D] The recovery gate is ENGINE-OWNED: `snap.isRecovering` carries
+        // the scheduler-computed flag WITH the fail-safe latch built in (terminal Done/Error force
+        // 0 — the resolveRecoveryGate/releasedByError machinery this replaces retires in Phase E).
+        // First-seconds guard (ENGINE_API_V2.md §0 known gap): before the scheduler's FIRST suggest
+        // round the flag reads 0 even mid-restore, so adopt the snapshot only once the scheduler has
+        // spoken (flag set, a pass denominator exists, or a terminal state) — until then keep
+        // prepare()'s summary-derived seed, closing the phantom-leak window on tick 1.
+        if snap.state == 2 || snap.state == 3 || snap.isRecovering == 1 || snap.passTotalBlocks > 0 {
+            currentlyRecovering = snap.isRecovering == 1
+        }
         let recovering = currentlyRecovering
 
         // [#1755] During recovery surface the AS-RECOVERED balance: per account, Σ `account_balance_delta`
@@ -523,38 +522,22 @@ public final class SlipstreamSynchronizer: Synchronizer {
             // until the re-scan reaches Done — see `forceCounterProgressUntilDone`. The floor would
             // otherwise mask the re-scan (the cached summary lags the new account, and the idle/Tor
             // refetch re-raises a stale ~100% floor).
-            let progress: Float
+            // [Engine API v2 / Phase D] Blessed engine progress: `progress_permille` already
+            // embodies the pass-counter ratio, Done→100%, the session-monotonic floor AND the
+            // warm-start across passes (begin_pass never resets the floor) — the summaryProgress
+            // warm-seed and the Swift monotonicRecoveryProgress floor this replaces retire in
+            // Phase E. The importAccount branch below deliberately bypasses every floor (the
+            // re-scan must read as a genuine 0→100% climb), which is exactly why the engine keeps
+            // the raw counters exported alongside the blessed value.
+            let surfacedProgress: Float
             if forceCounterProgressUntilDone {
-                progress = SlipstreamSynchronizer.counterProgress(
+                surfacedProgress = SlipstreamSynchronizer.counterProgress(
                     scanned: snap.scannedBlocks,
                     total: snap.passTotalBlocks
                 )
             } else {
-                progress = SlipstreamSynchronizer.syncingProgress(
-                    scanned: snap.scannedBlocks,
-                    passTotal: snap.passTotalBlocks,
-                    summaryFloor: SlipstreamSynchronizer.summaryProgress(cachedSummary).progress
-                )
+                surfacedProgress = Float(snap.progressPermille) / 1000
             }
-            // [#1755] Monotonic recovery floor — never let the bar jump backward across a transient
-            // whole-pass restart (the pass-local counter resets on restart; recovery_progress only
-            // advances). Reset once recovery completes; off outside recovery (reorgs may rewind).
-            let (surfacedProgress, newFloor) = SlipstreamSynchronizer.monotonicRecoveryProgress(
-                current: progress,
-                recovering: recovering,
-                floor: maxSurfacedSyncProgress
-            )
-            // [#1755] Only fires when the floor actually masks a backward jump (transient whole-pass
-            // restart) — the exact event from syncLogsMac3 (9% → 1.8%). Silent on normal progress.
-            if surfacedProgress > progress {
-                initializer.logger.debug(
-                    "[slipstream] progress floor held: surfacing \(Int(surfacedProgress * 100))% (engine reported \(Int(progress * 100))%)",
-                    file: #file,
-                    function: #function,
-                    line: #line
-                )
-            }
-            maxSurfacedSyncProgress = newFloor
             let spendable = snap.spendableHint != 0
 
             stateSubject.send(SynchronizerState(
@@ -626,6 +609,10 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // re-fire onAppear — by emitting `foundTransactions` whenever the reconciled-visible count
         // changes (incremental + calm), plus once when recovery completes.
         let hasSyncDoneEvent = events.contains { $0.tag == 3 && $0.value > 0 }
+        // [Engine API v2 §4.5 / Phase D] tag-5 (FoundTransactions) is now also HOST-triggered:
+        // the post-submit `notifyTxChange` poke lands here, so a just-broadcast pending tx
+        // surfaces on this tick even though no counter advanced and no pass completed.
+        let hasFoundTxEvent = events.contains { $0.tag == 5 }
         let recoveryJustStarted = !wasRecovering && recovering
         let recoveryJustCompleted = wasRecovering && !recovering
         wasRecovering = recovering
@@ -635,7 +622,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
             // enhanced new txs, and push only when what the user can see actually changed — surfacing
             // genuine receives + already-linked sends mid-backfill without per-tick churn.
             if recoveryJustStarted { lastSurfacedReconciledCount = -1 }
-            if recoveryJustStarted || snap.enhancedTxs != lastEnhancedCount {
+            if recoveryJustStarted || hasFoundTxEvent || snap.enhancedTxs != lastEnhancedCount {
                 let txs = await droppingUnreconciled(await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []))
                 if txs.count != lastSurfacedReconciledCount {
                     eventSubject.send(.foundTransactions(txs, nil))
@@ -643,7 +630,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
                 }
             }
             lastEnhancedCount = snap.enhancedTxs
-        } else if recoveryJustCompleted || snap.enhancedTxs > lastEnhancedCount {
+        } else if recoveryJustCompleted || hasFoundTxEvent || snap.enhancedTxs > lastEnhancedCount {
             // Reveal the now-fully-reconciled list once recovery completes, or emit normal incremental updates.
             let txs = await droppingUnreconciled(await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []))
             if recoveryJustCompleted || !txs.isEmpty {
@@ -1585,14 +1572,6 @@ private extension SlipstreamSynchronizer {
         try await enhanceWithState(transactionRepository.findReceived(offset: 0, limit: Int.max))
     }
 
-    /// [audit SDK-8] Emits `foundTransactions` right after a successful broadcast so the app's
-    /// Activity shows the pending tx immediately (same fetch + reconcile-gate pipeline as the
-    /// poll-loop emissions; the poll loop later re-confirms once the engine sees the tx).
-    private func emitPostSubmitTransactions() async {
-        let txs = await droppingUnreconciled(await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []))
-        guard !txs.isEmpty else { return }
-        eventSubject.send(.foundTransactions(txs, nil))
-    }
 
     // [#1755] Mirrors SDKSynchronizer.submitTransactions after zcash #1757 (multiserver
     // submission): consumes [CreatedTransaction] (was [ZcashTransaction.Overview]) and adopts the
@@ -1610,13 +1589,12 @@ private extension SlipstreamSynchronizer {
             } else {
                 do {
                     try await self.transactionEncoder.submit(transaction: transaction.encodedTransaction)
-                    // [audit SDK-8] Surface the just-broadcast tx NOW. `foundTransactions`
-                    // otherwise fires only when the engine sees the tx (next mempool round /
-                    // mined+enhanced), so a fresh send was invisible in Activity until then —
-                    // the "live pending state not appearing" field bug. The created tx is
-                    // already stored in data.db by the encoder, so a re-fetch includes it;
-                    // fire-and-forget so the submit stream is never delayed.
-                    Task { await self.emitPostSubmitTransactions() }
+                    // [Engine API v2 §4.5 / Phase D] Surface the just-broadcast tx: poke the
+                    // engine (`notify_tx_change`), which emits FoundTransactions through its
+                    // normal event channel — the poll loop re-fetches and emits on the next tick
+                    // (≤ the poll cadence). Replaces the fix-wave's direct SDK-side emission so
+                    // every host shares one path. Fire-and-forget; never delays the submit stream.
+                    Task { await self.engine.notifyTxChange() }
                     return TransactionSubmitResult.success(txId: transaction.txId)
                 } catch ZcashError.serviceSubmitFailed(let error) {
                     submitFailed = true

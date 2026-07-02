@@ -128,6 +128,15 @@ public actor SlipstreamEngine {
         _ = zcashlc_slipstream_stop(handlePtr)
     }
 
+    /// [Engine API v2 §4.5] Tells the engine the HOST changed the wallet's transaction set
+    /// outside a sync pass (a just-broadcast transaction was stored). The engine emits a
+    /// FoundTransactions event through its normal channel, so the poll loop surfaces the
+    /// pending transaction on the next tick — uniformly for every host. No-op on a nil handle.
+    public func notifyTxChange() {
+        guard let handlePtr = handle else { return }
+        _ = zcashlc_slipstream_notify_tx_change(handlePtr)
+    }
+
     /// Frees the engine handle exactly once and nils the pointer.
     ///
     /// Called by `wipe()` so the Rust-side tokio runtime and all associated state are

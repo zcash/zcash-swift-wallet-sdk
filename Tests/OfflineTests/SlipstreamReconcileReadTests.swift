@@ -62,6 +62,20 @@ final class SlipstreamReconcileReadTests: XCTestCase {
         // mined / reconciled gating is what we verify here; v_transactions' own correctness is upstream's).
         try setup.run("CREATE TABLE v_transactions (account_uuid BLOB, mined_height INTEGER, txid BLOB, account_balance_delta INTEGER)")
         try setup.run("CREATE TABLE slipstream_v_tx_reconciled (txid BLOB, reconciled INTEGER)")
+        // [Engine API v2 §4.2 / Phase D] The DAO now consumes the ENGINE-OWNED view (installed by
+        // WalletSession.open in production) instead of inlining its SQL — the fixture installs the
+        // same definition (mirrors slipstream/core/src/reconcile.rs RECOVERY_BALANCE_VIEW_SQL) so
+        // this test keeps exercising the full gating semantics through the DAO's real read path.
+        try setup.run("""
+            CREATE VIEW slipstream_v_recovery_balance AS
+            SELECT vt.account_uuid AS account_uuid,
+                   SUM(vt.account_balance_delta) AS balance_zat
+            FROM v_transactions vt
+            WHERE vt.mined_height IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM slipstream_v_tx_reconciled r
+                              WHERE r.txid = vt.txid AND r.reconciled = 0)
+            GROUP BY vt.account_uuid
+            """)
 
         let accountA = [UInt8](Data(repeating: 0x01, count: 16))
         let accountB = [UInt8](Data(repeating: 0x02, count: 16))
