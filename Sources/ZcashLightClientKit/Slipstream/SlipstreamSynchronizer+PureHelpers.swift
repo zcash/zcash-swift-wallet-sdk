@@ -222,6 +222,35 @@ extension SlipstreamSynchronizer {
     }
 }
 
+// MARK: - PendingStopSlot (Phase E / audit SDK-2)
+
+/// Lock-guarded task slot backing the nonisolated `stop()` → isolated `start()` ordering
+/// contract: `stop()` must REGISTER its teardown synchronously (so an immediately-following
+/// `start()` can await it), but an actor's nonisolated members cannot write actor state.
+/// Consecutive stops CHAIN (each new task awaits the previous), so `take()` returns a task
+/// that transitively covers every registered stop. NSLock (not OSAllocatedUnfairLock) keeps
+/// the SDK's deployment floor.
+final class PendingStopSlot: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+
+    /// Replace the slot with `make(previous)` — the maker chains onto the prior task.
+    func chain(_ make: (Task<Void, Never>?) -> Task<Void, Never>) {
+        lock.lock()
+        defer { lock.unlock() }
+        task = make(task)
+    }
+
+    /// Remove and return the pending chain (awaited once by `start()`).
+    func take() -> Task<Void, Never>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let pending = task
+        task = nil
+        return pending
+    }
+}
+
 // MARK: - withTaskTimeout helper (F1)
 
 /// Races `operation` against a nanosecond timer.  Returns the operation's value if it

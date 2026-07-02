@@ -29,16 +29,23 @@ import Foundation
 /// `Synchronizer` implementation that uses the Slipstream Rust engine for sync
 /// while delegating all data-model operations to the existing SDK components.
 /// This allows the two synchronizer implementations to share the same `data.db`.
-public final class SlipstreamSynchronizer: Synchronizer {
+///
+/// [Phase E / audit SDK-2] An ACTOR: every mutable var (poll mirrors, cachedSummary, the
+/// recovery gate, …) is actor-isolated, retiring the class-era races between the poll task,
+/// the summary-fetch tasks and the public API. The protocol's synchronous members are
+/// `nonisolated` and touch only immutable lets (the thread-safe Combine subjects, the DI
+/// handles) — except `stop()`, which registers its teardown in a lock-guarded slot so an
+/// immediately-following `start()` can still await it (the SDK-1 ordering contract).
+public actor SlipstreamSynchronizer: Synchronizer {
     // ── Alias ──────────────────────────────────────────────────────────────────
-    public var alias: ZcashSynchronizerAlias { initializer.alias }
+    public nonisolated var alias: ZcashSynchronizerAlias { initializer.alias }
 
     // ── Sync engine ────────────────────────────────────────────────────────────
     private let engine: SlipstreamEngine
 
     // ── Shared infrastructure ──────────────────────────────────────────────────
-    // swiftlint:disable:next strict_fileprivate
-    fileprivate let initializer: Initializer
+    // `private` reaches the same-file private extension (Swift 4+ file-scope rule).
+    private let initializer: Initializer
     private let transactionRepository: TransactionRepository
     private let transactionEncoder: TransactionEncoder
     private let broadcasterStorage: Broadcaster
@@ -48,16 +55,16 @@ public final class SlipstreamSynchronizer: Synchronizer {
     private let eventSubject = PassthroughSubject<SynchronizerEvent, Never>()
     private let exchangeRateSubject = CurrentValueSubject<FiatCurrencyResult?, Never>(nil)
 
-    // ── Public read-only state ─────────────────────────────────────────────────
-    public var latestState: SynchronizerState { stateSubject.value }
+    // ── Public read-only state (nonisolated: subjects are thread-safe lets) ────
+    public nonisolated var latestState: SynchronizerState { stateSubject.value }
     // TODO: [#1755] never updated (engine has no connection-state callback yet; P5).
-    public var connectionState: ConnectionState = .idle
-    public var stateStream: AnyPublisher<SynchronizerState, Never> { stateSubject.eraseToAnyPublisher() }
-    public var eventStream: AnyPublisher<SynchronizerEvent, Never> { eventSubject.eraseToAnyPublisher() }
-    public var exchangeRateUSDStream: AnyPublisher<FiatCurrencyResult?, Never> { exchangeRateSubject.eraseToAnyPublisher() }
+    public nonisolated var connectionState: ConnectionState { .idle }
+    public nonisolated var stateStream: AnyPublisher<SynchronizerState, Never> { stateSubject.eraseToAnyPublisher() }
+    public nonisolated var eventStream: AnyPublisher<SynchronizerEvent, Never> { eventSubject.eraseToAnyPublisher() }
+    public nonisolated var exchangeRateUSDStream: AnyPublisher<FiatCurrencyResult?, Never> { exchangeRateSubject.eraseToAnyPublisher() }
 
     // ── Broadcaster (Synchronizer protocol requirement) ────────────────────────
-    public var broadcaster: Broadcaster { broadcasterStorage }
+    public nonisolated var broadcaster: Broadcaster { broadcasterStorage }
 
     // ── Endpoint (mutable for switchTo) ───────────────────────────────────────
     // Tracks the endpoint currently in use.  `engine.reopen(server:network:)` uses
@@ -114,8 +121,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // `isSyncStalled` (+PureHelpers.swift). State is `internal` (not private) so
     // the extension file can reach it.
     var watchdogStallLogged = false
-    /// Logger accessor for same-class extensions in other files (`initializer` is
-    /// fileprivate; the StallWatchdog extension needs the injected logger).
+    /// Logger accessor for same-type extensions in other files (`initializer` is
+    /// private; the StallWatchdog extension needs the injected logger).
     var watchdogLogger: Logger { initializer.logger }
     /// Stall window before the watchdog fires: 120 s with zero counter movement
     /// while Syncing. The slowest legitimate counter gap observed in the field is
@@ -163,9 +170,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
     /// completion). The query is a cheap SUM over `v_transactions`; the value only moves on a real reconcile,
     /// so the display does not churn. Cleared on wallet reset (alongside `cachedSummary`).
     private var lastLoggedRecoveryTotal: Int64?
-    // [audit SDK-1] The in-flight detached `engine.stop()` from `stop()`; awaited at the top of
-    // `start()` so a rapid stop→start can't have the stop land after (and kill) the new pass.
-    private var pendingStopTask: Task<Void, Never>?
+    // [audit SDK-1 + SDK-2] The pending `stop()` teardown, registered SYNCHRONOUSLY from the
+    // nonisolated `stop()` (an actor's nonisolated members can't write actor state) and awaited
+    // at the top of `start()` so a rapid stop→start can't have the stop land after (and kill)
+    // the new pass. A plain `let` of a Sendable lock-guarded slot — reachable from both worlds.
+    private let pendingStop = PendingStopSlot()
     /// [#1755] Mirrors the wallet's deep-recovery state. Seeded from the persisted summary at
     /// prepare()/start(); ENGINE-OWNED during a run (tickPoll adopts `snap.isRecovering`, which embeds
     /// the terminal fail-safe latch — Done/Error force it 0). Drives the "Restoring"
@@ -296,11 +305,10 @@ public final class SlipstreamSynchronizer: Synchronizer {
         guard latestState.internalSyncStatus.isPrepared else {
             throw ZcashError.synchronizerNotPrepared
         }
-        // [audit SDK-1] A `stop()` detaches its `engine.stop()` into a Task; if one is still
-        // in flight, let it land BEFORE this run's `engine.start()` so the actor can't order
-        // the old stop after the new start (which would abort the fresh pass).
-        await pendingStopTask?.value
-        pendingStopTask = nil
+        // [audit SDK-1] A `stop()` registers its (chained) teardown in `pendingStop`; let the
+        // whole chain land BEFORE this run's `engine.start()` so the engine actor can't order
+        // an old stop after the new start (which would abort the fresh pass).
+        await pendingStop.take()?.value
         let birthday = BlockHeight(initializer.walletBirthday)
         // Parity with SDKSynchronizer.start (SDKSynchronizer.swift:198/204): re-enables
         // `SDKFlags.chainTipUpdated` when the SDK was stopped less than 120 s ago, so a
@@ -351,21 +359,22 @@ public final class SlipstreamSynchronizer: Synchronizer {
     // ── stop ───────────────────────────────────────────────────────────────────
 
     /// Stops the in-flight sync.
-    /// Per plan binding note C8: engine.stop() is an actor method; the synchronous
-    /// protocol method wraps it in `Task {}`.
-    public func stop() {
-        // Parity with SDKSynchronizer.stop (SDKSynchronizer.swift:244): reset
-        // `SDKFlags.chainTipUpdated` so spendable balances are re-masked until the next
-        // pass refreshes the wallet DB chain tip ([#1591] stale-tip protection).
-        let sdkFlags = initializer.container.resolve(SDKFlags.self)
-        // [audit SDK-1] Track the detached stop so a rapid follow-on `start()` can await it.
-        // Without this, the engine actor could order the NEW pass's `engine.start()` BEFORE this
-        // task's `engine.stop()` — the late stop then killed the freshly-started pass (recovered
-        // only at the next poll/start, but a needless dead window on quick background→foreground).
-        pendingStopTask = Task {
-            await sdkFlags.sdkStopped()
-            await engine.stop()
+    /// The protocol member is synchronous, so on the actor it is `nonisolated`: it registers
+    /// the isolated teardown in `pendingStop` SYNCHRONOUSLY (chained after any prior pending
+    /// stop) and returns. `start()` awaits the whole chain, preserving the [audit SDK-1]
+    /// ordering contract — the engine can never order an old stop after a new pass's start.
+    /// The observable state change (`.stopped` emission) lands moments later on the actor.
+    public nonisolated func stop() {
+        pendingStop.chain { previous in
+            Task {
+                await previous?.value
+                await self.stopImpl()
+            }
         }
+    }
+
+    /// The actor-isolated body of `stop()`.
+    private func stopImpl() async {
         chainTipMarkedThisRun = false
         isRunning = false
         stopPolling()
@@ -373,9 +382,9 @@ public final class SlipstreamSynchronizer: Synchronizer {
         // unprepared synchronizer (Zodl calls it unconditionally on didEnterBackground,
         // RootInitialization.swift:75-76) must NOT forge isPrepared by moving
         // .unprepared → .stopped — that springs the start-before-prepare wart on the
-        // next foreground start(). The sdkStopped()/engine.stop() side effects above
+        // next foreground start(). The sdkStopped()/engine.stop() side effects below
         // stay unconditional (engine.stop() on a nil handle is a no-op). Mirrors
-        // SDKSynchronizer.stop ordering (sdkStopped THEN status guard, SDKSynchronizer.swift:243-249).
+        // SDKSynchronizer.stop ordering (SDKSynchronizer.swift:243-249).
         if latestState.internalSyncStatus.isPrepared {
             stateSubject.send(SynchronizerState(
                 syncSessionID: latestState.syncSessionID,
@@ -384,6 +393,12 @@ public final class SlipstreamSynchronizer: Synchronizer {
                 latestBlockHeight: latestState.latestBlockHeight
             ))
         }
+        // Parity with SDKSynchronizer.stop (SDKSynchronizer.swift:244): reset
+        // `SDKFlags.chainTipUpdated` so spendable balances are re-masked until the next
+        // pass refreshes the wallet DB chain tip ([#1591] stale-tip protection).
+        let sdkFlags = initializer.container.resolve(SDKFlags.self)
+        await sdkFlags.sdkStopped()
+        await engine.stop()
     }
 
     // ── Polling (D8) ──────────────────────────────────────────────────────────
@@ -392,7 +407,10 @@ public final class SlipstreamSynchronizer: Synchronizer {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.tickPoll()
+                // End the loop when the synchronizer is gone — without this the orphaned
+                // task would keep sleeping/looping forever after dealloc.
+                guard let self else { return }
+                await self.tickPoll()
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
@@ -714,11 +732,21 @@ public final class SlipstreamSynchronizer: Synchronizer {
             }
             // Only update state if the task was not cancelled (e.g. by Done or wipe).
             guard !Task.isCancelled else { return }
-            self?.cachedSummary = result ?? self?.cachedSummary
-            // [Phase E] Summary fetches refresh BALANCES only — the recovery gate is engine-owned
-            // (tickPoll adopts `snap.isRecovering`); a stale summary must never write the gate.
-            self?.lastSummaryFinishDate = Date()
-            self?.summaryTask = nil
+            await self?.applySummaryFetchResult(result, boundary: false)
+        }
+    }
+
+    /// [Phase E / audit SDK-2] Actor-isolated application of a finished summary fetch — the
+    /// fetch tasks hop here instead of writing actor state from their own context. Summary
+    /// fetches refresh BALANCES only: the recovery gate is engine-owned (tickPoll adopts
+    /// `snap.isRecovering`); a stale summary must never write the gate.
+    private func applySummaryFetchResult(_ result: WalletSummary?, boundary: Bool) {
+        cachedSummary = result ?? cachedSummary
+        lastSummaryFinishDate = Date()
+        if boundary {
+            boundarySummaryTask = nil
+        } else {
+            summaryTask = nil
         }
     }
 
@@ -745,10 +773,8 @@ public final class SlipstreamSynchronizer: Synchronizer {
                 try await rustBackend.getWalletSummary()
             }
             guard !Task.isCancelled else { return }
-            // Update the shared cache so the next tick emits fresh balances.
-            self?.cachedSummary = result ?? self?.cachedSummary
-            self?.lastSummaryFinishDate = Date()
-            self?.boundarySummaryTask = nil
+            // Update the shared cache (actor hop) so the next tick emits fresh balances.
+            await self?.applySummaryFetchResult(result, boundary: true)
         }
     }
 
@@ -1015,7 +1041,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
         get async { (try? await allReceivedTransactions()) ?? [] }
     }
 
-    public func paginatedTransactions(of kind: TransactionKind = .all) -> PaginatedTransactionRepository {
+    public nonisolated func paginatedTransactions(of kind: TransactionKind = .all) -> PaginatedTransactionRepository {
         PagedTransactionRepositoryBuilder.build(initializer: initializer, kind: kind)
     }
 
@@ -1159,7 +1185,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
     // ── Exchange rate ─────────────────────────────────────────────────────────
 
-    public func refreshExchangeRateUSD() {
+    public nonisolated func refreshExchangeRateUSD() {
         Task {
             let sdkFlags = initializer.container.resolve(SDKFlags.self)
             guard await sdkFlags.exchangeRateEnabled else { return }
@@ -1187,51 +1213,56 @@ public final class SlipstreamSynchronizer: Synchronizer {
         try await initializer.rustBackend.truncateToChainState(chainState: checkpoint.treeState())
     }
 
-    public func rewind(_ policy: RewindPolicy) -> AnyPublisher<Void, Error> {
+    public nonisolated func rewind(_ policy: RewindPolicy) -> AnyPublisher<Void, Error> {
         let subject = PassthroughSubject<Void, Error>()
         Task {
-            let height: BlockHeight?
-            switch policy {
-            case .quick:
-                height = nil
-            case .birthday:
-                height = initializer.walletBirthday
-            case .height(let rewindHeight):
-                height = rewindHeight
-            case .transaction(let transaction):
-                guard let txHeight = transaction.anchor(network: initializer.network) else {
-                    subject.send(completion: .failure(ZcashError.synchronizerRewindUnknownArchorHeight))
-                    return
-                }
-                height = txHeight
-            }
-
-            do {
-                let checkpointSource = initializer.container.resolve(CheckpointSource.self)
-                if let height {
-                    let checkpoint = checkpointSource.birthday(for: height)
-                    try await initializer.rustBackend.truncateToChainState(chainState: checkpoint.treeState())
-                } else {
-                    // Quick rewind: truncate to nearest checkpoint at the current latestBlockHeight.
-                    let currentHeight = latestState.latestBlockHeight
-                    let checkpoint = checkpointSource.birthday(for: currentHeight)
-                    try await initializer.rustBackend.truncateToChainState(chainState: checkpoint.treeState())
-                }
-                // [audit SDK-5] Mirror `wipe()`'s cache resets: after a truncate the cached summary
-                // (and the recovery-log state derived from it) describes PRE-rewind data —
-                // serving it would show stale balances until the next pass. Engine COUNTERS are NOT
-                // reset here on purpose: the handle survives a rewind, so `enhancedTxs` /
-                // `rangesCompleted` stay monotonic and the SDK mirrors must keep tracking them
-                // (mirrors reset only where the handle dies: `wipe()` / `switchTo()`).
-                cachedSummary = nil
-                lastSummaryFinishDate = nil
-                lastLoggedRecoveryTotal = nil
-                subject.send(completion: .finished)
-            } catch {
-                subject.send(completion: .failure(error))
-            }
+            await self.rewindImpl(policy, subject)
         }
         return subject.eraseToAnyPublisher()
+    }
+
+    /// The actor-isolated body of `rewind(_:)`.
+    private func rewindImpl(_ policy: RewindPolicy, _ subject: PassthroughSubject<Void, Error>) async {
+        let height: BlockHeight?
+        switch policy {
+        case .quick:
+            height = nil
+        case .birthday:
+            height = initializer.walletBirthday
+        case .height(let rewindHeight):
+            height = rewindHeight
+        case .transaction(let transaction):
+            guard let txHeight = transaction.anchor(network: initializer.network) else {
+                subject.send(completion: .failure(ZcashError.synchronizerRewindUnknownArchorHeight))
+                return
+            }
+            height = txHeight
+        }
+
+        do {
+            let checkpointSource = initializer.container.resolve(CheckpointSource.self)
+            if let height {
+                let checkpoint = checkpointSource.birthday(for: height)
+                try await initializer.rustBackend.truncateToChainState(chainState: checkpoint.treeState())
+            } else {
+                // Quick rewind: truncate to nearest checkpoint at the current latestBlockHeight.
+                let currentHeight = latestState.latestBlockHeight
+                let checkpoint = checkpointSource.birthday(for: currentHeight)
+                try await initializer.rustBackend.truncateToChainState(chainState: checkpoint.treeState())
+            }
+            // [audit SDK-5] Mirror `wipe()`'s cache resets: after a truncate the cached summary
+            // (and the recovery-log state derived from it) describes PRE-rewind data —
+            // serving it would show stale balances until the next pass. Engine COUNTERS are NOT
+            // reset here on purpose: the handle survives a rewind, so `enhancedTxs` /
+            // `rangesCompleted` stay monotonic and the SDK mirrors must keep tracking them
+            // (mirrors reset only where the handle dies: `wipe()` / `switchTo()`).
+            cachedSummary = nil
+            lastSummaryFinishDate = nil
+            lastLoggedRecoveryTotal = nil
+            subject.send(completion: .finished)
+        } catch {
+            subject.send(completion: .failure(error))
+        }
     }
 
     /// Wipes all wallet data managed by this synchronizer.
@@ -1248,80 +1279,84 @@ public final class SlipstreamSynchronizer: Synchronizer {
     ///
     /// The publisher uses a `PassthroughSubject` driven from a `Task(priority: .high)`,
     /// mirroring the `SDKSynchronizer.wipe()` idiom.
-    public func wipe() -> AnyPublisher<Void, Error> {
+    public nonisolated func wipe() -> AnyPublisher<Void, Error> {
         let subject = PassthroughSubject<Void, Error>()
         Task(priority: .high) { [weak self] in
             guard let self else {
                 subject.send(completion: .finished)
                 return
             }
-
-            // 1. Stop polling.
-            stopPolling()
-
-            // 2. Stop the in-flight sync (non-blocking cancel in Rust).
-            await engine.stop()
-
-            // 3. Free the engine handle (exact-once — close() guards against double-free).
-            await engine.close()
-
-            // 3a. Reset the per-handle enhanced-tx counter: the engine handle is being
-            //     destroyed, so the Rust-side monotonic counter resets on next open().
-            lastEnhancedCount = 0
-
-            // 3a-F2. Reset the ranges-completed counter: the engine handle is being destroyed.
-            lastRangesCompleted = 0
-
-            // 3a-chainTip. Reset the chain-tip marking state: the handle (and its
-            // snapshot tip) is destroyed; the next start() re-evaluates from scratch.
-            chainTipMarkedThisRun = false
-            chainTipAtRunStart = 0
-
-            // 3a-B4. Re-arm the stall watchdog: the handle is destroyed.
-            resetStallWatchdog()
-
-            // 3b-F1. Reset the cached wallet summary: the DB is being wiped, so the
-            //        cached values would be stale for any subsequent prepare()/start().
-            cachedSummary = nil
-            lastSummaryFinishDate = nil
-            lastLoggedRecoveryTotal = nil
-
-            // 3b. Close Swift-side DB connections before deleting files — mirrors
-            //     SDKSynchronizer.wipe() prewipe closure (SDKSynchronizer.swift:759-760).
-            transactionEncoder.closeDBConnection()
-            transactionRepository.closeDBConnection()
-
-            do {
-                let fm = FileManager.default
-
-                // 4. Remove data.db and its SQLite WAL/SHM siblings.
-                // E.g. /path/data.db  → /path/data.db-wal, /path/data.db-shm.
-                let dataDb = initializer.dataDbURL
-                for suffix in ["", "-wal", "-shm"] {
-                    let targetURL = suffix.isEmpty
-                        ? dataDb
-                        : URL(fileURLWithPath: dataDb.path + suffix)
-                    if fm.fileExists(atPath: targetURL.path) {
-                        try fm.removeItem(at: targetURL)
-                    }
-                }
-
-                // 5. Remove the fsBlockDbRoot directory tree (parity with old SDK wipe).
-                let fsRoot = initializer.fsBlockDbRoot
-                if fm.fileExists(atPath: fsRoot.path) {
-                    try fm.removeItem(at: fsRoot)
-                }
-
-                // 6. Reset state to unprepared/zero.
-                stateSubject.send(.zero)
-
-                // 7. Signal completion.
-                subject.send(completion: .finished)
-            } catch {
-                subject.send(completion: .failure(error))
-            }
+            await self.wipeImpl(subject)
         }
         return subject.eraseToAnyPublisher()
+    }
+
+    /// The actor-isolated body of `wipe()`.
+    private func wipeImpl(_ subject: PassthroughSubject<Void, Error>) async {
+        // 1. Stop polling.
+        stopPolling()
+
+        // 2. Stop the in-flight sync (non-blocking cancel in Rust).
+        await engine.stop()
+
+        // 3. Free the engine handle (exact-once — close() guards against double-free).
+        await engine.close()
+
+        // 3a. Reset the per-handle enhanced-tx counter: the engine handle is being
+        //     destroyed, so the Rust-side monotonic counter resets on next open().
+        lastEnhancedCount = 0
+
+        // 3a-F2. Reset the ranges-completed counter: the engine handle is being destroyed.
+        lastRangesCompleted = 0
+
+        // 3a-chainTip. Reset the chain-tip marking state: the handle (and its
+        // snapshot tip) is destroyed; the next start() re-evaluates from scratch.
+        chainTipMarkedThisRun = false
+        chainTipAtRunStart = 0
+
+        // 3a-B4. Re-arm the stall watchdog: the handle is destroyed.
+        resetStallWatchdog()
+
+        // 3b-F1. Reset the cached wallet summary: the DB is being wiped, so the
+        //        cached values would be stale for any subsequent prepare()/start().
+        cachedSummary = nil
+        lastSummaryFinishDate = nil
+        lastLoggedRecoveryTotal = nil
+
+        // 3b. Close Swift-side DB connections before deleting files — mirrors
+        //     SDKSynchronizer.wipe() prewipe closure (SDKSynchronizer.swift:759-760).
+        transactionEncoder.closeDBConnection()
+        transactionRepository.closeDBConnection()
+
+        do {
+            let fileManager = FileManager.default
+
+            // 4. Remove data.db and its SQLite WAL/SHM siblings.
+            // E.g. /path/data.db  → /path/data.db-wal, /path/data.db-shm.
+            let dataDb = initializer.dataDbURL
+            for suffix in ["", "-wal", "-shm"] {
+                let targetURL = suffix.isEmpty
+                    ? dataDb
+                    : URL(fileURLWithPath: dataDb.path + suffix)
+                if fileManager.fileExists(atPath: targetURL.path) {
+                    try fileManager.removeItem(at: targetURL)
+                }
+            }
+
+            // 5. Remove the fsBlockDbRoot directory tree (parity with old SDK wipe).
+            let fsRoot = initializer.fsBlockDbRoot
+            if fileManager.fileExists(atPath: fsRoot.path) {
+                try fileManager.removeItem(at: fsRoot)
+            }
+
+            // 6. Reset state to unprepared/zero.
+            stateSubject.send(.zero)
+
+            // 7. Signal completion.
+            subject.send(completion: .finished)
+        } catch {
+            subject.send(completion: .failure(error))
+        }
     }
 
     // ── Server switch ─────────────────────────────────────────────────────────
@@ -1439,11 +1474,11 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
     // ── Birthday / timestamp ──────────────────────────────────────────────────
 
-    public func estimateBirthdayHeight(for date: Date) -> BlockHeight {
+    public nonisolated func estimateBirthdayHeight(for date: Date) -> BlockHeight {
         initializer.container.resolve(CheckpointSource.self).estimateBirthdayHeight(for: date)
     }
 
-    public func estimateTimestamp(for height: BlockHeight) -> TimeInterval? {
+    public nonisolated func estimateTimestamp(for height: BlockHeight) -> TimeInterval? {
         initializer.container.resolve(CheckpointSource.self).estimateTimestamp(for: height)
     }
 
@@ -1538,7 +1573,7 @@ public final class SlipstreamSynchronizer: Synchronizer {
 
     // ── Database debug ────────────────────────────────────────────────────────
 
-    public func debugDatabase(sql: String) -> String {
+    public nonisolated func debugDatabase(sql: String) -> String {
         transactionRepository.debugDatabase(sql: sql)
     }
 }

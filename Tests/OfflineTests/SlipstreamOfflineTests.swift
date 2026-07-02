@@ -371,9 +371,13 @@ class SlipstreamOfflineTests: ZcashTestCase {
     /// unconditionally on `didEnterBackground` (RootInitialization.swift:75-76); if a
     /// background hop during `prepare()` forged `isPrepared`, the next foreground
     /// `start()` would pass the guard above and spring the wart again.
-    func testStopBeforePrepareKeepsUnprepared() throws {
+    func testStopBeforePrepareKeepsUnprepared() async throws {
         let sync = SlipstreamSynchronizer(initializer: try makeInitializer())
         sync.stop()
+        // [Phase E] stop() is nonisolated on the actor: it registers the teardown and returns;
+        // the state effects land on the actor moments later. Give the isolated stopImpl time
+        // to run so the assertion observes the POST-stop state (the guard under test).
+        try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertFalse(sync.latestState.internalSyncStatus.isPrepared,
                        "stop() before prepare() must leave the synchronizer unprepared")
         if case .unprepared = sync.latestState.internalSyncStatus {
