@@ -78,6 +78,21 @@ impl WalletSession {
         Ok(Self { network, db, db_path: db_path.to_path_buf() })
     }
 
+    /// [API v2 §4.4] The wallet's recovery ceiling: MAX(`accounts.recover_until_height`), or
+    /// `None` when no account has one (new wallets / fully non-restore imports). The scheduler
+    /// compares suggested ranges against this once per suggest round to drive the snapshot's
+    /// `is_recovering`. Read through a short side connection (same pattern as the reconcile view;
+    /// WAL permits it) so it needs no upstream API surface.
+    pub fn max_recover_until(&self) -> Result<Option<u64>, SlipstreamError> {
+        let conn = Connection::open(&self.db_path).map_err(|e| wallet_err("recover_until open", e))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| wallet_err("recover_until busy_timeout", e))?;
+        let max: Option<i64> = conn
+            .query_row("SELECT MAX(recover_until_height) FROM accounts", [], |row| row.get(0))
+            .map_err(|e| wallet_err("recover_until query", e))?;
+        Ok(max.and_then(|v| u64::try_from(v).ok()))
+    }
+
     /// Keyless import: UFVK string + birthday treestate (server-provided at
     /// birthday-1). No-op if any account already exists.
     pub fn ensure_account(

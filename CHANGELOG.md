@@ -7,6 +7,25 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 # Unreleased
 
 ## Added
+- **Slipstream engine API v2** (`docs/slipstream/plans/ENGINE_API_V2.md`) — the engine now exports
+  the wallet semantics every host previously had to re-derive:
+  - Snapshot fields `is_recovering` (engine-computed from suggested ranges vs the wallet's
+    recover-until height, with the fail-safe latch built in: a terminally-failed or completed pass
+    can never wedge a "Restoring" UI), `progress_permille` (blessed 0–1000 progress,
+    session-monotonic — never regresses while the handle lives; completion forces 1000) and
+    `stalled_seconds` (seconds without forward progress while syncing).
+  - The event ring no longer silently drops critical events on overflow: SyncDone / SyncError /
+    FoundTransactions survive (oldest started/progress events are evicted first) and every
+    eviction is logged.
+  - `slipstream_v_recovery_balance` — an engine-owned view giving any host the never-over-showing
+    restore balance (Σ of final, reconciled per-account transaction deltas) with one SELECT.
+  - `zcashlc_slipstream_notify_tx_change` — the host pokes after storing a just-broadcast
+    transaction; the engine emits FoundTransactions through its normal event channel.
+  - `zcashlc_slipstream_wallet_summary` — a unified, phase-resolving summary: the upstream wallet
+    summary when synced; per-account recovery balances (which never over-show) while restoring.
+    One call, correct at every phase.
+  - `slipstream-cli watch` — a live wallet console rendered purely from the above (the crate's
+    "second host" acceptance proof; also repaired the CLI build, broken since the pass-lock change).
 - `ZcashError.initializerSeedMismatch` (`ZINIT0006`): `prepare(with:walletBirthday:)` now validates the
   supplied seed against the wallet database's existing seed-derived account(s) and throws instead of
   silently opening the old wallet. Previously, restoring a *different* seed over an existing `data.db`

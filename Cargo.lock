@@ -4763,10 +4763,14 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "rand 0.8.6",
+ "rusqlite",
  "slipstream-core",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zcash_client_backend",
+ "zcash_client_sqlite",
+ "zcash_protocol",
 ]
 
 [[package]]

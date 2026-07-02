@@ -19,7 +19,9 @@ use crate::connector::TorConn;
 use crate::engine::{SyncOutcome, probe_tip, should_resync, sync_once, wall_clock_utc};
 use crate::error::SlipstreamError;
 use crate::events::Progress;
-use crate::ffi_handle::{EVENT_RING_CAP, FfiSlipstreamEvent, SyncState};
+use crate::ffi_handle::{FfiSlipstreamEvent, SyncState};
+#[cfg(test)]
+use crate::ffi_handle::EVENT_RING_CAP;
 
 /// Per-session configuration: the per-pass engine config + optional account import + optional Tor.
 #[derive(Clone, Debug)]
@@ -171,14 +173,13 @@ impl SessionReporter {
         *self.state.lock().unwrap_or_else(|p| p.into_inner()) = s;
     }
 
-    /// Push one event onto the ring, dropping the oldest when full (cap-then-push at
-    /// `EVENT_RING_CAP` — the exact pre-lift `push_ring_event` semantics).
+    /// Push one event onto the bounded ring. v2 ([audit ENG-4]): overflow evicts the oldest
+    /// DROPPABLE event (started/progress) first — done/error/found-transactions survive — and
+    /// every eviction is logged. Policy lives in `ffi_handle::push_event_bounded` (shared with
+    /// the panic supervisor's push).
     pub fn push_event(&self, e: FfiSlipstreamEvent) {
         let mut ring = self.events.lock().unwrap_or_else(|p| p.into_inner());
-        if ring.len() >= EVENT_RING_CAP {
-            ring.remove(0);
-        }
-        ring.push(e);
+        crate::ffi_handle::push_event_bounded(&mut ring, e);
     }
 }
 

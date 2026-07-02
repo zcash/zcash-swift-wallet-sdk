@@ -86,6 +86,29 @@ enum Cmd {
         #[arg(long, default_value_t = false)]
         follow: bool,
     },
+    /// [API v2 Phase C acceptance] Live wallet console rendered ONLY from the v2 contract:
+    /// the derived engine snapshot (state/permille/recovering/stalled), the engine-owned SQL
+    /// views (`slipstream_v_recovery_balance`, `slipstream_v_tx_reconciled`), and the two
+    /// DOCUMENTED one-line host rules (balance = recovering ? view : upstream summary;
+    /// visible = reconciled OR NOT recovering). ZERO wallet math lives in this command — if
+    /// it ever needs any, the engine API is wrong and must grow instead (ENGINE_API_V2.md §8).
+    Watch {
+        /// lightwalletd URL, e.g. https://zec.rocks:443
+        #[arg(long)]
+        server: String,
+        /// Wallet directory (data.db lives inside).
+        #[arg(long)]
+        wallet_dir: std::path::PathBuf,
+        /// UFVK to import on first run (fresh restore demo).
+        #[arg(long)]
+        ufvk: Option<String>,
+        /// Birthday height for --ufvk import.
+        #[arg(long)]
+        birthday: Option<u64>,
+        /// Render interval in milliseconds (min 200).
+        #[arg(long, default_value_t = 1000)]
+        interval_ms: u64,
+    },
     /// Golden-oracle run: sync the same UFVK/birthday twice into two wallet dirs
     /// (A = upstream persistence, B = upstream until T6.3 lands --sparse-b),
     /// then semantically diff the resulting data.db files. Exit 0 = identical.
@@ -213,6 +236,193 @@ fn cmd_fetch(server: String, range: String, streams: usize, chunk: u32, baseline
 ///
 /// Returns `Ok(Some((ufvk_str, birthday)))` if both are present, `Ok(None)` if neither,
 /// and `Err(String)` if the combination is invalid.
+// ── `watch` (API v2 Phase C acceptance) ────────────────────────────────────────────────────
+
+fn event_tag_name(tag: u8) -> &'static str {
+    match tag {
+        1 => "SyncStarted",
+        2 => "SyncProgress",
+        3 => "SyncDone",
+        4 => "SyncError",
+        5 => "FoundTransactions",
+        _ => "Unknown",
+    }
+}
+
+/// Display formatting only (integer split — no wallet math).
+fn zec_display(zat: i64) -> String {
+    let sign = if zat < 0 { "-" } else { "" };
+    let a = zat.unsigned_abs();
+    format!("{sign}{}.{:08}", a / 100_000_000, a % 100_000_000)
+}
+
+fn uuid_prefix(bytes: &[u8]) -> String {
+    bytes.iter().take(4).map(|b| format!("{b:02x}")).collect()
+}
+
+/// The Phase C acceptance harness: renders wallet state ONLY from the v2 contract.
+/// If this function ever needs wallet math, the engine API is wrong (ENGINE_API_V2.md §8).
+fn cmd_watch(
+    server: String,
+    wallet_dir: std::path::PathBuf,
+    ufvk: Option<String>,
+    birthday: Option<u64>,
+    interval_ms: u64,
+) {
+    let endpoint = parse_server(&server).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2)
+    });
+    let ufvk_arg = validate_sync_args(ufvk.as_deref(), birthday).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(2)
+    });
+    let db_path = wallet_dir.join("data.db");
+    let cfg = slipstream_core::EngineConfig::new(
+        slipstream_core::Network::MainNetwork,
+        db_path.clone(),
+        endpoint,
+    );
+
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    rt.block_on(async move {
+        let reporter = slipstream_core::SessionReporter {
+            progress: std::sync::Arc::new(slipstream_core::Progress::default()),
+            state: std::sync::Arc::new(std::sync::Mutex::new(
+                slipstream_core::ffi_handle::SyncState::Idle,
+            )),
+            events: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let scfg = slipstream_core::SessionConfig {
+            engine: cfg,
+            account: ufvk_arg.map(|(s, h)| (s.to_string(), h)),
+            tor: None,
+        };
+        let session = tokio::spawn(slipstream_core::session::run_session(
+            scfg,
+            reporter.clone(),
+            std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        ));
+
+        println!("watch: rendering from the v2 contract only (derived snapshot + engine views). Ctrl-C to stop.");
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_millis(interval_ms.max(200)));
+        loop {
+            interval.tick().await;
+
+            // v2 channel 1: the derived snapshot — the SAME derivation the FFI serves
+            // (fail-safe recovery latch, monotonic permille, stall clock included).
+            let state = *reporter.state.lock().unwrap_or_else(|p| p.into_inner());
+            let snap = slipstream_core::ffi_handle::derive_snapshot(&reporter.progress, state);
+
+            // Edge signals: drain + print.
+            let drained: Vec<slipstream_core::ffi_handle::FfiSlipstreamEvent> = {
+                let mut ring = reporter.events.lock().unwrap_or_else(|p| p.into_inner());
+                std::mem::take(&mut *ring)
+            };
+            for e in &drained {
+                println!("event: {} (value {})", event_tag_name(e.tag), e.value);
+            }
+
+            // v2 channel 2 — the DOCUMENTED host rules, verbatim:
+            //   balance = is_recovering ? SELECT slipstream_v_recovery_balance : upstream summary
+            let balances: Vec<(String, i64, &'static str)> = if snap.is_recovering == 1 {
+                let mut out = Vec::new();
+                if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+                    if let Ok(mut stmt) = conn
+                        .prepare("SELECT account_uuid, balance_zat FROM slipstream_v_recovery_balance")
+                    {
+                        if let Ok(rows) = stmt.query_map([], |r| {
+                            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?))
+                        }) {
+                            for row in rows.flatten() {
+                                out.push((uuid_prefix(&row.0), row.1, "Σ reconciled (recovering)"));
+                            }
+                        }
+                    }
+                }
+                out
+            } else {
+                use zcash_client_backend::data_api::WalletRead;
+                match zcash_client_sqlite::WalletDb::for_path(
+                    &db_path,
+                    zcash_protocol::consensus::Network::MainNetwork,
+                    zcash_client_sqlite::util::SystemClock,
+                    rand::rngs::OsRng,
+                ) {
+                    Ok(db) => match db.get_wallet_summary(
+                        zcash_client_backend::data_api::wallet::ConfirmationsPolicy::default(),
+                    ) {
+                        Ok(Some(summary)) => summary
+                            .account_balances()
+                            .iter()
+                            .map(|(uuid, b)| {
+                                (
+                                    uuid_prefix(uuid.expose_uuid().as_bytes()),
+                                    i64::try_from(u64::from(b.total())).unwrap_or(i64::MAX),
+                                    "upstream summary",
+                                )
+                            })
+                            .collect(),
+                        _ => Vec::new(),
+                    },
+                    Err(_) => Vec::new(),
+                }
+            };
+
+            //   visible = reconciled OR NOT is_recovering (mined txs only)
+            let visible: i64 = rusqlite::Connection::open(&db_path)
+                .ok()
+                .and_then(|conn| {
+                    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+                    let sql = if snap.is_recovering == 1 {
+                        "SELECT COUNT(*) FROM transactions t WHERE t.mined_height IS NOT NULL \
+                         AND NOT EXISTS (SELECT 1 FROM slipstream_v_tx_reconciled r \
+                                         WHERE r.txid = t.txid AND r.reconciled = 0)"
+                    } else {
+                        "SELECT COUNT(*) FROM transactions t WHERE t.mined_height IS NOT NULL"
+                    };
+                    conn.query_row(sql, [], |r| r.get(0)).ok()
+                })
+                .unwrap_or(-1);
+
+            let state_name = match snap.state {
+                0 => "idle",
+                1 => "syncing",
+                2 => "error",
+                3 => "done",
+                _ => "?",
+            };
+            let bal_str = if balances.is_empty() {
+                "balance: (none yet)".to_string()
+            } else {
+                balances
+                    .iter()
+                    .map(|(u, z, src)| format!("{u}: {} ZEC [{src}]", zec_display(*z)))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
+            println!(
+                "[{state_name}] {}‰ | recovering: {} | stalled: {}s | scanned {}/{} | tip {} | visible txs: {} | {}",
+                snap.progress_permille,
+                snap.is_recovering == 1,
+                snap.stalled_seconds,
+                snap.scanned_blocks,
+                snap.pass_total_blocks,
+                snap.chain_tip,
+                visible,
+                bal_str
+            );
+
+            if session.is_finished() {
+                eprintln!("watch: session ended (non-transient initial error) — see logs above");
+                std::process::exit(1);
+            }
+        }
+    });
+}
+
 fn validate_sync_args(
     ufvk: Option<&str>,
     birthday: Option<u64>,
@@ -330,7 +540,12 @@ fn cmd_sync(
                 events: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             };
             println!("follow: running autonomous engine session (Ctrl-C to stop) ...");
-            slipstream_core::session::run_session(scfg, reporter).await;
+            slipstream_core::session::run_session(
+                scfg,
+                reporter,
+                std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            )
+            .await;
             ticker.abort();
             eprintln!("sync session ended: non-transient initial error (see logs above)");
             std::process::exit(1);
@@ -495,6 +710,9 @@ fn main() {
         }
         Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow } => {
             cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow);
+        }
+        Cmd::Watch { server, wallet_dir, ufvk, birthday, interval_ms } => {
+            cmd_watch(server, wallet_dir, ufvk, birthday, interval_ms);
         }
         Cmd::Oracle { server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, gpu_subtree_b, persist_depth_b, streams, chunk } => {
             cmd_oracle(server, wallet_a, wallet_b, ufvk, birthday, sparse_b, write_behind_b, gpu_subtree_b, persist_depth_b, streams, chunk);

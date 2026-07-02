@@ -81,20 +81,42 @@ SELECT t.txid AS txid,
        ) AS reconciled
 FROM transactions t";
 
-/// Create (idempotently) the reconciliation view on an already-migrated wallet
-/// database. Called once per [`crate::wallet_session::WalletSession::open`].
+/// [API v2 §4.2] Per-account as-recovered balance: Σ `account_balance_delta` over MINED
+/// transactions whose delta is FINAL (reconciled — no dangling shielded spend). This is the
+/// field-validated SDK query (`TransactionRepository.recoveryBalances()`, the "Direction B"
+/// fix of docs/slipstream/2026-06-30-balance-recovery-postmortem.md) moved down into the
+/// engine so EVERY host gets a never-over-showing restore balance by SELECTing one view.
+/// Guarantees (tested below): excludes a tx while its delta is transiently wrong (dangling
+/// spend), includes it the moment it links; never over-counts; consistent with the
+/// reconciled Activity list by construction. `v_transactions` is upstream's stable view
+/// (account_uuid, account_balance_delta, mined_height are the columns the shipped SDK
+/// query already depends on).
+pub const RECOVERY_BALANCE_VIEW_SQL: &str = "CREATE VIEW IF NOT EXISTS slipstream_v_recovery_balance AS
+SELECT vt.account_uuid AS account_uuid,
+       SUM(vt.account_balance_delta) AS balance_zat
+FROM v_transactions vt
+WHERE vt.mined_height IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM slipstream_v_tx_reconciled r
+                  WHERE r.txid = vt.txid AND r.reconciled = 0)
+GROUP BY vt.account_uuid";
+
+/// Create (idempotently) the slipstream read-side views on an already-migrated wallet
+/// database: the reconciliation primitive and, layered on it, the recovery balance
+/// ([API v2 §4.2]). Called once per [`crate::wallet_session::WalletSession::open`].
 pub fn create_reconcile_view(conn: &Connection) -> Result<(), SlipstreamError> {
     conn.execute_batch(RECONCILE_VIEW_SQL)
-        .map_err(|e| SlipstreamError::Wallet(format!("create reconcile view: {e}")))
+        .map_err(|e| SlipstreamError::Wallet(format!("create reconcile view: {e}")))?;
+    conn.execute_batch(RECOVERY_BALANCE_VIEW_SQL)
+        .map_err(|e| SlipstreamError::Wallet(format!("create recovery balance view: {e}")))
 }
 
 // NOTE: an earlier `slipstream_v_balance_overcount` view (subtract a per-account nf-based
 // over-count from the live balance during recovery) was removed — it was structurally
 // inert: during the recent-first gap the spend's block is unscanned, so its nullifier is
 // not yet in `nullifier_map`, so the view found nothing while the balance still read ~2×.
-// The recovery balance is now derived SDK-side as Σ `account_balance_delta` over the
-// RECONCILED transactions of `slipstream_v_tx_reconciled` (see the SDK
-// `TransactionRepository.recoveryBalances()` and docs/slipstream/2026-06-29-balance-recovery-rethink.md).
+// The working recovery balance (Σ reconciled deltas) was first shipped SDK-side and is now
+// engine-owned as `slipstream_v_recovery_balance` above (API v2 §4.2); the SDK's copy
+// retires in boundary-review Phase D.
 
 #[cfg(test)]
 mod tests {
@@ -238,5 +260,114 @@ mod tests {
         .expect("insert other nullifier_map");
 
         assert_eq!(reconciled(&conn, &ours), Some(1), "unrelated dangling spend must not taint our tx");
+    }
+
+    // ── [API v2 §4.2] recovery-balance view ─────────────────────────────────────────────
+
+    /// Hermetic stub DB: the minimal base tables the reconcile view reads, plus a STUB
+    /// `v_transactions` TABLE standing in for upstream's view (only the three columns the
+    /// recovery-balance view depends on). Real-schema CREATE-compatibility is covered
+    /// separately: `fixture()` opens a fully-migrated wallet DB, where `WalletSession::open`
+    /// now installs BOTH views over upstream's real `v_transactions` — every fixture-based
+    /// test would fail if the SQL didn't apply there.
+    fn stub_fixture() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE transactions (id_tx INTEGER PRIMARY KEY, txid BLOB, mined_height INTEGER, tx_index INTEGER, min_observed_height INTEGER);
+             CREATE TABLE tx_locator_map (block_height INTEGER, tx_index INTEGER, txid BLOB);
+             CREATE TABLE nullifier_map (spend_pool INTEGER, nf BLOB, block_height INTEGER, tx_index INTEGER);
+             CREATE TABLE sapling_received_notes (id INTEGER PRIMARY KEY, tx INTEGER, account_id INTEGER, nf BLOB);
+             CREATE TABLE orchard_received_notes (id INTEGER PRIMARY KEY, tx INTEGER, account_id INTEGER, nf BLOB);
+             CREATE TABLE v_transactions (txid BLOB, account_uuid BLOB, account_balance_delta INTEGER, mined_height INTEGER);",
+        )
+        .expect("stub schema");
+        create_reconcile_view(&conn).expect("create views");
+        conn
+    }
+
+    fn recovery_balance(conn: &Connection, account: &[u8]) -> Option<i64> {
+        conn.query_row(
+            "SELECT balance_zat FROM slipstream_v_recovery_balance WHERE account_uuid = ?1",
+            params![account],
+            |r| r.get(0),
+        )
+        .optional()
+        .expect("query recovery balance")
+    }
+
+    /// The postmortem replay (4→8→4 class): a mined receive counts immediately; a mined
+    /// spend with a DANGLING nullifier is excluded (its delta is transiently wrong) — the
+    /// balance never over-shows — and is included the moment the spent note links.
+    #[test]
+    fn recovery_balance_excludes_dangling_then_includes_linked() {
+        let conn = stub_fixture();
+        let acct = vec![0xAAu8; 16];
+        let receive_tx = vec![0x01u8; 32];
+        let spend_tx = vec![0x02u8; 32];
+        let nf = vec![0xBBu8; 32];
+
+        // Mined receive: +400, immediately reconciled (no spends).
+        conn.execute(
+            "INSERT INTO v_transactions VALUES (?1, ?2, 400, 100)",
+            params![receive_tx, acct],
+        )
+        .expect("receive row");
+        conn.execute(
+            "INSERT INTO transactions (id_tx, txid, mined_height, tx_index, min_observed_height) VALUES (1, ?1, 100, 0, 100)",
+            params![receive_tx],
+        )
+        .expect("receive tx row");
+        assert_eq!(recovery_balance(&conn, &acct), Some(400), "reconciled receive counts");
+
+        // Mined spend −100 whose spent note hasn't been scanned yet (dangling nullifier):
+        // the tx is unreconciled → EXCLUDED → balance holds at 400, never over/under-shows.
+        conn.execute(
+            "INSERT INTO v_transactions VALUES (?1, ?2, -100, 200)",
+            params![spend_tx, acct],
+        )
+        .expect("spend row");
+        insert_dangling_spend(&conn, 2, &spend_tx, 200, 3, &nf);
+        assert_eq!(
+            recovery_balance(&conn, &acct),
+            Some(400),
+            "dangling spend excluded while its delta is provisional"
+        );
+
+        // The backfill scans the note's origin → nf links → the spend reconciles → included.
+        conn.execute(
+            "INSERT INTO orchard_received_notes (tx, account_id, nf) VALUES (1, 1, ?1)",
+            params![nf],
+        )
+        .expect("link note");
+        assert_eq!(
+            recovery_balance(&conn, &acct),
+            Some(300),
+            "linked spend folds into the balance"
+        );
+    }
+
+    /// Per-account isolation: one account's dangling spend must not hold back another's balance.
+    #[test]
+    fn recovery_balance_is_per_account() {
+        let conn = stub_fixture();
+        let acct_a = vec![0xA1u8; 16];
+        let acct_b = vec![0xB1u8; 16];
+        let a_receive = vec![0x03u8; 32];
+        let b_spend = vec![0x04u8; 32];
+        let nf = vec![0xCCu8; 32];
+
+        conn.execute("INSERT INTO v_transactions VALUES (?1, ?2, 500, 100)", params![a_receive, acct_a])
+            .expect("a receive");
+        conn.execute(
+            "INSERT INTO transactions (id_tx, txid, mined_height, tx_index, min_observed_height) VALUES (1, ?1, 100, 0, 100)",
+            params![a_receive],
+        )
+        .expect("a tx row");
+        conn.execute("INSERT INTO v_transactions VALUES (?1, ?2, -50, 200)", params![b_spend, acct_b])
+            .expect("b spend");
+        insert_dangling_spend(&conn, 2, &b_spend, 200, 2, &nf);
+
+        assert_eq!(recovery_balance(&conn, &acct_a), Some(500), "A unaffected by B's dangle");
+        assert_eq!(recovery_balance(&conn, &acct_b), None, "B has no reconciled rows yet");
     }
 }

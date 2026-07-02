@@ -46,6 +46,18 @@ pub struct FfiSlipstreamSnapshot {
     /// Number of suggested ranges whose scan+enhancement has completed in the current pass.
     /// Swift observes this counter and triggers ONE balance-summary fetch per boundary.
     pub ranges_completed: u64,
+    // ── API v2 fields (ENGINE_API_V2.md §4.4; appended at END for padding stability) ──
+    /// 1 while the wallet is inside its recovery (restore backfill) window. Engine-computed
+    /// from suggested ranges vs `accounts.recover_until_height`, with the fail-safe latch
+    /// built in: terminal states (Done / Error) force 0, so a dead pass can never wedge a
+    /// host's "Restoring" UI.
+    pub is_recovering: u8,
+    /// Blessed progress value, 0..=1000, session-monotonic (never regresses while the
+    /// handle lives). Done forces 1000. Replaces host-side % math.
+    pub progress_permille: u16,
+    /// Seconds since the last forward progress while state == Syncing; 0 otherwise.
+    /// The host keeps the policy (log vs restart); the engine supplies the fact.
+    pub stalled_seconds: u32,
 }
 
 /// C-compatible event record.
@@ -69,6 +81,27 @@ pub enum SyncState {
 
 /// Maximum events to keep in the ring before dropping oldest.
 pub const EVENT_RING_CAP: usize = 64;
+
+/// Push onto the bounded event ring with the v2 CRITICALITY policy ([audit ENG-4] / API v2 §4.5):
+/// on overflow, evict the oldest DROPPABLE event first — tag 1 (SyncStarted) / tag 2 (SyncProgress)
+/// are pure UI pacing and safe to lose; tags 3 (SyncDone), 4 (SyncError), 5 (FoundTransactions) are
+/// edge signals a host may act on exactly once, so they survive as long as anything droppable
+/// remains. Only a ring FULL of critical events (pathological — the host stopped draining) evicts a
+/// critical, and every eviction logs a warning so field logs show event loss instead of silence.
+pub fn push_event_bounded(ring: &mut Vec<FfiSlipstreamEvent>, e: FfiSlipstreamEvent) {
+    if ring.len() >= EVENT_RING_CAP {
+        let droppable = ring.iter().position(|ev| ev.tag == 1 || ev.tag == 2);
+        let evicted = ring.remove(droppable.unwrap_or(0));
+        tracing::warn!(
+            evicted_tag = evicted.tag,
+            incoming_tag = e.tag,
+            critical_evicted = droppable.is_none(),
+            "slipstream event ring overflow — oldest {} event dropped",
+            if droppable.is_some() { "droppable" } else { "CRITICAL" }
+        );
+    }
+    ring.push(e);
+}
 
 pub struct SlipstreamHandle {
     /// Single multi-thread tokio runtime owned by this handle (dropped with the handle).
@@ -162,11 +195,9 @@ where
                 );
                 *state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Error(2);
                 let mut ring = events.lock().unwrap_or_else(|p| p.into_inner());
-                if ring.len() >= EVENT_RING_CAP {
-                    ring.remove(0);
-                }
-                // SyncError (tag=4): value = error code 2 (task panicked).
-                ring.push(FfiSlipstreamEvent { tag: 4, value: 2 });
+                // SyncError (tag=4): value = error code 2 (task panicked). v2 bounded push —
+                // the error event evicts a droppable (started/progress) entry, never a critical.
+                push_event_bounded(&mut ring, FfiSlipstreamEvent { tag: 4, value: 2 });
             }
         }
     });
@@ -174,24 +205,65 @@ where
 }
 
 impl SlipstreamHandle {
-    /// Push one event onto the ring; drops the oldest if the ring is full.
+    /// Push one event onto the ring (v2 bounded policy: overflow evicts the oldest
+    /// started/progress event first; done/error/found-transactions survive; loss is logged).
     pub fn push_event(&self, event: FfiSlipstreamEvent) {
         let mut ring = self.events.lock().unwrap_or_else(|p| p.into_inner());
-        if ring.len() >= EVENT_RING_CAP {
-            ring.remove(0); // drop oldest
-        }
-        ring.push(event);
+        push_event_bounded(&mut ring, event);
     }
 
     /// Read a point-in-time snapshot of progress counters and sync state.
     pub fn snapshot(&self) -> FfiSlipstreamSnapshot {
-        let p = &self.progress;
-        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        let state_u8 = match *state {
+        let state = *self.state.lock().unwrap_or_else(|p| p.into_inner());
+        derive_snapshot(&self.progress, state)
+    }
+}
+
+/// Derive the v2 snapshot from live progress + state. Shared by the FFI handle and Rust
+/// hosts (e.g. `slipstream-cli watch`) so the v2 semantics — the recovery fail-safe latch,
+/// the session-monotonic permille floor, the stall clock — have exactly ONE implementation.
+pub fn derive_snapshot(p: &crate::events::Progress, state: SyncState) -> FfiSlipstreamSnapshot {
+    {
+        let state_u8 = match state {
             SyncState::Idle => 0,
             SyncState::Syncing => 1,
             SyncState::Error(_) => 2,
             SyncState::Done => 3,
+        };
+        // ── API v2 derived fields (ENGINE_API_V2.md §4.4) ──
+        // Blessed progress: raw pass ratio folded into the session-monotonic floor (reported
+        // progress never regresses while the handle lives). Done folds 1000 into the floor so
+        // a later catch-up pass can't display below a completed pass's 100%.
+        let raw_permille = {
+            let total = p.pass_total();
+            if total == 0 { 0 } else { p.scanned().saturating_mul(1000) / total }
+        };
+        let progress_permille = match state {
+            SyncState::Done => p.permille_floor(1000) as u16,
+            _ => p.permille_floor(raw_permille) as u16,
+        };
+        // Fail-safe latch: terminal states force NOT-recovering regardless of the live flag —
+        // a dead pass can never wedge a host's "Restoring" UI (previously Swift-side hardening).
+        let is_recovering_u8 = match state {
+            SyncState::Done | SyncState::Error(_) => 0u8,
+            _ => u8::from(p.recovering()),
+        };
+        // Stall clock: only meaningful while actively syncing; 0 when idle/terminal or before
+        // the first progress stamp.
+        let stalled_seconds = match state {
+            SyncState::Syncing => {
+                let last = p.last_progress_unix_secs();
+                if last == 0 {
+                    0
+                } else {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    u32::try_from(now.saturating_sub(last)).unwrap_or(u32::MAX)
+                }
+            }
+            _ => 0u32,
         };
         FfiSlipstreamSnapshot {
             chain_tip: p.chain_tip(),
@@ -203,6 +275,9 @@ impl SlipstreamHandle {
             pass_total_blocks: p.pass_total(),
             spendable_hint: p.spendable() as u8,
             ranges_completed: p.ranges_completed(),
+            is_recovering: is_recovering_u8,
+            progress_permille,
+            stalled_seconds,
         }
     }
 }
@@ -210,6 +285,46 @@ impl SlipstreamHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [API v2 §4.5] Overflow evicts the oldest DROPPABLE (started/progress) event, so a critical
+    /// event pushed into a full ring never displaces another critical while pacing events remain.
+    #[test]
+    fn ring_overflow_evicts_droppable_before_critical() {
+        let mut ring: Vec<FfiSlipstreamEvent> = Vec::new();
+        // 3 criticals first (found-transactions), then fill the rest with progress.
+        for i in 0..3 {
+            push_event_bounded(&mut ring, FfiSlipstreamEvent { tag: 5, value: i });
+        }
+        for i in 0..(EVENT_RING_CAP - 3) {
+            push_event_bounded(&mut ring, FfiSlipstreamEvent { tag: 2, value: i as u64 });
+        }
+        assert_eq!(ring.len(), EVENT_RING_CAP);
+        // Push a critical into the full ring: the oldest PROGRESS event (value 0) must go,
+        // all 3 early criticals must survive, and the new critical must be at the tail.
+        push_event_bounded(&mut ring, FfiSlipstreamEvent { tag: 4, value: 9 });
+        assert_eq!(ring.len(), EVENT_RING_CAP);
+        assert_eq!(ring.iter().filter(|e| e.tag == 5).count(), 3, "early criticals survive");
+        assert!(
+            !ring.iter().any(|e| e.tag == 2 && e.value == 0),
+            "oldest droppable evicted, not position 0"
+        );
+        let last = ring.last().unwrap();
+        assert_eq!((last.tag, last.value), (4, 9));
+    }
+
+    /// Pathological fallback: a ring FULL of criticals still accepts (evicts oldest overall).
+    #[test]
+    fn ring_overflow_all_critical_falls_back_to_oldest() {
+        let mut ring: Vec<FfiSlipstreamEvent> = Vec::new();
+        for i in 0..EVENT_RING_CAP {
+            push_event_bounded(&mut ring, FfiSlipstreamEvent { tag: 5, value: i as u64 });
+        }
+        push_event_bounded(&mut ring, FfiSlipstreamEvent { tag: 3, value: 7 });
+        assert_eq!(ring.len(), EVENT_RING_CAP);
+        assert!(!ring.iter().any(|e| e.value == 0 && e.tag == 5), "oldest critical evicted");
+        let last = ring.last().unwrap();
+        assert_eq!((last.tag, last.value), (3, 7));
+    }
 
     #[test]
     fn ffi_snapshot_default_is_zero() {
@@ -223,6 +338,63 @@ mod tests {
         assert_eq!(s.pass_total_blocks, 0, "pass_total_blocks default must be 0");
         assert_eq!(s.spendable_hint, 0, "spendable_hint default must be 0");
         assert_eq!(s.ranges_completed, 0, "ranges_completed default must be 0");
+        assert_eq!(s.is_recovering, 0, "is_recovering default must be 0");
+        assert_eq!(s.progress_permille, 0, "progress_permille default must be 0");
+        assert_eq!(s.stalled_seconds, 0, "stalled_seconds default must be 0");
+    }
+
+    /// [API v2 §4.4] The permille floor is session-monotonic: raw regressions never lower
+    /// the reported value, and raw values clamp to 1000.
+    #[test]
+    fn permille_floor_is_monotonic_and_clamped() {
+        let p = crate::events::Progress::default();
+        assert_eq!(p.permille_floor(300), 300);
+        assert_eq!(p.permille_floor(100), 300, "regression must hold the floor");
+        assert_eq!(p.permille_floor(999), 999);
+        assert_eq!(p.permille_floor(5000), 1000, "raw clamps to 1000");
+        assert_eq!(p.permille_floor(0), 1000, "floor persists at max");
+    }
+
+    /// [API v2 §4.4] Terminal states force is_recovering = 0 (the fail-safe latch), and Done
+    /// forces progress to 1000 — a dead or finished pass can never wedge a "Restoring" UI or
+    /// show partial progress.
+    #[test]
+    fn snapshot_terminal_states_apply_v2_latches() {
+        let mk = |state: SyncState, progress: std::sync::Arc<crate::events::Progress>| SlipstreamHandle {
+            runtime: tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("tokio runtime"),
+            progress,
+            state: std::sync::Arc::new(Mutex::new(state)),
+            events: std::sync::Arc::new(Mutex::new(Vec::new())),
+            task: None,
+            pass_lock: Arc::new(tokio::sync::Mutex::new(())),
+            endpoint: Endpoint { host: "localhost".into(), port: 9067, tls: false },
+            wallet_db_path: std::path::PathBuf::from("/tmp/test.db"),
+            network: zcash_protocol::consensus::Network::TestNetwork,
+            total_memory_bytes: 0,
+        };
+
+        // Syncing + recovering flag set → surfaces as recovering, permille from counters.
+        let p1 = std::sync::Arc::new(crate::events::Progress::default());
+        p1.set_recovering(true);
+        p1.set_pass_total(1000);
+        p1.add_scanned(250);
+        let snap = mk(SyncState::Syncing, p1.clone()).snapshot();
+        assert_eq!(snap.is_recovering, 1);
+        assert_eq!(snap.progress_permille, 250);
+
+        // Error → latch forces NOT recovering even though the live flag is still true.
+        let snap = mk(SyncState::Error(2), p1.clone()).snapshot();
+        assert_eq!(snap.is_recovering, 0, "Error must release the recovery gate");
+        assert_eq!(snap.stalled_seconds, 0, "stall clock only ticks while Syncing");
+
+        // Done → recovery off AND progress forced to (and floored at) 1000.
+        let snap = mk(SyncState::Done, p1).snapshot();
+        assert_eq!(snap.is_recovering, 0, "Done must clear recovering");
+        assert_eq!(snap.progress_permille, 1000, "Done must complete the progress");
     }
 
     #[test]

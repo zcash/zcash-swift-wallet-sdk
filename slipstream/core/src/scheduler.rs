@@ -110,8 +110,23 @@ pub async fn run_to_completion(
     // F1: track blocks scanned so far in this pass (local accumulator).
     // Used to compute the whole-pass denominator: scanned_so_far + sum(remaining ranges).
     let mut scanned_so_far_in_pass: u64 = 0;
+    // [API v2 §4.4] The wallet's recovery ceiling, read once per pass: the snapshot's
+    // `is_recovering` is true while any suggested range still starts below it (the restore
+    // backfill window). A read failure degrades to "not recovering" rather than failing the
+    // pass — the flag is presentation state, never correctness state.
+    let recover_until: Option<u64> = session.max_recover_until().unwrap_or_default();
     loop {
         let ranges = session.suggest_scan_ranges()?;
+        // [API v2 §4.4] Recompute the recovery flag on every suggest round: still recovering
+        // iff work remains below the recovery ceiling. An empty queue (handled below) or a
+        // queue entirely above the ceiling flips it false — recovery is over even though the
+        // pass may keep scanning newer ranges.
+        if let Some(ref p) = progress {
+            let recovering = recover_until.map_or(false, |ru| {
+                ranges.iter().any(|r| u64::from(r.block_range().start) < ru)
+            });
+            p.set_recovering(recovering);
+        }
         let Some(range) = ranges.first() else {
             info!("scan queue empty — sync complete");
             return Ok(report);

@@ -4272,6 +4272,15 @@ pub struct FfiSlipstreamSnapshot {
     /// Number of suggested ranges whose scan+enhancement has completed in the current pass.
     /// Swift observes this counter and triggers ONE balance-summary fetch per boundary.
     pub ranges_completed: u64,
+    // ── API v2 fields (appended at END for padding stability) ──
+    /// 1 while the wallet is inside its recovery (restore backfill) window; engine-computed
+    /// with the fail-safe latch built in (terminal Done/Error force 0).
+    pub is_recovering: u8,
+    /// Blessed progress, 0..=1000, session-monotonic (never regresses while the handle
+    /// lives; Done forces 1000). Replaces host-side progress math.
+    pub progress_permille: u16,
+    /// Seconds since last forward progress while syncing; 0 otherwise.
+    pub stalled_seconds: u32,
 }
 
 /// C-compatible Slipstream engine event record. Returned by
@@ -4578,9 +4587,118 @@ pub unsafe extern "C" fn zcashlc_slipstream_snapshot(
             pass_total_blocks: s.pass_total_blocks,
             spendable_hint: s.spendable_hint,
             ranges_completed: s.ranges_completed,
+            is_recovering: s.is_recovering,
+            progress_permille: s.progress_permille,
+            stalled_seconds: s.stalled_seconds,
         })
     });
     unwrap_exc_or(res, FfiSlipstreamSnapshot::default())
+}
+
+/// [API v2 §4.5] Notifies the engine that the HOST changed the wallet's transaction set
+/// outside a sync pass — e.g. it stored a just-broadcast transaction. The engine responds by
+/// emitting a FoundTransactions event (tag 5) through its normal event channel, so every
+/// host's single event loop sees the pending transaction immediately and uniformly instead of
+/// waiting for the next mempool/scan round. Returns `true` on success, `false` on a null
+/// handle or internal panic.
+///
+/// # Safety
+///
+/// - `handle` must be a non-null pointer returned by [`zcashlc_slipstream_open`] that
+///   has not previously been freed.
+/// - `handle` must not be passed to two FFI calls at the same time.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_slipstream_notify_tx_change(handle: *mut SlipstreamHandle) -> bool {
+    let handle = AssertUnwindSafe(handle);
+    let res = catch_panic(|| {
+        let handle = unsafe { handle.as_ref() }.ok_or_else(|| anyhow!("null handle"))?;
+        handle
+            .inner
+            .push_event(slipstream_core::ffi_handle::FfiSlipstreamEvent { tag: 5, value: 0 });
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
+}
+
+/// [API v2 §0-5] The unified, PHASE-RESOLVING wallet summary for Slipstream hosts: one call
+/// that is correct at every phase, so no host ever re-implements restore balance math.
+///
+/// - **Not recovering** → the upstream wallet summary, unchanged (identical to
+///   [`zcashlc_get_wallet_summary`]).
+/// - **Recovering** (the recent-first restore backfill; `snapshot.is_recovering == 1`) →
+///   the upstream summary's per-account balances are REPLACED, because upstream balances
+///   "may overestimate" mid-restore by documented design (a receipt is counted before its
+///   spend is scanned). The replacement is the engine-owned `slipstream_v_recovery_balance`
+///   (Σ of FINAL, reconciled tx deltas — never over-shows, converges to the true total),
+///   surfaced per the SDK's field-validated Direction-B mapping: the whole clamped net as
+///   orchard spendable, everything else zero. Progress/heights fields pass through.
+///
+/// Returns null on error; a summary with `fully_scanned_height == -1` when the wallet has
+/// no balance data yet.
+///
+/// # Safety
+///
+/// - `handle` must be a non-null pointer returned by [`zcashlc_slipstream_open`] that
+///   has not previously been freed, and must not be passed to two FFI calls at once.
+/// - Call [`zcashlc_free_wallet_summary`] to free the memory associated with the returned
+///   pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
+    handle: *const SlipstreamHandle,
+    confirmations_policy: ffi::ConfirmationsPolicy,
+) -> *mut ffi::WalletSummary {
+    let handle = AssertUnwindSafe(handle);
+    let res = catch_panic(|| {
+        let handle = unsafe { handle.as_ref() }.ok_or_else(|| anyhow!("null handle"))?;
+        let network = handle.inner.network;
+        let db_path = handle.inner.wallet_db_path.clone();
+        // Reuse the exact WalletDb construction of the legacy summary path.
+        let path_bytes = db_path.as_os_str().as_bytes();
+        let db_data = unsafe { wallet_db(path_bytes.as_ptr(), path_bytes.len(), network)? };
+        let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
+
+        let summary = match db_data
+            .get_wallet_summary(confirmations_policy)
+            .map_err(|e| anyhow!("Error while fetching wallet summary: {}", e))?
+        {
+            Some(summary) => summary,
+            None => return Ok(ffi::WalletSummary::none()),
+        };
+        let summary_ptr = ffi::WalletSummary::some(summary)?;
+
+        // Phase resolution. `is_recovering` carries the engine's fail-safe latch (terminal
+        // Done/Error force 0), so a dead pass falls back to the upstream summary here too.
+        if handle.inner.snapshot().is_recovering == 1 {
+            let conn = rusqlite::Connection::open(&db_path)
+                .map_err(|e| anyhow!("recovery balance open: {}", e))?;
+            conn.busy_timeout(std::time::Duration::from_secs(5))
+                .map_err(|e| anyhow!("recovery balance busy_timeout: {}", e))?;
+            let mut nets: std::collections::HashMap<[u8; 16], i64> = std::collections::HashMap::new();
+            {
+                let mut stmt = conn
+                    .prepare("SELECT account_uuid, balance_zat FROM slipstream_v_recovery_balance")
+                    .map_err(|e| anyhow!("recovery balance prepare: {}", e))?;
+                let mut rows = stmt
+                    .query([])
+                    .map_err(|e| anyhow!("recovery balance query: {}", e))?;
+                while let Some(row) = rows.next().map_err(|e| anyhow!("recovery balance row: {}", e))? {
+                    let uuid: Vec<u8> = row.get(0).map_err(|e| anyhow!("recovery balance uuid: {}", e))?;
+                    let net: i64 = row.get(1).map_err(|e| anyhow!("recovery balance net: {}", e))?;
+                    if let Ok(uuid16) = <[u8; 16]>::try_from(uuid.as_slice()) {
+                        nets.insert(uuid16, net);
+                    }
+                }
+            }
+            // Accounts with no reconciled rows yet read 0 — the SDK's `?? .zero` semantics.
+            let summary_mut = unsafe { &mut *summary_ptr };
+            for balance in summary_mut.account_balances_mut() {
+                let net = nets.get(balance.uuid_bytes()).copied().unwrap_or(0);
+                balance.override_with_recovery_net(net);
+            }
+        }
+        Ok(summary_ptr)
+    });
+    unwrap_exc_or_null(res)
 }
 
 /// Drains all queued Slipstream events into a caller-allocated buffer.

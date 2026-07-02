@@ -46,6 +46,22 @@ pub struct Progress {
     /// (scan + per-range enhancement). Used by Swift to trigger a balance-summary
     /// fetch at each range boundary while Syncing.
     pub ranges_completed: AtomicU64,
+    // ── API v2 fields (ENGINE_API_V2.md §4.4) ──
+    /// 1 while the current pass still has suggested ranges below the wallet's
+    /// recover-until height (the restore backfill window); 0 otherwise. Written by the
+    /// scheduler on every suggest round. The SNAPSHOT mapping forces 0 on terminal
+    /// states (Done / Error) — the fail-safe latch that previously lived in the Swift
+    /// SDK ("a dead pass can never wedge Restoring") now holds for every host.
+    pub recovering: AtomicU64,
+    /// Unix seconds of the last forward progress (any counter bump / pass start).
+    /// The snapshot derives `stalled_seconds = now − this` while Syncing.
+    pub last_progress_unix: AtomicU64,
+    /// Session-monotonic progress floor in permille (0..=1000). The snapshot fetch-maxes
+    /// the raw `scanned / pass_total` ratio into this and reports the floor, so reported
+    /// progress NEVER regresses while the handle lives (subsumes the SDK's
+    /// monotonicRecoveryProgress floor and its warm-start seeding: a follow-up catch-up
+    /// pass holds the prior high-water mark instead of flashing back to 0%).
+    pub progress_permille_floor: AtomicU64,
 }
 
 impl Progress {
@@ -53,18 +69,21 @@ impl Progress {
     #[inline]
     pub fn add_fetched(&self, n: u64) {
         self.fetched_blocks.fetch_add(n, Ordering::Relaxed);
+        self.touch();
     }
 
     /// Bump `scanned_blocks` by `n`.
     #[inline]
     pub fn add_scanned(&self, n: u64) {
         self.scanned_blocks.fetch_add(n, Ordering::Relaxed);
+        self.touch();
     }
 
     /// Bump `enhanced_txs` by `n`.
     #[inline]
     pub fn add_enhanced(&self, n: u64) {
         self.enhanced_txs.fetch_add(n, Ordering::Relaxed);
+        self.touch();
     }
 
     /// Set `chain_tip` (Relaxed store).
@@ -124,6 +143,48 @@ impl Progress {
     #[inline]
     pub fn add_ranges_completed(&self) {
         self.ranges_completed.fetch_add(1, Ordering::Relaxed);
+        self.touch();
+    }
+
+    // ── API v2 (ENGINE_API_V2.md §4.4) ──
+
+    /// Stamp `last_progress_unix` with the current wall-clock second. Called by every
+    /// counter bump and at pass start; the snapshot derives stalledness from it.
+    #[inline]
+    pub fn touch(&self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.last_progress_unix.store(now, Ordering::Relaxed);
+    }
+
+    /// Scheduler: set whether the pass is still inside the recovery (restore backfill)
+    /// window — i.e. suggested ranges remain below the wallet's recover-until height.
+    #[inline]
+    pub fn set_recovering(&self, recovering: bool) {
+        self.recovering.store(u64::from(recovering), Ordering::Relaxed);
+    }
+
+    /// Read the live recovering flag (terminal-state forcing happens in the snapshot).
+    #[inline]
+    pub fn recovering(&self) -> bool {
+        self.recovering.load(Ordering::Relaxed) != 0
+    }
+
+    /// Read `last_progress_unix`.
+    #[inline]
+    pub fn last_progress_unix_secs(&self) -> u64 {
+        self.last_progress_unix.load(Ordering::Relaxed)
+    }
+
+    /// Fold `raw` (0..=1000) into the session-monotonic floor and return the floor.
+    /// fetch_max keeps reported progress from ever regressing while the handle lives.
+    #[inline]
+    pub fn permille_floor(&self, raw: u64) -> u64 {
+        let clamped = raw.min(1000);
+        self.progress_permille_floor.fetch_max(clamped, Ordering::Relaxed);
+        self.progress_permille_floor.load(Ordering::Relaxed)
     }
 
     /// Reset the per-pass RATIO counters at the start of a sync pass.
@@ -147,6 +208,10 @@ impl Progress {
         self.pass_total_blocks.store(0, Ordering::Relaxed);
         self.current_range_end.store(0, Ordering::Relaxed);
         self.spendable_hint.store(0, Ordering::Relaxed);
+        // v2: a new pass starts the stall clock fresh. `recovering` and the permille
+        // floor are deliberately NOT reset — recovering is recomputed on the first
+        // suggest round, and the floor is session-monotonic by contract (§4.4).
+        self.touch();
     }
 
     /// Read `chain_tip` (Relaxed load).

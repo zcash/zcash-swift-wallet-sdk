@@ -23,3 +23,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { workspace = true }
 rand = { workspace = true }
+# `watch` (Phase C acceptance): the second-host proof consumes the v2 contract —
+# rusqlite for the engine-owned views, zcash_client_sqlite/backend for the upstream
+# summary when NOT recovering (the documented host rule, verbatim).
+rusqlite = { workspace = true }
+zcash_client_sqlite = { workspace = true }
+zcash_client_backend = { workspace = true }
+zcash_protocol = { workspace = true }
