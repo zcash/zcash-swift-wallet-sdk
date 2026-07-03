@@ -3110,28 +3110,6 @@ class TransactionRepositoryMock: TransactionRepository {
         }
     }
 
-    // MARK: - recoveryBalances
-
-    var recoveryBalancesThrowableError: Error?
-    var recoveryBalancesCallsCount = 0
-    var recoveryBalancesCalled: Bool {
-        return recoveryBalancesCallsCount > 0
-    }
-    var recoveryBalancesReturnValue: [AccountUUID: Zatoshi]!
-    var recoveryBalancesClosure: (() async throws -> [AccountUUID: Zatoshi])?
-
-    func recoveryBalances() async throws -> [AccountUUID: Zatoshi] {
-        if let error = recoveryBalancesThrowableError {
-            throw error
-        }
-        recoveryBalancesCallsCount += 1
-        if let closure = recoveryBalancesClosure {
-            return try await closure()
-        } else {
-            return recoveryBalancesReturnValue
-        }
-    }
-
 }
 class UTXOFetcherMock: UTXOFetcher {
 

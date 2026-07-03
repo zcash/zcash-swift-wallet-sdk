@@ -100,24 +100,6 @@ extension SlipstreamSynchronizer {
         return !recovery.isComplete
     }
 
-    /// [#1755] Wrap a per-account net recovery balance (Σ of FINAL transaction deltas — see
-    /// `TransactionRepository.recoveryBalances()`) in an `AccountBalance` for the state stream during a
-    /// restore. The whole net (clamped ≥ 0) is surfaced as orchard `spendableValue` so every consumer reads
-    /// it correctly: `total()` == net (Zodl home `totalBalance`), available shielded == net (SmartBanner /
-    /// WalletBalances). The per-pool breakdown is intentionally collapsed to Orchard for the duration of
-    /// recovery — headline correctness over breakdown fidelity mid-restore (the "Restoring" banner is the
-    /// progress affordance). Transparent is already folded into the delta sum, so `unshielded` stays zero
-    /// here to avoid double-counting. Pure; net ≤ 0 yields a zero balance.
-    static func recoveryAccountBalance(net: Zatoshi) -> AccountBalance {
-        let clamped = Zatoshi(Swift.max(0, net.amount))
-        return AccountBalance(
-            saplingBalance: .zero,
-            orchardBalance: PoolBalance(spendableValue: clamped, changePendingConfirmation: .zero, valuePendingSpendability: .zero),
-            unshielded: .zero,
-            awaitingResolution: .zero
-        )
-    }
-
     /// T8.3.5: the `SynchronizerState` that `prepare()` emits right after opening the
     /// engine. WARM (from the persisted summary) when a summary exists — the real balance
     /// + a truthful near-100% progress, so a cold launch of a synced wallet never flashes
@@ -160,39 +142,8 @@ extension SlipstreamSynchronizer {
         }
     }
 
-    /// Pure decision: should this poll tick mark `SDKFlags.chainTipUpdated`?
-    ///
-    /// Semantics mirror `UpdateChainTipAction.swift:49` — the flag is marked exactly when
-    /// the wallet DB chain tip is known to have been refreshed by the CURRENT run:
-    ///
-    ///   - `alreadyMarked` — marked once per run; later ticks are no-ops.
-    ///   - `snapshotTip == 0` — the engine has not advertised any tip yet; never mark.
-    ///   - `snapshotTip != tipAtRunStart` — the engine's `sync_once` stores the snapshot
-    ///     tip ONLY AFTER `session.update_chain_tip(tip)` succeeds (engine.rs:111 → :116),
-    ///     so a changed tip proves the DB tip was refreshed by this run.
-    ///   - same tip value — trust it only when the pass reached Done (`state == 3`):
-    ///     `sync_once` cannot complete without `update_chain_tip` having succeeded.
-    ///     (While still Syncing, an unchanged nonzero tip may be residue from a PREVIOUS
-    ///     pass on the same handle — e.g. stop()/start() after a long background period —
-    ///     and marking on it would defeat the [#1591] stale-tip protection.)
-    ///
-    /// - Parameters:
-    ///   - snapshotTip:   `snap.chainTip` from the FFI snapshot.
-    ///   - tipAtRunStart: snapshot tip captured in `start()` before the pass began.
-    ///   - state:         `snap.state` (0=idle, 1=syncing, 2=error, 3=done).
-    ///   - alreadyMarked: whether this run already marked the flag.
-    /// - Returns: true when the flag should be marked now.
-    static func shouldMarkChainTipUpdated(
-        snapshotTip: UInt64,
-        tipAtRunStart: UInt64,
-        state: UInt8,
-        alreadyMarked: Bool
-    ) -> Bool {
-        guard !alreadyMarked else { return false }
-        guard snapshotTip != 0 else { return false }
-        if snapshotTip != tipAtRunStart { return true }
-        return state == 3
-    }
+    // [v2.1 Phase 2] `shouldMarkChainTipUpdated` is GONE: tip freshness is the engine-owned
+    // snapshot fact `tipFresh` (E-2 — same semantics, computed where the tip is refreshed).
 
     // ── B4 (#1755 failure-path hardening): stall watchdog ─────────────────────
 

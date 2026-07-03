@@ -91,10 +91,15 @@ state: never walk while Syncing; refresh at range boundaries (`rangesCompleted` 
 counter), on Done, and at an idle TTL; serve the cached summary otherwise. Host calls become
 unconditional. Deletes SDK R2 (~150 lines + timeouts + task lifecycle).
 
-### E-2 — Tip-freshness masking inside the summary FFI (engine)
-While THIS handle's pass hasn't refreshed the wallet-DB tip (engine-internal fact), the unified
-summary masks `spendable` exactly as `[#1591]` requires. Deletes SDK R3 (~70 lines); the
-`SDKFlags` interplay remains only for the frozen legacy path.
+### E-2 — Tip freshness as an engine fact (`snapshot.tip_fresh`) — REVISED AT IMPLEMENTATION
+Original shape ("mask inside the FFI") is UNIMPLEMENTABLE without an ABI break: the C
+`AccountBalance` is an array-element struct (appending an `awaiting_resolution` field changes
+the stride), so the mask's awaiting-resolution shift cannot be expressed FFI-side. Revised
+split: the ENGINE owns the FACT — `snapshot.tip_fresh` (end-appended, padding-stable),
+computed with the exact `shouldMarkChainTipUpdated` semantics at the source (tip captured at
+`start()`, fresh on tip-change or Done, survives <120 s stop→start hops) — and the host keeps
+the 3-line `withSpendableMasked()` transform keyed on it. Still deletes all of SDK R3 (the
+derivation machinery + `SDKFlags` parity calls); recovery balances are never masked (parity).
 
 ### E-3 — Truthful-from-open snapshot (engine)
 At `open()`: seed `is_recovering` from persisted `recover_until_height` vs frontier, and seed

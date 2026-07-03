@@ -671,30 +671,8 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertEqual(state.latestBlockHeight, 3_000_000)
     }
 
-    /// recoveryAccountBalance wraps the per-account net recovery balance (Σ of FINAL reconciled tx deltas)
-    /// into an `AccountBalance`: the whole net surfaces as orchard `spendableValue` so `total()` == net (the
-    /// headline) and available (spendable) == net; transparent is already folded into the delta sum so
-    /// `unshielded` stays zero; a net ≤ 0 clamps to a zero balance (never negative).
-    func testRecoveryAccountBalance() {
-        // 4.0052 ZEC net → surfaced as orchard spendable; total() == net, available == net.
-        let net = Zatoshi(400_520_000)
-        let balance = SlipstreamSynchronizer.recoveryAccountBalance(net: net)
-        XCTAssertEqual(balance.orchardBalance.spendableValue, net, "the whole net surfaces as orchard spendable")
-        XCTAssertEqual(balance.saplingBalance.total().amount, 0, "sapling bucket stays zero during recovery")
-        XCTAssertEqual(balance.unshielded.amount, 0, "transparent is already folded into the delta sum")
-        let available = balance.saplingBalance.spendableValue + balance.orchardBalance.spendableValue
-        XCTAssertEqual(available, net, "available (spendable) == net")
-        let total = balance.saplingBalance.total() + balance.orchardBalance.total() + balance.unshielded + balance.awaitingResolution
-        XCTAssertEqual(total, net, "headline total() + transparent == net")
-
-        // Zero net → zero balance.
-        XCTAssertEqual(SlipstreamSynchronizer.recoveryAccountBalance(net: .zero), .zero)
-
-        // Negative net (defensive) → clamps to zero, never negative.
-        let clamped = SlipstreamSynchronizer.recoveryAccountBalance(net: Zatoshi(-100_000_000))
-        let clampedTotal = clamped.saplingBalance.total() + clamped.orchardBalance.total() + clamped.unshielded
-        XCTAssertEqual(clampedTotal.amount, 0, "a negative net clamps to a zero balance")
-    }
+    // [v2.1 Phase 2] testRecoveryAccountBalance is GONE with the helper: the Direction-B
+    // mapping lives in the engine FFI (ffi.rs `override_with_recovery_net`, crate-side).
 
     // MARK: - 7. T4.9 regression tests (F1 timeout-helper; F2 switchTo same-endpoint no-op)
 
@@ -799,53 +777,8 @@ class SlipstreamOfflineTests: ZcashTestCase {
                       "switchTo a different endpoint must attempt a reopen (not silently no-op)")
     }
 
-    // MARK: - 8. T5.5 Summary interval + no-summary-while-syncing tests
-
-    // T5.5 supersedes T5.3: the 8-second Syncing interval is eliminated because
-    // getWalletSummary is NEVER called while state==1 (Syncing). All reachable states
-    // (0/2/3) use the 2-second interval. The Syncing guard lives in
-    // kickSummaryFetchIfNeeded (returns early for state==1) — summaryFetchInterval
-    // is now only called for non-Syncing states.
-
-    /// summaryFetchInterval(forState:) returns 2 seconds when state == Disconnected (0).
-    /// T5.5: the 8s-Syncing branch is gone; all states return 2s from this helper.
-    func testSummaryIntervalWhileDisconnectedIs2s() {
-        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 0) // Disconnected
-        XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
-                       "Summary interval while Disconnected must be 2 seconds")
-    }
-
-    /// summaryFetchInterval(forState:) returns 2 seconds when state == Syncing (1).
-    /// T5.5: Syncing is now guarded by kickSummaryFetchIfNeeded (early return), so
-    /// this function is never called for state==1 in production — but if it were,
-    /// it returns 2s (not 8s), confirming the 8s branch is fully removed.
-    func testSummaryIntervalWhileSyncingIs2sNotEight() {
-        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 1) // Syncing
-        XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
-                       "T5.5: summaryFetchInterval must return 2s for Syncing (8s branch removed; " +
-                       "kickSummaryFetchIfNeeded guards state==1 before this is called)")
-    }
-
-    /// summaryFetchInterval(forState:) returns 2 seconds when state == Error (2).
-    func testSummaryIntervalWhileErrorIs2s() {
-        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 2) // Error
-        XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
-                       "Summary interval while Error must be 2 seconds")
-    }
-
-    /// summaryFetchInterval(forState:) returns 2 seconds when state == Done (3).
-    func testSummaryIntervalWhileDoneIs2s() {
-        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: 3) // Done
-        XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
-                       "Summary interval while Done must be 2 seconds")
-    }
-
-    /// summaryFetchInterval(forState:) returns 2 seconds for unknown states (default case).
-    func testSummaryIntervalForUnknownStateIs2s() {
-        let interval = SlipstreamSynchronizer.summaryFetchInterval(forState: UInt8(99)) // Unknown
-        XCTAssertEqual(interval, 2.0, accuracy: 1e-6,
-                       "Summary interval for unknown states must default to 2 seconds")
-    }
+    // [v2.1 Phase 2] The MARK-8 summaryFetchInterval suite is GONE with the host cadence:
+    // summary rationing (incl. the T5.5 no-walk-while-Syncing invariant) is engine-owned (E-1).
 
     // MARK: - 9. T5.5 counterProgress pure-helper tests
 
@@ -1000,85 +933,9 @@ class SlipstreamOfflineTests: ZcashTestCase {
                        "set semantics: new total replaces old (not adds to it)")
     }
 
-    /// F2 boundary summary timeout constant is longer than the idle 3s timeout.
-    func testBoundarySummaryTimeoutIsLongerThanIdleTimeout() {
-        let idleTimeout = SlipstreamSynchronizer.summaryTimeoutNanoseconds
-        let boundaryTimeout = SlipstreamSynchronizer.boundarySummaryTimeoutNanoseconds
-        XCTAssertGreaterThan(boundaryTimeout, idleTimeout,
-                             "Boundary summary timeout (20s) must be longer than idle timeout (3s)")
-        // Verify the exact documented values.
-        XCTAssertEqual(idleTimeout, 3_000_000_000, "idle summary timeout must be 3s")
-        XCTAssertEqual(boundaryTimeout, 20_000_000_000, "boundary summary timeout must be 20s")
-    }
-
-    // MARK: - 13. shouldMarkChainTipUpdated pure-helper unit tests (field bug 2026-06-11)
-    //
-    // Oracle: UpdateChainTipAction.swift:49 marks `SDKFlags.chainTipUpdated` right after
-    // `rustBackend.updateChainTip` succeeds. The Slipstream engine stores the snapshot
-    // tip ONLY AFTER `session.update_chain_tip(tip)` succeeds (engine.rs:111 → :116), so:
-    //   - tip changed vs run start  → DB tip refreshed by THIS run → mark.
-    //   - tip == run-start value    → only trust when the pass reached Done (state 3).
-    //   - tip == 0                  → engine never advertised a tip → never mark.
-    //   - already marked            → once per run, no re-marking.
-    // Without this marking, ZcashRustBackend.getWalletSummary() masks spendableValue to
-    // zero forever in the Slipstream path (field report: pending spinner, cannot pay).
-
-    /// Fresh handle, first nonzero tip while syncing → mark (the field-bug case: a fresh
-    /// 269k restore must unmask spendable balances during/after the first pass).
-    func testShouldMarkChainTipFreshHandleFirstNonZeroTip() {
-        XCTAssertTrue(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
-            snapshotTip: 3_374_491, tipAtRunStart: 0, state: 1, alreadyMarked: false
-        ))
-    }
-
-    /// Snapshot tip 0 (engine not yet past update_chain_tip) → never mark, in any state.
-    func testShouldMarkChainTipZeroTipNeverMarks() {
-        for state: UInt8 in [0, 1, 2, 3] {
-            XCTAssertFalse(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
-                snapshotTip: 0, tipAtRunStart: 0, state: state, alreadyMarked: false
-            ), "tip 0 must never mark (state \(state))")
-        }
-    }
-
-    /// Restarted handle: tip advanced past the run-start residue → mark (the engine's
-    /// update_chain_tip stored a fresh tip in this pass).
-    func testShouldMarkChainTipAdvancedTipMarks() {
-        XCTAssertTrue(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
-            snapshotTip: 3_374_500, tipAtRunStart: 3_374_491, state: 1, alreadyMarked: false
-        ))
-    }
-
-    /// Restarted handle, tip UNCHANGED while still syncing → do NOT mark: the nonzero tip
-    /// may be residue from a previous pass (stale-tip protection, [#1591]).
-    func testShouldMarkChainTipSameTipWhileSyncingDoesNotMark() {
-        XCTAssertFalse(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
-            snapshotTip: 3_374_491, tipAtRunStart: 3_374_491, state: 1, alreadyMarked: false
-        ))
-    }
-
-    /// Restarted handle, tip unchanged but the pass reached Done → mark: sync_once cannot
-    /// complete without update_chain_tip having succeeded.
-    func testShouldMarkChainTipSameTipDoneMarks() {
-        XCTAssertTrue(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
-            snapshotTip: 3_374_491, tipAtRunStart: 3_374_491, state: 3, alreadyMarked: false
-        ))
-    }
-
-    /// Same-tip error state (pass failed, possibly BEFORE update_chain_tip) → do not mark.
-    func testShouldMarkChainTipSameTipErrorDoesNotMark() {
-        XCTAssertFalse(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
-            snapshotTip: 3_374_491, tipAtRunStart: 3_374_491, state: 2, alreadyMarked: false
-        ))
-    }
-
-    /// Once marked, later ticks never re-mark within the same run.
-    func testShouldMarkChainTipAlreadyMarkedNeverMarks() {
-        for state: UInt8 in [0, 1, 2, 3] {
-            XCTAssertFalse(SlipstreamSynchronizer.shouldMarkChainTipUpdated(
-                snapshotTip: 3_374_999, tipAtRunStart: 0, state: state, alreadyMarked: true
-            ), "alreadyMarked must suppress re-marking (state \(state))")
-        }
-    }
+    // [v2.1 Phase 2] The boundary/idle timeout constants and the shouldMarkChainTipUpdated
+    // suite are GONE with their machinery: summary rationing + tip freshness are engine-owned
+    // (E-1 / E-2 — `snapshot.tipFresh` carries the same semantics, computed at the source).
 
     // MARK: - 14. B4 stall-watchdog pure helpers (#1755 failure-path hardening)
     //
