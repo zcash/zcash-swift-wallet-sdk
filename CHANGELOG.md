@@ -39,6 +39,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next mempool/scan round, so a new send appears in the app's Activity as pending without delay.
 
 ## Fixed
+- Deleting an account (`deleteAccount`) on the Slipstream synchronizer no longer races the sync
+  engine. It now serializes (stop → delete → restart), and the engine prunes the deleted
+  account's orphaned historic scan ranges at every session open — so removing a hardware-wallet
+  account mid-restore neither fails the in-flight pass (the pass scanned with a cached copy of
+  the deleted account's viewing key and then failed writing its notes) nor leaves the wallet
+  deep-scanning history for keys that no longer exist. Deleted transactions also disappear from
+  `eventStream` immediately (the engine's transaction-set version is bumped on delete).
+- The Slipstream sync session now revives itself after a NON-transient pass failure with a
+  capped backoff (15 s → 5 min) instead of staying dead until app relaunch. Every failure is
+  still surfaced (error state + event) — but a one-shot cause, like an account deleted while a
+  range was in flight, self-heals on the first revival.
+- All FFI wallet-database connections (and the engine's write-behind persist lane) now carry a
+  15 s SQLite `busy_timeout`, so a host write landing while the engine holds the write lock
+  waits briefly instead of failing with `SQLITE_BUSY`.
 - `rewind(_:)` on the Slipstream synchronizer now resets its cached wallet summary (and the
   recovery-log/latch state derived from it) after truncating, matching `wipe()`. Previously the first
   balance/summary reads after a rewind could serve pre-rewind cached values until the next sync pass.
