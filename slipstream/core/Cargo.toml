@@ -2,7 +2,7 @@
 name = "slipstream-core"
 # Milestone versioning (see the slipstream repo README "Status"): v0.3 = the engine API v2
 # era — exported wallet semantics (recovery latch, blessed progress, views, unified summary).
-version = "0.3.0"
+version = "0.3.5"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"
