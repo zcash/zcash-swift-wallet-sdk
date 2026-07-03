@@ -54,7 +54,7 @@ difference is only how much cheap work is repeated. Rows below state which class
 | S12 | wipe() **mid-restore** | Same — no zombie engine writes after file deletion | engine.close precedes deletion; orphan write-behind commit targets a freed… **see note** | 🟡 note: an uncancellable in-flight `spawn_blocking` commit could hold its own connection while files unlink — POSIX keeps the inode alive until close, so it writes into an orphaned inode and vanishes; no new-file corruption. Device-check: wipe mid-restore → fresh restore starts clean |
 | S13 | App killed **mid-wipe** | Worst case: partial deletion. data.db gone + stale -wal → SQLite resets a mismatched WAL on next create; wallet re-initializes fresh; keychain (app-owned) untouched → Zodl re-runs its own reset | SQLite WAL salt/checksum semantics; prepare re-creates DB | 🟡 reasoning solid; cheap to device-check |
 | S14 | rewind() (resync) while idle | Truncate to checkpoint; re-scan reads as genuine climb (queue re-grows = scope expansion → floor re-baselines) | truncateToChainState + E-5 re-baseline | 🟡 device |
-| S15 | rewind() **mid-restore / mid-sync** | **GAP.** `rewindImpl` truncates WITHOUT stopping the engine — the in-flight pass's façade/plan reference blocks above the truncation; its next commit can write against truncated chain state. Old SDK stopped the processor inside rewind; slipstream lost that. | — | 🔴 **H1**: serialize exactly like deleteAccount — `engine.stop()` → truncate → `if wasRunning start()`. 4 lines, recipe proven today. (Zodl's resync flow may stop first app-side, which masks it — the SDK contract must not rely on that.) |
+| S15 | rewind() **mid-restore / mid-sync** | Stop → truncate → restart (old-SDK parity restored); a failed truncate also restarts the engine; the re-scan reads as a genuine climb (E-5) | **H1 SHIPPED 2026-07-03** — `rewindImpl` serializes like deleteAccount | 🟡 fixed in code; needs device |
 | S16 | switchTo(endpoint) mid-restore | Stop → reopen handle on new server → resume from queue (durable, server-agnostic); tx-version mirror reset | switchTo sequence (verified: stopPolling → engine.stop → reopen → restart) | ✅ code-verified; 🟡 one device datapoint |
 | S17 | Tor toggle in settings | Next start() picks up `sdkFlags.torEnabled` (dir passed per-start) | `slipstreamTorDirPath()` read at start | ✅ code-verified |
 
@@ -70,8 +70,8 @@ accounts. `recover_until` = tip via the E-6 anchor. Ignored rows fill [Sapling, 
 | S18 | SYNCED + import KS, **BD2 ≈ tip** | Near-no-op re-scan; brief or no "Restoring" | tiny force-requeue span | 🟡 trivial device check |
 | S19 | SYNCED + import KS, **BD2 < BD1** (older — his headline class: request BD2→tip when coverage began at BD1) | Deep restore [BD2 → tip]; banner climbs 0→100 as a genuine climb (floor re-baselines on scope expansion); balance/Activity reveal reconciled-only | E-5 `rebaseline_floor_if_scope_expanded` (≥50 ‰ drop); force-requeue; recover_until=tip ⇒ is_recovering true | 🟡 explicitly on the Phases-1–5 device list |
 | S20 | SYNCED + import KS, **BD2 > BD1** (newer) | Re-scan only [BD2, tip] (subset); quick; no false deep-restore | same, smaller span; no re-baseline trigger (seed within epsilon) | 🟡 device |
-| S21 | **RESTORING** (seed mid-restore) + import KS, any BD | Import lands (waits ≤15 s if writer busy), pass restarts, merged queue, still "Restoring", both accounts complete with ALL notes | busy_timeout (P1b); pass_lock serialized restart (5ee74ee8); force-requeue; **but see S22** | 🔴 **capped by S22** |
-| S22 | The S21 race, precisely | **GAP.** `importAccount` does NOT stop the engine before its DB write. Interleaving: import commits its force-Historic re-queue for range R → the old pass's in-flight (uncancellable `spawn_blocking`) commit then marks R **Scanned** → R is never re-scanned with the KS key → **silently missing KS notes** in R. (Delete got serialization today; import didn't.) | — | 🔴 **H2**: same 4-line recipe — `engine.stop()` → anchor+import → restart. With the engine stopped first, any orphan commit lands BEFORE the import txn (both serialize on the SQLite write lock), so the force-requeue is guaranteed last = correct. |
+| S21 | **RESTORING** (seed mid-restore) + import KS, any BD | Import serializes (engine stopped first), pass restarts, merged queue, still "Restoring", both accounts complete with ALL notes | H2 serialization + busy_timeout (P1b) + pass_lock restart (5ee74ee8) + force-requeue | 🟡 unblocked by H2; needs device |
+| S22 | The S21 race, precisely | Engine stopped BEFORE the wallet write ⇒ any orphan write-behind commit lands BEFORE the import transaction (both serialize on the SQLite write lock) ⇒ the force-rescan re-queue is the LAST writer — no range can be marked Scanned after it. The anchor fetch stays outside the stop window (network-only, no wallet write). A failed import restarts the engine. | **H2 SHIPPED 2026-07-03** — `importAccount` serializes like deleteAccount | 🟡 fixed by construction; S21's device run covers it |
 | S23 | Re-add same KS after disconnect (B4-12 re-test) | Clean re-import (no collision — the delete removed the account); full KS re-scan; no dialog | fresh add_account; busy_timeout (22add7cd + P1b) | 🟡 device re-test pending |
 | S24 | Double-add same KS **without** disconnect | Clean error surfaced (no half-state) | upstream `AccountCollision` → FFI error → ZcashError | ✅ upstream-guaranteed; Zodl UI should also prevent |
 | S25 | Import while OFFLINE | Import succeeds with recovery identity intact: recover_until = max(bundled checkpoint, BD2+1); syncs when online; never a silent direct fetch when Tor is on | E-6 `offline_anchor` (anchor.rs) + offline tests | ✅ unit-tested; 🟡 one device datapoint |
@@ -119,17 +119,17 @@ accounts. `recover_until` = tip via the E-6 anchor. Ignored rows fill [Sapling, 
 
 ---
 
-## The two 🔴 hardenings (both are today's proven recipe)
+## The two 🔴 hardenings — SHIPPED 2026-07-03
 
-1. **H1 — rewind must serialize with the engine.** `rewindImpl`: `let wasRunning = isRunning;
-   await engine.stop()` before `truncateToChainState`, `if wasRunning { try? await start() }`
-   after. Restores old-SDK parity (its `blockProcessor.rewind` stopped internally).
-2. **H2 — importAccount must serialize with the engine.** Same wrap around the
-   anchor+`rustBackend.importAccount` block. Kills the missing-notes race (S22): with the
-   engine stopped, any orphan write-behind commit necessarily lands BEFORE the import's
-   force-rescan re-queue, so the re-queue is last-writer = correct.
+1. **H1 — rewind serializes with the engine.** `rewindImpl`: stop → truncate → restart (on
+   both success and failure). Restores old-SDK parity (its `blockProcessor.rewind` stopped
+   internally).
+2. **H2 — importAccount serializes with the engine.** Stop before the wallet write (anchor
+   fetch stays live — network-only), restart after (also on failure). Kills the
+   missing-notes race (S22) by lock-order construction.
 
-Both are ~4 lines each + no FFI change. After H1/H2, every 🔴 in this matrix becomes 🟡.
+Swift-only, no FFI change. **Zero 🔴 rows remain** — the matrix is ✅/🟡 only; the finish
+line is the device script below.
 
 ## Device-test script (one sitting, orders the 🟡s efficiently)
 
@@ -141,10 +141,10 @@ Both are ~4 lines each + no FFI change. After H1/H2, every 🔴 in this matrix b
 3. Import KS with BD2 < BD1 → banner climbs (S19) → disconnect mid-restore (S28 = S34) →
    confirm self-resume + no grind → re-add (S23/S30) → let finish → disconnect synced (S27).
 4. Import KS with BD2 ≈ tip (S18), then with BD2 > BD1 (S20). Offline import once (S25).
-5. (After H2) repeat step 3's import while Setup-A is mid-restore (S21).
+5. Repeat step 3's import while Setup-A is mid-restore (S21 — exercises H2).
 
 **Setup C — maintenance + failure**:
-6. rewind idle (S14); (after H1) rewind mid-sync (S15). switchTo mid-restore (S16).
+6. rewind idle (S14); rewind mid-sync (S15 — exercises H1). switchTo mid-restore (S16).
 7. wipe mid-restore (S12) → fresh restore; kill mid-wipe if reproducible (S13).
 8. Your currently-wedged wallet: first launch of this build = S33.
 

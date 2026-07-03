@@ -39,6 +39,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next mempool/scan round, so a new send appears in the app's Activity as pending without delay.
 
 ## Fixed
+- `rewind(_:)` and `importAccount` on the Slipstream synchronizer now serialize with the sync
+  engine (stop → mutate → restart), the same contract as `deleteAccount`: a rewind can no
+  longer truncate the chain state under a mid-write pass, and an import's force-rescan
+  re-queue can no longer be clobbered by an in-flight commit marking a range Scanned after it
+  (which would have silently skipped re-scanning that range for the new account's notes). A
+  failed rewind/import restarts the engine rather than leaving it stopped.
 - Deleting an account (`deleteAccount`) on the Slipstream synchronizer no longer races the sync
   engine. It now serializes (stop → delete → restart), and the engine prunes the deleted
   account's orphaned historic scan ranges at every session open — so removing a hardware-wallet

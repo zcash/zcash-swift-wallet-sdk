@@ -543,16 +543,37 @@ public actor SlipstreamSynchronizer: Synchronizer {
         let effectiveBirthday = birthday ?? (chainTipHeight.map { BlockHeight($0) } ?? initializer.walletBirthday)
         let checkpoint = checkpointSource.birthday(for: effectiveBirthday)
 
-        let uuid = try await initializer.rustBackend.importAccount(
-            ufvk: ufvk,
-            seedFingerprint: seedFingerprint,
-            zip32AccountIndex: zip32AccountIndex,
-            treeState: checkpoint.treeState(),
-            recoverUntil: chainTipHeight,
-            purpose: purpose,
-            name: name,
-            keySource: keySource
-        )
+        // [#1755 H2 / SCENARIO_MATRIX S22] Serialize with the engine BEFORE the wallet write.
+        // The import force-re-queues [birthday, tip] as Historic (upstream `add_account`) so
+        // already-scanned blocks get re-scanned with the new key — but with a pass still
+        // running, an in-flight (uncancellable) write-behind commit could mark one of those
+        // ranges Scanned AFTER the import's re-queue, and that range would never be re-scanned
+        // with the new account's key: silently missing notes. Stopping first guarantees any
+        // orphan commit lands BEFORE the import transaction (both serialize on the SQLite
+        // write lock), so the force-re-queue is the last writer. The anchor fetch above
+        // deliberately runs with the engine still live — it is network-only, no wallet write.
+        let wasRunning = isRunning
+        await engine.stop()
+
+        let uuid: AccountUUID
+        do {
+            uuid = try await initializer.rustBackend.importAccount(
+                ufvk: ufvk,
+                seedFingerprint: seedFingerprint,
+                zip32AccountIndex: zip32AccountIndex,
+                treeState: checkpoint.treeState(),
+                recoverUntil: chainTipHeight,
+                purpose: purpose,
+                name: name,
+                keySource: keySource
+            )
+        } catch {
+            // A failed import must not leave the engine dead.
+            if wasRunning {
+                try? await start()
+            }
+            throw error
+        }
 
         // [#1755 → v2.1 E-5] Make the new account's re-scan VISIBLE + prompt. The re-scan's
         // progress needs NO host help anymore: the ENGINE detects the scope expansion (the
@@ -564,10 +585,10 @@ public actor SlipstreamSynchronizer: Synchronizer {
         // restart the re-scan would wait for the next block (≤ ~75 s). `try?`: a restart
         // hiccup must never fail an otherwise-successful import.
         initializer.logger.debug(
-            "[#1755] importAccount: isRunning=\(isRunning) "
-            + (isRunning ? "→ restarting sync pass now to surface the re-scan" : "→ next start() will re-scan")
+            "[#1755] importAccount: wasRunning=\(wasRunning) "
+            + (wasRunning ? "→ restarting sync pass now to surface the re-scan" : "→ next start() will re-scan")
         )
-        if isRunning {
+        if wasRunning {
             try? await start()
         }
 
@@ -925,6 +946,16 @@ public actor SlipstreamSynchronizer: Synchronizer {
             height = txHeight
         }
 
+        // [#1755 H1 / SCENARIO_MATRIX S15] Serialize with the engine — the same contract as
+        // deleteAccount/importAccount: truncating while a pass is mid-write would let the
+        // in-flight pass commit against the truncated chain state (the old SDK stopped the
+        // processor inside `blockProcessor.rewind`; slipstream lost that parity). Stop →
+        // truncate → restart. The restarted pass re-suggests from the truncated queue, and
+        // the engine's scope-expansion re-baseline (E-5) makes the re-scan read as a genuine
+        // climb. Restart on BOTH outcomes — a failed truncate must not leave the engine dead.
+        let wasRunning = isRunning
+        await engine.stop()
+
         do {
             let checkpointSource = initializer.container.resolve(CheckpointSource.self)
             if let height {
@@ -941,8 +972,14 @@ public actor SlipstreamSynchronizer: Synchronizer {
             // the handle survives a rewind, so `enhancedTxs`/`rangesCompleted` stay monotonic
             // and the SDK mirrors keep tracking them (mirrors reset only where the handle
             // dies: `wipe()` / `switchTo()`).
+            if wasRunning {
+                try? await start()
+            }
             subject.send(completion: .finished)
         } catch {
+            if wasRunning {
+                try? await start()
+            }
             subject.send(completion: .failure(error))
         }
     }
