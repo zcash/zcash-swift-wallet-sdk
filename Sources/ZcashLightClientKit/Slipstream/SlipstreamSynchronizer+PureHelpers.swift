@@ -30,83 +30,23 @@ extension SlipstreamSynchronizer {
         return min(Float(scanned) / Float(denominator), 1.0)
     }
 
-    /// Pure progress composition — mirrors the old SDK's ScanAction formula verbatim.
-    ///
-    /// Formula source: `ScanAction.swift` lines ~81-99.
-    /// ```
-    ///   composedNumerator   = scanProgress.numerator   + (recoveryProgress?.numerator   ?? 0)
-    ///   composedDenominator = scanProgress.denominator + (recoveryProgress?.denominator ?? 0)
-    ///   denominator == 0    → 1.0
-    ///   progress > 1.0      → clamp to 1.0 (old SDK threw; we log-warn, then clamp)
-    ///   areFundsSpendable   = scanProgress.isComplete  (ScanAction.swift:99)
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - scanProgress:     `(numerator, denominator, isComplete)` from `WalletSummary.scanProgress`,
-    ///                       or `nil` when the summary is unavailable (fresh db).
-    ///   - recoveryProgress: `(numerator, denominator)` from `WalletSummary.recoveryProgress`,
-    ///                       or `nil` when no recovery range exists.
-    /// - Returns: `(progress, spendable)` where `progress` ∈ [0.0, 1.0].
-    static func composeProgress(
-        scanProgress: (numerator: UInt64, denominator: UInt64, isComplete: Bool)?,
-        recoveryProgress: (numerator: UInt64, denominator: UInt64)?
-    ) -> (progress: Float, spendable: Bool) {
-        guard let scan = scanProgress else {
-            return (0.0, false)
-        }
+    // [v2.1 E-3] `composeProgress` / `summaryProgress` / `isRecovering(summary)` are GONE:
+    // the snapshot is truthful from open() (the engine seeds `is_recovering`, the permille
+    // floor, the persisted tip and spendability from the wallet DB), so no host re-derives
+    // progress or the recovery flag from a summary — `progress_permille` is the one blessed
+    // progress source (ENGINE_API_V2.md §0.3).
 
-        let composedNumerator = Float(scan.numerator) + Float(recoveryProgress?.numerator ?? 0)
-        let composedDenominator = Float(scan.denominator) + Float(recoveryProgress?.denominator ?? 0)
-
-        let progress: Float
-        if composedDenominator == 0 {
-            progress = 1.0
-        } else {
-            let raw = composedNumerator / composedDenominator
-            if raw > 1.0 {
-                // Defensive clamp — should not happen, but protect the UI from an out-of-range
-                // fraction; the old SDK threw ZcashError.rustScanProgressOutOfRange here.
-                // We clamp and let the caller emit a warning (single emission point in tickPoll).
-                progress = 1.0
-            } else {
-                progress = raw
-            }
-        }
-
-        return (progress, scan.isComplete)
-    }
-
-    /// T8.3.5: the wallet's GLOBAL scan progress from a persisted `WalletSummary`
-    /// (the engine's scanned-vs-total-needed fraction), or `(0.0, false)` when no
-    /// summary exists yet (a genuinely fresh wallet). Wraps `composeProgress` with the
-    /// summary's `scanProgress`/`recoveryProgress`. Used to (a) warm the cold-launch
-    /// emissions (`prepare`/`start`) so balance + progress show real values immediately,
-    /// and (b) hold the pre-first-suggest ticks (before the engine seeds its global floor).
-    static func summaryProgress(_ summary: WalletSummary?) -> (progress: Float, spendable: Bool) {
-        guard let summary else { return (0.0, false) }
-        return composeProgress(
-            scanProgress: summary.scanProgress.map { ($0.numerator, $0.denominator, $0.isComplete) },
-            recoveryProgress: summary.recoveryProgress.map { ($0.numerator, $0.denominator) }
-        )
-    }
-
-    /// [#1755] Deep-recovery (restore / new-account backfill) detector. True while the wallet
-    /// backend's `recovery_progress` exists and is incomplete — the window in which a note can
-    /// appear unspent before the block that spends it has been scanned, transiently inflating both
-    /// balance and Activity. The SDK reports 0 balance / empty Activity while this is true. A nil or
-    /// complete recovery (light catch-ups, fully synced) ⇒ false.
-    static func isRecovering(_ summary: WalletSummary?) -> Bool {
-        guard let recovery = summary?.recoveryProgress else { return false }
-        return !recovery.isComplete
-    }
-
-    /// T8.3.5: the `SynchronizerState` that `prepare()` emits right after opening the
-    /// engine. WARM (from the persisted summary) when a summary exists — the real balance
-    /// + a truthful near-100% progress, so a cold launch of a synced wallet never flashes
-    /// `[:]`/0%. COLD (`.disconnected`, no balances) when there is no summary yet (a
-    /// genuinely fresh wallet about to restore — 0 balance / "connecting" is correct).
-    static func initialState(from summary: WalletSummary?, syncSessionID: UUID) -> SynchronizerState {
-        guard let summary else {
+    /// [v2.1 E-3] The `SynchronizerState` that `prepare()` emits right after opening the
+    /// engine — a TRIVIAL mapping of the truthful-from-open snapshot (progress, recovery,
+    /// spendability, persisted tip) plus the unified summary's balances. A zero snapshot
+    /// (fresh wallet: no tip, no floor) emits cold `.disconnected`, as before.
+    static func initialState(
+        snapshot: SlipstreamSnapshot?,
+        accountsBalances: [AccountUUID: AccountBalance],
+        fullyScannedHeight: BlockHeight?,
+        syncSessionID: UUID
+    ) -> SynchronizerState {
+        guard let snap = snapshot, snap.chainTip != 0 || snap.progressPermille != 0 else {
             return SynchronizerState(
                 syncSessionID: syncSessionID,
                 accountsBalances: [:],
@@ -114,15 +54,13 @@ extension SlipstreamSynchronizer {
                 latestBlockHeight: .zero
             )
         }
-        let (progress, spendable) = summaryProgress(summary)
-        let recovering = isRecovering(summary)
         return SynchronizerState(
             syncSessionID: syncSessionID,
-            accountsBalances: recovering ? [:] : summary.accountBalances,
-            internalSyncStatus: .syncing(progress, spendable),
-            latestBlockHeight: summary.chainTipHeight,
-            fullyScannedHeight: summary.fullyScannedHeight,
-            isRecovering: recovering
+            accountsBalances: accountsBalances,
+            internalSyncStatus: .syncing(Float(snap.progressPermille) / 1000, snap.spendableHint != 0),
+            latestBlockHeight: BlockHeight(snap.chainTip),
+            fullyScannedHeight: fullyScannedHeight ?? .zero,
+            isRecovering: snap.isRecovering == 1
         )
     }
 

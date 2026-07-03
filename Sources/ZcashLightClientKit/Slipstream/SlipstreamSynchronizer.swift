@@ -30,8 +30,8 @@ import Foundation
 /// while delegating all data-model operations to the existing SDK components.
 /// This allows the two synchronizer implementations to share the same `data.db`.
 ///
-/// [Phase E / audit SDK-2] An ACTOR: every mutable var (poll mirrors, cachedSummary, the
-/// recovery gate, …) is actor-isolated, retiring the class-era races between the poll task,
+/// [Phase E / audit SDK-2] An ACTOR: every mutable var (poll mirrors, the recovery gate, …)
+/// is actor-isolated, retiring the class-era races between the poll task,
 /// the summary-fetch tasks and the public API. The protocol's synchronous members are
 /// `nonisolated` and touch only immutable lets (the thread-safe Combine subjects, the DI
 /// handles) — except `stop()`, which registers its teardown in a lock-guarded slot so an
@@ -109,13 +109,8 @@ public actor SlipstreamSynchronizer: Synchronizer {
     static let stallWatchdogThresholdSeconds: TimeInterval = 120
 
 
-    // ── Last unified summary (v2.1 Phase 2) ───────────────────────────────────
-    // The per-tick `unifiedWalletSummary()` result. The T5.5 summary-parasite protection
-    // (zero walks while Syncing except at range boundaries) lives in the ENGINE now
-    // (E-1 serve-cached + background refresh); this host-side copy exists only for the
-    // between-snapshot warm-starts (prepare/start emissions, pre-first-suggest holds —
-    // R4, retired by E-3).
-    private var cachedSummary: WalletSummary?
+    // [v2.1 E-3] The host-side summary cache is GONE: the engine caches the summary itself
+    // (E-1) and the warm-start emissions it fed read the truthful-from-open snapshot instead.
     // [audit SDK-1 + SDK-2] The pending `stop()` teardown, registered SYNCHRONOUSLY from the
     // nonisolated `stop()` (an actor's nonisolated members can't write actor state) and awaited
     // at the top of `start()` so a rapid stop→start can't have the stop land after (and kill)
@@ -212,22 +207,21 @@ public actor SlipstreamSynchronizer: Synchronizer {
             return .seedRequired
         }
         try await engine.open(network: initializer.network)
-        // T8.3.5: warm the cold-launch emission from the persisted wallet summary, so an
-        // already-synced wallet shows its REAL balance + a truthful near-100% progress
-        // immediately (widget stays hidden), instead of [:]/0% until the first sync tick
-        // resolves seconds later. A genuinely fresh wallet has no summary yet → cold
-        // .disconnected, as before (a real restore legitimately starts at 0 balance/0%).
-        // `cachedSummary` is seeded here so start() + the pre-first-suggest ticks inherit
-        // the warm values.
-        // [v2.1 Phase 1] Seeded from the UNIFIED summary (engine just opened above): a
-        // relaunch mid-restore now seeds recovery-SAFE balances instead of upstream's
-        // (potentially over-counted) values — every `cachedSummary` write is phase-correct.
-        cachedSummary = await unifiedWalletSummary()
-        // [#1755] Seed the recovery gate from the persisted summary so the FIRST balance/Activity read
-        // is correct without waiting for a poll: a synced wallet (recovery complete) shows its real
-        // Activity immediately; a relaunch mid-restore gates from the first read (no phantom flash).
-        currentlyRecovering = SlipstreamSynchronizer.isRecovering(cachedSummary)
-        stateSubject.send(SlipstreamSynchronizer.initialState(from: cachedSummary, syncSessionID: UUID()))
+        // [v2.1 E-3] The snapshot is truthful FROM OPEN: the engine seeds `isRecovering`,
+        // the permille floor, the persisted chain tip and spendability from the wallet DB
+        // (the same inputs the first suggest round would use), so the cold-launch emission
+        // is a trivial snapshot→state mapping — the summary-derived warm-start math this
+        // block used to carry (summaryProgress/isRecovering(summary)) is deleted. Balances
+        // still come from the unified summary (recovery-safe at every phase, D-1/E-1).
+        let snap = await engine.snapshot()
+        currentlyRecovering = snap?.isRecovering == 1
+        let summary = await unifiedWalletSummary()
+        stateSubject.send(SlipstreamSynchronizer.initialState(
+            snapshot: snap,
+            accountsBalances: summary?.accountBalances ?? [:],
+            fullyScannedHeight: summary?.fullyScannedHeight,
+            syncSessionID: UUID()
+        ))
         return .success
     }
 
@@ -277,19 +271,22 @@ public actor SlipstreamSynchronizer: Synchronizer {
         try await engine.start(ufvk: nil, birthday: birthday, torDir: slipstreamTorDir)
         isRunning = true
         startPolling()
-        // T8.3.5: seed the initial syncing emission from the cached summary (seeded in
-        // prepare) so a cold-launch catch-up doesn't reset progress to 0% — the pass-local
-        // counter starts at 0 for the few new blocks. A fresh wallet has no summary → 0%,
-        // as before; balance carries the warm value from prepare().
-        let (warmProgress, warmSpendable) = SlipstreamSynchronizer.summaryProgress(cachedSummary)
-        let startRecovering = SlipstreamSynchronizer.isRecovering(cachedSummary)
-        currentlyRecovering = startRecovering
+        // [v2.1 E-3] Warm start emission straight off the truthful snapshot: the engine
+        // seeded the permille floor / recovery flag / persisted tip at open(), so a
+        // cold-launch catch-up reads its real near-100% position (never 0%) with no
+        // summary math. Balances carry over from prepare()'s emission.
+        let snap = await engine.snapshot()
+        currentlyRecovering = snap?.isRecovering == 1
         stateSubject.send(SynchronizerState(
             syncSessionID: UUID(),
-            accountsBalances: startRecovering ? [:] : (cachedSummary?.accountBalances ?? latestState.accountsBalances),
-            internalSyncStatus: .syncing(warmProgress, warmSpendable),
-            latestBlockHeight: cachedSummary?.chainTipHeight ?? latestState.latestBlockHeight,
-            isRecovering: startRecovering
+            accountsBalances: latestState.accountsBalances,
+            internalSyncStatus: .syncing(
+                Float(snap?.progressPermille ?? 0) / 1000,
+                (snap?.spendableHint ?? 0) != 0
+            ),
+            latestBlockHeight: (snap?.chainTip).flatMap { $0 != 0 ? BlockHeight($0) : nil }
+                ?? latestState.latestBlockHeight,
+            isRecovering: currentlyRecovering
         ))
     }
 
@@ -368,49 +365,31 @@ public actor SlipstreamSynchronizer: Synchronizer {
         // phase-correct balances at every state — recovery-safe Σ-view values while
         // recovering (re-read per call ⇒ the mid-restore climb stays per-tick), upstream
         // passthrough otherwise, [#1591]-masked while snapshot.tipFresh == 0 (E-2).
-        cachedSummary = await unifiedWalletSummary() ?? cachedSummary
+        // [E-3] A plain local: the host-side summary CACHE is gone with the warm-start
+        // machinery it fed (the engine serves its own cache; a nil here only means
+        // "engine mid-close", and every consumer falls back to `latestState`).
+        let summary = await unifiedWalletSummary()
 
-        // ── T5.5 state-dispatch: Syncing vs Done vs other ─────────────────────
-        //
-        // STATE 1 (Syncing): ZERO getWalletSummary calls. Progress and spendability
-        // derive entirely from engine counters:
-        //   progress  = counterProgress(scanned: snap.scannedBlocks, total: snap.passTotalBlocks)
-        //   spendable = snap.spendableHint != 0
-        // This eliminates the "summary-parasite" regression (iPad A10 log, T5.5):
-        // every 8s a 10–30s shard walk ran concurrently with scanning, stealing 20–35%
-        // of CPU from rayon trial-decryption on a 4-core device. By making ZERO summary
-        // calls during scan, the device's full CPU budget is available for scanning.
-        //
-        // STATE 3 (Done): emit .synced IMMEDIATELY (never delayed), then start ONE
-        // background summary fetch to refresh balances/fullyScannedHeight for the
-        // post-sync idle state.
-        //
-        // STATES 0/2 (Disconnected/Error): summary fetches run at the 2s cadence so
-        // the balance display stays fresh while the wallet is idle or recovering.
+        // ── State-dispatch: Syncing vs Done vs other ──────────────────────────
+        // Progress + spendability come from the snapshot (blessed `progressPermille` +
+        // `spendableHint`); balances/fullyScannedHeight from the unified summary above.
+        // The T5.5 no-walk-while-scanning protection lives in the ENGINE'S summary
+        // rationing (E-1) — the walk never competes with rayon trial-decryption on
+        // low-core devices regardless of how often the host asks.
 
-        // [#1755] Deep-recovery gate. While the wallet backend's recovery_progress is incomplete,
-        // balance + Activity are provisional (device data: phantom at every recov<100%, gone at 100%),
-        // so the SDK reports ZERO balance + an EMPTY Activity to every client until recovery completes
-        // — forced, not a flag clients must honor. A live signal ⇒ robust across rewind/truncate/stop.
-        //
-        // Read the maintained flag — do NOT recompute from `cachedSummary` here. During a from-birthday
-        // restore the engine emits NO summary mid-pass (T5.5), so `cachedSummary` lags a boundary behind
-        // and would read "not recovering" for the first chunk — exactly when the recent range's phantom
-        // change notes first land, leaking them until the first boundary fetch. `currentlyRecovering` is
-        // refreshed by every LIVE summary fetch (prepare, getAccountsBalances, boundary, idle/done), so
-        // it is already true by the first read (the cold-launch balance read fires at scan=0/0).
+        // [#1755] Deep-recovery gate. While the restore backfill is incomplete, Activity rows are
+        // provisional (device data: phantom at every recov<100%, gone at 100%), so the reconcile
+        // filter holds unlinked txs until their delta is final — forced, not a flag clients must
+        // honor. A live signal ⇒ robust across rewind/truncate/stop.
         //
         // [Engine API v2 / Phase D] The recovery gate is ENGINE-OWNED: `snap.isRecovering` carries
         // the scheduler-computed flag WITH the fail-safe latch built in (terminal Done/Error force
         // 0 — the engine-side successor of the Swift resolveRecoveryGate/releasedByError machinery,
         // deleted in Phase E).
-        // First-seconds guard (ENGINE_API_V2.md §0 known gap): before the scheduler's FIRST suggest
-        // round the flag reads 0 even mid-restore, so adopt the snapshot only once the scheduler has
-        // spoken (flag set, a pass denominator exists, or a terminal state) — until then keep
-        // prepare()'s summary-derived seed, closing the phantom-leak window on tick 1.
-        if snap.state == 2 || snap.state == 3 || snap.isRecovering == 1 || snap.passTotalBlocks > 0 {
-            currentlyRecovering = snap.isRecovering == 1
-        }
+        // [E-3] Adopted UNCONDITIONALLY: the snapshot is truthful from open() (the engine seeds
+        // the flag from the persisted `recover_until_height` + scan queue), so the first-seconds
+        // adopt-guard that closed the pre-first-suggest lying window is retired.
+        currentlyRecovering = snap.isRecovering == 1
         let recovering = currentlyRecovering
 
         // [v2.1 Phase 2] Balances come straight from the per-tick unified summary above —
@@ -424,10 +403,10 @@ public actor SlipstreamSynchronizer: Synchronizer {
             forceCounterProgressUntilDone = false
             stateSubject.send(SynchronizerState(
                 syncSessionID: latestState.syncSessionID,
-                accountsBalances: cachedSummary?.accountBalances ?? latestState.accountsBalances,
+                accountsBalances: summary?.accountBalances ?? latestState.accountsBalances,
                 internalSyncStatus: .synced,
                 latestBlockHeight: BlockHeight(snap.chainTip),
-                fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight,
+                fullyScannedHeight: summary?.fullyScannedHeight ?? latestState.fullyScannedHeight,
                 isRecovering: recovering
             ))
             // Fall through to foundTransactions emission below (still needed on Done).
@@ -451,18 +430,15 @@ public actor SlipstreamSynchronizer: Synchronizer {
             // below deliberately bypasses every floor (the re-scan must read as a genuine 0→100%
             // climb), which is exactly why the engine keeps the raw counters exported alongside
             // the blessed value.
+            // [E-3] The pre-first-suggest hold is retired with the truthful-from-open floor:
+            // the engine seeds the permille floor at open() from the persisted scan state, so
+            // even a multi-tick Tor cold start reads the real position instead of 0%.
             let surfacedProgress: Float
             if forceCounterProgressUntilDone {
                 surfacedProgress = SlipstreamSynchronizer.counterProgress(
                     scanned: snap.scannedBlocks,
                     total: snap.passTotalBlocks
                 )
-            } else if snap.passTotalBlocks == 0 && snap.progressPermille == 0 {
-                // Pre-first-suggest hold (mirror of the D-2 isRecovering guard): before the
-                // scheduler's first suggest round the engine floor is unseeded — on a Tor cold
-                // start that window can span several ticks — so hold the warm summary value
-                // start() emitted rather than dipping to 0% and snapping back.
-                surfacedProgress = SlipstreamSynchronizer.summaryProgress(cachedSummary).progress
             } else {
                 surfacedProgress = Float(snap.progressPermille) / 1000
             }
@@ -470,10 +446,10 @@ public actor SlipstreamSynchronizer: Synchronizer {
 
             stateSubject.send(SynchronizerState(
                 syncSessionID: latestState.syncSessionID,
-                accountsBalances: cachedSummary?.accountBalances ?? latestState.accountsBalances,
+                accountsBalances: summary?.accountBalances ?? latestState.accountsBalances,
                 internalSyncStatus: .syncing(surfacedProgress, spendable),
                 latestBlockHeight: BlockHeight(snap.chainTip),
-                fullyScannedHeight: cachedSummary?.fullyScannedHeight ?? latestState.fullyScannedHeight,
+                fullyScannedHeight: summary?.fullyScannedHeight ?? latestState.fullyScannedHeight,
                 isRecovering: recovering
             ))
             // [v2.1 Phase 2] The F2 boundary refresh lives in the ENGINE now: the unified
@@ -482,7 +458,6 @@ public actor SlipstreamSynchronizer: Synchronizer {
         } else {
             // Disconnected (0) or Error (2): the per-tick unified summary keeps balances
             // fresh (engine-side 2 s idle TTL — the old host cadence, now engine-owned).
-            let summary = cachedSummary
             let fullyScannedHeight = summary?.fullyScannedHeight ?? latestState.fullyScannedHeight
             let balances = summary?.accountBalances ?? latestState.accountsBalances
 
@@ -594,7 +569,6 @@ public actor SlipstreamSynchronizer: Synchronizer {
         // (Σ-reconciled view values) vs normal (upstream passthrough) inside the unified
         // summary FFI and rations the expensive walk itself — no host-side branching.
         let summary = await unifiedWalletSummary()
-        if let summary { cachedSummary = summary }
         return summary?.accountBalances ?? [:]
     }
 
@@ -646,16 +620,13 @@ public actor SlipstreamSynchronizer: Synchronizer {
         //     ~100%; worse, the idle/Tor-bootstrap summary refetch in the poll loop would re-raise
         //     that stale floor even if we cleared it once (the field bug). So we set
         //     `forceCounterProgressUntilDone`: the poll loop drives % purely from the pass-local
-        //     counter (a real 0→100% climb) until the pass reaches Done. We also clear the cached
-        //     summary so the FIRST emission starts near 0% (no 100%→0% flicker); balances fall back
-        //     to `latestState` and repopulate on Done.
+        //     counter (a real 0→100% climb) until the pass reaches Done.
         //
         //  2. Restart the sync pass. The follow loop only re-syncs when the server TIP advances
         //     (`session.rs` `should_resync`), so without a restart the re-scan would wait for the next
         //     block (≤ ~75 s). Restarting runs `sync_once` NOW and emits `.syncing` immediately.
         //     `try?`: a restart hiccup must never fail an otherwise-successful import.
         forceCounterProgressUntilDone = true
-        cachedSummary = nil
         initializer.logger.debug(
             "[#1755] importAccount: counter-driven progress until Done; isRunning=\(isRunning) "
             + (isRunning ? "→ restarting sync pass now to surface the re-scan" : "→ next start() will re-scan")
@@ -1012,13 +983,11 @@ public actor SlipstreamSynchronizer: Synchronizer {
                 let checkpoint = checkpointSource.birthday(for: currentHeight)
                 try await initializer.rustBackend.truncateToChainState(chainState: checkpoint.treeState())
             }
-            // [audit SDK-5] Mirror `wipe()`'s cache resets: after a truncate the cached summary
-            // (and the recovery-log state derived from it) describes PRE-rewind data —
-            // serving it would show stale balances until the next pass. Engine COUNTERS are NOT
-            // reset here on purpose: the handle survives a rewind, so `enhancedTxs` /
-            // `rangesCompleted` stay monotonic and the SDK mirrors must keep tracking them
-            // (mirrors reset only where the handle dies: `wipe()` / `switchTo()`).
-            cachedSummary = nil
+            // [audit SDK-5 → E-3] No host cache to reset after a truncate: the summary is
+            // engine-served per call (E-1). Engine COUNTERS are NOT reset here on purpose:
+            // the handle survives a rewind, so `enhancedTxs`/`rangesCompleted` stay monotonic
+            // and the SDK mirrors keep tracking them (mirrors reset only where the handle
+            // dies: `wipe()` / `switchTo()`).
             subject.send(completion: .finished)
         } catch {
             subject.send(completion: .failure(error))
@@ -1068,10 +1037,6 @@ public actor SlipstreamSynchronizer: Synchronizer {
 
         // 3a-B4. Re-arm the stall watchdog: the handle is destroyed.
         resetStallWatchdog()
-
-        // 3b-F1. Reset the cached wallet summary: the DB is being wiped, so the
-        //        cached values would be stale for any subsequent prepare()/start().
-        cachedSummary = nil
 
         // 3b. Close Swift-side DB connections before deleting files — mirrors
         //     SDKSynchronizer.wipe() prewipe closure (SDKSynchronizer.swift:759-760).

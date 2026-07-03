@@ -13,7 +13,9 @@
 //       - zcashlc_slipstream_open with invalid path → throws rustSlipstreamOpen.
 //       - start before open → throws rustSlipstreamNotOpen.
 //    5. shouldEmitFound pure-helper unit tests.
-//    6. composeProgress pure-helper unit tests (wallet-summary-driven progress, T4.8).
+//    6. [v2.1 E-3] initialState trivial snapshot-mapping tests (truthful-from-open; the
+//       summary-driven composeProgress/summaryProgress era is retired — engine-side seed
+//       is cargo-tested in slipstream-core).
 //    7. T4.9 regression fixes:
 //       - withTaskTimeout: completes before deadline → returns value (not nil).
 //       - withTaskTimeout: exceeds deadline → returns nil (swallowed timeout error).
@@ -523,88 +525,10 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertEqual(kept.count, 2, "empty unreconciled set holds nothing back")
     }
 
-    // MARK: - 6. composeProgress pure-helper unit tests (T4.8)
-    //
-    // Oracle: ScanAction.swift lines ~81-99.
-    //   composedNumerator   = scan.numerator   + (recovery?.numerator   ?? 0)
-    //   composedDenominator = scan.denominator + (recovery?.denominator ?? 0)
-    //   denominator == 0    → 1.0
-    //   raw > 1.0           → clamp to 1.0
-    //   spendable           = scan.isComplete
-
-    /// nil scanProgress (fresh db, summary unavailable) → (0.0, false).
-    func testComposeProgressNilScanProgress() {
-        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
-            scanProgress: nil,
-            recoveryProgress: nil
-        )
-        XCTAssertEqual(progress, 0.0, accuracy: Float.ulpOfOne)
-        XCTAssertFalse(spendable)
-    }
-
-    /// denominator == 0 → progress == 1.0, spendable follows isComplete.
-    func testComposeProgressDenominatorZero() {
-        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
-            scanProgress: (numerator: 0, denominator: 0, isComplete: false),
-            recoveryProgress: nil
-        )
-        XCTAssertEqual(progress, 1.0, accuracy: Float.ulpOfOne,
-                       "denominator == 0 must yield progress 1.0")
-        XCTAssertFalse(spendable)
-    }
-
-    /// Typical mid-sync ratio with no recovery range.
-    func testComposeProgressScanOnlyMidway() {
-        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
-            scanProgress: (numerator: 50_000, denominator: 100_000, isComplete: false),
-            recoveryProgress: nil
-        )
-        XCTAssertEqual(progress, 0.5, accuracy: 1e-5)
-        XCTAssertFalse(spendable)
-    }
-
-    /// Scan+recovery ranges compose correctly: (40+10) / (100+20) = 50/120 ≈ 0.4167.
-    func testComposeProgressScanPlusRecovery() {
-        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
-            scanProgress: (numerator: 40, denominator: 100, isComplete: false),
-            recoveryProgress: (numerator: 10, denominator: 20)
-        )
-        let expected: Float = 50.0 / 120.0
-        XCTAssertEqual(progress, expected, accuracy: 1e-5,
-                       "composed scan+recovery ratio must be (40+10)/(100+20)")
-        XCTAssertFalse(spendable)
-    }
-
-    /// If the composed ratio somehow exceeds 1.0, it is clamped to 1.0.
-    func testComposeProgressClampAboveOne() {
-        // Force numerator > denominator (numerator=120, denominator=100 → raw=1.2).
-        let (progress, _) = SlipstreamSynchronizer.composeProgress(
-            scanProgress: (numerator: 120, denominator: 100, isComplete: false),
-            recoveryProgress: nil
-        )
-        XCTAssertEqual(progress, 1.0, accuracy: Float.ulpOfOne,
-                       "progress > 1.0 must be clamped to 1.0")
-    }
-
-    /// Fully scanned: numerator == denominator, isComplete == true → (1.0, true).
-    func testComposeProgressSpendablePassthrough() {
-        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
-            scanProgress: (numerator: 100, denominator: 100, isComplete: true),
-            recoveryProgress: nil
-        )
-        XCTAssertEqual(progress, 1.0, accuracy: 1e-5)
-        XCTAssertTrue(spendable, "spendable must be true when scan.isComplete is true")
-    }
-
-    // MARK: - 6b. T8.3.5 warm-start progress helper (summaryProgress)
-
-    /// summaryProgress(nil) → (0.0, false): a genuinely fresh wallet has no summary, so the
-    /// warm prepare()/start() emissions (and the pre-first-suggest hold) correctly read 0%.
-    func testSummaryProgressNilIsZero() {
-        let (progress, spendable) = SlipstreamSynchronizer.summaryProgress(nil)
-        XCTAssertEqual(progress, 0.0, accuracy: Float.ulpOfOne)
-        XCTAssertFalse(spendable)
-    }
+    // [v2.1 E-3] Sections 6 (composeProgress) and 6b (summaryProgress) are GONE with the
+    // helpers: the snapshot is truthful from open() — `progress_permille` is the one blessed
+    // progress source, seeded engine-side from the persisted wallet (cargo-tested in
+    // slipstream-core `scheduler::tests::seed_*`). No host re-derives progress from a summary.
 
     // MARK: - 6c. importAccount re-scan visibility ([#1755] truncation/old-birthday fix)
     //
@@ -624,51 +548,83 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertLessThan(progress, 0.98, "counter-only progress reveals the large re-scan")
     }
 
-    /// CONVERGENCE: once the next pass updates the scan queue (`update_chain_tip`), the wallet's
-    /// `WalletSummary` for a just-imported old-birthday account has a COMPLETE `scanProgress`
-    /// (existing accounts stay synced/spendable) but a `recoveryProgress` covering the big new
-    /// [birthday, tip] range (`recoverUntil=chainTip`). `composeProgress` sums them, so the global
-    /// progress the boundary/Done refreshes later see is far below 0.98 — it AGREES with the floor
-    /// the fix cleared to 0, so progress stays visible across the whole re-scan (no late snap-back).
-    func testComposeProgressFreshlyImportedOldBirthdayIsBelowBannerThreshold() {
-        let (progress, spendable) = SlipstreamSynchronizer.composeProgress(
-            scanProgress: (numerator: 1_000, denominator: 1_000, isComplete: true),
-            recoveryProgress: (numerator: 0, denominator: 650_000)
-        )
-        // (1000 + 0) / (1000 + 650000) ≈ 0.0015
-        XCTAssertLessThan(progress, 0.98,
-                          "a just-imported old-birthday recovery range drops global progress below the banner threshold")
-        XCTAssertTrue(spendable,
-                      "existing accounts stay spendable (scanProgress.isComplete) while the new account recovers")
-    }
+    // MARK: - 6d. [v2.1 E-3] initialState — trivial truthful-from-open snapshot mapping
 
-    /// initialState(nil) → cold `.disconnected` with no balances — a genuinely fresh
-    /// wallet (no summary yet) keeps the prior cold-launch behaviour.
-    func testInitialStateColdWhenNil() {
-        let state = SlipstreamSynchronizer.initialState(from: nil, syncSessionID: UUID())
+    /// initialState(nil snapshot) → cold `.disconnected` with no balances (engine mid-close).
+    func testInitialStateColdWhenNilSnapshot() {
+        let state = SlipstreamSynchronizer.initialState(
+            snapshot: nil,
+            accountsBalances: [:],
+            fullyScannedHeight: nil,
+            syncSessionID: UUID()
+        )
         XCTAssertEqual(state.internalSyncStatus, .disconnected)
         XCTAssertTrue(state.accountsBalances.isEmpty)
     }
 
-    /// initialState(summary) → WARM `.syncing` carrying the summary's progress + chain tip,
-    /// so a cold launch of a synced wallet shows a truthful near-100% instead of 0%.
-    func testInitialStateWarmFromSummary() {
-        let summary = WalletSummary(
-            accountBalances: [:],
-            chainTipHeight: 3_000_000,
-            fullyScannedHeight: 2_999_990,
-            recoveryProgress: nil,
-            scanProgress: ScanProgress(numerator: 99, denominator: 100),
-            nextSaplingSubtreeIndex: 0,
-            nextOrchardSubtreeIndex: 0
+    /// A ZERO snapshot (fresh wallet: engine seeded nothing — no tip, no floor) stays cold
+    /// `.disconnected`, preserving the prior fresh-wallet cold-launch behaviour.
+    func testInitialStateColdWhenSnapshotUnseeded() {
+        let snap = SlipstreamSnapshot(
+            chainTip: 0, fetchedBlocks: 0, scannedBlocks: 0, enhancedTxs: 0,
+            currentRangeEnd: 0, state: 0
         )
-        let state = SlipstreamSynchronizer.initialState(from: summary, syncSessionID: UUID())
-        if case let .syncing(progress, _) = state.internalSyncStatus {
-            XCTAssertEqual(progress, 0.99, accuracy: 1e-5, "warm progress must come from the summary scanProgress")
+        let state = SlipstreamSynchronizer.initialState(
+            snapshot: snap,
+            accountsBalances: [:],
+            fullyScannedHeight: nil,
+            syncSessionID: UUID()
+        )
+        XCTAssertEqual(state.internalSyncStatus, .disconnected)
+    }
+
+    /// A SEEDED snapshot (synced wallet at open: persisted tip + ~1000‰ floor + spendable)
+    /// emits warm `.syncing(~1.0, spendable)` with the persisted tip — truthful from open,
+    /// no summary math involved.
+    func testInitialStateWarmFromSeededSnapshot() {
+        let snap = SlipstreamSnapshot(
+            chainTip: 3_000_000, fetchedBlocks: 0, scannedBlocks: 0, enhancedTxs: 0,
+            currentRangeEnd: 0, state: 0,
+            spendableHint: 1, progressPermille: 999
+        )
+        let state = SlipstreamSynchronizer.initialState(
+            snapshot: snap,
+            accountsBalances: [:],
+            fullyScannedHeight: 2_999_990,
+            syncSessionID: UUID()
+        )
+        if case let .syncing(progress, spendable) = state.internalSyncStatus {
+            XCTAssertEqual(progress, 0.999, accuracy: 1e-5, "warm progress must be the seeded permille")
+            XCTAssertTrue(spendable, "no pending recent range at open ⇒ spendable")
         } else {
             XCTFail("warm initial state must be .syncing, got \(state.internalSyncStatus)")
         }
         XCTAssertEqual(state.latestBlockHeight, 3_000_000)
+        XCTAssertEqual(state.fullyScannedHeight, 2_999_990)
+        XCTAssertFalse(state.isRecovering)
+    }
+
+    /// A mid-restore relaunch snapshot (isRecovering seeded 1, floor at the resume position)
+    /// emits `.syncing` with `isRecovering == true` from the FIRST emission — the window the
+    /// deleted summary-derived seed + D-2 adopt-guard used to paper over.
+    func testInitialStateMidRestoreRelaunchIsRecoveringFromOpen() {
+        let snap = SlipstreamSnapshot(
+            chainTip: 3_000_000, fetchedBlocks: 0, scannedBlocks: 0, enhancedTxs: 0,
+            currentRangeEnd: 0, state: 0,
+            isRecovering: 1, progressPermille: 350
+        )
+        let state = SlipstreamSynchronizer.initialState(
+            snapshot: snap,
+            accountsBalances: [:],
+            fullyScannedHeight: nil,
+            syncSessionID: UUID()
+        )
+        XCTAssertTrue(state.isRecovering, "recovery flag must be truthful from the open-time snapshot")
+        if case let .syncing(progress, _) = state.internalSyncStatus {
+            XCTAssertEqual(progress, 0.35, accuracy: 1e-5, "restore resumes at its persisted position")
+        } else {
+            XCTFail("mid-restore relaunch must emit .syncing, got \(state.internalSyncStatus)")
+        }
     }
 
     // [v2.1 Phase 2] testRecoveryAccountBalance is GONE with the helper: the Direction-B
@@ -689,8 +645,8 @@ class SlipstreamOfflineTests: ZcashTestCase {
     }
 
     /// withTaskTimeout: operation takes longer than the deadline → throws _SummaryTimeoutError.
-    /// The call site in kickSummaryFetchIfNeeded wraps this in `try?` so the cache is left
-    /// unchanged — tested here as the raw throw to verify the timeout fires correctly.
+    /// (The helper is production-unused since v2.1 Phase 2 — the engine owns the summary
+    /// refresh lifecycle — but stays available; this pins its timeout contract.)
     func testWithTaskTimeoutThrowsWhenDeadlineExceeded() async throws {
         // Deadline: 50 ms; operation: sleep 500 ms (10× longer).
         let deadline: UInt64 = 50_000_000  // 50 ms
