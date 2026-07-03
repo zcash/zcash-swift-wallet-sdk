@@ -58,6 +58,11 @@ pub struct FfiSlipstreamSnapshot {
     /// Seconds since the last forward progress while state == Syncing; 0 otherwise.
     /// The host keeps the policy (log vs restart); the engine supplies the fact.
     pub stalled_seconds: u32,
+    // ── API v2.1 E-4 (appended at END for padding stability) ──
+    /// Monotonic version of the wallet's stored transaction set (see
+    /// `Progress::tx_set_version`). Host rule: version moved since last poll →
+    /// re-fetch transactions + publish. Never reset while the handle lives.
+    pub tx_set_version: u64,
 }
 
 /// C-compatible event record.
@@ -278,6 +283,7 @@ pub fn derive_snapshot(p: &crate::events::Progress, state: SyncState) -> FfiSlip
             is_recovering: is_recovering_u8,
             progress_permille,
             stalled_seconds,
+            tx_set_version: p.tx_set_version(),
         }
     }
 }
@@ -341,6 +347,7 @@ mod tests {
         assert_eq!(s.is_recovering, 0, "is_recovering default must be 0");
         assert_eq!(s.progress_permille, 0, "progress_permille default must be 0");
         assert_eq!(s.stalled_seconds, 0, "stalled_seconds default must be 0");
+        assert_eq!(s.tx_set_version, 0, "tx_set_version default must be 0");
     }
 
     /// [API v2 §4.4] The permille floor is session-monotonic: raw regressions never lower

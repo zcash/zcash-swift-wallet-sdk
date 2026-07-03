@@ -202,6 +202,10 @@ pub async fn run_to_completion(
     // floor each suggest round (below). A read failure degrades to "no seed" — presentation
     // state, never correctness state.
     let wallet_birthday: Option<u64> = session.min_birthday().unwrap_or_default();
+    // [API v2.1 E-4] Pass-start baseline for the boundary tx-set signature check (see the
+    // range-boundary block at the bottom of the loop). `None` (read failure) = the first
+    // successful boundary read becomes the baseline without bumping.
+    let mut last_tx_sig: Option<(u64, u64)> = session.tx_set_signature().ok();
     loop {
         let ranges = session.suggest_scan_ranges()?;
         // [API v2 §4.4] Recompute the recovery flag on every suggest round: still recovering
@@ -475,6 +479,19 @@ pub async fn run_to_completion(
         // Swift observes this counter and triggers ONE balance-summary fetch per boundary.
         if let Some(ref p) = progress {
             p.add_ranges_completed();
+            // [API v2.1 E-4] Boundary tx-set signature check: catches set changes that arrive
+            // WITHOUT an enhancement write — e.g. scanning a historic block stores the received
+            // note that LINKS an already-stored dangling spend (reconciled flips with no new
+            // tx). Direct writes (enhance/mempool) bump the version at their own sites; this
+            // closes the scan-driven linkage class. Read failure = skip (presentation state).
+            if let Ok(sig) = session.tx_set_signature() {
+                if last_tx_sig != Some(sig) {
+                    if last_tx_sig.is_some() {
+                        p.bump_tx_set_version();
+                    }
+                    last_tx_sig = Some(sig);
+                }
+            }
         }
     }
 }

@@ -69,6 +69,17 @@ pub struct Progress {
     /// independent of whether the fetched tip happens to equal the persisted one.
     /// Monotonic per handle; deliberately NOT reset by [`Self::begin_pass`].
     pub tip_refreshes: AtomicU64,
+    /// [API v2.1 E-4] Monotonic version of the wallet's STORED transaction set. Bumped exactly
+    /// when the set changes: a transaction stored/updated by enhancement or the mempool
+    /// monitor, a reconcile-linkage transition detected at a range boundary (the scheduler's
+    /// `(tx_count, unreconciled_count)` signature moved), or a host submit-poke
+    /// (`zcashlc_slipstream_notify_tx_change`). The HOST rule is one line: version moved →
+    /// re-fetch + publish `foundTransactions` (replaces the SDK's counter-watch + SyncDone
+    /// fallback + count-dedup strategy). The host's own reconcile-FILTER edge (`is_recovering`
+    /// flips — visibility policy per API v2 §0) is deliberately NOT folded in here: the filter
+    /// is host policy, so its edge is host-observed from the same snapshot.
+    /// Monotonic per handle; deliberately NOT reset by [`Self::begin_pass`].
+    pub tx_set_version: AtomicU64,
 }
 
 impl Progress {
@@ -112,6 +123,20 @@ impl Progress {
     #[inline]
     pub fn tip_refreshes(&self) -> u64 {
         self.tip_refreshes.load(Ordering::Relaxed)
+    }
+
+    /// [API v2.1 E-4] Record that the wallet's stored transaction set changed (see the
+    /// `tx_set_version` field doc for the exact bump sites).
+    #[inline]
+    pub fn bump_tx_set_version(&self) {
+        self.tx_set_version.fetch_add(1, Ordering::Relaxed);
+        self.touch();
+    }
+
+    /// Read the tx-set version (see [`Self::bump_tx_set_version`]).
+    #[inline]
+    pub fn tx_set_version(&self) -> u64 {
+        self.tx_set_version.load(Ordering::Relaxed)
     }
 
     /// Set `current_range_end` (Relaxed store).
@@ -514,6 +539,9 @@ mod tests {
         p.add_enhanced(20);
         p.add_ranges_completed();
         p.add_reorg();
+        p.note_tip_refreshed();
+        p.bump_tx_set_version();
+        p.bump_tx_set_version();
 
         // Pass 2 begins (app foregrounded, start() on the same handle).
         p.begin_pass();
@@ -530,5 +558,8 @@ mod tests {
         assert_eq!(p.ranges_completed(), 1, "ranges_completed is monotonic per handle");
         assert_eq!(p.reorgs(), 1, "reorgs_recovered is cumulative diagnostics");
         assert_eq!(p.chain_tip(), 3_374_188, "chain_tip is overwritten by the new pass anyway");
+        // [E-2/E-4] The freshness and tx-set counters are per-handle facts, not pass ratios.
+        assert_eq!(p.tip_refreshes(), 1, "tip_refreshes is monotonic per handle");
+        assert_eq!(p.tx_set_version(), 2, "tx_set_version is monotonic per handle");
     }
 }

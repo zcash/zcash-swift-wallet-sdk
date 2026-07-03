@@ -223,6 +223,7 @@ fn apply_txid_fetch(
                 stats.txs_stored += 1;
                 if let Some(p) = progress {
                     p.add_enhanced(1);
+                    p.bump_tx_set_version(); // [E-4] a wallet tx was stored/updated
                 }
             } else {
                 // GetStatus: record the chain view without full tx decryption.
@@ -237,6 +238,11 @@ fn apply_txid_fetch(
                         SlipstreamError::Wallet(format!("set_transaction_status: {e}"))
                     })?;
                 stats.statuses_set += 1;
+                if let Some(p) = progress {
+                    // [E-4] a status write is a tx-set UPDATE (pending → mined/expired) —
+                    // hosts re-fetch so the state transition surfaces without a scan event.
+                    p.bump_tx_set_version();
+                }
             }
         }
     }
@@ -407,6 +413,7 @@ async fn apply_address_request(
         stats.txs_stored += 1;
         if let Some(p) = progress {
             p.add_enhanced(1);
+            p.bump_tx_set_version(); // [E-4] a wallet tx was stored/updated
         }
     }
 

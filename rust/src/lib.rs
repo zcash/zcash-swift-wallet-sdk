@@ -4319,11 +4319,19 @@ pub struct FfiSlipstreamSnapshot {
     pub stalled_seconds: u32,
     // ── API v2.1 fields (appended at END for padding stability) ──
     /// [E-2] 1 once the CURRENT run has refreshed the wallet-DB chain tip (the [#1591]
-    /// stale-tip fact, engine-owned): the snapshot tip changed vs its value at `start()`,
-    /// or a pass reached Done. Survives stop→start hops shorter than 120 s. While 0,
-    /// hosts must mask spendable balances (the mask transform stays host-side because the
-    /// C `AccountBalance` cannot express the awaiting-resolution shift).
+    /// stale-tip fact, engine-owned): the engine's tip-refresh counter advanced past its
+    /// `start()` baseline (bumped only after `update_chain_tip` succeeds), or a pass
+    /// reached Done. Survives stop→start hops shorter than 120 s. While 0, hosts must
+    /// mask spendable balances (the mask transform stays host-side because the C
+    /// `AccountBalance` cannot express the awaiting-resolution shift).
     pub tip_fresh: u8,
+    /// [E-4] Monotonic version of the wallet's stored transaction set: bumps exactly when
+    /// enhancement stores/updates a tx, the mempool monitor stores a 0-conf hit, a range
+    /// boundary detects a reconcile-linkage transition, or the host pokes
+    /// [`zcashlc_slipstream_notify_tx_change`] after a submit. Host rule (one line):
+    /// version moved since the last poll → re-fetch transactions + publish
+    /// `foundTransactions`. Never reset while the handle lives.
+    pub tx_set_version: u64,
 }
 
 /// C-compatible Slipstream engine event record. Returned by
@@ -4692,6 +4700,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_snapshot(
             progress_permille: s.progress_permille,
             stalled_seconds: s.stalled_seconds,
             tip_fresh: if handle.tip_fresh_now(s.state) { 1 } else { 0 },
+            tx_set_version: s.tx_set_version,
         })
     });
     unwrap_exc_or(res, FfiSlipstreamSnapshot::default())
@@ -4739,6 +4748,9 @@ pub unsafe extern "C" fn zcashlc_slipstream_notify_tx_change(handle: *mut Slipst
     let handle = AssertUnwindSafe(handle);
     let res = catch_panic(|| {
         let handle = unsafe { handle.as_ref() }.ok_or_else(|| anyhow!("null handle"))?;
+        // [E-4] The version counter is the primary signal (snapshot-carried, loss-proof);
+        // the tag-5 event stays for hosts that consume the ring.
+        handle.inner.progress.bump_tx_set_version();
         handle
             .inner
             .push_event(slipstream_core::ffi_handle::FfiSlipstreamEvent { tag: 5, value: 0 });

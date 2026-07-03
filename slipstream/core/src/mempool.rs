@@ -140,6 +140,7 @@ pub async fn run_session(
             info!(txid = %tx.txid(), "mempool transaction stored (0-conf wallet hit)");
             if let Some(ref p) = progress {
                 p.add_enhanced(1);
+                p.bump_tx_set_version(); // [E-4] a 0-conf wallet tx was stored
             }
         } else {
             debug!(txid = %tx.txid(), "mempool transaction not wallet-relevant");
