@@ -65,6 +65,71 @@ pub(crate) fn global_floor_permille(tip: u64, birthday: Option<u64>, remaining: 
     Some(scanned.saturating_mul(1000) / span)
 }
 
+/// [API v2.1 E-3] Seed the snapshot atomics from PERSISTED wallet state, so the snapshot is
+/// truthful from `open()` — before the first suggest round — and hosts never compensate for
+/// a pre-pass snapshot that "lies" (the ENGINE_API_V2.md §0 known gap: `is_recovering` read
+/// 0 mid-restore and `progress_permille` read 0 on a 99%-synced wallet until the scheduler's
+/// first suggest round, which on a Tor cold start can be many seconds away).
+///
+/// Replicates the first suggest round's math against the DB alone (no network):
+///   - `chain_tip`  — the wallet's persisted tip view (`WalletRead::chain_height`, the height
+///     the last `update_chain_tip` recorded). The live pass overwrites it on its first fetch.
+///   - `recovering` — any suggested range still starts below MAX(`accounts.recover_until_height`)
+///     (identical to the per-round computation in [`run_to_completion`]).
+///   - permille floor — [`global_floor_permille`] over (persisted tip, MIN(birthday),
+///     Σ remaining queue), folded via `fetch_max` (a seed can only raise the floor).
+///   - `spendable`  — latched when NO ChainTip/Verify-priority range remains pending: the
+///     recent window is fully scanned, which is exactly what the in-pass latch records.
+///
+/// A wallet with no accounts seeds nothing — a fresh wallet's zero snapshot IS truthful.
+/// Callers treat errors as "no seed" (presentation state, never correctness state).
+pub fn seed_progress_from_wallet(
+    progress: &Progress,
+    session: &WalletSession,
+) -> Result<(), SlipstreamError> {
+    let Some(birthday) = session.min_birthday()? else {
+        return Ok(()); // no accounts — the zero snapshot is the truth
+    };
+    let ranges = session.suggest_scan_ranges()?;
+    let recover_until = session.max_recover_until()?;
+    let recovering = recover_until.map_or(false, |ru| {
+        ranges.iter().any(|r| u64::from(r.block_range().start) < ru)
+    });
+    progress.set_recovering(recovering);
+
+    let recent_pending = ranges
+        .iter()
+        .any(|r| matches!(r.priority(), ScanPriority::ChainTip | ScanPriority::Verify));
+    if !recent_pending {
+        progress.set_spendable();
+    }
+
+    let tip = session.chain_height()?.unwrap_or(0);
+    if tip != 0 {
+        progress.set_chain_tip(tip);
+    }
+    let sum_remaining: u64 = ranges
+        .iter()
+        .map(|r| {
+            let s = u64::from(r.block_range().start);
+            let e = u64::from(r.block_range().end);
+            e.saturating_sub(s)
+        })
+        .sum();
+    if let Some(seed) = global_floor_permille(tip, Some(birthday), sum_remaining) {
+        let _ = progress.permille_floor(seed);
+    }
+    tracing::info!(
+        tip,
+        birthday,
+        sum_remaining,
+        recovering,
+        spendable = !recent_pending,
+        "E-3 snapshot seeded from persisted wallet state (truthful from open)"
+    );
+    Ok(())
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct SyncReport {
     pub ranges_processed: u64,
@@ -474,6 +539,93 @@ mod tests {
         assert_eq!(global_floor_permille(999, Some(1_000), 10), None, "tip below birthday");
         // Remaining exceeding the span clamps to 0 rather than underflowing.
         assert_eq!(global_floor_permille(1_100, Some(1_000), 5_000), Some(0));
+    }
+
+    // ── [API v2.1 E-3] truthful-from-open seed ─────────────────────────────────
+
+    /// Open a wallet with one imported account (TEST_UFVK, birthday treestate at 663149)
+    /// and the chain tip persisted at `tip`. Returns the session (birthday = 663150).
+    fn wallet_with_account(dir: &tempfile::TempDir, tip: u64) -> WalletSession {
+        let path = dir.path().join("data.db");
+        let mut s = WalletSession::open(zcash_protocol::consensus::Network::MainNetwork, &path)
+            .expect("open wallet");
+        let ts = zcash_client_backend::proto::service::TreeState {
+            network: "main".into(),
+            height: 663_149,
+            hash: "0".repeat(64),
+            time: 1,
+            ..Default::default()
+        };
+        s.ensure_account(crate::wallet_session::TEST_UFVK, ts).expect("import account");
+        s.update_chain_tip(tip).expect("update tip");
+        s
+    }
+
+    /// A wallet with NO accounts seeds nothing — the zero snapshot is already truthful.
+    #[test]
+    fn seed_is_noop_on_fresh_wallet() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("data.db");
+        let s = WalletSession::open(zcash_protocol::consensus::Network::MainNetwork, &path)
+            .expect("open wallet");
+        let p = Progress::default();
+        seed_progress_from_wallet(&p, &s).expect("seed");
+        assert_eq!(p.chain_tip.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert!(!p.recovering());
+        assert_eq!(p.spendable(), 0);
+        assert_eq!(p.progress_permille_floor.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    /// Never-scanned restore-shaped wallet: the seed reports the persisted tip, a truthful
+    /// ~0 floor (the whole span is still queued), NOT recovering (no recover_until), and
+    /// spendability mirroring whether a ChainTip/Verify range is still pending.
+    #[test]
+    fn seed_reports_persisted_position() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tip = 700_000u64;
+        let s = wallet_with_account(&dir, tip);
+        let p = Progress::default();
+        seed_progress_from_wallet(&p, &s).expect("seed");
+
+        assert_eq!(
+            p.chain_tip.load(std::sync::atomic::Ordering::Relaxed),
+            tip,
+            "seed must surface the persisted chain tip"
+        );
+        assert!(!p.recovering(), "no recover_until ⇒ not recovering");
+        assert_eq!(
+            p.progress_permille_floor.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "nothing scanned ⇒ truthful 0‰ floor (restore bar still climbs from 0)"
+        );
+        // Wiring proof: the spendable latch mirrors the actual queue contents.
+        let ranges = s.suggest_scan_ranges().expect("ranges");
+        let recent_pending = ranges
+            .iter()
+            .any(|r| matches!(r.priority(), ScanPriority::ChainTip | ScanPriority::Verify));
+        assert_eq!(p.spendable() == 1, !recent_pending, "spendable ⇔ no recent range pending");
+        // The seed must never bump the tip-REFRESH counter (persisted ≠ freshly proven).
+        assert_eq!(p.tip_refreshes(), 0, "E-3 seed must not fake tip freshness");
+    }
+
+    /// With `recover_until_height` persisted (a restore in flight), queued ranges below it
+    /// must seed `recovering = true` — the mid-restore relaunch case that used to lie 0.
+    #[test]
+    fn seed_detects_recovering_from_persisted_recover_until() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let tip = 700_000u64;
+        let s = wallet_with_account(&dir, tip);
+        {
+            let conn = rusqlite::Connection::open(dir.path().join("data.db")).expect("side conn");
+            conn.execute("UPDATE accounts SET recover_until_height = ?1", [tip])
+                .expect("set recover_until");
+        }
+        let p = Progress::default();
+        seed_progress_from_wallet(&p, &s).expect("seed");
+        assert!(
+            p.recovering(),
+            "queued ranges below recover_until must seed recovering=true from open"
+        );
     }
 
     #[test]

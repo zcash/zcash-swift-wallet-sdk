@@ -62,6 +62,13 @@ pub struct Progress {
     /// monotonicRecoveryProgress floor and its warm-start seeding: a follow-up catch-up
     /// pass holds the prior high-water mark instead of flashing back to 0%).
     pub progress_permille_floor: AtomicU64,
+    /// [API v2.1 E-2/E-3] Count of successful `update_chain_tip` persists across the handle's
+    /// life. Bumped by the ENGINE only (never by the E-3 open-time seed, which stores a
+    /// persisted tip VALUE without proving freshness) — the FFI's `tip_fresh` fact latches
+    /// when this counter has advanced since `start()`, i.e. "THIS run refreshed the tip",
+    /// independent of whether the fetched tip happens to equal the persisted one.
+    /// Monotonic per handle; deliberately NOT reset by [`Self::begin_pass`].
+    pub tip_refreshes: AtomicU64,
 }
 
 impl Progress {
@@ -86,10 +93,25 @@ impl Progress {
         self.touch();
     }
 
-    /// Set `chain_tip` (Relaxed store).
+    /// Set `chain_tip` (Relaxed store). Stores a VALUE only — callers that just persisted a
+    /// freshly-fetched server tip must also call [`Self::note_tip_refreshed`]; the E-3
+    /// open-time seed calls this alone (a persisted tip is not proof of freshness).
     #[inline]
     pub fn set_chain_tip(&self, tip: u64) {
         self.chain_tip.store(tip, Ordering::Relaxed);
+    }
+
+    /// [API v2.1 E-2] Record that a sync pass successfully persisted a freshly-fetched
+    /// server tip (`session.update_chain_tip` returned Ok). Drives the FFI `tip_fresh` fact.
+    #[inline]
+    pub fn note_tip_refreshed(&self) {
+        self.tip_refreshes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Read the tip-refresh counter (see [`Self::note_tip_refreshed`]).
+    #[inline]
+    pub fn tip_refreshes(&self) -> u64 {
+        self.tip_refreshes.load(Ordering::Relaxed)
     }
 
     /// Set `current_range_end` (Relaxed store).

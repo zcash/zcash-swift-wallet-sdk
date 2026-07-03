@@ -181,6 +181,18 @@ impl WalletSession {
             .map_err(|e| wallet_err("suggest_scan_ranges", e))
     }
 
+    /// [API v2.1 E-3] The wallet's PERSISTED view of the chain tip (`WalletRead::chain_height`,
+    /// scan-queue derived), or `None` when the wallet has never seen a tip (fresh DB). Used by
+    /// the open-time snapshot seed: it is the tip the last `update_chain_tip` recorded, so the
+    /// truthful-from-open snapshot can report a real height before any network call.
+    pub fn chain_height(&self) -> Result<Option<u64>, SlipstreamError> {
+        Ok(self
+            .db
+            .chain_height()
+            .map_err(|e| wallet_err("chain_height", e))?
+            .map(|h| u64::from(u32::from(h))))
+    }
+
     /// Exclusive access for the scan driver (scan_cached_blocks needs &mut).
     pub fn db_mut(&mut self) -> &mut Db {
         &mut self.db

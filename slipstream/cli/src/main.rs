@@ -293,6 +293,18 @@ fn cmd_watch(
             )),
             events: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         };
+        // [API v2.1 E-3] Truthful-from-open: seed the snapshot atomics from the persisted
+        // wallet (same call the iOS FFI open() makes) — the SECOND-HOST acceptance proof
+        // that no host needs pre-first-suggest compensation. Failure = cold snapshot.
+        if let Ok(session) =
+            slipstream_core::wallet_session::WalletSession::open(slipstream_core::Network::MainNetwork, &db_path)
+        {
+            if let Err(e) =
+                slipstream_core::scheduler::seed_progress_from_wallet(&reporter.progress, &session)
+            {
+                eprintln!("warn: E-3 open-time snapshot seed failed ({e}) — starting cold");
+            }
+        }
         let scfg = slipstream_core::SessionConfig {
             engine: cfg,
             account: ufvk_arg.map(|(s, h)| (s.to_string(), h)),

@@ -4247,10 +4247,13 @@ pub struct SlipstreamHandle {
     summary_refresh_inflight: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// [API v2.1 E-2] Tip-freshness for the [#1591] stale-tip spendable mask — the engine
     /// owns the FACT (it is the thing refreshing the tip); hosts apply the mask transform.
-    /// Mirrors the SDK's `shouldMarkChainTipUpdated` semantics exactly: fresh once the
-    /// snapshot tip changed vs the value captured at `start()` (the engine stores the tip
-    /// only AFTER `update_chain_tip` succeeds), or when a pass reaches Done.
-    tip_at_run_start: std::sync::atomic::AtomicU64,
+    /// `shouldMarkChainTipUpdated` semantics at the source: fresh once THIS run has
+    /// persisted a freshly-fetched server tip (`Progress::tip_refreshes` advanced past the
+    /// baseline captured at `start()` — the engine bumps it only after `update_chain_tip`
+    /// succeeds), or when a pass reaches Done. Counter-based (not tip-value-based) so the
+    /// E-3 DB-seeded tip can neither fake freshness nor suppress a genuine refresh that
+    /// happens to fetch the same height.
+    tip_refreshes_at_run_start: std::sync::atomic::AtomicU64,
     tip_fresh: std::sync::atomic::AtomicBool,
     /// [API v2.1 E-2] `stop()` timestamp: freshness survives a stop→start hop shorter than
     /// 120 s (the SDK's `SDKFlags.sdkStarted` quick-background parity).
@@ -4430,13 +4433,36 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
             total_memory_bytes,
         };
 
+        // [API v2.1 E-3] Truthful-from-open snapshot: seed the progress atomics from the
+        // persisted wallet DB (the same inputs the first suggest round would use), so a
+        // pre-pass snapshot never lies — `is_recovering` is correct on a mid-restore
+        // relaunch, the permille floor holds a 99%-synced wallet's real position, and
+        // `chain_tip` reports the last persisted tip. Hosts must NOT compensate.
+        // Failures degrade to the zero snapshot (truthful for a fresh wallet) — the seed
+        // is presentation state and must never fail `open()`. NOTE: the Swift host always
+        // runs `Initializer.initialize` (DB create + migrations) before `open()`, so this
+        // does not race wallet creation.
+        match slipstream_core::wallet_session::WalletSession::open(network, db_path) {
+            Ok(session) => {
+                if let Err(e) =
+                    slipstream_core::scheduler::seed_progress_from_wallet(&inner.progress, &session)
+                {
+                    tracing::warn!(error = %e, "E-3 open-time snapshot seed failed — snapshot starts cold");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "E-3 seed skipped (wallet not openable) — snapshot starts cold");
+            }
+        }
         tracing::info!(total_memory_bytes, "slipstream handle opened");
 
         Ok(Box::into_raw(Box::new(SlipstreamHandle {
             inner,
             summary_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
             summary_refresh_inflight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            tip_at_run_start: std::sync::atomic::AtomicU64::new(0),
+            // Freshness baseline = the refresh COUNTER (0 on a fresh handle; the E-3 seed
+            // above never bumps it) — a DB-seeded tip is persisted state, not freshness.
+            tip_refreshes_at_run_start: std::sync::atomic::AtomicU64::new(0),
             tip_fresh: std::sync::atomic::AtomicBool::new(false),
             last_stop_at: std::sync::Mutex::new(None),
         })))
@@ -4486,13 +4512,14 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         let handle = unsafe { handle.as_mut() }.ok_or_else(|| anyhow!("null handle"))?;
 
         // [API v2.1 E-2] Tip-freshness bookkeeping (shouldMarkChainTipUpdated parity):
-        // capture the tip BEFORE the pass starts — a later change proves THIS run refreshed
-        // the wallet-DB tip. Freshness survives a stop→start hop < 120 s (quick background
-        // hop); a longer gap re-masks until the new pass proves the tip.
-        let snap_tip = handle.inner.snapshot().chain_tip;
+        // capture the refresh-counter baseline BEFORE the pass starts — a later advance
+        // proves THIS run persisted a freshly-fetched tip (even when the fetched height
+        // equals the E-3 DB-seeded one). Freshness survives a stop→start hop < 120 s
+        // (quick background hop); a longer gap re-masks until the new pass proves the tip.
+        let refreshes_now = handle.inner.progress.tip_refreshes();
         handle
-            .tip_at_run_start
-            .store(snap_tip, std::sync::atomic::Ordering::Relaxed);
+            .tip_refreshes_at_run_start
+            .store(refreshes_now, std::sync::atomic::Ordering::Relaxed);
         let stale_stop = handle
             .last_stop_at
             .lock()
@@ -4664,7 +4691,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_snapshot(
             is_recovering: s.is_recovering,
             progress_permille: s.progress_permille,
             stalled_seconds: s.stalled_seconds,
-            tip_fresh: if handle.tip_fresh_now(s.chain_tip, s.state) { 1 } else { 0 },
+            tip_fresh: if handle.tip_fresh_now(s.state) { 1 } else { 0 },
         })
     });
     unwrap_exc_or(res, FfiSlipstreamSnapshot::default())
@@ -4674,21 +4701,20 @@ impl SlipstreamHandle {
     /// [API v2.1 E-2] Lazily evaluates + latches tip freshness — the exact
     /// `shouldMarkChainTipUpdated` semantics the SDK derived host-side:
     /// - already fresh → stays fresh (until a >120 s stop→start gap re-masks in `start()`);
-    /// - tip still 0 → the engine has not advertised any tip; never fresh;
-    /// - tip changed vs its value at `start()` → the engine stores the snapshot tip only
-    ///   AFTER `session.update_chain_tip` succeeds, so a change proves THIS run refreshed
-    ///   the wallet-DB tip;
-    /// - unchanged tip → trust it only when the pass reached Done (state 3): `sync_once`
-    ///   cannot complete without `update_chain_tip` having succeeded.
-    fn tip_fresh_now(&self, chain_tip: u64, state: u8) -> bool {
+    /// - the refresh counter advanced past its `start()` baseline → the engine bumps it
+    ///   only AFTER `session.update_chain_tip` succeeds, so an advance proves THIS run
+    ///   refreshed the wallet-DB tip (counter-based so the E-3 DB-seeded tip can neither
+    ///   fake freshness nor mask a refresh that fetched the same height);
+    /// - otherwise → trust only a pass that reached Done (state 3): `sync_once` cannot
+    ///   complete without `update_chain_tip` having succeeded.
+    fn tip_fresh_now(&self, state: u8) -> bool {
         use std::sync::atomic::Ordering;
         if self.tip_fresh.load(Ordering::Relaxed) {
             return true;
         }
-        if chain_tip == 0 {
-            return false;
-        }
-        if chain_tip != self.tip_at_run_start.load(Ordering::Relaxed) || state == 3 {
+        let advanced = self.inner.progress.tip_refreshes()
+            > self.tip_refreshes_at_run_start.load(Ordering::Relaxed);
+        if advanced || state == 3 {
             self.tip_fresh.store(true, Ordering::Relaxed);
             return true;
         }

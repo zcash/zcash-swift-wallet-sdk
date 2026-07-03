@@ -184,9 +184,12 @@ pub async fn sync_once(
     session.update_chain_tip(tip)?;
     info!(tip, "chain tip updated");
 
-    // Advertise the chain tip to poll-based consumers.
+    // Advertise the chain tip to poll-based consumers, and record the refresh FACT —
+    // [E-2] `update_chain_tip` just succeeded, so this run has proven the wallet-DB tip
+    // (the FFI `tip_fresh` latch keys on this counter, not on the tip value changing).
     if let Some(ref p) = progress {
         p.set_chain_tip(tip);
+        p.note_tip_refreshed();
     }
 
     // Transparent UTXO refresh — runs BEFORE the shielded scan loop, mirroring upstream
