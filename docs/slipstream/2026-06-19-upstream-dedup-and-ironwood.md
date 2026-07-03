@@ -218,6 +218,11 @@ could take:
    prerequisite; once the seam exists, upstream could offer a "batched tree" variant that any consumer opts into.
 3. **GPU Sinsemilla subtree build** for Orchard **and** Ironwood (both Pallas/Sinsemilla). The hash-combining batch is
    pool-agnostic; a `zcash_client_backend` feature could expose it.
+4. **A write-back overlay `ShardStore`** for `shardtree` (`incrementalmerkletree`). Slipstream's `SparseShardStore`
+   is the optimized form of upstream's existing-but-naive `CachingShardStore` (eager full-load → sparse/lazy seed;
+   full re-flush → dirty delta; terminal → incremental), and the same pass fixes `MemoryShardStore`'s dense-`Vec`
+   back-fill (→ `BTreeMap`). Directly benefits `zcash_client_memory`/WebZjs. **Separate upstream target**
+   (`shardtree`, not `zcash_client_backend`) — full analysis + plan in `2026-06-22-upstream-shardtree-overlay-store.md`.
 
 These are the "shuffle code from here to there and vice versa" wins — and they're the strongest argument that the
 relationship is collaborative, not Slipstream-takes-from-upstream.
