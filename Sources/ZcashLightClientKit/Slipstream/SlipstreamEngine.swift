@@ -220,3 +220,89 @@ public actor SlipstreamEngine {
         return buf.prefix(Int(count)).map { SlipstreamEngineEvent(tag: $0.tag, value: $0.value) }
     }
 }
+
+// MARK: - Wallet-provisioning anchor (v2.1 E-6, handle-less)
+
+/// [E-6] The engine-resolved wallet-provisioning anchor. RESTORE: `height` = the
+/// recover_until to provision (always valid — live tip, or the engine's offline
+/// `max(bundled checkpoint, birthday+1)` fallback), `treeState` nil (the host keeps its
+/// birthday checkpoint). NEW: the reorg-safe recent server tree state, or nil when
+/// offline (the host keeps its bundled checkpoint defaults).
+struct SlipstreamRestoreAnchor {
+    let height: BlockHeight
+    let treeState: TreeState?
+}
+
+extension SlipstreamEngine {
+    /// [E-6] Resolve the provisioning anchor via `zcashlc_slipstream_restore_anchor` —
+    /// HANDLE-LESS (provisioning runs before `open()`, and `importAccount` must not
+    /// serialize against the live handle), so this is a static member. The FFI blocks for
+    /// the round-trip (single direct attempt; bounded Tor circuit retries when `torDirPath`
+    /// is set — a failed Tor bootstrap resolves OFFLINE, never a direct fallback), so the
+    /// call is hopped off the cooperative pool.
+    // swiftlint:disable:next function_parameter_count
+    static func restoreAnchor(
+        isRestore: Bool,
+        birthday: BlockHeight,
+        fallbackCheckpointHeight: BlockHeight,
+        server: LightWalletEndpoint,
+        network: ZcashNetwork,
+        torDirPath: String?
+    ) async -> SlipstreamRestoreAnchor? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: restoreAnchorBlocking(
+                    isRestore: isRestore,
+                    birthday: birthday,
+                    fallbackCheckpointHeight: fallbackCheckpointHeight,
+                    server: server,
+                    network: network,
+                    torDirPath: torDirPath
+                ))
+            }
+        }
+    }
+
+    // swiftlint:disable:next function_parameter_count
+    private static func restoreAnchorBlocking(
+        isRestore: Bool,
+        birthday: BlockHeight,
+        fallbackCheckpointHeight: BlockHeight,
+        server: LightWalletEndpoint,
+        network: ZcashNetwork,
+        torDirPath: String?
+    ) -> SlipstreamRestoreAnchor? {
+        let hostData = Array(server.host.utf8)
+        let torData = Array((torDirPath ?? "").utf8)
+        let networkId: UInt32 = network.networkType == .mainnet ? 1 : 0
+
+        let anchorPtr: UnsafeMutablePointer<FfiRestoreAnchor>? = hostData.withUnsafeBufferPointer { hPtr in
+            torData.withUnsafeBufferPointer { tPtr in
+                zcashlc_slipstream_restore_anchor(
+                    hPtr.baseAddress,
+                    UInt(hPtr.count),
+                    UInt16(clamping: server.port),
+                    server.secure,
+                    networkId,
+                    isRestore ? 1 : 0,
+                    UInt64(birthday),
+                    UInt64(fallbackCheckpointHeight),
+                    torData.isEmpty ? nil : tPtr.baseAddress,
+                    UInt(torData.count)
+                )
+            }
+        }
+        guard let anchorPtr else { return nil }
+        defer { zcashlc_slipstream_free_restore_anchor(anchorPtr) }
+
+        var treeState: TreeState?
+        if let tsPtr = anchorPtr.pointee.treestate, anchorPtr.pointee.treestate_len > 0 {
+            let data = Data(bytes: tsPtr, count: Int(anchorPtr.pointee.treestate_len))
+            treeState = try? TreeState(serializedBytes: data)
+        }
+        return SlipstreamRestoreAnchor(
+            height: BlockHeight(anchorPtr.pointee.height),
+            treeState: treeState
+        )
+    }
+}

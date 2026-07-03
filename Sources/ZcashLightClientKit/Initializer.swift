@@ -146,6 +146,15 @@ public class Initializer {
     /// or `SDKSynchronizer.wipe()`.
     var urlsParsingError: ZcashError?
 
+    /// [v2.1 E-6] Engine-owned wallet-provisioning anchor source. `SlipstreamSynchronizer`
+    /// sets this before `prepare()` runs `initialize`, routing the restore/new chain-fact
+    /// fetch (recover_until tip; reorg-safe new-wallet tree state) through the engine's
+    /// `restore_anchor` primitive — offline fallback policy and Tor privacy included.
+    /// `nil` (the legacy `SDKSynchronizer` path) keeps the host-side fetch below,
+    /// byte-for-byte (the old sync path is frozen).
+    /// Signature: (isRestore, birthday, latest bundled checkpoint height) → anchor.
+    var slipstreamAnchorSource: ((Bool, BlockHeight, BlockHeight) async -> SlipstreamRestoreAnchor?)?
+
     /// Constructs the Initializer and migrates an old cacheDb to the new file system block cache if a `cacheDbURL` is provided.
     /// - Parameters:
     ///  - cacheDbURL: previous location of the cacheDb. If you don't know what a cacheDb is and you are adopting this SDK for the first time then
@@ -459,60 +468,64 @@ public class Initializer {
         //     (recover_until = nil).
         // (A deliberate re-scan/resync is a separate, explicit action — `rewind(_:)` — not an init mode.)
         let existingAccounts = try await rustBackend.listAccounts()
-        // Seed↔account integrity guard: `initialize` is idempotent for an existing wallet, so
-        // restoring a DIFFERENT seed over existing accounts previously no-op'd silently — the
-        // keychain held seed B while data.db kept seed A's account, the app showed A's balance AND
-        // receive address (funds receivable but unspendable), and sends failed ZRUST0002. Validate
-        // the caller's seed against the stored derived account(s) before opening. Imported-only
-        // wallets (no derived account) are exempt: relevance cannot be evaluated for them
-        // (`SeedRelevance::NoDerivedAccounts` also reads as false, and throwing would break the
-        // hardware-wallet-only + new-seed flow).
-        if let seed, !existingAccounts.isEmpty {
-            let hasDerivedAccount = existingAccounts.contains { $0.seedFingerprint != nil && $0.hdAccountIndex != nil }
-            if hasDerivedAccount {
-                let seedIsRelevant = try await rustBackend.isSeedRelevantToAnyDerivedAccount(seed: seed)
-                guard seedIsRelevant else { throw ZcashError.initializerSeedMismatch }
-            }
-        }
+        try await validateSeedAgainstExistingAccounts(seed, existingAccounts: existingAccounts)
         if let seed, existingAccounts.isEmpty {
             var chainTip: UInt32?
             var accountTreeState = checkpoint.treeState()
 
-            let sdkFlags = container.resolve(SDKFlags.self)
-
-            if walletBirthday != nil {
-                // RESTORE — recover_until = current chain tip.
-                if let latestBlockHeight = try? await lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor)) {
-                    chainTip = UInt32(latestBlockHeight)
-                } else {
-                    // [#1755] Server unreachable at restore time: recover_until MUST still be a valid recent
-                    // height. A NULL recover_until makes the restore look like a NEW wallet — recovery_progress
-                    // reads complete ⇒ isRecovering=false ⇒ NO "Restoring" UI, the recovery gate never engages,
-                    // and the raw (transiently over-counted) balance is shown (syncLogsMac9: recover_until=unknown,
-                    // wallet showed 0 then a fluttering 8/5 with no banner). Fall back to the latest bundled
-                    // checkpoint — the best offline estimate of "now"; the [checkpoint..tip] gap is caught up as a
-                    // normal scan once the server is reachable, and recovery [birthday..checkpoint] keeps the
-                    // restore identity. max(.., birthday+1) guarantees a non-empty recovery even for a wallet
-                    // whose birthday is newer than the bundled checkpoints.
-                    let latestCheckpointHeight = checkpointSource.birthday(for: BlockHeight.max).height
-                    chainTip = UInt32(max(latestCheckpointHeight, self.walletBirthday + 1))
+            if let anchorSource = slipstreamAnchorSource {
+                // [v2.1 E-6] SLIPSTREAM: the provisioning chain facts come from the engine's
+                // `restore_anchor` primitive — one policy for every host (offline fallback +
+                // Tor privacy inside; see slipstream-core anchor.rs). Keys never cross: the
+                // `createAccount(seed:…)` call below stays host-side.
+                let resolved = await resolveSlipstreamAnchor(
+                    anchorSource,
+                    checkpointSource: checkpointSource,
+                    isRestore: walletBirthday != nil
+                )
+                chainTip = resolved.chainTip
+                if let serverTreeState = resolved.treeState {
+                    accountTreeState = serverTreeState
+                    self.walletBirthday = BlockHeight(serverTreeState.height)
                 }
             } else {
-                // NEW — no prior history. Fetch a recent tree state below the reorg horizon so funds
-                // intended for the wallet can't be missed if the current chain tip is reorganized; leave
-                // recover_until nil (no recovery phase).
-                if let latestBlockHeight = try? await lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor)) {
-                    let birthdayTreeStateHeight = max(
-                        latestBlockHeight - ZcashSDK.maxReorgSize,
-                        network.constants.saplingActivationHeight
-                    )
-                    let blockID = BlockID(height: UInt64(birthdayTreeStateHeight))
-                    if let serverTreeState = try? await lightWalletService.getTreeState(blockID, mode: await sdkFlags.ifTor(.uniqueTor)) {
-                        accountTreeState = serverTreeState
-                        // Not using birthdayTreeStateHeight directly just in case that something is wrong and server returns different height for
-                        // tree state. At 99.9999999% of cases `birthdayTreeStateHeight` and `serverTreeState.height` will be the same. In those
-                        // other cases this makes sure that there is no inconsistency between rust and `self.walletBirthday`.
-                        self.walletBirthday = BlockHeight(serverTreeState.height)
+                // LEGACY (`SDKSynchronizer`) — host-side fetch policy, frozen verbatim.
+                let sdkFlags = container.resolve(SDKFlags.self)
+
+                if walletBirthday != nil {
+                    // RESTORE — recover_until = current chain tip.
+                    if let latestBlockHeight = try? await lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor)) {
+                        chainTip = UInt32(latestBlockHeight)
+                    } else {
+                        // [#1755] Server unreachable at restore time: recover_until MUST still be a valid recent
+                        // height. A NULL recover_until makes the restore look like a NEW wallet — recovery_progress
+                        // reads complete ⇒ isRecovering=false ⇒ NO "Restoring" UI, the recovery gate never engages,
+                        // and the raw (transiently over-counted) balance is shown (syncLogsMac9: recover_until=unknown,
+                        // wallet showed 0 then a fluttering 8/5 with no banner). Fall back to the latest bundled
+                        // checkpoint — the best offline estimate of "now"; the [checkpoint..tip] gap is caught up as a
+                        // normal scan once the server is reachable, and recovery [birthday..checkpoint] keeps the
+                        // restore identity. max(.., birthday+1) guarantees a non-empty recovery even for a wallet
+                        // whose birthday is newer than the bundled checkpoints.
+                        let latestCheckpointHeight = checkpointSource.birthday(for: BlockHeight.max).height
+                        chainTip = UInt32(max(latestCheckpointHeight, self.walletBirthday + 1))
+                    }
+                } else {
+                    // NEW — no prior history. Fetch a recent tree state below the reorg horizon so funds
+                    // intended for the wallet can't be missed if the current chain tip is reorganized; leave
+                    // recover_until nil (no recovery phase).
+                    if let latestBlockHeight = try? await lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor)) {
+                        let birthdayTreeStateHeight = max(
+                            latestBlockHeight - ZcashSDK.maxReorgSize,
+                            network.constants.saplingActivationHeight
+                        )
+                        let blockID = BlockID(height: UInt64(birthdayTreeStateHeight))
+                        if let serverTreeState = try? await lightWalletService.getTreeState(blockID, mode: await sdkFlags.ifTor(.uniqueTor)) {
+                            accountTreeState = serverTreeState
+                            // Not using birthdayTreeStateHeight directly just in case that something is wrong and server returns different height for
+                            // tree state. At 99.9999999% of cases `birthdayTreeStateHeight` and `serverTreeState.height` will be the same. In those
+                            // other cases this makes sure that there is no inconsistency between rust and `self.walletBirthday`.
+                            self.walletBirthday = BlockHeight(serverTreeState.height)
+                        }
                     }
                 }
             }
@@ -548,6 +561,46 @@ public class Initializer {
         }
 
         return .success
+    }
+
+    /// Seed↔account integrity guard: `initialize` is idempotent for an existing wallet, so
+    /// restoring a DIFFERENT seed over existing accounts previously no-op'd silently — the
+    /// keychain held seed B while data.db kept seed A's account, the app showed A's balance AND
+    /// receive address (funds receivable but unspendable), and sends failed ZRUST0002. Validate
+    /// the caller's seed against the stored derived account(s) before opening. Imported-only
+    /// wallets (no derived account) are exempt: relevance cannot be evaluated for them
+    /// (`SeedRelevance::NoDerivedAccounts` also reads as false, and throwing would break the
+    /// hardware-wallet-only + new-seed flow).
+    private func validateSeedAgainstExistingAccounts(_ seed: [UInt8]?, existingAccounts: [Account]) async throws {
+        guard let seed, !existingAccounts.isEmpty else { return }
+        let hasDerivedAccount = existingAccounts.contains { $0.seedFingerprint != nil && $0.hdAccountIndex != nil }
+        guard hasDerivedAccount else { return }
+        let seedIsRelevant = try await rustBackend.isSeedRelevantToAnyDerivedAccount(seed: seed)
+        guard seedIsRelevant else { throw ZcashError.initializerSeedMismatch }
+    }
+
+    /// [v2.1 E-6] Resolve the slipstream provisioning anchor. RESTORE ⇒ `chainTip` = the
+    /// recover_until height (always present by the engine's policy: live tip, or offline
+    /// max(bundled checkpoint, birthday+1) — never NULL, the syncLogsMac9 rule). NEW ⇒
+    /// `treeState` = the reorg-safe recent server tree state, or nil offline (the caller
+    /// keeps the bundled checkpoint defaults).
+    private func resolveSlipstreamAnchor(
+        _ anchorSource: (Bool, BlockHeight, BlockHeight) async -> SlipstreamRestoreAnchor?,
+        checkpointSource: CheckpointSource,
+        isRestore: Bool
+    ) async -> (chainTip: UInt32?, treeState: TreeState?) {
+        let latestCheckpointHeight = checkpointSource.birthday(for: BlockHeight.max).height
+        if isRestore {
+            guard let anchor = await anchorSource(true, walletBirthday, latestCheckpointHeight) else {
+                return (nil, nil)
+            }
+            return (UInt32(anchor.height), nil)
+        } else {
+            guard let anchor = await anchorSource(false, 0, latestCheckpointHeight) else {
+                return (nil, nil)
+            }
+            return (nil, anchor.treeState)
+        }
     }
 
     /**

@@ -22,7 +22,7 @@
 //       - switchTo same-endpoint is a no-op (F2): engine not re-opened, state unchanged.
 //       - switchTo different endpoint fires reopen (F2/F3 smoke).
 //    8. T5.5 summary-interval tests (8s-Syncing branch REMOVED; all states return 2s).
-//    9. T5.5 counterProgress pure-helper unit tests (total==0 edge, mid-pass, clamp).
+//    9. [v2.1 E-5] counterProgress retired — progressPermille is the blessed source.
 //   10. T5.5 SlipstreamSnapshot new fields (passTotalBlocks, spendableHint defaults + explicit).
 //   11. T5.6 SlipstreamSnapshot rangesCompleted field (default + explicit + roundtrip).
 //   12. T5.6 boundary-summary timeout constant and F2 design invariants.
@@ -534,23 +534,11 @@ class SlipstreamOfflineTests: ZcashTestCase {
     // progress source, seeded engine-side from the persisted wallet (cargo-tested in
     // slipstream-core `scheduler::tests::seed_*`). No host re-derives progress from a summary.
 
-    // MARK: - 6c. importAccount re-scan visibility ([#1755] truncation/old-birthday fix)
-    //
-    // Importing an account with an older birthday on an already-synced wallet adds a large
-    // [birthday, tip] recovery range to re-scan. Every progress floor — today the ENGINE's
-    // session-monotonic permille, folded/seeded to ~1.0 on a synced wallet — would pin % at
-    // ~100% and mask the whole re-scan (the SmartBanner shows only below 0.98). importAccount
-    // therefore sets `forceCounterProgressUntilDone`: the poll loop drives % PURELY from the
-    // raw pass-local counters (bypassing the blessed permille entirely) until the re-scan
-    // reaches Done. This test pins the counter-only contract the flag relies on.
-
-    /// ~50k of a ~650k (≈15-month) re-scan is 7.7% pass-local — the counter-only path keeps it
-    /// below the 0.98 banner threshold, so the re-scan is visible as a genuine 0→100% climb.
-    func testCounterProgressLargeRescanVisibleWithoutFloor() {
-        let progress = SlipstreamSynchronizer.counterProgress(scanned: 50_000, total: 650_000)
-        XCTAssertEqual(progress, 50_000.0 / 650_000.0, accuracy: 1e-5)
-        XCTAssertLessThan(progress, 0.98, "counter-only progress reveals the large re-scan")
-    }
+    // [v2.1 E-5] Section 6c (importAccount counter-only re-scan visibility) is GONE with
+    // `forceCounterProgressUntilDone`/`counterProgress`: the ENGINE re-baselines its session
+    // floor when the scan scope expands (cargo-tested in slipstream-core
+    // `events::tests::floor_rebaseline_on_scope_expansion_only`), so the blessed permille
+    // reads an import/rewind re-scan as a genuine climb with no host bypass.
 
     // MARK: - 6d. [v2.1 E-3] initialState — trivial truthful-from-open snapshot mapping
 
@@ -740,49 +728,8 @@ class SlipstreamOfflineTests: ZcashTestCase {
     // [v2.1 Phase 2] The MARK-8 summaryFetchInterval suite is GONE with the host cadence:
     // summary rationing (incl. the T5.5 no-walk-while-Syncing invariant) is engine-owned (E-1).
 
-    // MARK: - 9. T5.5 counterProgress pure-helper tests
-
-    /// counterProgress(total:0) → 0.0 (avoids division-by-zero when no ranges taken yet).
-    func testCounterProgressTotalZeroReturnsZero() {
-        let result = SlipstreamSynchronizer.counterProgress(scanned: 0, total: 0)
-        XCTAssertEqual(result, 0.0, accuracy: Float.ulpOfOne,
-                       "counterProgress(scanned:0, total:0) must return 0.0 (clamped denominator)")
-    }
-
-    /// counterProgress(scanned:0, total:10000) → 0.0.
-    func testCounterProgressZeroScanned() {
-        let result = SlipstreamSynchronizer.counterProgress(scanned: 0, total: 10_000)
-        XCTAssertEqual(result, 0.0, accuracy: Float.ulpOfOne)
-    }
-
-    /// counterProgress mid-pass: 5000 / 10000 = 0.5.
-    func testCounterProgressMidPass() {
-        let result = SlipstreamSynchronizer.counterProgress(scanned: 5_000, total: 10_000)
-        XCTAssertEqual(result, 0.5, accuracy: 1e-5,
-                       "5000 / 10000 must be 0.5")
-    }
-
-    /// counterProgress complete: scanned == total → 1.0.
-    func testCounterProgressComplete() {
-        let result = SlipstreamSynchronizer.counterProgress(scanned: 10_000, total: 10_000)
-        XCTAssertEqual(result, 1.0, accuracy: Float.ulpOfOne,
-                       "scanned == total must yield 1.0")
-    }
-
-    /// counterProgress overflow: scanned > total → clamped to 1.0.
-    func testCounterProgressClampedAboveOne() {
-        let result = SlipstreamSynchronizer.counterProgress(scanned: 12_000, total: 10_000)
-        XCTAssertEqual(result, 1.0, accuracy: Float.ulpOfOne,
-                       "scanned > total must be clamped to 1.0")
-    }
-
-    /// counterProgress: large values do not overflow Float.
-    func testCounterProgressLargeValues() {
-        let result = SlipstreamSynchronizer.counterProgress(scanned: 286_855, total: 1_000_000)
-        let expected = Float(286_855) / Float(1_000_000)
-        XCTAssertEqual(result, expected, accuracy: 1e-5,
-                       "286855 / 1000000 must equal the expected Float ratio")
-    }
+    // [v2.1 E-5] Section 9 (counterProgress) is GONE with the helper — `progressPermille`
+    // is the one blessed progress source at every phase (E-3 seed + E-5 re-baseline).
 
     // MARK: - 10. T5.5 SlipstreamSnapshot new fields
 
@@ -834,13 +781,6 @@ class SlipstreamOfflineTests: ZcashTestCase {
         )
         XCTAssertEqual(snap.passTotalBlocks, 15_000)
         XCTAssertEqual(snap.spendableHint, 1)
-        // Verify counterProgress formula using these values.
-        let progress = SlipstreamSynchronizer.counterProgress(
-            scanned: snap.scannedBlocks,
-            total: snap.passTotalBlocks
-        )
-        XCTAssertEqual(progress, 0.5, accuracy: 1e-5,
-                       "7500 / 15000 must equal 0.5")
     }
 
     // MARK: - 11. T5.6 rangesCompleted field

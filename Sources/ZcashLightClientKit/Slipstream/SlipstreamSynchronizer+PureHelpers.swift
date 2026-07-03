@@ -11,24 +11,9 @@
 import Foundation
 
 extension SlipstreamSynchronizer {
-    /// Counter-based sync progress — derived purely from engine atomics, no DB call.
-    ///
-    /// Formula: `Float(scanned) / Float(max(total, 1))`, clamped to [0.0, 1.0].
-    ///   - `total == 0` (no ranges taken yet) → 0.0 (prevents division by zero).
-    ///   - Result > 1.0 (defensive) → clamped to 1.0.
-    ///
-    /// This is the primary progress source while `state == 1` (Syncing). It eliminates
-    /// the `getWalletSummary` call that caused ~20–35% per-output CPU overhead on iPad A10
-    /// (T5.5 — A10 log evidence: summary-parasite root cause confirmed).
-    ///
-    /// - Parameters:
-    ///   - scanned: `snap.scannedBlocks` from the FFI snapshot.
-    ///   - total:   `snap.passTotalBlocks` from the FFI snapshot.
-    /// - Returns: progress fraction ∈ [0.0, 1.0].
-    static func counterProgress(scanned: UInt64, total: UInt64) -> Float {
-        let denominator = max(total, 1)
-        return min(Float(scanned) / Float(denominator), 1.0)
-    }
+    // [v2.1 E-5] `counterProgress` is GONE with `forceCounterProgressUntilDone`: the engine
+    // re-baselines its session floor on scope expansion (import/rewind), so the blessed
+    // `progressPermille` needs no host-side raw-counter bypass.
 
     // [v2.1 E-3] `composeProgress` / `summaryProgress` / `isRecovering(summary)` are GONE:
     // the snapshot is truthful from open() (the engine seeds `is_recovering`, the permille

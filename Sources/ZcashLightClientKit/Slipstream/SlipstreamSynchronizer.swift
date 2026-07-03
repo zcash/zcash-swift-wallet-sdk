@@ -142,12 +142,10 @@ public actor SlipstreamSynchronizer: Synchronizer {
         }
     }
 
-    // [#1755] When set, syncing-time % is driven PURELY by the pass-local counter (no summary
-    // floor) until the next pass reaches Done. importAccount sets it so a new account's re-scan is
-    // visible: the cached summary lags (the scan queue isn't updated for the new account until the
-    // pass's update_chain_tip), AND the idle/Tor-bootstrap summary refetch in the poll loop would
-    // otherwise re-raise a stale ~100% floor — either of which masks the re-scan. Cleared on Done.
-    private var forceCounterProgressUntilDone = false
+    // [v2.1 E-5] `forceCounterProgressUntilDone` is GONE: the ENGINE re-baselines its
+    // session progress floor when the scan scope expands (an import with an older birthday,
+    // a rewind), so the blessed `progressPermille` reads the re-scan as a genuine climb by
+    // itself — no host-side floor bypass.
 
     // ── Init ───────────────────────────────────────────────────────────────────
 
@@ -193,6 +191,23 @@ public actor SlipstreamSynchronizer: Synchronizer {
         name: String,
         keySource: String?
     ) async throws -> Initializer.InitializationResult {
+        // [v2.1 E-6] Route init-time provisioning (restore recover_until / new-wallet tree
+        // state) through the engine's `restore_anchor` primitive — the offline fallback
+        // policy and Tor privacy live ENGINE-side, one implementation for every host. The
+        // legacy `SDKSynchronizer` path never sets this and keeps its frozen inline fetch.
+        let anchorServer = currentEndpoint
+        let anchorNetwork = initializer.network
+        let anchorTorDir = await slipstreamTorDirPath()
+        initializer.slipstreamAnchorSource = { isRestore, birthday, fallbackCheckpoint in
+            await SlipstreamEngine.restoreAnchor(
+                isRestore: isRestore,
+                birthday: birthday,
+                fallbackCheckpointHeight: fallbackCheckpoint,
+                server: anchorServer,
+                network: anchorNetwork,
+                torDirPath: anchorTorDir
+            )
+        }
         if case .seedRequired = try await initializer.initialize(
             with: seed,
             walletBirthday: walletBirthday,
@@ -242,27 +257,15 @@ public actor SlipstreamSynchronizer: Synchronizer {
         await pendingStop.take()?.value
         let birthday = BlockHeight(initializer.walletBirthday)
         // [v2.1 Phase 2] Tip freshness ([#1591]) is ENGINE-OWNED (snapshot.tipFresh, E-2):
-        // the FFI start() captures the tip baseline and keeps freshness across a <120 s
+        // the FFI start() captures the refresh baseline and keeps freshness across a <120 s
         // stop→start hop — the SDKFlags.sdkStarted()/chainTipAtRunStart parity machinery
         // this block used to carry is deleted.
-        let sdkFlags = initializer.container.resolve(SDKFlags.self)
         // B4: a new run starts with a fresh stall-watchdog window.
         resetStallWatchdog()
         // TODO: [#1755] Consider passing ufvk=Some after T4.4 integration tests confirm
         //   idempotency. Current strategy: ufvk=nil (keyless) since prepare() already
         //   imported the account and stored its birthday treestate.
-        // T-Tor.3: when Tor is enabled, hand the engine its OWN Tor state dir — a subdir of
-        // the SDK's torDirURL, separate from the old SDK's TorClient dir (arti holds a state
-        // lock). nil = direct. The engine syncs at full speed regardless (bulk stays direct;
-        // only the identifying metadata calls traverse Tor), so this never re-introduces the
-        // 12x-slower fallback — Tor users get fast sync AND privacy.
-        let torEnabled = await sdkFlags.torEnabled
-        var slipstreamTorDir: String?
-        if torEnabled {
-            let dir = initializer.torDirURL.appendingPathComponent("slipstream", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            slipstreamTorDir = dir.path
-        }
+        let slipstreamTorDir = await slipstreamTorDirPath()
         try await engine.start(ufvk: nil, birthday: birthday, torDir: slipstreamTorDir)
         isRunning = true
         startPolling()
@@ -327,6 +330,19 @@ public actor SlipstreamSynchronizer: Synchronizer {
     }
 
     // ── Polling (D8) ──────────────────────────────────────────────────────────
+
+    /// [T-Tor.3 / E-6] The engine's dedicated Tor state directory when Tor is enabled, else
+    /// nil (direct). A subdir of the SDK's torDirURL, SEPARATE from the old SDK's TorClient
+    /// dir (arti holds a state lock). Used by both `start()` (sync metadata circuits) and
+    /// the provisioning-anchor calls (identifying fetches ride Tor with the same state).
+    /// The engine syncs at full speed regardless — bulk block fetch stays direct.
+    private func slipstreamTorDirPath() async -> String? {
+        let sdkFlags = initializer.container.resolve(SDKFlags.self)
+        guard await sdkFlags.torEnabled else { return nil }
+        let dir = initializer.torDirURL.appendingPathComponent("slipstream", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.path
+    }
 
     private func startPolling() {
         pollTask?.cancel()
@@ -396,9 +412,6 @@ public actor SlipstreamSynchronizer: Synchronizer {
 
         if snap.state == 3 {
             // Done: emit .synced immediately.
-            // [#1755] The import re-scan (if any) is complete — resume normal floored progress so a
-            // later small catch-up doesn't read as 0% (the T8.3.5 reason the floor exists).
-            forceCounterProgressUntilDone = false
             stateSubject.send(SynchronizerState(
                 syncSessionID: latestState.syncSessionID,
                 accountsBalances: summary?.accountBalances ?? latestState.accountsBalances,
@@ -409,37 +422,11 @@ public actor SlipstreamSynchronizer: Synchronizer {
             ))
             // Fall through to foundTransactions emission below (still needed on Done).
         } else if snap.state == 1 {
-            // Syncing: counter-based progress only — NO regular getWalletSummary.
-            // (A10 log evidence: summary was ~20–35% CPU parasite; eliminated in T5.5.)
-            // T8.3.5: floor the pass-local counter with the wallet's GLOBAL summary
-            // progress so a cold-launch catch-up (a few new blocks → pass-local 0%)
-            // doesn't read as "0% synced". A real restore (summary ≈ 0 at the start)
-            // still climbs 0→100% off the pass-local counter.
-            // [#1755] After importAccount, drive % purely from the pass-local counter (no floor)
-            // until the re-scan reaches Done — see `forceCounterProgressUntilDone`. The floor would
-            // otherwise mask the re-scan (the cached summary lags the new account, and the idle/Tor
-            // refetch re-raises a stale ~100% floor).
-            // [Engine API v2 / Phase E] Blessed engine progress: `progress_permille` embodies the
-            // pass-counter ratio, Done→100%, the session-monotonic floor, AND the global floor
-            // the scheduler seeds each suggest round (tip−birthday span vs remaining queue) — so
-            // a cold-launch catch-up reads ~99.9% instead of pass-local 0%, and a relaunched
-            // restore resumes its true position. The Swift floors it replaced (summaryProgress
-            // syncing floor + monotonicRecoveryProgress) are deleted. The importAccount branch
-            // below deliberately bypasses every floor (the re-scan must read as a genuine 0→100%
-            // climb), which is exactly why the engine keeps the raw counters exported alongside
-            // the blessed value.
-            // [E-3] The pre-first-suggest hold is retired with the truthful-from-open floor:
-            // the engine seeds the permille floor at open() from the persisted scan state, so
-            // even a multi-tick Tor cold start reads the real position instead of 0%.
-            let surfacedProgress: Float
-            if forceCounterProgressUntilDone {
-                surfacedProgress = SlipstreamSynchronizer.counterProgress(
-                    scanned: snap.scannedBlocks,
-                    total: snap.passTotalBlocks
-                )
-            } else {
-                surfacedProgress = Float(snap.progressPermille) / 1000
-            }
+            // Syncing. [Engine API v2 / Phase E + v2.1 E-3/E-5] `progressPermille` is the ONE
+            // blessed progress source: the pass-counter ratio, Done→100%, the session-monotonic
+            // floor (seeded truthful-from-open, E-3), AND the scope-expansion re-baseline (E-5 —
+            // an import/rewind re-scan reads as a genuine climb with no host-side floor bypass).
+            let surfacedProgress = Float(snap.progressPermille) / 1000
             let spendable = snap.spendableHint != 0
 
             stateSubject.send(SynchronizerState(
@@ -540,12 +527,20 @@ public actor SlipstreamSynchronizer: Synchronizer {
         birthday: BlockHeight? = nil
     ) async throws -> AccountUUID {
         let checkpointSource = initializer.container.resolve(CheckpointSource.self)
-        let sdkFlags = initializer.container.resolve(SDKFlags.self)
-        // Use chain tip if available, fallback to provided birthday.
-        let chainTipHeight = try? await UInt32(
-            initializer.lightWalletService.latestBlockHeight(mode: await sdkFlags.ifTor(.uniqueTor))
+        // [v2.1 E-6] recover_until comes from the engine's `restore_anchor` primitive (live
+        // tip; offline ⇒ the engine's max(checkpoint, birthday+1) fallback — an offline
+        // import now keeps its recovery identity instead of provisioning recover_until=NULL).
+        // Identifying fetches ride Tor when enabled (same engine state dir as start()).
+        let anchor = await SlipstreamEngine.restoreAnchor(
+            isRestore: true,
+            birthday: birthday ?? 0,
+            fallbackCheckpointHeight: checkpointSource.birthday(for: BlockHeight.max).height,
+            server: currentEndpoint,
+            network: initializer.network,
+            torDirPath: await slipstreamTorDirPath()
         )
-        let effectiveBirthday = birthday ?? BlockHeight(chainTipHeight ?? UInt32(initializer.walletBirthday))
+        let chainTipHeight = anchor.map { UInt32($0.height) }
+        let effectiveBirthday = birthday ?? (chainTipHeight.map { BlockHeight($0) } ?? initializer.walletBirthday)
         let checkpoint = checkpointSource.birthday(for: effectiveBirthday)
 
         let uuid = try await initializer.rustBackend.importAccount(
@@ -559,29 +554,17 @@ public actor SlipstreamSynchronizer: Synchronizer {
             keySource: keySource
         )
 
-        // [#1755] Make the new account's re-scan VISIBLE + prompt. Importing an account — especially
-        // with an older birthday — adds a large `[birthday, tip]` range the wallet must re-scan. The
-        // engine DOES re-scan it (the next pass's `update_chain_tip` → `suggest_scan_ranges` returns
-        // the range — this is what made the balance appear), but two things stop it surfacing as a
-        // SmartBanner, and we fix both:
-        //
-        //  1. Bypass the progress FLOOR for this re-scan. The blessed `progress_permille` is
-        //     session-monotonic and, on a just-synced wallet, already folded/seeded at ~1.0 —
-        //     which MASKS the re-scan. Re-fetching the summary here does NOT
-        //     help — right after importAccount the scan queue isn't updated for the new account (that
-        //     happens in the next pass's `update_chain_tip`), so `getWalletSummary` still reports
-        //     ~100%; worse, the idle/Tor-bootstrap summary refetch in the poll loop would re-raise
-        //     that stale floor even if we cleared it once (the field bug). So we set
-        //     `forceCounterProgressUntilDone`: the poll loop drives % purely from the pass-local
-        //     counter (a real 0→100% climb) until the pass reaches Done.
-        //
-        //  2. Restart the sync pass. The follow loop only re-syncs when the server TIP advances
-        //     (`session.rs` `should_resync`), so without a restart the re-scan would wait for the next
-        //     block (≤ ~75 s). Restarting runs `sync_once` NOW and emits `.syncing` immediately.
-        //     `try?`: a restart hiccup must never fail an otherwise-successful import.
-        forceCounterProgressUntilDone = true
+        // [#1755 → v2.1 E-5] Make the new account's re-scan VISIBLE + prompt. The re-scan's
+        // progress needs NO host help anymore: the ENGINE detects the scope expansion (the
+        // new account's older birthday drops the suggest-round seed far below the session
+        // floor) and re-baselines the floor, so the blessed `progressPermille` reads the
+        // re-scan as a genuine 0→100% climb (the `forceCounterProgressUntilDone` host bypass
+        // is deleted). One host job remains: RESTART the pass — the follow loop only
+        // re-syncs when the server tip advances (`session.rs` `should_resync`), so without a
+        // restart the re-scan would wait for the next block (≤ ~75 s). `try?`: a restart
+        // hiccup must never fail an otherwise-successful import.
         initializer.logger.debug(
-            "[#1755] importAccount: counter-driven progress until Done; isRunning=\(isRunning) "
+            "[#1755] importAccount: isRunning=\(isRunning) "
             + (isRunning ? "→ restarting sync pass now to surface the re-scan" : "→ next start() will re-scan")
         )
         if isRunning {
