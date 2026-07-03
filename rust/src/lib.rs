@@ -4239,7 +4239,40 @@ use slipstream_core::ffi_handle::SyncState;
 /// directly to it.
 pub struct SlipstreamHandle {
     inner: slipstream_core::ffi_handle::SlipstreamHandle,
+    /// [API v2.1 E-1] Upstream-summary cache: the expensive `get_wallet_summary` walk is
+    /// rationed HERE (engine-side), so hosts may call the unified summary whenever they
+    /// like. Arc'd because the background refresh thread outlives the FFI call.
+    summary_cache: std::sync::Arc<std::sync::Mutex<Option<SummaryCacheEntry>>>,
+    /// [API v2.1 E-1] One background refresh in flight at a time.
+    summary_refresh_inflight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// [API v2.1 E-2] Tip-freshness for the [#1591] stale-tip spendable mask — the engine
+    /// owns the FACT (it is the thing refreshing the tip); hosts apply the mask transform.
+    /// Mirrors the SDK's `shouldMarkChainTipUpdated` semantics exactly: fresh once the
+    /// snapshot tip changed vs the value captured at `start()` (the engine stores the tip
+    /// only AFTER `update_chain_tip` succeeds), or when a pass reaches Done.
+    tip_at_run_start: std::sync::atomic::AtomicU64,
+    tip_fresh: std::sync::atomic::AtomicBool,
+    /// [API v2.1 E-2] `stop()` timestamp: freshness survives a stop→start hop shorter than
+    /// 120 s (the SDK's `SDKFlags.sdkStarted` quick-background parity).
+    last_stop_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// [API v2.1 E-1] One cached upstream wallet summary + the engine facts it was captured
+/// under. Refresh triggers: the pass crossed a range boundary (`ranges_completed` moved),
+/// the engine state changed (e.g. Syncing → Done), or — outside a scan — the idle TTL
+/// elapsed. While Syncing between boundaries the cache is served as-is: this is the T5.5
+/// no-walk-while-scanning invariant, now engine-owned.
+struct SummaryCacheEntry {
+    captured_at: std::time::Instant,
+    ranges_completed: u64,
+    state: u8,
+    summary: zcash_client_backend::data_api::WalletSummary<AccountUuid>,
+}
+
+/// [API v2.1 E-1] Idle refresh TTL — matches the SDK's historical idle/error refetch cadence.
+const SUMMARY_IDLE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+/// [API v2.1 E-2] Freshness survives stop→start hops shorter than this (SDKFlags parity).
+const TIP_FRESH_STOP_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// C-compatible snapshot of Slipstream engine progress. Returned by
 /// [`zcashlc_slipstream_snapshot`] (by value — no heap allocation).
@@ -4281,6 +4314,13 @@ pub struct FfiSlipstreamSnapshot {
     pub progress_permille: u16,
     /// Seconds since last forward progress while syncing; 0 otherwise.
     pub stalled_seconds: u32,
+    // ── API v2.1 fields (appended at END for padding stability) ──
+    /// [E-2] 1 once the CURRENT run has refreshed the wallet-DB chain tip (the [#1591]
+    /// stale-tip fact, engine-owned): the snapshot tip changed vs its value at `start()`,
+    /// or a pass reached Done. Survives stop→start hops shorter than 120 s. While 0,
+    /// hosts must mask spendable balances (the mask transform stays host-side because the
+    /// C `AccountBalance` cannot express the awaiting-resolution shift).
+    pub tip_fresh: u8,
 }
 
 /// C-compatible Slipstream engine event record. Returned by
@@ -4392,7 +4432,14 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
 
         tracing::info!(total_memory_bytes, "slipstream handle opened");
 
-        Ok(Box::into_raw(Box::new(SlipstreamHandle { inner })))
+        Ok(Box::into_raw(Box::new(SlipstreamHandle {
+            inner,
+            summary_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            summary_refresh_inflight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tip_at_run_start: std::sync::atomic::AtomicU64::new(0),
+            tip_fresh: std::sync::atomic::AtomicBool::new(false),
+            last_stop_at: std::sync::Mutex::new(None),
+        })))
     });
     unwrap_exc_or_null(res)
 }
@@ -4437,6 +4484,27 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
     let handle = AssertUnwindSafe(handle);
     let res = catch_panic(|| {
         let handle = unsafe { handle.as_mut() }.ok_or_else(|| anyhow!("null handle"))?;
+
+        // [API v2.1 E-2] Tip-freshness bookkeeping (shouldMarkChainTipUpdated parity):
+        // capture the tip BEFORE the pass starts — a later change proves THIS run refreshed
+        // the wallet-DB tip. Freshness survives a stop→start hop < 120 s (quick background
+        // hop); a longer gap re-masks until the new pass proves the tip.
+        let snap_tip = handle.inner.snapshot().chain_tip;
+        handle
+            .tip_at_run_start
+            .store(snap_tip, std::sync::atomic::Ordering::Relaxed);
+        let stale_stop = handle
+            .last_stop_at
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .map(|t| t.elapsed() >= TIP_FRESH_STOP_WINDOW)
+            .unwrap_or(false);
+        if stale_stop {
+            handle
+                .tip_fresh
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+
         let h = &mut handle.inner;
 
         // Cancel any in-flight task before spawning a new one.
@@ -4548,6 +4616,12 @@ pub unsafe extern "C" fn zcashlc_slipstream_stop(handle: *mut SlipstreamHandle) 
     let handle = AssertUnwindSafe(handle);
     let res = catch_panic(|| {
         let handle = unsafe { handle.as_mut() }.ok_or_else(|| anyhow!("null handle"))?;
+        // [API v2.1 E-2] Stamp the stop: a start() within 120 s keeps tip freshness
+        // (quick background hop, SDKFlags parity); a longer gap re-masks.
+        *handle
+            .last_stop_at
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(std::time::Instant::now());
         let h = &mut handle.inner;
         if let Some(task) = h.task.take() {
             task.abort();
@@ -4590,9 +4664,36 @@ pub unsafe extern "C" fn zcashlc_slipstream_snapshot(
             is_recovering: s.is_recovering,
             progress_permille: s.progress_permille,
             stalled_seconds: s.stalled_seconds,
+            tip_fresh: if handle.tip_fresh_now(s.chain_tip, s.state) { 1 } else { 0 },
         })
     });
     unwrap_exc_or(res, FfiSlipstreamSnapshot::default())
+}
+
+impl SlipstreamHandle {
+    /// [API v2.1 E-2] Lazily evaluates + latches tip freshness — the exact
+    /// `shouldMarkChainTipUpdated` semantics the SDK derived host-side:
+    /// - already fresh → stays fresh (until a >120 s stop→start gap re-masks in `start()`);
+    /// - tip still 0 → the engine has not advertised any tip; never fresh;
+    /// - tip changed vs its value at `start()` → the engine stores the snapshot tip only
+    ///   AFTER `session.update_chain_tip` succeeds, so a change proves THIS run refreshed
+    ///   the wallet-DB tip;
+    /// - unchanged tip → trust it only when the pass reached Done (state 3): `sync_once`
+    ///   cannot complete without `update_chain_tip` having succeeded.
+    fn tip_fresh_now(&self, chain_tip: u64, state: u8) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.tip_fresh.load(Ordering::Relaxed) {
+            return true;
+        }
+        if chain_tip == 0 {
+            return false;
+        }
+        if chain_tip != self.tip_at_run_start.load(Ordering::Relaxed) || state == 3 {
+            self.tip_fresh.store(true, Ordering::Relaxed);
+            return true;
+        }
+        false
+    }
 }
 
 /// [API v2 §4.5] Notifies the engine that the HOST changed the wallet's transaction set
@@ -4652,23 +4753,109 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
         let handle = unsafe { handle.as_ref() }.ok_or_else(|| anyhow!("null handle"))?;
         let network = handle.inner.network;
         let db_path = handle.inner.wallet_db_path.clone();
-        // Reuse the exact WalletDb construction of the legacy summary path.
-        let path_bytes = db_path.as_os_str().as_bytes();
-        let db_data = unsafe { wallet_db(path_bytes.as_ptr(), path_bytes.len(), network)? };
-        let confirmations_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
+        let snap = handle.inner.snapshot();
 
-        let summary = match db_data
-            .get_wallet_summary(confirmations_policy)
-            .map_err(|e| anyhow!("Error while fetching wallet summary: {}", e))?
-        {
-            Some(summary) => summary,
-            None => return Ok(ffi::WalletSummary::none()),
+        // ── [API v2.1 E-1] Serve-cached + refresh policy — the walk is rationed HERE, so
+        // hosts may call this whenever they like (per poll tick included):
+        //   • no cache yet → ONE synchronous walk (in practice: the host's prepare/open-time
+        //     call, when the engine is quiet);
+        //   • cache exists → serve it immediately, and — when the pass crossed a range
+        //     boundary, the state changed, or (outside a scan) the idle TTL elapsed — spawn
+        //     ONE background walk (plain thread; owns only clones + Arcs, so it is safe
+        //     against `free()` racing it) that swaps the cache for later calls.
+        // Between boundaries while Syncing, NO walk ever runs: the T5.5
+        // no-summary-while-scanning invariant, now engine-owned. The recovery-balance
+        // REPLACEMENT below is NOT cached — it re-reads the cheap view on every call, so a
+        // recovering host sees the per-tick climb.
+        let cached: Option<SummaryCacheEntry> = {
+            let guard = handle
+                .summary_cache
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            guard.as_ref().map(|e| SummaryCacheEntry {
+                captured_at: e.captured_at,
+                ranges_completed: e.ranges_completed,
+                state: e.state,
+                summary: e.summary.clone(),
+            })
         };
+
+        let summary = match cached {
+            None => {
+                // First call on this handle: walk synchronously and prime the cache.
+                let path_bytes = db_path.as_os_str().as_bytes();
+                let db_data =
+                    unsafe { wallet_db(path_bytes.as_ptr(), path_bytes.len(), network)? };
+                let policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
+                let walked = db_data
+                    .get_wallet_summary(policy)
+                    .map_err(|e| anyhow!("Error while fetching wallet summary: {}", e))?;
+                if let Some(ref s) = walked {
+                    *handle
+                        .summary_cache
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) = Some(SummaryCacheEntry {
+                        captured_at: std::time::Instant::now(),
+                        ranges_completed: snap.ranges_completed,
+                        state: snap.state,
+                        summary: s.clone(),
+                    });
+                }
+                match walked {
+                    Some(s) => s,
+                    None => return Ok(ffi::WalletSummary::none()),
+                }
+            }
+            Some(entry) => {
+                let boundary_crossed = snap.ranges_completed != entry.ranges_completed
+                    || snap.state != entry.state;
+                let idle_ttl_due =
+                    snap.state != 1 && entry.captured_at.elapsed() >= SUMMARY_IDLE_TTL;
+                if (boundary_crossed || idle_ttl_due)
+                    && !handle
+                        .summary_refresh_inflight
+                        .swap(true, std::sync::atomic::Ordering::SeqCst)
+                {
+                    let cache = std::sync::Arc::clone(&handle.summary_cache);
+                    let inflight = std::sync::Arc::clone(&handle.summary_refresh_inflight);
+                    let thread_db_path = db_path.clone();
+                    let thread_policy = confirmations_policy;
+                    let (ranges_at, state_at) = (snap.ranges_completed, snap.state);
+                    std::thread::spawn(move || {
+                        let walk = || -> anyhow::Result<
+                            Option<zcash_client_backend::data_api::WalletSummary<AccountUuid>>,
+                        > {
+                            let path_bytes = thread_db_path.as_os_str().as_bytes();
+                            let db_data = unsafe {
+                                wallet_db(path_bytes.as_ptr(), path_bytes.len(), network)?
+                            };
+                            let policy =
+                                wallet::ConfirmationsPolicy::try_from(thread_policy)?;
+                            db_data
+                                .get_wallet_summary(policy)
+                                .map_err(|e| anyhow!("summary refresh: {}", e))
+                        };
+                        if let Ok(Some(s)) = walk() {
+                            *cache.lock().unwrap_or_else(|p| p.into_inner()) =
+                                Some(SummaryCacheEntry {
+                                    captured_at: std::time::Instant::now(),
+                                    ranges_completed: ranges_at,
+                                    state: state_at,
+                                    summary: s,
+                                });
+                        }
+                        inflight.store(false, std::sync::atomic::Ordering::SeqCst);
+                    });
+                }
+                entry.summary
+            }
+        };
+
         let summary_ptr = ffi::WalletSummary::some(summary)?;
 
         // Phase resolution. `is_recovering` carries the engine's fail-safe latch (terminal
         // Done/Error force 0), so a dead pass falls back to the upstream summary here too.
-        if handle.inner.snapshot().is_recovering == 1 {
+        if snap.is_recovering == 1 {
             let conn = rusqlite::Connection::open(&db_path)
                 .map_err(|e| anyhow!("recovery balance open: {}", e))?;
             conn.busy_timeout(std::time::Duration::from_secs(5))
