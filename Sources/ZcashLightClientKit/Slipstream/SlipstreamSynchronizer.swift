@@ -77,12 +77,15 @@ public actor SlipstreamSynchronizer: Synchronizer {
     // ── Polling task ───────────────────────────────────────────────────────────
     private var pollTask: Task<Void, Never>?
 
-    // ── foundTransactions emission tracking ────────────────────────────────────
-    // Monotonically-increasing counter mirroring the Rust engine's `enhanced_txs`
-    // field (which is per-handle, growing across multiple start/stop cycles until
-    // the handle is closed).  Persists across start() calls — reset only when the
-    // engine handle is closed (close() / wipe()).
-    private var lastEnhancedCount: UInt64 = 0
+    // ── foundTransactions emission tracking (v2.1 E-4) ─────────────────────────
+    // Last-seen `snap.txSetVersion` — the engine's monotonic tx-set version (per-handle,
+    // survives start/stop cycles; reset only where the handle dies: wipe()/switchTo()).
+    private var lastTxSetVersion: UInt64 = 0
+    // The host reconcile FILTER's last-published scope (recovering on/off): the filter is
+    // host policy (API v2 §0, applied in `droppingUnreconciled`), so its edge — which
+    // changes the VISIBLE list with no engine write — is host-observed. Together with the
+    // version compare this is the WHOLE emission rule.
+    private var lastRevealRecovering = false
 
     // [v2.1 Phase 2] The F2 boundary-refresh mirror and the [#1591] chain-tip-flag parity
     // machinery are GONE: the engine refreshes the unified summary at its own boundaries
@@ -139,14 +142,6 @@ public actor SlipstreamSynchronizer: Synchronizer {
         }
     }
 
-    /// [#1755] Previous tick's recovery state — detects the recovery→done transition so the Activity
-    /// reveal (a re-fetch push) fires once even if the enhanced-tx counter didn't move that tick.
-    private var wasRecovering = false
-    /// [#1755] Count of the reconciled-visible Activity rows last surfaced during a recovery. The poll
-    /// tick pushes `foundTransactions` only when this changes — incremental reveal as the backfill links
-    /// spends, without the per-tick re-fetch churn. Reset to -1 at each recovery start so the first
-    /// reveal always fires (clearing any pre-recovery phantom list on macOS/iPad).
-    private var lastSurfacedReconciledCount = -1
     // [#1755] When set, syncing-time % is driven PURELY by the pass-local counter (no summary
     // floor) until the next pass reaches Done. importAccount sets it so a new account's re-scan is
     // visible: the cached summary lags (the scan queue isn't updated for the new account until the
@@ -355,7 +350,10 @@ public actor SlipstreamSynchronizer: Synchronizer {
 
     private func tickPoll() async {
         guard let snap = await engine.snapshot() else { return }
-        let events = await engine.drainEvents()
+        // [E-4] Ring hygiene only: the tx signal is the snapshot-carried `txSetVersion`
+        // (loss-proof — a cumulative counter can't be evicted the way ring events can);
+        // the ring stays drained so overflow warnings never fire for an idle consumer.
+        _ = await engine.drainEvents()
 
         // B4: surface silent stalls (state==Syncing, zero counter movement) loudly.
         checkStallWatchdog(snap)
@@ -478,65 +476,20 @@ public actor SlipstreamSynchronizer: Synchronizer {
             ))
         }
 
-        // ── Resilient foundTransactions emission ──────────────────────────────
-        // Primary path: emit whenever the engine's enhanced_txs counter advances
-        // beyond what we last saw.  This fires on every poll tick where new
-        // transactions were enhanced, regardless of whether the event ring also
-        // carries a SyncDone event (event-ring capacity is 64; the ring can lose
-        // events under a sustained burst).
-        //
-        // Fallback path: if the counter did NOT move but the event ring contains
-        // a SyncDone event (tag==3, value>0) AND there are stored transactions,
-        // emit once.  This catches the edge case where enhancedTxs stalls at a
-        // non-zero value (e.g. the engine re-uses a counter from a prior pass and
-        // the primary path already fired) while we still know a pass completed.
-        //
-        // Single emission point: we never emit both paths in the same tick (the
-        // primary path takes precedence; the fallback is an else-branch).
-        //
-        // [#1755] During a recent-first recovery the raw Activity carries phantom "+receive" rows (a
-        // self-send's change, recorded before its historic input's spend links). We no longer hold the
-        // list wholesale: `allTransactions()` drops only the unreconciled txs (the
-        // `slipstream_v_tx_reconciled` view), so each reconciled tx surfaces as soon as it's scanned.
-        // The poll tick just PRODS consumers to re-fetch — macOS/iPad's always-visible Home doesn't
-        // re-fire onAppear — by emitting `foundTransactions` whenever the reconciled-visible count
-        // changes (incremental + calm), plus once when recovery completes.
-        let hasSyncDoneEvent = events.contains { $0.tag == 3 && $0.value > 0 }
-        // [Engine API v2 §4.5 / Phase D] tag-5 (FoundTransactions) is now also HOST-triggered:
-        // the post-submit `notifyTxChange` poke lands here, so a just-broadcast pending tx
-        // surfaces on this tick even though no counter advanced and no pass completed.
-        let hasFoundTxEvent = events.contains { $0.tag == 5 }
-        let recoveryJustStarted = !wasRecovering && recovering
-        let recoveryJustCompleted = wasRecovering && !recovering
-        wasRecovering = recovering
-
-        if recovering {
-            // Incremental reveal: recompute the reconciled-visible list when recovery begins or the engine
-            // enhanced new txs, and push only when what the user can see actually changed — surfacing
-            // genuine receives + already-linked sends mid-backfill without per-tick churn.
-            if recoveryJustStarted { lastSurfacedReconciledCount = -1 }
-            if recoveryJustStarted || hasFoundTxEvent || snap.enhancedTxs != lastEnhancedCount {
-                let txs = await droppingUnreconciled(await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []))
-                if txs.count != lastSurfacedReconciledCount {
-                    eventSubject.send(.foundTransactions(txs, nil))
-                    lastSurfacedReconciledCount = txs.count
-                }
-            }
-            lastEnhancedCount = snap.enhancedTxs
-        } else if recoveryJustCompleted || hasFoundTxEvent || snap.enhancedTxs > lastEnhancedCount {
-            // Reveal the now-fully-reconciled list once recovery completes, or emit normal incremental updates.
+        // ── foundTransactions: the E-4 one-line rule ──────────────────────────
+        // The ENGINE versions the stored tx set (`snap.txSetVersion`: enhancement writes,
+        // mempool hits, boundary reconcile-linkage transitions, post-submit pokes — a
+        // cumulative counter carried in every snapshot, so nothing can be "lost" the way
+        // ring events could). The HOST owns exactly one extra edge: its own reconcile
+        // FILTER flipping scope (recovering on/off — visibility policy per API v2 §0,
+        // applied in `droppingUnreconciled`), which changes the VISIBLE list with no
+        // engine write. Version moved or filter flipped → re-fetch + publish. Replaces
+        // the counter-watch + SyncDone-fallback + count-dedup strategy (R6).
+        if snap.txSetVersion != lastTxSetVersion || recovering != lastRevealRecovering {
+            lastTxSetVersion = snap.txSetVersion
+            lastRevealRecovering = recovering
             let txs = await droppingUnreconciled(await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []))
-            if recoveryJustCompleted || !txs.isEmpty {
-                eventSubject.send(.foundTransactions(txs, nil))
-            }
-            lastEnhancedCount = snap.enhancedTxs
-            lastSurfacedReconciledCount = txs.count
-        } else if hasSyncDoneEvent && snap.enhancedTxs > 0 {
-            // Fallback: a pass completed with stored transactions but the counter did not advance.
-            let txs = await droppingUnreconciled(await enhanceWithState((try? await transactionRepository.find(offset: 0, limit: 50, kind: .all)) ?? []))
-            if !txs.isEmpty {
-                eventSubject.send(.foundTransactions(txs, nil))
-            }
+            eventSubject.send(.foundTransactions(txs, nil))
         }
     }
 
@@ -1031,9 +984,10 @@ public actor SlipstreamSynchronizer: Synchronizer {
         // 3. Free the engine handle (exact-once — close() guards against double-free).
         await engine.close()
 
-        // 3a. Reset the per-handle enhanced-tx counter: the engine handle is being
-        //     destroyed, so the Rust-side monotonic counter resets on next open().
-        lastEnhancedCount = 0
+        // 3a. Reset the per-handle tx-set-version mirror: the engine handle is being
+        //     destroyed, so the Rust-side monotonic counter restarts at 0 on next open().
+        lastTxSetVersion = 0
+        lastRevealRecovering = false
 
         // 3a-B4. Re-arm the stall watchdog: the handle is destroyed.
         resetStallWatchdog()
@@ -1127,8 +1081,9 @@ public actor SlipstreamSynchronizer: Synchronizer {
         // Record the new endpoint.
         currentEndpoint = endpoint
 
-        // Also reset the enhanced-tx counter: the new handle starts from zero.
-        lastEnhancedCount = 0
+        // Also reset the tx-set-version mirror: the new handle's counter starts from zero.
+        lastTxSetVersion = 0
+        lastRevealRecovering = false
         // B4: re-arm the stall watchdog for the new handle.
         resetStallWatchdog()
 
@@ -1315,11 +1270,11 @@ private extension SlipstreamSynchronizer {
             } else {
                 do {
                     try await self.transactionEncoder.submit(transaction: transaction.encodedTransaction)
-                    // [Engine API v2 §4.5 / Phase D] Surface the just-broadcast tx: poke the
-                    // engine (`notify_tx_change`), which emits FoundTransactions through its
-                    // normal event channel — the poll loop re-fetches and emits on the next tick
-                    // (≤ the poll cadence). Replaces the fix-wave's direct SDK-side emission so
-                    // every host shares one path. Fire-and-forget; never delays the submit stream.
+                    // [Engine API v2 §4.5 / E-4] Surface the just-broadcast tx: poke the engine
+                    // (`notify_tx_change`), which bumps the snapshot's `txSetVersion` (+ a tag-5
+                    // ring event for ring consumers) — the poll loop's version compare re-fetches
+                    // and emits on the next tick (≤ the poll cadence). One path for every host.
+                    // Fire-and-forget; never delays the submit stream.
                     Task { await self.engine.notifyTxChange() }
                     return TransactionSubmitResult.success(txId: transaction.txId)
                 } catch ZcashError.serviceSubmitFailed(let error) {

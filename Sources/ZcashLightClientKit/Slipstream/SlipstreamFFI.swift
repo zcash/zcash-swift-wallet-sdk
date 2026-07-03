@@ -53,6 +53,10 @@ public struct SlipstreamSnapshot {
     /// stale-tip fact, engine-owned; survives stop→start hops under 120 s). While 0, the
     /// host masks spendable balances (`WalletSummary.withSpendableMasked()`).
     public let tipFresh: UInt8
+    /// [E-4] Monotonic version of the wallet's stored transaction set (enhancement writes,
+    /// mempool hits, boundary reconcile-linkage transitions, submit pokes). Host rule:
+    /// version moved since the last poll → re-fetch transactions + publish.
+    public let txSetVersion: UInt64
 
     init(_ cSnapshot: FfiSlipstreamSnapshot) {
         chainTip = cSnapshot.chain_tip
@@ -68,6 +72,7 @@ public struct SlipstreamSnapshot {
         progressPermille = cSnapshot.progress_permille
         stalledSeconds = cSnapshot.stalled_seconds
         tipFresh = cSnapshot.tip_fresh
+        txSetVersion = cSnapshot.tx_set_version
     }
 
     /// Memberwise initializer for tests (avoids a direct dependency on `FfiSlipstreamSnapshot` / libzcashlc in test targets).
@@ -84,7 +89,8 @@ public struct SlipstreamSnapshot {
         isRecovering: UInt8 = 0,
         progressPermille: UInt16 = 0,
         stalledSeconds: UInt32 = 0,
-        tipFresh: UInt8 = 0
+        tipFresh: UInt8 = 0,
+        txSetVersion: UInt64 = 0
     ) {
         self.chainTip = chainTip
         self.fetchedBlocks = fetchedBlocks
@@ -99,6 +105,7 @@ public struct SlipstreamSnapshot {
         self.progressPermille = progressPermille
         self.stalledSeconds = stalledSeconds
         self.tipFresh = tipFresh
+        self.txSetVersion = txSetVersion
     }
 }
 

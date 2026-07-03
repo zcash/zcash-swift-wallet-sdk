@@ -432,44 +432,48 @@ class SlipstreamOfflineTests: ZcashTestCase {
         XCTAssertTrue(events.isEmpty, "drainEvents() must return [] when handle is nil")
     }
 
-    // MARK: - 5. shouldEmitFound pure-helper unit tests
+    // MARK: - 5. [v2.1 E-4] foundTransactions emission rule
 
-    /// Pure-function encoding of the foundTransactions decision from tickPoll().
-    /// Extracted here so the logic can be tested without instantiating a synchronizer.
-    ///
-    /// Returns `true` when tickPoll() should emit a foundTransactions event.
-    ///   - Primary:  `newCount > lastCount`  (counter advanced)
-    ///   - Fallback: `hasSyncDone && storedPositive` (ring event present + known txs)
-    private func shouldEmitFound(lastCount: UInt64, newCount: UInt64, hasSyncDone: Bool, storedPositive: Bool) -> Bool {
-        if newCount > lastCount {
-            return true
-        }
-        return hasSyncDone && storedPositive
+    /// The E-4 rule as tickPoll applies it: emit when the ENGINE's tx-set version moved
+    /// (any store/update/linkage/mempool/submit change), or when the HOST's reconcile
+    /// filter flipped scope (recovering edge — visibility policy is host-owned per §0).
+    /// Replaces the 3-branch counter-watch + SyncDone-fallback + count-dedup strategy.
+    private func shouldEmitFound(
+        version: UInt64,
+        lastVersion: UInt64,
+        recovering: Bool,
+        lastRecovering: Bool
+    ) -> Bool {
+        version != lastVersion || recovering != lastRecovering
     }
 
-    /// Primary path: counter advances → emit.
-    func testShouldEmitFoundPrimaryCounterAdvances() {
-        XCTAssertTrue(shouldEmitFound(lastCount: 0, newCount: 1, hasSyncDone: false, storedPositive: false))
-        XCTAssertTrue(shouldEmitFound(lastCount: 5, newCount: 6, hasSyncDone: false, storedPositive: false))
-        XCTAssertTrue(shouldEmitFound(lastCount: 0, newCount: 10, hasSyncDone: true, storedPositive: true))
+    /// Version advanced (enhance/mempool/linkage/submit-poke) → emit.
+    func testShouldEmitFoundOnVersionMove() {
+        XCTAssertTrue(shouldEmitFound(version: 1, lastVersion: 0, recovering: false, lastRecovering: false))
+        XCTAssertTrue(shouldEmitFound(version: 7, lastVersion: 3, recovering: true, lastRecovering: true))
     }
 
-    /// Primary counter unchanged, no sync-done event → no emit.
-    func testShouldEmitFoundNoAdvanceNoEvent() {
-        XCTAssertFalse(shouldEmitFound(lastCount: 3, newCount: 3, hasSyncDone: false, storedPositive: true))
-        XCTAssertFalse(shouldEmitFound(lastCount: 0, newCount: 0, hasSyncDone: false, storedPositive: false))
+    /// Nothing moved → no emission (calm idle ticks).
+    func testShouldEmitFoundQuietWhenNothingMoved() {
+        XCTAssertFalse(shouldEmitFound(version: 3, lastVersion: 3, recovering: false, lastRecovering: false))
+        XCTAssertFalse(shouldEmitFound(version: 0, lastVersion: 0, recovering: true, lastRecovering: true))
     }
 
-    /// Fallback: counter unchanged but sync-done event + stored txs → emit.
-    func testShouldEmitFoundFallbackSyncDoneWithStoredTxs() {
-        XCTAssertTrue(shouldEmitFound(lastCount: 3, newCount: 3, hasSyncDone: true, storedPositive: true))
-        XCTAssertTrue(shouldEmitFound(lastCount: 0, newCount: 0, hasSyncDone: true, storedPositive: true))
+    /// The host filter's scope flip emits even with no engine write: recovery completing
+    /// reveals the held txs; recovery re-engaging re-gates the list (both are host-filter
+    /// edges — the engine wrote nothing).
+    func testShouldEmitFoundOnRecoveringEdge() {
+        XCTAssertTrue(shouldEmitFound(version: 3, lastVersion: 3, recovering: false, lastRecovering: true),
+                      "recovery completion must reveal the now-unfiltered list")
+        XCTAssertTrue(shouldEmitFound(version: 3, lastVersion: 3, recovering: true, lastRecovering: false),
+                      "recovery start must push the newly-gated list")
     }
 
-    /// Fallback: sync-done event but stored count is zero → no emit (nothing to show).
-    func testShouldEmitFoundFallbackSyncDoneButNoStoredTxs() {
-        XCTAssertFalse(shouldEmitFound(lastCount: 0, newCount: 0, hasSyncDone: true, storedPositive: false))
-        XCTAssertFalse(shouldEmitFound(lastCount: 3, newCount: 3, hasSyncDone: true, storedPositive: false))
+    /// Handle replacement (wipe/switchTo) resets both mirrors to their initial values, so a
+    /// fresh handle's version 0 does not spuriously emit — and the first real change does.
+    func testShouldEmitFoundFreshHandleBaseline() {
+        XCTAssertFalse(shouldEmitFound(version: 0, lastVersion: 0, recovering: false, lastRecovering: false))
+        XCTAssertTrue(shouldEmitFound(version: 1, lastVersion: 0, recovering: false, lastRecovering: false))
     }
 
     // MARK: - reconciledVisible pure-helper unit tests ([#1755] vanishing-tx fix)
@@ -796,6 +800,24 @@ class SlipstreamOfflineTests: ZcashTestCase {
                        "passTotalBlocks must default to 0 when omitted")
         XCTAssertEqual(snap.spendableHint, 0,
                        "spendableHint must default to 0 when omitted")
+        // [v2.1 E-4] The tx-set version follows the same memberwise convention.
+        XCTAssertEqual(snap.txSetVersion, 0,
+                       "txSetVersion must default to 0 when omitted")
+    }
+
+    /// [v2.1 E-4] txSetVersion propagates through the memberwise init (fresh-handle 0 and
+    /// an advanced value both round-trip).
+    func testSnapshotTxSetVersionExplicit() {
+        let snap = SlipstreamSnapshot(
+            chainTip: 663_200,
+            fetchedBlocks: 0,
+            scannedBlocks: 0,
+            enhancedTxs: 3,
+            currentRangeEnd: 0,
+            state: 1,
+            txSetVersion: 42
+        )
+        XCTAssertEqual(snap.txSetVersion, 42)
     }
 
     /// SlipstreamSnapshot with explicit passTotalBlocks and spendableHint.
