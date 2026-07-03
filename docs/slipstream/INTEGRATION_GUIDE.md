@@ -387,26 +387,20 @@ refresh flows (e.g. after receiving to a single-use t-address).
 
 ## 14. Non-Swift hosts
 
-The Swift layer in this repo is one consumer of a deliberately host-agnostic contract.
-A Kotlin/JVM, CLI, or daemon host integrates against:
+The Swift layer in this repo is one consumer of a deliberately host-agnostic contract —
+the engine fills a standard `zcash_client_sqlite` `data.db` and exposes a poll-based
+snapshot/event/SQL surface that any language with a C FFI (or Rust directly) can drive.
 
-- **Handle FFI:** `zcashlc_slipstream_open / start / stop / free` (lifecycle),
-  `snapshot` (poll: state, blessed `progress_permille`, `is_recovering`, `tip_fresh`,
-  `tx_set_version`, `stalled_seconds`, counters), `drain_events` (edge ring),
-  `wallet_summary` (phase-correct balances, internally cost-rationed — call it every
-  tick), `notify_tx_change` (post-broadcast poke), `restore_anchor` (handle-less wallet
-  provisioning with offline fallback).
-- **Versioned SQL views** on the shared wallet DB (`slipstream_v_tx_reconciled`,
-  `slipstream_v_recovery_balance`) plus the standard librustzcash schema.
-- The host's whole job is the loop this SDK's `SlipstreamSynchronizer` implements: poll
-  the snapshot on a timer, map it to your UI idiom (Combine here, Flow on Kotlin), fetch
-  + publish transactions when `tx_set_version` moves or your recovery filter flips, and
-  render balances from the summary. The snapshot is truthful from `open()` — do not add
-  warm-up compensation.
+**The complete crate-consumer guide is `HOSTING.md` in the engine repo**
+(`github.com/LukasKorba/slipstream/blob/main/HOSTING.md`): the Rust path
+(`run_session`/`SessionReporter` + the poll loop), the full C ABI (all nine
+`zcashlc_slipstream_*` functions with threading rules), the snapshot contract
+field-by-field, the event ring, the two SQL views with their documented host rules,
+`restore_anchor` provisioning, and the MUST/NEVER host checklist. The `slipstream watch`
+CLI in that repo is the executable reference host (~200 lines, zero wallet math).
 
-See `docs/slipstream/plans/ENGINE_API_V2.md` (the contract, with vetoes and amendments)
-and the engine repo's `REVIEWING.md` (module map). The `slipstream watch` CLI in the
-engine repo is a complete reference host in ~200 lines.
+For the contract's design record (vetoes, amendments) see
+`docs/slipstream/plans/ENGINE_API_V2.md` in this repo.
 
 ## 15. Client responsibilities — the checklist
 
