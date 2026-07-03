@@ -4334,6 +4334,24 @@ pub struct FfiSlipstreamSnapshot {
     pub tx_set_version: u64,
 }
 
+/// [API v2.1 E-6] C-compatible wallet-provisioning anchor. Returned by
+/// [`zcashlc_slipstream_restore_anchor`]; free with
+/// [`zcashlc_slipstream_free_restore_anchor`].
+///
+/// RESTORE intent: `height` = the recover_until height (always valid by policy — live tip
+/// or the offline `max(checkpoint, birthday+1)` fallback); `treestate` null.
+/// NEW intent: `height` + serialized `TreeState` protobuf bytes = the reorg-safe recent
+/// tree state; `height` 0 + null `treestate` when offline (host keeps its checkpoint).
+#[repr(C)]
+pub struct FfiRestoreAnchor {
+    /// See the type docs — recover_until (restore) or the anchor height (new).
+    pub height: u64,
+    /// Serialized `TreeState` protobuf bytes, or null (see the type docs).
+    pub treestate: *mut u8,
+    /// Length of `treestate` (0 when null).
+    pub treestate_len: usize,
+}
+
 /// C-compatible Slipstream engine event record. Returned by
 /// [`zcashlc_slipstream_drain_events`] in a caller-allocated buffer.
 ///
@@ -4757,6 +4775,129 @@ pub unsafe extern "C" fn zcashlc_slipstream_notify_tx_change(handle: *mut Slipst
         Ok(true)
     });
     unwrap_exc_or(res, false)
+}
+
+/// [API v2.1 E-6] The engine-owned wallet-provisioning anchor (policy in slipstream-core
+/// `anchor.rs`): the chain facts a host needs BEFORE creating/restoring a wallet, with the
+/// offline fallback policy INSIDE — no host re-implements provisioning math.
+///
+/// - `intent` = 1 (RESTORE, with `birthday`): `height` = the live chain tip to provision as
+///   `recover_until`; offline ⇒ `max(fallback_checkpoint_height, birthday + 1)` (a restore
+///   must NEVER get a NULL recover_until — the syncLogsMac9 rule). `treestate` is null (the
+///   host keeps its birthday checkpoint).
+/// - `intent` = 0 (NEW wallet): `height` + serialized `TreeState` protobuf = the reorg-safe
+///   recent tree state (`tip − 100`, floored at Sapling activation); offline ⇒ `height` 0 +
+///   null `treestate` (the host keeps its bundled checkpoint defaults).
+///
+/// Handle-less by design: provisioning happens BEFORE [`zcashlc_slipstream_open`] in the
+/// host init flow, and `importAccount` must not serialize against the live handle. Creates
+/// a short-lived runtime and blocks until resolved (typically one round-trip; the direct
+/// path is a SINGLE attempt — the offline fallback IS the retry policy). When `tor_dir` is
+/// non-empty the identifying fetches ride an isolated Tor circuit; a requested-but-failed
+/// Tor bootstrap resolves OFFLINE — never a de-anonymising direct retry.
+///
+/// Returns null only on invalid arguments or an internal panic. Free with
+/// [`zcashlc_slipstream_free_restore_anchor`].
+///
+/// # Safety
+///
+/// - `server_host` must be non-null and valid for reads for `server_host_len` bytes (UTF-8).
+/// - If `tor_dir` is non-null, it must be valid for reads for `tor_dir_len` bytes (UTF-8).
+/// - Neither buffer may be mutated for the duration of the call.
+/// - Call [`zcashlc_slipstream_free_restore_anchor`] to free the returned pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_slipstream_restore_anchor(
+    server_host: *const u8,
+    server_host_len: usize,
+    server_port: u16,
+    use_tls: bool,
+    network_id: u32,
+    intent: u8,
+    birthday: u64,
+    fallback_checkpoint_height: u64,
+    tor_dir: *const u8,
+    tor_dir_len: usize,
+) -> *mut FfiRestoreAnchor {
+    let res = catch_panic(|| {
+        let host =
+            std::str::from_utf8(unsafe { slice::from_raw_parts(server_host, server_host_len) })
+                .map_err(|e| anyhow!("server_host UTF-8: {e}"))?;
+        let network = if network_id == 1 { MainNetwork } else { TestNetwork };
+        let endpoint = slipstream_core::config::Endpoint {
+            host: host.to_string(),
+            port: server_port,
+            tls: use_tls,
+        };
+        let tor_dir_opt: Option<std::path::PathBuf> = if tor_dir.is_null() || tor_dir_len == 0 {
+            None
+        } else {
+            Some(
+                Path::new(OsStr::from_bytes(unsafe {
+                    slice::from_raw_parts(tor_dir, tor_dir_len)
+                }))
+                .to_path_buf(),
+            )
+        };
+        let intent = if intent == 1 {
+            slipstream_core::anchor::AnchorIntent::Restore {
+                birthday,
+                fallback_checkpoint: fallback_checkpoint_height,
+            }
+        } else {
+            slipstream_core::anchor::AnchorIntent::New
+        };
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .map_err(|e| anyhow!("tokio runtime: {e}"))?;
+        let anchor = runtime.block_on(async {
+            let tor_conn = match &tor_dir_opt {
+                Some(dir) => {
+                    match slipstream_core::connector::TorConn::bootstrap(dir, false).await {
+                        Ok(t) => Some(t),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "anchor: Tor bootstrap failed — resolving OFFLINE (no direct fallback)"
+                            );
+                            return slipstream_core::anchor::offline_anchor(intent);
+                        }
+                    }
+                }
+                None => None,
+            };
+            slipstream_core::anchor::restore_anchor(&endpoint, network, intent, tor_conn.as_ref())
+                .await
+        });
+
+        let (ts_ptr, ts_len) = match anchor.treestate {
+            Some(ts) => ptr_from_vec(ts.encode_to_vec()),
+            None => (std::ptr::null_mut(), 0),
+        };
+        Ok(Box::into_raw(Box::new(FfiRestoreAnchor {
+            height: anchor.height,
+            treestate: ts_ptr,
+            treestate_len: ts_len,
+        })))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Frees an [`FfiRestoreAnchor`] returned by [`zcashlc_slipstream_restore_anchor`].
+///
+/// # Safety
+///
+/// - If `ptr` is non-null, it must be a pointer returned by
+///   [`zcashlc_slipstream_restore_anchor`] that has not previously been freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_slipstream_free_restore_anchor(ptr: *mut FfiRestoreAnchor) {
+    if !ptr.is_null() {
+        let anchor = unsafe { Box::from_raw(ptr) };
+        free_ptr_from_vec(anchor.treestate, anchor.treestate_len);
+        drop(anchor);
+    }
 }
 
 /// [API v2 §0-5] The unified, PHASE-RESOLVING wallet summary for Slipstream hosts: one call

@@ -82,6 +82,12 @@ pub struct Progress {
     pub tx_set_version: AtomicU64,
 }
 
+/// [API v2.1 E-5] Scope-expansion detection margin for the session progress floor: a
+/// suggest-round seed this many permille (or more) BELOW the current floor means the scan
+/// scope grew (import/rewind), not that progress regressed. See
+/// [`Progress::rebaseline_floor_if_scope_expanded`].
+pub const FLOOR_REBASELINE_EPSILON_PERMILLE: u64 = 50;
+
 impl Progress {
     /// Bump `fetched_blocks` by `n` (Relaxed — poll-only, no ordering guarantee).
     #[inline]
@@ -232,6 +238,24 @@ impl Progress {
         let clamped = raw.min(1000);
         self.progress_permille_floor.fetch_max(clamped, Ordering::Relaxed);
         self.progress_permille_floor.load(Ordering::Relaxed)
+    }
+
+    /// [API v2.1 E-5] When a suggest round's GLOBAL seed lands materially BELOW the current
+    /// session floor, the scan SCOPE EXPANDED under the floor's feet — an imported account
+    /// with an older birthday, or a rewind re-growing the queue — and the old floor (folded
+    /// to ~1000 by the previous scope's Done) would MASK the whole re-scan at ~100%. Reset
+    /// the floor to the new truthful seed so the blessed permille reads a genuine climb.
+    /// Normal operation can never trigger it: within one scope the seed is monotone (the
+    /// queue only shrinks between suggest rounds) and tip drift moves it by <1‰ — the
+    /// epsilon is 50× above that noise and far below any real expansion (an import drops
+    /// the seed by hundreds of permille). Returns whether a re-baseline happened.
+    pub fn rebaseline_floor_if_scope_expanded(&self, seed: u64) -> bool {
+        let current = self.progress_permille_floor.load(Ordering::Relaxed);
+        if seed.saturating_add(FLOOR_REBASELINE_EPSILON_PERMILLE) < current {
+            self.progress_permille_floor.store(seed.min(1000), Ordering::Relaxed);
+            return true;
+        }
+        false
     }
 
     /// Reset the per-pass RATIO counters at the start of a sync pass.
@@ -561,5 +585,25 @@ mod tests {
         // [E-2/E-4] The freshness and tx-set counters are per-handle facts, not pass ratios.
         assert_eq!(p.tip_refreshes(), 1, "tip_refreshes is monotonic per handle");
         assert_eq!(p.tx_set_version(), 2, "tx_set_version is monotonic per handle");
+    }
+
+    /// [API v2.1 E-5] The floor re-baselines when the scope EXPANDS (seed materially below
+    /// the floor — import/rewind) and stays monotone against within-scope noise.
+    #[test]
+    fn floor_rebaseline_on_scope_expansion_only() {
+        let p = Progress::default();
+        assert_eq!(p.permille_floor(990), 990);
+        // Within-scope drift up to the epsilon never re-baselines (tip drift is <1‰).
+        assert!(!p.rebaseline_floor_if_scope_expanded(989), "1‰ dip is noise");
+        assert!(
+            !p.rebaseline_floor_if_scope_expanded(990 - FLOOR_REBASELINE_EPSILON_PERMILLE),
+            "exactly-epsilon dip is still within scope"
+        );
+        assert_eq!(p.permille_floor(0), 990, "floor held through noise");
+        // Import with an older birthday: the seed plummets → re-baseline to the truth.
+        assert!(p.rebaseline_floor_if_scope_expanded(120), "material drop = scope expansion");
+        assert_eq!(p.permille_floor(0), 120, "floor re-baselined to the expanded-scope seed");
+        // …and climbs monotonically again within the new scope.
+        assert_eq!(p.permille_floor(300), 300);
     }
 }

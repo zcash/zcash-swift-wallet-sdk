@@ -248,6 +248,19 @@ pub async fn run_to_completion(
             // summary floor), and a relaunched restore RESUMES near its true position instead of
             // 0% (the old Swift monotonic floor could not survive a relaunch).
             if let Some(seed) = global_floor_permille(p.chain_tip(), wallet_birthday, sum_remaining) {
+                // [API v2.1 E-5] Scope-expansion re-baseline: an imported account with an
+                // older birthday (or a rewind) grows the span under the session floor —
+                // without this, the ~1000 floor from the previous scope's Done would mask
+                // the whole re-scan at ~100% (the host used to bypass every floor with
+                // `forceCounterProgressUntilDone`; the blessed permille now reads the
+                // genuine climb by itself).
+                if p.rebaseline_floor_if_scope_expanded(seed) {
+                    info!(
+                        seed,
+                        birthday = wallet_birthday,
+                        "scan scope expanded — session progress floor re-baselined (re-scan reads as a genuine climb)"
+                    );
+                }
                 let _ = p.permille_floor(seed);
             }
         }
