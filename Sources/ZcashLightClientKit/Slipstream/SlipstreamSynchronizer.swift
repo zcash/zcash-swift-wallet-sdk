@@ -280,7 +280,10 @@ public actor SlipstreamSynchronizer: Synchronizer {
         // .disconnected, as before (a real restore legitimately starts at 0 balance/0%).
         // `cachedSummary` is seeded here so start() + the pre-first-suggest ticks inherit
         // the warm values.
-        cachedSummary = try? await initializer.rustBackend.getWalletSummary()
+        // [v2.1 Phase 1] Seeded from the UNIFIED summary (engine just opened above): a
+        // relaunch mid-restore now seeds recovery-SAFE balances instead of upstream's
+        // (potentially over-counted) values — every `cachedSummary` write is phase-correct.
+        cachedSummary = await unifiedWalletSummary()
         // [#1755] Seed the recovery gate from the persisted summary so the FIRST balance/Activity read
         // is correct without waiting for a poll: a synced wallet (recovery complete) shows its real
         // Activity immediately; a relaunch mid-restore gates from the first read (no phantom flash).
@@ -687,6 +690,25 @@ public actor SlipstreamSynchronizer: Synchronizer {
     /// on weak devices; A10 evidence: ~20–35% per-output slowdown). All other states use
     /// 2 seconds.
     /// Internal for testability (pure function, no side effects).
+    /// [v2.1 Phase 1 / D-1] THE summary source for the slipstream path: the engine's unified
+    /// phase-resolving summary (`zcashlc_slipstream_wallet_summary`, ENGINE_API_V2.md §0.5) —
+    /// correct at EVERY phase (recovering ⇒ per-account Σ-reconciled balances, never over-shows;
+    /// else ⇒ upstream passthrough) — with the [#1591] stale-tip spendable mask applied
+    /// host-side (E-2 sinks the mask into the FFI, at which point this helper collapses to the
+    /// bare engine call).
+    ///
+    /// THREADING (see `SlipstreamEngine.walletSummary` doc): the walk rides the engine actor,
+    /// so call this only from QUIET states — prepare + the state≠1 cadence + user-triggered
+    /// balance reads. The mid-scan boundary refresh stays legacy until E-1.
+    private func unifiedWalletSummary() async -> WalletSummary? {
+        guard let summary = await engine.walletSummary() else { return nil }
+        let sdkFlags = initializer.container.resolve(SDKFlags.self)
+        if await !sdkFlags.chainTipUpdated {
+            return summary.withSpendableMasked()
+        }
+        return summary
+    }
+
     static func summaryFetchInterval(forState state: UInt8) -> TimeInterval {
         // Note: state==1 (Syncing) is never passed here — kickSummaryFetchIfNeeded
         // returns early for state==1 before calling this function. The 8-second
@@ -724,15 +746,17 @@ public actor SlipstreamSynchronizer: Synchronizer {
             guard elapsed >= interval else { return }
         }
 
-        let rustBackend = initializer.rustBackend
+        // [v2.1 Phase 1] This cadence only ever fires in state ≠ 1 (idle/error/done — the
+        // engine actor is quiet), so the UNIFIED summary rides it safely: every cached value
+        // is phase-correct (recovery-safe balances while recovering, upstream otherwise).
         summaryTask = Task { [weak self] in
             // Race the summary call against the hard timeout.
-            let result = try? await withTaskTimeout(Self.summaryTimeoutNanoseconds) {
-                try await rustBackend.getWalletSummary()
+            let result = try? await withTaskTimeout(Self.summaryTimeoutNanoseconds) { [weak self] in
+                await self?.unifiedWalletSummary()
             }
             // Only update state if the task was not cancelled (e.g. by Done or wipe).
             guard !Task.isCancelled else { return }
-            await self?.applySummaryFetchResult(result, boundary: false)
+            await self?.applySummaryFetchResult(result ?? nil, boundary: false)
         }
     }
 
@@ -767,6 +791,12 @@ public actor SlipstreamSynchronizer: Synchronizer {
         // One-in-flight guard: skip if a boundary fetch is already running.
         guard boundarySummaryTask == nil else { return }
 
+        // [v2.1 Phase 1] DELIBERATELY still the legacy @DBActor call, NOT the unified summary:
+        // this fires mid-scan (state == 1), where the unified call would ride — and starve —
+        // the engine actor's snapshot()/drainEvents() polls for the walk's duration. Safe:
+        // while RECOVERING, tickPoll never surfaces this cache's balances (the per-tick view
+        // read wins), and while NOT recovering the legacy values are identical to the unified
+        // passthrough. E-1 (engine-side rationing) retires this split.
         let rustBackend = initializer.rustBackend
         boundarySummaryTask = Task { [weak self] in
             let result = try? await withTaskTimeout(Self.boundarySummaryTimeoutNanoseconds) {
@@ -782,10 +812,14 @@ public actor SlipstreamSynchronizer: Synchronizer {
 
     public func getAccountsBalances() async throws -> [AccountUUID: AccountBalance] {
         // [#1755] During deep recovery, surface the as-recovered balance (Σ reconciled tx deltas) WITHOUT a
-        // fresh getWalletSummary call (it would otherwise be a scan-time parasite). The recovery flag is
+        // fresh summary walk (it would otherwise be a scan-time parasite). The recovery flag is
         // engine-owned: seeded by prepare()/start(), adopted from the snapshot on every poll tick.
+        // [v2.1 Phase 1] The cheap per-tick view read stays until E-1 makes the unified FFI
+        // freely callable (engine-side rationing); it reads the SAME engine view the FFI resolves.
         if currentlyRecovering { return await recoveryAccountBalances() }
-        let summary = try await initializer.rustBackend.getWalletSummary()
+        // [v2.1 Phase 1] Not recovering ⇒ the unified summary (value-identical to the upstream
+        // passthrough here) — the slipstream path no longer consumes the legacy per-DB call.
+        let summary = await unifiedWalletSummary()
         if let summary { cachedSummary = summary }
         return summary?.accountBalances ?? [:]
     }

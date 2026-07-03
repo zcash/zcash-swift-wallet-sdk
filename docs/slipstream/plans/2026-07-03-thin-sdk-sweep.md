@@ -67,14 +67,23 @@ round (R4/R5), and policies that exist only because the engine doesn't react to 
 
 ## 3. The deliverables (all additive; C-ABI padding convention respected)
 
-### D-1 — Consume the unified summary (SDK-only, NO FFI rebuild) ⭐ first, cheapest, biggest
-- `getAccountsBalances()` → one `engine.walletSummary()` call (new thin wrapper over
-  `zcashlc_slipstream_wallet_summary`). Delete: `recoveryAccountBalances()`,
-  `TransactionDao.recoveryBalances()` + repository plumbing, `recoveryAccountBalance(net:)`,
-  `zecString`, `lastLoggedRecoveryTotal`.
-- tickPoll balance surfacing reads the same call (rationed by R2 until E-1 lands, then freely).
-- Risk: LOW — the FFI is crate-side complete and mirrors the shipped Direction-B semantics.
-  Device-verify the restore-climb (syncLogsMac10 scenario) before Phase-2 deletions.
+### D-1 — Consume the unified summary (SDK-only, NO FFI rebuild) ⭐ first, cheapest
+**AMENDED AT IMPLEMENTATION (2026-07-03):** the unrationed FFI runs the full summary walk per
+call ON THE ENGINE ACTOR (serialization with `close()` is what makes it use-after-free-proof),
+so it must not ride the hot paths — mid-scan it would starve `snapshot()`/`drainEvents()`
+polls, and per-recovery-tick it would resurrect the T5.5 parasite. Phase-1 scope is therefore
+the COLD paths, and the R10 deletions move to Phase 2 (E-1 is the enabler, not an optimization):
+- Shared `WalletSummary.fromFFI` + `withSpendableMasked()` extraction (legacy wrapper refactored
+  onto them, behavior-identical).
+- `SlipstreamEngine.walletSummary()` + `unifiedWalletSummary()` (mask applied host-side until E-2).
+- CONSUMED AT: `prepare()` seed (a mid-restore relaunch now seeds recovery-SAFE balances — a
+  correctness improvement over the legacy seed), the state≠1 cadence fetch, and
+  `getAccountsBalances()` when not recovering (value-identical passthrough).
+- STAYS UNTIL E-1: the per-recovery-tick view read (+ `recoveryAccountBalance(net:)` mapping,
+  `TransactionDao.recoveryBalances()`) and the mid-scan boundary fetch (legacy `@DBActor` call —
+  safe: its balances are never surfaced while recovering, and equal the unified passthrough
+  otherwise).
+- Field value now: lib.rs:4646 is exercised on device (prepare + idle) before Phase 2 leans on it.
 
 ### E-1 — Cadence inside the summary FFI (engine)
 `zcashlc_slipstream_wallet_summary` gains an internal refresh policy keyed on the engine's own

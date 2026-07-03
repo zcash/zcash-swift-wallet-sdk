@@ -168,6 +168,33 @@ public actor SlipstreamEngine {
         try open(network: network)
     }
 
+    /// [Engine API v2 §0.5 / v2.1 Phase 1] The unified, PHASE-RESOLVING wallet summary:
+    /// one call that is correct at every phase — recovering ⇒ the upstream summary with
+    /// per-account balances REPLACED by `slipstream_v_recovery_balance` (Σ of final,
+    /// reconciled tx deltas — never over-shows); not recovering ⇒ the upstream summary
+    /// passed through unchanged. No host ever re-implements restore balance math.
+    ///
+    /// Returns `nil` when the engine is not open, the call fails, or the wallet has no
+    /// balance data yet (the FFI "none" summary).
+    ///
+    /// COST + THREADING: this runs the full upstream summary walk (seconds on old
+    /// devices) SYNCHRONOUSLY on this actor — which also serializes it with `close()`,
+    /// making use-after-free impossible. Call it only from QUIET states (prepare, idle,
+    /// error, done): mid-scan it would starve `snapshot()`/`drainEvents()` polls. The
+    /// mid-scan boundary refresh stays on the legacy `@DBActor` path until E-1 moves
+    /// the rationing policy inside this FFI.
+    /// (Internal because `WalletSummary` is an internal model — the synchronizer is the consumer.)
+    func walletSummary(
+        confirmationsPolicy: ConfirmationsPolicy = ConfirmationsPolicy.defaultTransferPolicy()
+    ) -> WalletSummary? {
+        guard let handlePtr = handle else { return nil }
+        guard let summaryPtr = zcashlc_slipstream_wallet_summary(handlePtr, confirmationsPolicy.toBackend()) else {
+            return nil
+        }
+        defer { zcashlc_free_wallet_summary(summaryPtr) }
+        return WalletSummary.fromFFI(summaryPtr)
+    }
+
     // ── Poll surface (D8) ──────────────────────────────────────────────────────
 
     /// Returns a snapshot of current progress counters (non-blocking).

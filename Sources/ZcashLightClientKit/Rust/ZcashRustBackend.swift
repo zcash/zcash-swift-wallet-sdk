@@ -964,50 +964,15 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
         defer { zcashlc_free_wallet_summary(summaryPtr) }
 
-        if summaryPtr.pointee.fully_scanned_height < 0 {
-            return nil
-        }
+        // C → Swift mapping shared with the slipstream unified summary (WalletSummary+FFI.swift).
+        guard let summary = WalletSummary.fromFFI(summaryPtr) else { return nil }
 
-        var accountBalances: [AccountUUID: AccountBalance] = [:]
-
-        for i in (0 ..< Int(summaryPtr.pointee.account_balances_len)) {
-            let accountBalance = summaryPtr.pointee.account_balances.advanced(by: i).pointee
-            accountBalances[AccountUUID(id: accountBalance.uuidArray)] = accountBalance.toAccountBalance()
-        }
-
-        // Modify spendable `accountBalances` if chainTip hasn't been updated yet
+        // Mask spendable `accountBalances` while chainTip hasn't been updated yet ([#1591]).
         if await !sdkFlags.chainTipUpdated {
-            accountBalances.forEach { key, _ in
-                if let accountBalance = accountBalances[key] {
-                    accountBalances[key] = AccountBalance(
-                        saplingBalance: PoolBalance(
-                            spendableValue: .zero,
-                            changePendingConfirmation: accountBalance.saplingBalance.changePendingConfirmation,
-                            valuePendingSpendability: accountBalance.saplingBalance.valuePendingSpendability
-                            + accountBalance.saplingBalance.spendableValue
-                        ),
-                        orchardBalance: PoolBalance(
-                            spendableValue: .zero,
-                            changePendingConfirmation: accountBalance.orchardBalance.changePendingConfirmation,
-                            valuePendingSpendability: accountBalance.orchardBalance.valuePendingSpendability
-                            + accountBalance.orchardBalance.spendableValue
-                        ),
-                        unshielded: .zero,
-                        awaitingResolution: accountBalance.unshielded
-                    )
-                }
-            }
+            return summary.withSpendableMasked()
         }
 
-        return WalletSummary(
-            accountBalances: accountBalances,
-            chainTipHeight: BlockHeight(summaryPtr.pointee.chain_tip_height),
-            fullyScannedHeight: BlockHeight(summaryPtr.pointee.fully_scanned_height),
-            recoveryProgress: summaryPtr.pointee.recovery_progress?.pointee.toScanProgress(),
-            scanProgress: summaryPtr.pointee.scan_progress?.pointee.toScanProgress(),
-            nextSaplingSubtreeIndex: UInt32(summaryPtr.pointee.next_sapling_subtree_index),
-            nextOrchardSubtreeIndex: UInt32(summaryPtr.pointee.next_orchard_subtree_index)
-        )
+        return summary
     }
 
     @DBActor
