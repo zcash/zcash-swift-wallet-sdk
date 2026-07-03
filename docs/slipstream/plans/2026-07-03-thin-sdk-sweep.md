@@ -2,8 +2,18 @@
 
 **2026-07-03 · Autonomous deep analysis (Lukas: "ideally, the SDK is a thin layer… SDK does
 almost no computation or math — go through slipstream related things, make a plan and spec").
-Status: DRAFT — awaiting Lukas approval (one gate, same discipline as Phase A).
-Companions: `ENGINE_API_V2.md` (§0 = the approved v2 contract + vetoes — all respected here),
+Status: ✅ IMPLEMENTED IN FULL, same day (gate approved by Lukas: "GO"). All five phases
+landed: D-1 `5e436dda`, E-1+E-2 `f747b580`+`c358bff2`, E-3 `9038748c`+`912c2550`, E-4
+`68042b12`+`c39927fc`, E-5+E-6 `de5a9325`+`3cb17752`. **§4 grep-list acceptance PASSES —
+all 10 symbols at 0 live references.** Amendments discovered at implementation are inline
+(D-1 scope, E-2 fact-export revision) plus two more: E-2 was re-refactored during E-3 to a
+tip-REFRESH COUNTER latch (a DB-seeded tip made value-comparison both spoofable and
+under-latching), and E-4's host rule carries ONE extra host-owned clause — the reconcile
+FILTER's own scope edge (`recovering != lastRevealRecovering`), because the filter is host
+policy per §0 and its flip changes the visible list with no engine write. [needs-user]: one
+macOS device pass covering the whole wave (see STATE.md).
+Companions: `ENGINE_API_V2.md` (§0 = the approved v2 contract + vetoes — all respected here;
+§4.4 now carries the E-3 truthful-from-open contract line),
 `2026-07-01-engine-sdk-boundary-review.md` (round 1), the balance postmortems.**
 
 ---
