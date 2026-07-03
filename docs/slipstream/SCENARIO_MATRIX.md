@@ -133,6 +133,11 @@ line is the device script below.
 
 ## Device-test script (one sitting, orders the 🟡s efficiently)
 
+> **RC1 fast path:** the six non-negotiable gates (S2/S3, S28+S33, S19+S21, S38+S39, S15)
+> are extracted with exact pass criteria + log lines into
+> [`BETA4_RC1_GATE.md`](BETA4_RC1_GATE.md) — run that first; the full script below is the
+> RC-soak plan that greens the remaining rows.
+
 **Setup A — seed restore lifecycle** (fresh wallet, deep BD1):
 1. Restore → watch first emission (S2), kill mid-restore → relaunch (S6), airplane-mode blip (S7).
 2. Let it finish → relaunch synced (S3) → stop/start hop <120 s → send (S39).
