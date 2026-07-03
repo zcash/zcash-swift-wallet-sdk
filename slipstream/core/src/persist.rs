@@ -1649,13 +1649,26 @@ impl PersistLane {
         network: zcash_protocol::consensus::Network,
         depth: usize,
     ) -> Result<Self, crate::error::SlipstreamError> {
-        let db = zcash_client_sqlite::WalletDb::for_path(
-            wallet_db_path,
+        // [B4-16] Same wait-not-die posture as the main connection (wallet_session.rs): a
+        // host write (importAccount landing mid-pass) holding the lock made the lane's
+        // deferred commit die with an instant SQLITE_BUSY — a NON-transient pass error.
+        // Mirror `for_path` (open + array vtab + wrap) with a 15 s busy_timeout.
+        let lane_conn = rusqlite::Connection::open(wallet_db_path)
+            .map_err(|e| crate::error::SlipstreamError::Wallet(format!("persist lane open: {e}")))?;
+        lane_conn
+            .busy_timeout(std::time::Duration::from_secs(15))
+            .map_err(|e| {
+                crate::error::SlipstreamError::Wallet(format!("persist lane busy_timeout: {e}"))
+            })?;
+        rusqlite::vtab::array::load_module(&lane_conn).map_err(|e| {
+            crate::error::SlipstreamError::Wallet(format!("persist lane array module: {e}"))
+        })?;
+        let db = zcash_client_sqlite::WalletDb::from_connection(
+            lane_conn,
             network,
             zcash_client_sqlite::util::SystemClock,
             rand::rngs::OsRng,
-        )
-        .map_err(|e| crate::error::SlipstreamError::Wallet(format!("persist lane open: {e}")))?;
+        );
         let lane_pool = Self::build_lane_pool(lane_pool_policy())?;
         Ok(Self {
             db: Some(db),

@@ -575,7 +575,24 @@ public actor SlipstreamSynchronizer: Synchronizer {
     }
 
     public func deleteAccount(_ accountUUID: AccountUUID) async throws {
+        // [#1755 B4-16] Serialize with the engine — a raw pass-through here killed the wallet:
+        // an in-flight pass scans with a PER-RANGE snapshot of the UFVK map + nullifier views
+        // (`WriteBehindFacade::seed`, whose documented invariant is "accounts mutate only via
+        // import/create, which cannot run during a range"). Deleting mid-range made the next
+        // `put_blocks` write notes for a vanished account → non-transient pass error. So:
+        // stop the engine first, delete, then restart. The restarted pass re-seeds without
+        // the deleted key, and `WalletSession::open` prunes the account's orphaned Historic
+        // scan ranges — a deep-birthday import's restore does NOT grind on after its account
+        // is gone. `wasRunning` mirrors importAccount's restart contract.
+        let wasRunning = isRunning
+        await engine.stop()
         try await initializer.rustBackend.deleteAccount(accountUUID)
+        // `delete_account` removes the account's transactions — bump `tx_set_version`
+        // (tag-5 poke) so hosts re-fetch and Activity drops the dead rows on the next tick.
+        await engine.notifyTxChange()
+        if wasRunning {
+            try? await start()
+        }
     }
 
     // ── Addresses ─────────────────────────────────────────────────────────────

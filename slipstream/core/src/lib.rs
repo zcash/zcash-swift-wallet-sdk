@@ -21,6 +21,7 @@ pub mod reconcile;
 #[cfg(feature = "gpu")]
 mod gpu_subtree;
 pub mod scan;
+pub mod scan_queue;
 pub mod scheduler;
 pub mod session;
 pub mod transparent;

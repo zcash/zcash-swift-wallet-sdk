@@ -133,8 +133,19 @@ unsafe fn wallet_db(
     let db_data = Path::new(OsStr::from_bytes(unsafe {
         slice::from_raw_parts(db_data, db_data_len)
     }));
-    WalletDb::for_path(db_data, network, SystemClock, OsRng)
-        .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))
+    // [B4-16] Mirror `WalletDb::for_path` (open + array vtab + wrap) but give the connection
+    // a busy_timeout first — upstream sets NONE, so a host write landing while the slipstream
+    // engine's writer holds the lock (`deleteAccount`/`importAccount` mid-pass) died with an
+    // instant SQLITE_BUSY instead of waiting. 15 s matches the engine's main-connection
+    // posture (wallet_session.rs). Behavior-neutral for the legacy engine: it has no
+    // concurrent writer to wait on, so the timeout never engages.
+    let conn = rusqlite::Connection::open(db_data)
+        .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
+    conn.busy_timeout(std::time::Duration::from_secs(15))
+        .map_err(|e| anyhow!("Error setting wallet database busy_timeout: {}", e))?;
+    rusqlite::vtab::array::load_module(&conn)
+        .map_err(|e| anyhow!("Error loading wallet database array module: {}", e))?;
+    Ok(WalletDb::from_connection(conn, network, SystemClock, OsRng))
 }
 
 /// Helper method for construcing a FsBlockDb value from path data provided over the FFI.

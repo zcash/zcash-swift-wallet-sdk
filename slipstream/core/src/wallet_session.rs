@@ -92,6 +92,21 @@ impl WalletSession {
             conn.busy_timeout(std::time::Duration::from_secs(5))
                 .map_err(|e| wallet_err("set busy_timeout (reconcile)", e))?;
             crate::reconcile::create_reconcile_view(&conn)?;
+            // [B4-16] Queue hygiene: drop Historic ranges no remaining account justifies.
+            // An account deleted mid-restore leaves its deep ranges queued (upstream
+            // `delete_account` never touches scan_queue) — without this, the engine grinds
+            // a full deep restore for keys that no longer exist. Runs at every open (= every
+            // pass start too), so wedged wallets heal at launch and an in-app delete →
+            // restart heals immediately. Warn-and-continue: a failed prune must not block
+            // opening — sync still runs correctly without it, just wastefully.
+            match crate::scan_queue::prune_orphaned_historic_ranges(&conn) {
+                Ok(0) => {}
+                Ok(n) => info!(
+                    pruned = n,
+                    "scan queue: dropped orphaned historic ranges (below every account birthday)"
+                ),
+                Err(e) => tracing::warn!(%e, "scan queue prune failed (non-fatal) — continuing"),
+            }
         }
         Ok(Self { network, db, db_path: db_path.to_path_buf() })
     }
