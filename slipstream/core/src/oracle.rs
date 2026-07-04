@@ -428,7 +428,7 @@ pub mod testkit {
             crate::persist::WriteBehindFacade::seed(&*session.db_mut(), SYNTH_START)
                 .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
         let mut lane =
-            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork, 1, graft, 1)?;
+            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork, 1, graft, 1, false)?;
 
         let mut from_state = birthday_ts
             .to_chain_state()
@@ -520,7 +520,7 @@ pub mod testkit {
         let mut facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
             .map_err(|e| SlipstreamError::Wallet(format!("resume write-behind seed: {e}")))?;
         let mut lane =
-            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork, 1, graft, 1)?;
+            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork, 1, graft, 1, false)?;
         let mut from_state = synth_chain_state(&blocks[resume_at - 1])?;
         let mut offset = 0usize;
         let mut result: Result<(), SlipstreamError> = Ok(());

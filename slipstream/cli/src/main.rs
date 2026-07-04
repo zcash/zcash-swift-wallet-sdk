@@ -111,6 +111,9 @@ enum Cmd {
         /// Banked B0 GPU offload lever (requires a `--features gpu` build).
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         gpu_subtree: bool,
+        /// v0.4 Plan B lever: batch-affine Orchard combine (the SIMD bet leg).
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        batch_combine: bool,
         /// Task 10 audit cadence: build-and-verify every Nth graftable shard
         /// against the server root (0 = off, 1 = audit EVERY graft — the
         /// validation mode). Default matches the engine (16).
@@ -513,6 +516,7 @@ fn cmd_bench(
     wallet_dir: Option<std::path::PathBuf>,
     graft: bool,
     gpu_subtree: bool,
+    batch_combine: bool,
     graft_verify_sample: u32,
     json: Option<std::path::PathBuf>,
     keep: bool,
@@ -552,6 +556,7 @@ fn cmd_bench(
     // v0.4 Plan A lever (Task 8+): live A/B switch — the whole point of bench.
     cfg.graft_subtree = graft;
     cfg.graft_verify_sample = graft_verify_sample;
+    cfg.batch_combine = batch_combine;
     cfg.bench_json_path = Some(json_path.clone());
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -885,8 +890,8 @@ fn main() {
         Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow } => {
             cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow);
         }
-        Cmd::Bench { server, ufvk, birthday, wallet_dir, graft, gpu_subtree, graft_verify_sample, json, keep } => {
-            cmd_bench(server, ufvk, birthday, wallet_dir, graft, gpu_subtree, graft_verify_sample, json, keep);
+        Cmd::Bench { server, ufvk, birthday, wallet_dir, graft, gpu_subtree, batch_combine, graft_verify_sample, json, keep } => {
+            cmd_bench(server, ufvk, birthday, wallet_dir, graft, gpu_subtree, batch_combine, graft_verify_sample, json, keep);
         }
         Cmd::Watch { server, wallet_dir, ufvk, birthday, interval_ms } => {
             cmd_watch(server, wallet_dir, ufvk, birthday, interval_ms);

@@ -4638,7 +4638,14 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         cfg.graft_subtree = std::env::var("ZCASH_GRAFT_SUBTREE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(cfg.graft_subtree);
-        tracing::info!(graft_subtree = cfg.graft_subtree, "v0.4 graft config");
+        cfg.batch_combine = std::env::var("ZCASH_BATCH_COMBINE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(cfg.batch_combine);
+        tracing::info!(
+            graft_subtree = cfg.graft_subtree,
+            batch_combine = cfg.batch_combine,
+            "v0.4 graft/batch config"
+        );
 
         // ── Build the session config + reporting sink, then spawn the engine session ──────
         // The orchestration (resilient Tor bootstrap + initial pass + tip-following + mempool)

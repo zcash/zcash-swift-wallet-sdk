@@ -31,6 +31,12 @@ orchard = { workspace = true }
 incrementalmerkletree = { workspace = true }
 shardtree = { workspace = true }
 slipstream-gpuhash = { path = "../gpuhash", optional = true } # Phase B `gpu` feature only
+# v0.4 Plan B (batch_sinsemilla.rs): batch-affine combine — same workspace-pinned
+# versions the B0 GPU work introduced; pure CPU, no wgpu, always compiled.
+sinsemilla = { workspace = true }
+pasta_curves = { workspace = true }
+group = { workspace = true }
+ff = { workspace = true }
 rayon = { workspace = true }
 zip32 = { workspace = true }
 tokio = { workspace = true }

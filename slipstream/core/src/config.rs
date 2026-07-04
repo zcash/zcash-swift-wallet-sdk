@@ -102,6 +102,13 @@ pub struct EngineConfig {
     /// Deterministic by shard index (reproducible; no RNG in the hot path).
     pub graft_verify_sample: u32,
 
+    /// v0.4 Plan B (spec §5): batch-affine Orchard combine — all of a fragment's
+    /// combines computed level-synchronously with shared Montgomery inversions
+    /// (~12× the scalar combine in the probe), byte-identical output (KAT +
+    /// lookup_build gate). Applies to every Orchard build incl. the segments
+    /// that survive grafting. Default off until the P3/P4 device A-B.
+    pub batch_combine: bool,
+
     /// Persist-pipelining: max unpersisted units (in-flight + queued) before the scan
     /// side blocks. `1` = legacy strict depth-1 backpressure (byte-for-byte identical).
     /// Higher lets scan run further ahead so more persist hides behind scan (~22%
@@ -139,6 +146,7 @@ impl EngineConfig {
             bench_json_path: None,
             graft_subtree: false,
             graft_verify_sample: 16,
+            batch_combine: false,
             persist_depth: 1,
         }
     }

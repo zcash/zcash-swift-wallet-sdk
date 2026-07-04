@@ -195,7 +195,7 @@ pub async fn scan_chunks(
     let mut wb: Option<WriteBehind> = if config.write_behind {
         let facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
             .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
-        let mut lane = crate::persist::PersistLane::open(&config.wallet_db_path, config.network, config.persist_depth, graft_buffering, config.graft_verify_sample)?;
+        let mut lane = crate::persist::PersistLane::open(&config.wallet_db_path, config.network, config.persist_depth, graft_buffering, config.graft_verify_sample, config.batch_combine)?;
         // [B4-16 drain] Every deferred commit holds the writer gate so the FFI
         // stop()/start() drain can wait out an orphan commit abort() can't cancel.
         if let Some(p) = &progress {
@@ -274,6 +274,7 @@ async fn scan_chunks_inner(
     let mut sparse_state = crate::persist::SparseTreeState::default();
     sparse_state.gpu_subtree = config.gpu_subtree; // B0: route Orchard build to GPU when set
     sparse_state.graft_buffering = graft_buffering; // v0.4: only used on the inline path (wb's lane carries its own)
+    sparse_state.batch_combine = config.batch_combine; // v0.4 Plan B (inline path)
     // Read config fields once.
     let batch_target_ms = config.scan_batch_target_ms;
     let network = config.network;
@@ -637,7 +638,7 @@ pub async fn scan_chunks_from_treestate(
     let mut wb: Option<WriteBehind> = if write_behind {
         let facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
             .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
-        let lane = crate::persist::PersistLane::open(session.db_path(), session.network, 1, graft, 1)?;
+        let lane = crate::persist::PersistLane::open(session.db_path(), session.network, 1, graft, 1, false)?;
         Some(WriteBehind { facade, lane })
     } else {
         None

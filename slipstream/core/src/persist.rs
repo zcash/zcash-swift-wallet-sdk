@@ -314,6 +314,9 @@ pub struct SparseTreeState {
     /// the persist lane when `graft_buffering` (plan Task 7b rev 2). `None` on
     /// every other path — and the closure then runs byte-for-byte today's code.
     pub(crate) graft: Option<GraftCtx>,
+    /// v0.4 Plan B: route Orchard builds through the batch-affine lookup path
+    /// (byte-identical; the KAT + lookup_build gate adjudicate).
+    pub(crate) batch_combine: bool,
     /// v0.4 census (spec §3.2): shard-touch vs owned-note-shard counts, fed by every
     /// `sparse_put_blocks` call on this state and read out at range end (ScanStats).
     pub(crate) census_sapling: crate::census::ShardCensus,
@@ -689,6 +692,7 @@ pub fn sparse_put_blocks(
         sparse.orchard = Some(seed_orchard(inner, from_state)?);
     }
     let gpu_on = sparse.gpu_subtree;
+    let batch_on = sparse.batch_combine;
     let SparseTreeState {
         sapling: Some(sap_tree),
         orchard: Some(orch_tree),
@@ -1182,14 +1186,16 @@ pub fn sparse_put_blocks(
                     // unsupported and pointless).
                     let t = std::time::Instant::now();
                     let orchard_subtrees = match orch_plan {
-                        None => build_orchard_subtrees(gpu_on, orch_start, &mut orchard_commitments),
+                        None => build_orchard_subtrees(gpu_on, batch_on, orch_start, &mut orchard_commitments),
                         Some(plan) => {
                             let mut out = vec![];
                             for (seg_start, mut rows) in plan.segments {
                                 if let Some(cutoff) = orch_cutoff {
                                     orch_downgraded += downgrade_doomed_checkpoints(&mut rows, cutoff);
                                 }
-                                out.extend(build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(seg_start, &mut rows));
+                                // Plan B applies to the combines that SURVIVE grafting
+                                // (noted/fallback/audit shards) — graft+batch compose.
+                                out.extend(build_orchard_subtrees(false, batch_on, seg_start, &mut rows));
                             }
                             for (idx, root) in plan.grafts {
                                 let located = LocatedTree::from_parts(
@@ -1375,28 +1381,29 @@ where
         .collect()
 }
 
-/// Orchard subtree build, routed to the GPU when `gpu` is true (feature `gpu` + the
-/// `gpu_subtree` flag); otherwise the CPU `build_subtrees`. Output is byte-identical either
-/// way (gpu_subtree.rs + the `gpu_subtree_build_matches_cpu` test + the engine oracle).
-#[cfg(feature = "gpu")]
+/// Orchard subtree build routing. Priority: batch-affine (v0.4 Plan B, always
+/// available, ~12× the scalar combine) > GPU offload (banked B0, feature `gpu`)
+/// > scalar. Output is byte-identical on every path (lookup_build gate + the
+/// gpu equality test + the engine oracle).
 fn build_orchard_subtrees(
     gpu: bool,
+    batch: bool,
     start: Position,
     commitments: &mut [Option<(orchard::tree::MerkleHashOrchard, Retention<BlockHeight>)>],
 ) -> Vec<(LocatedPrunableTree<orchard::tree::MerkleHashOrchard>, BTreeMap<BlockHeight, Position>)> {
-    if gpu {
-        crate::gpu_subtree::build_subtrees_gpu::<ORCHARD_SHARD_HEIGHT>(start, commitments)
-    } else {
-        build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(start, commitments)
+    if batch {
+        return crate::lookup_build::build_subtrees_lookup::<ORCHARD_SHARD_HEIGHT>(
+            crate::batch_sinsemilla::orchard_combine_batch_cpu,
+            start,
+            commitments,
+        );
     }
-}
-
-#[cfg(not(feature = "gpu"))]
-fn build_orchard_subtrees(
-    _gpu: bool,
-    start: Position,
-    commitments: &mut [Option<(orchard::tree::MerkleHashOrchard, Retention<BlockHeight>)>],
-) -> Vec<(LocatedPrunableTree<orchard::tree::MerkleHashOrchard>, BTreeMap<BlockHeight, Position>)> {
+    #[cfg(feature = "gpu")]
+    if gpu {
+        return crate::gpu_subtree::build_subtrees_gpu::<ORCHARD_SHARD_HEIGHT>(start, commitments);
+    }
+    #[cfg(not(feature = "gpu"))]
+    let _ = gpu;
     build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(start, commitments)
 }
 
@@ -2043,12 +2050,14 @@ impl PersistLane {
     /// Open the lane's own connection to the (already-migrated) wallet file.
     /// `graft_buffering`: v0.4 Plan A — this range defers note-free shard builds
     /// (Historic ranges with `graft_subtree` on; see SparseTreeState field doc).
+    #[allow(clippy::too_many_arguments)] // lane tuning mirrors EngineConfig 1:1
     pub fn open(
         wallet_db_path: &std::path::Path,
         network: zcash_protocol::consensus::Network,
         depth: usize,
         graft_buffering: bool,
         graft_verify_sample: u32,
+        batch_combine: bool,
     ) -> Result<Self, crate::error::SlipstreamError> {
         // [B4-16] Same wait-not-die posture as the main connection (wallet_session.rs): a
         // host write (importAccount landing mid-pass) holding the lock made the lane's
@@ -2076,7 +2085,8 @@ impl PersistLane {
         } else {
             None
         };
-        let sparse = SparseTreeState { graft_buffering, graft, ..Default::default() };
+        let sparse =
+            SparseTreeState { graft_buffering, graft, batch_combine, ..Default::default() };
         Ok(Self {
             db: Some(db),
             sparse: Some(sparse),
@@ -2678,6 +2688,7 @@ mod write_behind_tests {
             1,
             false,
             0,
+            false,
         )
         .expect("lane open")
     }

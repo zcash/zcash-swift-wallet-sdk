@@ -4788,9 +4788,12 @@ dependencies = [
 name = "slipstream-core"
 version = "0.3.6"
 dependencies = [
+ "ff",
  "futures-util",
+ "group",
  "incrementalmerkletree",
  "orchard",
+ "pasta_curves",
  "prost",
  "rand 0.8.6",
  "rayon",
@@ -4798,6 +4801,7 @@ dependencies = [
  "sapling-crypto",
  "secrecy",
  "shardtree",
+ "sinsemilla",
  "slipstream-gpuhash",
  "tempfile",
  "thiserror 2.0.18",

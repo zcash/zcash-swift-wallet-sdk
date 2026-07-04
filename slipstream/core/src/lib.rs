@@ -3,6 +3,7 @@
 //! docs/slipstream/ROADMAP.md for the build plan.
 
 pub mod anchor;
+pub(crate) mod batch_sinsemilla;
 pub mod block_source;
 pub mod census;
 pub mod chunk;
@@ -27,6 +28,7 @@ pub mod persist;
 pub mod reconcile;
 #[cfg(feature = "gpu")]
 mod gpu_subtree;
+pub(crate) mod lookup_build;
 pub mod scan;
 pub mod scan_queue;
 pub mod scheduler;
