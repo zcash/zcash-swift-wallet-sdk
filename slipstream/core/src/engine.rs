@@ -23,7 +23,7 @@ use crate::{
 /// tag in the log doesn't match HEAD's value, the device is running a stale
 /// XCFramework (the three-layer gotcha, consuming side). Probe a built slice with:
 /// `strings <slice>/libzcashlc.framework/libzcashlc | grep <tag>`.
-pub const ENGINE_BUILD: &str = "2026-06-17.torretry";
+pub const ENGINE_BUILD: &str = "2026-07-04.v04-graft-config";
 
 /// Current wall-clock time as a `YYYY-MM-DD HH:MM:SSZ` UTC string.
 ///
@@ -165,6 +165,7 @@ pub async fn sync_once(
         sparse = config.sparse_persistence,
         write_behind = config.write_behind,
         gpu_subtree = config.gpu_subtree,
+        graft_subtree = config.graft_subtree,
         started_at_utc = %wall_clock_utc(),
         "engine pass starting"
     );

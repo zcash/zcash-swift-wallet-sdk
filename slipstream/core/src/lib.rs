@@ -14,6 +14,10 @@ pub mod error;
 pub mod events;
 pub mod ffi_handle;
 pub mod fetch;
+// dead_code: consumed by the sparse build path in v0.4 plan Task 7 — this allow
+// is deleted in that diff (buffer CRUD lands first so Task 6/7 build on green).
+#[allow(dead_code)]
+pub(crate) mod graft;
 pub mod grpc;
 pub mod mempool;
 pub mod oracle;

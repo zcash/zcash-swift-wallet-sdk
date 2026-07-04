@@ -4632,6 +4632,14 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
             tracing::info!(gpu_subtree = cfg.gpu_subtree, "v0.3 GPU offload config (feature=gpu)");
         }
 
+        // v0.4 (#1755): Plan A graft. No cargo feature (no heavy deps); the runtime
+        // env toggle is the dev A/B lever until the P3 gates flip the default
+        // (spec §2 policy). Mirrors the ZCASH_GPU_SUBTREE pattern above.
+        cfg.graft_subtree = std::env::var("ZCASH_GRAFT_SUBTREE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(cfg.graft_subtree);
+        tracing::info!(graft_subtree = cfg.graft_subtree, "v0.4 graft config");
+
         // ── Build the session config + reporting sink, then spawn the engine session ──────
         // The orchestration (resilient Tor bootstrap + initial pass + tip-following + mempool)
         // now lives in slipstream_core::session::run_session. This FFI only marshals C args,

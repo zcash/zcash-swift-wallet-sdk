@@ -89,6 +89,12 @@ pub struct EngineConfig {
     /// consumed by `slipstream-cli bench` and bench-ios. `None` (default) = off.
     pub bench_json_path: Option<PathBuf>,
 
+    /// v0.4 Plan A (spec §4): graft server-provided subtree roots for note-free
+    /// shards instead of computing them locally. Requires `sparse_persistence`.
+    /// Default off until the P3 device gates pass (spec §2 policy); kill switch
+    /// semantics match gpu_subtree — off = byte-for-byte today's path.
+    pub graft_subtree: bool,
+
     /// Persist-pipelining: max unpersisted units (in-flight + queued) before the scan
     /// side blocks. `1` = legacy strict depth-1 backpressure (byte-for-byte identical).
     /// Higher lets scan run further ahead so more persist hides behind scan (~22%
@@ -124,6 +130,7 @@ impl EngineConfig {
             write_behind: true,
             gpu_subtree: false,
             bench_json_path: None,
+            graft_subtree: false,
             persist_depth: 1,
         }
     }
@@ -159,6 +166,11 @@ impl EngineConfig {
         if self.write_behind && !self.sparse_persistence {
             return Err(SlipstreamError::Config(
                 "write_behind requires sparse_persistence (the deferred commit runs the sparse put_blocks path)".into(),
+            ));
+        }
+        if self.graft_subtree && !self.sparse_persistence {
+            return Err(SlipstreamError::Config(
+                "graft_subtree requires sparse_persistence (the graft verdict lives in the sparse build path)".into(),
             ));
         }
         if self.gpu_subtree && !self.sparse_persistence {
