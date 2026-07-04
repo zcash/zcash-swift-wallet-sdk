@@ -4575,6 +4575,12 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         if let Some(task) = h.task.take() {
             task.abort();
         }
+        // [B4-16 drain] The aborted pass's write-behind commit may still be running
+        // (`spawn_blocking` — uncancellable); wait it out BEFORE spawning the new
+        // session, so the new pass's first writes never collide with an orphan
+        // ("database is locked" at pass start) and no orphan Scanned-mark can land
+        // after this point. Kills the B4-12 orphan-overlap class at the root.
+        drain_slipstream_wallet_writers(&h.progress);
         *h.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Syncing;
 
         let ufvk_str: Option<String> = if ufvk.is_null() || ufvk_len == 0 {
@@ -4690,10 +4696,43 @@ pub unsafe extern "C" fn zcashlc_slipstream_stop(handle: *mut SlipstreamHandle) 
         if let Some(task) = h.task.take() {
             task.abort();
         }
+        // [B4-16 drain] abort() cannot cancel an in-flight write-behind commit
+        // (`spawn_blocking`) — drain it so a returned stop means the wallet file is
+        // QUIESCENT: the host's next write (deleteAccount / importAccount / rewind
+        // truncate) can no longer interleave with an orphan commit. Swift hops this
+        // call off the cooperative pool (the drain is a real, bounded wait).
+        drain_slipstream_wallet_writers(&h.progress);
         *h.state.lock().unwrap_or_else(|p| p.into_inner()) = SyncState::Idle;
         Ok(true)
     });
     unwrap_exc_or(res, false)
+}
+
+/// [B4-16 drain] Bounded wait for the engine's in-flight wallet-file writer — the
+/// write-behind lane's deferred commit, a `spawn_blocking` closure `task.abort()` cannot
+/// cancel. Field evidence (2026-07-04): an orphan commit outlived an `importAccount`
+/// restart, collided with the new pass's first writes ("database is locked" →
+/// non-transient failure, absorbed by the revival loop) and — worse — landed its
+/// Scanned-mark AFTER the import's force-rescan re-queue, silently shrinking the new
+/// account's scan scope. Called by stop() and start() right after aborting the task.
+/// 10 s cap ≫ the worst observed device commit (a few seconds, A10); on timeout we
+/// proceed with a warning — the busy_timeouts remain the backstop.
+fn drain_slipstream_wallet_writers(progress: &slipstream_core::ProgressArc) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut waited = false;
+    while progress.wallet_writers() > 0 {
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!(
+                "slipstream stop/start: in-flight wallet commit still running after 10 s — proceeding (busy_timeouts remain the backstop)"
+            );
+            return;
+        }
+        waited = true;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if waited {
+        tracing::info!("slipstream stop/start: drained in-flight wallet commit");
+    }
 }
 
 /// Reads a snapshot of current Slipstream progress atomics (non-blocking, poll-based — D8).

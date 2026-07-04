@@ -4,7 +4,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
 /// Shared engine progress for poll-based consumers (decision D8).
@@ -80,6 +80,17 @@ pub struct Progress {
     /// is host policy, so its edge is host-observed from the same snapshot.
     /// Monotonic per handle; deliberately NOT reset by [`Self::begin_pass`].
     pub tx_set_version: AtomicU64,
+    /// [B4-16 drain] Number of in-flight WALLET-FILE writers owned by the engine — the
+    /// write-behind persist lane's deferred commit, a `spawn_blocking` closure that
+    /// `task.abort()` CANNOT cancel. Each commit holds a [`WalletWriterGate`] for its
+    /// WHOLE life (tree compute + DB transaction); `zcashlc_slipstream_stop`/`_start`
+    /// drain on this (bounded) after aborting, so a returned stop means the wallet file
+    /// is quiescent. Field-caught 2026-07-04: an orphan commit landed AFTER an
+    /// importAccount's force-rescan re-queue (silently shrinking the new account's scan
+    /// scope) and collided with the next pass's first writes ("database is locked").
+    /// Deliberately NOT reset by [`Self::begin_pass`] — an orphan outlives its pass by
+    /// definition.
+    pub wallet_writers: AtomicUsize,
 }
 
 /// [API v2.1 E-5] Scope-expansion detection margin for the session progress floor: a
@@ -129,6 +140,14 @@ impl Progress {
     #[inline]
     pub fn tip_refreshes(&self) -> u64 {
         self.tip_refreshes.load(Ordering::Relaxed)
+    }
+
+    /// [B4-16 drain] Live count of in-flight engine wallet-file writers (see the
+    /// `wallet_writers` field doc). SeqCst pairs with the gate's increments: the drain
+    /// loop must never read a stale 0 while a commit is still running.
+    #[inline]
+    pub fn wallet_writers(&self) -> usize {
+        self.wallet_writers.load(Ordering::SeqCst)
     }
 
     /// [API v2.1 E-4] Record that the wallet's stored transaction set changed (see the
@@ -343,6 +362,28 @@ impl Progress {
 /// Convenience alias used throughout the engine.
 pub type ProgressArc = Arc<Progress>;
 
+/// [B4-16 drain] RAII writer-gate token: holds `Progress::wallet_writers` +1 for the
+/// WHOLE life of an engine wallet-file write (tree compute + DB transaction), so
+/// stop()/start() can drain to a quiescent file before the host's next wallet write.
+/// Held by the persist lane's deferred-commit closure; releases on completion AND on
+/// panic (unwinding runs `Drop` — a stuck counter would make every later stop() spin
+/// its full drain bound).
+pub struct WalletWriterGate(ProgressArc);
+
+impl WalletWriterGate {
+    /// Increment the writer count and hold it until this token drops.
+    pub fn hold(progress: ProgressArc) -> Self {
+        progress.wallet_writers.fetch_add(1, Ordering::SeqCst);
+        Self(progress)
+    }
+}
+
+impl Drop for WalletWriterGate {
+    fn drop(&mut self) {
+        self.0.wallet_writers.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Which resource currently bounds throughput (honest-ETA reporting).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Bound {
@@ -388,6 +429,29 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [B4-16 drain] The gate must count while held and release on BOTH normal drop and
+    /// panic-unwind — a stuck counter would make every later stop() spin its full drain
+    /// bound instead of returning promptly.
+    #[test]
+    fn writer_gate_counts_and_releases_on_drop_and_panic() {
+        let p: ProgressArc = Arc::new(Progress::default());
+        assert_eq!(p.wallet_writers(), 0);
+        let gate = WalletWriterGate::hold(p.clone());
+        assert_eq!(p.wallet_writers(), 1);
+        let nested = WalletWriterGate::hold(p.clone());
+        assert_eq!(p.wallet_writers(), 2);
+        drop(nested);
+        drop(gate);
+        assert_eq!(p.wallet_writers(), 0);
+
+        let p2 = p.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _gate = WalletWriterGate::hold(p2);
+            panic!("commit panicked");
+        });
+        assert_eq!(p.wallet_writers(), 0, "unwind must release the gate");
+    }
 
     #[test]
     fn snapshot_default_is_idle_zeroes() {

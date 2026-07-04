@@ -187,7 +187,12 @@ pub async fn scan_chunks(
     let mut wb: Option<WriteBehind> = if config.write_behind {
         let facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
             .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
-        let lane = crate::persist::PersistLane::open(&config.wallet_db_path, config.network, config.persist_depth)?;
+        let mut lane = crate::persist::PersistLane::open(&config.wallet_db_path, config.network, config.persist_depth)?;
+        // [B4-16 drain] Every deferred commit holds the writer gate so the FFI
+        // stop()/start() drain can wait out an orphan commit abort() can't cancel.
+        if let Some(p) = &progress {
+            lane.attach_writer_gate(p.clone());
+        }
         Some(WriteBehind { facade, lane })
     } else {
         None

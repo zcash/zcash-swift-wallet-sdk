@@ -1622,6 +1622,12 @@ pub struct PersistLane {
     /// global pool (measured-best on ≥6-core machines — see T6.9b2 policy doc).
     /// Arc so it can be moved into `spawn_blocking` closures cheaply.
     lane_pool: Option<std::sync::Arc<rayon::ThreadPool>>,
+    /// [B4-16 drain] When attached (production scan path), every deferred commit holds a
+    /// [`crate::events::WalletWriterGate`] for its WHOLE life (tree compute + DB txn), so
+    /// the FFI stop()/start() drain can wait out an orphan commit that `task.abort()`
+    /// cannot cancel — field-caught landing its Scanned-mark AFTER an importAccount's
+    /// force-rescan re-queue, and colliding with the next pass's first writes.
+    progress: Option<crate::events::ProgressArc>,
     in_flight: Option<tokio::task::JoinHandle<PersistTaskOutput>>,
     /// (first_height, last_height) of the in-flight unit, for log attribution.
     in_flight_span: (u64, u64),
@@ -1674,6 +1680,7 @@ impl PersistLane {
             db: Some(db),
             sparse: Some(SparseTreeState::default()),
             lane_pool,
+            progress: None,
             in_flight: None,
             in_flight_span: (0, 0),
             queue: std::collections::VecDeque::new(),
@@ -1681,6 +1688,13 @@ impl PersistLane {
             total_wait: std::time::Duration::ZERO,
             total_busy: std::time::Duration::ZERO,
         })
+    }
+
+    /// [B4-16 drain] Attach the handle's shared progress so every deferred commit holds
+    /// the writer gate for its whole life. The production scan path attaches; oracle and
+    /// test drivers (no stop()/start() drain to serve) may skip.
+    pub fn attach_writer_gate(&mut self, progress: crate::events::ProgressArc) {
+        self.progress = Some(progress);
     }
 
     /// Build the optional dedicated lane pool per the given policy.
@@ -1773,8 +1787,13 @@ impl PersistLane {
         // Arc::clone so the spawn_blocking closure can own a reference to the
         // lane pool without borrowing `self`.  Cheap (atomic ref-count bump).
         let pool = self.lane_pool.clone();
+        // [B4-16 drain] Acquired BEFORE the spawn (no window where the commit exists but
+        // the counter reads 0) and moved into the closure — held across compute + txn,
+        // released by Drop on completion or panic.
+        let gate = self.progress.clone().map(crate::events::WalletWriterGate::hold);
         self.in_flight_span = span;
         self.in_flight = Some(tokio::task::spawn_blocking(move || {
+            let _gate = gate;
             let started = std::time::Instant::now();
             let result = match pool {
                 Some(p) => p.install(|| job(&mut db, &mut sparse)),

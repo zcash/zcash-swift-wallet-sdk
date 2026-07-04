@@ -39,6 +39,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next mempool/scan round, so a new send appears in the app's Activity as pending without delay.
 
 ## Fixed
+- Stopping (or restarting) the Slipstream engine now DRAINS the in-flight write-behind
+  commit (bounded ≤10 s): `abort()` cannot cancel the `spawn_blocking` commit closure, so an
+  orphaned commit could land AFTER a stop returned — colliding with the next pass's first
+  writes ("database is locked") and, worse, marking a range Scanned after `importAccount`'s
+  force-rescan re-queue, which silently excluded that range from the new account's scan.
+  A returned `stop()` now means the wallet file is quiescent, making the
+  delete/import/rewind serialization guarantees unconditional.
 - `rewind(_:)` and `importAccount` on the Slipstream synchronizer now serialize with the sync
   engine (stop → mutate → restart), the same contract as `deleteAccount`: a rewind can no
   longer truncate the chain state under a mid-write pass, and an import's force-rescan

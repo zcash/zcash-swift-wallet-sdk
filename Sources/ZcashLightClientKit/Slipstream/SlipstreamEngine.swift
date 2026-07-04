@@ -93,26 +93,35 @@ public actor SlipstreamEngine {
     /// circuits, passed ONLY when Tor is enabled (`nil` = direct, no Tor). It must be
     /// SEPARATE from the old SDK's `TorClient` directory (arti holds a state lock).
     /// (The engine mirrors the old SDK's per-platform `dangerously_trust_everyone` internally.)
-    public func start(ufvk: String?, birthday: BlockHeight, torDir: String?) throws {
+    public func start(ufvk: String?, birthday: BlockHeight, torDir: String?) async throws {
         guard let handlePtr = handle else {
             throw ZcashError.rustSlipstreamNotOpen
         }
 
         // Empty Tor-dir bytes → null pointer / length 0 → the engine syncs directly (Tor off).
         let torBytes: [UInt8] = torDir.map { Array($0.utf8) } ?? []
-        let result: Bool = torBytes.withUnsafeBufferPointer { torPtr in
-            let torBase = torPtr.baseAddress
-            let torLen = UInt(torPtr.count)
-            if let ufvk {
-                // Pass UFVK bytes and birthday.  Use Array(ufvk.utf8) → withUnsafeBufferPointer
-                // for explicit pointer + length (matches plan C9 correction).
-                let ufvkBytes = Array(ufvk.utf8)
-                return ufvkBytes.withUnsafeBufferPointer { ptr in
-                    zcashlc_slipstream_start(handlePtr, ptr.baseAddress, UInt(ptr.count), UInt64(birthday), torBase, torLen)
+        let ufvkBytes: [UInt8]? = ufvk.map { Array($0.utf8) }
+        // [B4-16 drain] The FFI now DRAINS the aborted pass's in-flight write-behind
+        // commit (bounded ≤10 s) before spawning the new session — a real wait, so hop
+        // off the cooperative pool (same pattern as restoreAnchor).
+        let result: Bool = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let ok: Bool = torBytes.withUnsafeBufferPointer { torPtr in
+                    let torBase = torPtr.baseAddress
+                    let torLen = UInt(torPtr.count)
+                    if let ufvkBytes {
+                        // Pass UFVK bytes and birthday.  Use Array(ufvk.utf8) →
+                        // withUnsafeBufferPointer for explicit pointer + length
+                        // (matches plan C9 correction).
+                        return ufvkBytes.withUnsafeBufferPointer { ptr in
+                            zcashlc_slipstream_start(handlePtr, ptr.baseAddress, UInt(ptr.count), UInt64(birthday), torBase, torLen)
+                        }
+                    } else {
+                        // Keyless update: pass null UFVK pointer with length 0.
+                        return zcashlc_slipstream_start(handlePtr, nil, 0, UInt64(birthday), torBase, torLen)
+                    }
                 }
-            } else {
-                // Keyless update: pass null UFVK pointer with length 0.
-                return zcashlc_slipstream_start(handlePtr, nil, 0, UInt64(birthday), torBase, torLen)
+                continuation.resume(returning: ok)
             }
         }
 
@@ -121,11 +130,20 @@ public actor SlipstreamEngine {
         }
     }
 
-    /// Stops the in-flight sync (non-blocking — Rust aborts the tokio task asynchronously).
-    /// The handle remains live; poll `snapshot()` to observe the state transition to idle.
-    public func stop() {
+    /// Stops the in-flight sync AND drains the engine's in-flight wallet commit
+    /// ([B4-16] — `abort()` cannot cancel a `spawn_blocking` write-behind commit, so the
+    /// FFI now blocks, bounded ≤10 s, until the wallet file is quiescent). A returned
+    /// stop() is the contract deleteAccount/importAccount/rewind serialize on: their
+    /// wallet write can no longer interleave with an orphan commit. Hopped off the
+    /// cooperative pool — the drain is a real wait; never block an actor thread.
+    public func stop() async {
         guard let handlePtr = handle else { return }
-        _ = zcashlc_slipstream_stop(handlePtr)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = zcashlc_slipstream_stop(handlePtr)
+                continuation.resume()
+            }
+        }
     }
 
     /// [Engine API v2 §4.5] Tells the engine the HOST changed the wallet's transaction set

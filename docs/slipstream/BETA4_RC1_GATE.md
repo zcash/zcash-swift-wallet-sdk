@@ -9,6 +9,15 @@ during the RC soak instead.
 **Rule:** any gate that fails → grab the log, stop the session, send it over. A pass →
 flip the matrix row(s) to ✅ with today's date.
 
+> **2026-07-04 field note (first partial run):** Gate-3/4's first attempt caught a real hole —
+> the aborted pass's write-behind commit outlived `engine.stop()` (`spawn_blocking` is
+> uncancellable), collided with the new pass ("database is locked") and could clobber the
+> import's force-rescan re-queue. Two outcomes: the **revival loop had its first field win**
+> (sync self-resumed in 15 s, exactly the contract), and the hole is now CLOSED at the source
+> (writer-gate drain in stop/start). **Re-run Gates 3/4 on the drain build**, and treat the
+> 07-04 morning wallet as tainted for Keystone completeness (a scan window may have been
+> skipped) — Gate 6's wipe → restore covers it, or disconnect + re-add the Keystone.
+
 ## Precondition — the RC build
 
 - SDK `slipstream` @ `73d5de27` (tree clean; crates **0.3.6**; macOS + iOS FFI slices
