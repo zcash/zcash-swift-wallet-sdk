@@ -104,8 +104,8 @@ enum Cmd {
         /// Wallet directory (must NOT already contain a data.db). Default: temp dir.
         #[arg(long)]
         wallet_dir: Option<std::path::PathBuf>,
-        /// Plan A graft lever (v0.4). Parses now; until the graft lands (plan Task 5+),
-        /// `--graft true` exits with an honest error instead of silently no-opping.
+        /// v0.4 Plan A graft lever: skip building note-free completed shards by
+        /// installing server roots (the A/B switch for the bet legs).
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         graft: bool,
         /// Banked B0 GPU offload lever (requires a `--features gpu` build).
@@ -513,12 +513,6 @@ fn cmd_bench(
 ) {
     let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
     require_gpu_feature_if(gpu_subtree, "--gpu-subtree");
-    if graft {
-        // Honest error until the graft lever lands (v0.4 plan Task 5+): a silent
-        // no-op here would produce a false A/B "no difference" verdict.
-        eprintln!("error: --graft true is not built yet (v0.4 Plan A; see docs/slipstream/plans/2026-07-04-v04-graft-dont-grind-plan.md)");
-        std::process::exit(2);
-    }
 
     // Wallet dir: user-supplied (must be fresh) or a temp dir (deleted unless --keep).
     let (dir, tempdir_guard) = match wallet_dir {
@@ -549,6 +543,8 @@ fn cmd_bench(
         endpoint,
     );
     cfg.gpu_subtree = gpu_subtree;
+    // v0.4 Plan A lever (Task 8+): live A/B switch — the whole point of bench.
+    cfg.graft_subtree = graft;
     cfg.bench_json_path = Some(json_path.clone());
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");

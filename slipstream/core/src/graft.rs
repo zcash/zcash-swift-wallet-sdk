@@ -107,7 +107,12 @@ pub(crate) fn append_rows<H: HashSer>(
     if rows.is_empty() {
         return Ok(());
     }
-    let mut stmt = conn.prepare_cached(
+    // ONE transaction per append (first live-fire lesson, 2026-07-04): autocommit
+    // meant one implicit txn+fsync PER ROW — ~18k/chunk — and persist_wait went
+    // 16.6s → 96.5s on the reference restore. unchecked: the side conn never
+    // holds another open txn (all its other uses are single statements).
+    let tx = conn.unchecked_transaction()?;
+    let mut stmt = tx.prepare_cached(
         "INSERT OR REPLACE INTO slipstream_graft_buffer
          (pool, shard_index, position, commitment, retention_kind, checkpoint_height, marking)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -126,6 +131,8 @@ pub(crate) fn append_rows<H: HashSer>(
             marking
         ])?;
     }
+    drop(stmt);
+    tx.commit()?;
     Ok(())
 }
 
