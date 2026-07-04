@@ -45,7 +45,9 @@ if [[ -z "$1" ]]; then
 fi
 
 VERSION="$1"
-REPO="zcash/zcash-swift-wallet-sdk"
+# Release onto the repo the workflow runs in (GITHUB_REPOSITORY in Actions), so forks can
+# publish their own FFI releases — the hardcoded upstream 403s under a fork's CI token.
+REPO="${GITHUB_REPOSITORY:-zcash/zcash-swift-wallet-sdk}"
 PRODUCTS_DIR="BuildSupport/products"
 ZIP_FILE="libzcashlc.xcframework.zip"
 
