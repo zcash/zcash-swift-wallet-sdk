@@ -1,0 +1,27 @@
+# v0.4 P0 bench-ios (spec §3.4): the on-device measuring instrument's Rust half.
+# A staticlib mirroring the spike repo's ios-probe pattern — a ~30-line SwiftUI
+# host links it and calls ONE C function. Zodl is deliberately not the instrument.
+[package]
+name = "slipstream-bench-probe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[lib]
+name = "slipstream_bench_probe"
+# staticlib -> a .a to link into the bench app. No final link step at cargo time,
+# so it cross-compiles for aarch64-apple-ios without the iOS SDK.
+crate-type = ["staticlib", "lib"]
+path = "src/lib.rs"
+
+[features]
+gpu = ["slipstream-core/gpu"]
+
+[dependencies]
+slipstream-core = { path = "../../core" }
+tokio = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

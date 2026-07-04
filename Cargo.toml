@@ -123,7 +123,7 @@ crate-type = ["staticlib"]
 lto = true
 
 [workspace]
-members = ["slipstream/core", "slipstream/cli", "slipstream/protogen", "slipstream/gpuhash"]
+members = ["slipstream/core", "slipstream/cli", "slipstream/protogen", "slipstream/gpuhash", "slipstream/bench-ios/probe"]
 resolver = "3"
 
 [workspace.dependencies]

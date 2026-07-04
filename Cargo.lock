@@ -4758,6 +4758,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
+name = "slipstream-bench-probe"
+version = "0.1.0"
+dependencies = [
+ "slipstream-core",
+ "tempfile",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "slipstream-cli"
 version = "0.3.6"
 dependencies = [

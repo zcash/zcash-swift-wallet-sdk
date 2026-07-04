@@ -1,0 +1,36 @@
+# v0.4 P0 bench-ios (spec §3.4) — XcodeGen project for the on-device bench host.
+# Same recipe as the spike repo's ios-probe app. `../setup.sh` builds the
+# xcframework and generates SlipstreamBench.xcodeproj (both gitignored).
+name: SlipstreamBench
+options:
+  bundleIdPrefix: com.zodl
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    CODE_SIGN_STYLE: Automatic
+    # The probe xcframework carries arm64 slices only (Apple Silicon shop —
+    # build-xcframework.sh builds aarch64-apple-ios{,-sim}); keep Rosetta out.
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+targets:
+  SlipstreamBench:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zodl.slipstreambench
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/../probe/include"
+    dependencies:
+      - framework: SlipstreamBench.xcframework
+        embed: false
+      - sdk: Foundation.framework
+      - sdk: SystemConfiguration.framework
