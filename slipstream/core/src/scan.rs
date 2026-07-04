@@ -118,6 +118,11 @@ pub struct ScanStats {
     /// (Σ persist_busy, measured inside the persist closures). The overlap won
     /// is `persist_busy - persist_wait` (clamped at 0).
     pub persist_busy: std::time::Duration,
+    /// v0.4 census (spec §3.2): per-pool shard-touch vs owned-note-shard counts
+    /// for this range (copied out of whichever SparseTreeState ran the builds —
+    /// the persist lane's on the write-behind path, the scan task's inline).
+    pub census_sapling: crate::census::ShardCensus,
+    pub census_orchard: crate::census::ShardCensus,
 }
 
 // ── T6.9 write-behind loop state ───────────────────────────────────────────────
@@ -220,6 +225,8 @@ pub async fn scan_chunks(
             (Ok(mut stats), Ok(())) => {
                 stats.persist_wait = wb.lane.total_wait();
                 stats.persist_busy = wb.lane.total_busy();
+                // v0.4 census: the lane's sparse state ran the builds on this path.
+                (stats.census_sapling, stats.census_orchard) = wb.lane.census();
                 info!(
                     blocks = stats.blocks,
                     chunks = stats.chunks,
@@ -531,6 +538,10 @@ async fn scan_chunks_inner(
             }
         }
     }
+    // v0.4 census: inline-sparse path — the local state ran the builds. (On the
+    // write-behind path this is zeros; scan_chunks overwrites from the lane.)
+    stats.census_sapling = std::mem::take(&mut sparse_state.census_sapling);
+    stats.census_orchard = std::mem::take(&mut sparse_state.census_orchard);
     if wb.is_none() {
         // Write-behind logs its "scan done" in scan_chunks AFTER the drain
         // barrier (so the line means "fully committed", not "fully decrypted").
@@ -628,6 +639,8 @@ pub async fn scan_chunks_from_treestate(
             (Ok(mut stats), Ok(())) => {
                 stats.persist_wait = wb.lane.total_wait();
                 stats.persist_busy = wb.lane.total_busy();
+                // v0.4 census: the lane's sparse state ran the builds on this path.
+                (stats.census_sapling, stats.census_orchard) = wb.lane.census();
                 Ok(stats)
             }
             (Err(scan_err), Ok(())) => Err(scan_err),
@@ -746,6 +759,10 @@ async fn scan_chunks_from_treestate_inner(
         drop(permit);
         next_state = synthesized_next;
     }
+    // v0.4 census: mirror of scan_chunks_inner (zeros under write-behind; the
+    // wrapper overwrites from the lane after its drain barrier).
+    stats.census_sapling = std::mem::take(&mut sparse_state.census_sapling);
+    stats.census_orchard = std::mem::take(&mut sparse_state.census_orchard);
     info!(blocks = stats.blocks, chunks = stats.chunks, sapling = stats.sapling_received, orchard = stats.orchard_received, "scan_from_treestate done");
     Ok(stats)
 }

@@ -84,6 +84,11 @@ pub struct EngineConfig {
     /// is byte-for-byte identical when off (kill switch: `--gpu-subtree false`).
     pub gpu_subtree: bool,
 
+    /// v0.4 P0 bench (spec §3.1): when set, the engine writes a machine-readable
+    /// end-of-pass `BenchSummary` JSON (stage split + shard census) to this path —
+    /// consumed by `slipstream-cli bench` and bench-ios. `None` (default) = off.
+    pub bench_json_path: Option<PathBuf>,
+
     /// Persist-pipelining: max unpersisted units (in-flight + queued) before the scan
     /// side blocks. `1` = legacy strict depth-1 backpressure (byte-for-byte identical).
     /// Higher lets scan run further ahead so more persist hides behind scan (~22%
@@ -118,6 +123,7 @@ impl EngineConfig {
             sparse_persistence: true,
             write_behind: true,
             gpu_subtree: false,
+            bench_json_path: None,
             persist_depth: 1,
         }
     }

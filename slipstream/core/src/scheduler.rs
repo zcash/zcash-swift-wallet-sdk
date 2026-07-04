@@ -156,6 +156,9 @@ pub struct SyncReport {
     pub persist_wait_elapsed: Duration,
     /// T6.9 write-behind: Σ wall time of the deferred commits themselves.
     pub persist_busy_elapsed: Duration,
+    /// v0.4 census (spec §3.2): per-pool shard census unioned across all ranges.
+    pub census_sapling: crate::census::ShardCensus,
+    pub census_orchard: crate::census::ShardCensus,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -430,6 +433,8 @@ pub async fn run_to_completion(
         // persist_wait portion — it is honest loop wall time; see engine.rs log).
         report.persist_wait_elapsed += scan_stats.persist_wait;
         report.persist_busy_elapsed += scan_stats.persist_busy;
+        report.census_sapling.merge(&scan_stats.census_sapling);
+        report.census_orchard.merge(&scan_stats.census_orchard);
         report.enhance.requests += scan_stats.interleaved_enhance.requests;
         report.enhance.txs_stored += scan_stats.interleaved_enhance.txs_stored;
         report.enhance.statuses_set += scan_stats.interleaved_enhance.statuses_set;

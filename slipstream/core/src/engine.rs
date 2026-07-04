@@ -265,6 +265,37 @@ pub async fn sync_once(
         "sync stage split"
     );
 
+    // v0.4 P0 (spec §3): shard census on the pass record — `graftable` PREDICTS
+    // Plan A's ceiling for this wallet before the graft exists.
+    info!(
+        sapling_shards = outcome.report.census_sapling.shards(),
+        sapling_noted = outcome.report.census_sapling.noted_shards(),
+        sapling_graftable = outcome.report.census_sapling.graftable_fraction(),
+        orchard_shards = outcome.report.census_orchard.shards(),
+        orchard_noted = outcome.report.census_orchard.noted_shards(),
+        orchard_graftable = outcome.report.census_orchard.graftable_fraction(),
+        "shard census"
+    );
+
+    // v0.4 P0 (spec §3.1): the machine-readable bench artifact, host-opted via config.
+    if let Some(path) = &config.bench_json_path {
+        let bench = crate::census::BenchSummary {
+            engine_build: ENGINE_BUILD,
+            total_s: outcome.elapsed.as_secs_f64(),
+            fetch_s: outcome.report.fetch_elapsed.as_secs_f64(),
+            scan_s: outcome.report.scan_elapsed.as_secs_f64(),
+            enhance_s: outcome.enhance_elapsed.as_secs_f64(),
+            persist_wait_s,
+            persist_overlap_s: (persist_busy_s - persist_wait_s).max(0.0),
+            blocks: outcome.report.scan.blocks,
+            sapling: (&outcome.report.census_sapling).into(),
+            orchard: (&outcome.report.census_orchard).into(),
+        };
+        if let Err(e) = bench.write_json(path) {
+            tracing::warn!(path = %path.display(), %e, "bench JSON write failed");
+        }
+    }
+
     Ok(outcome)
 }
 

@@ -4,6 +4,7 @@
 
 pub mod anchor;
 pub mod block_source;
+pub mod census;
 pub mod chunk;
 pub mod config;
 pub mod connector;

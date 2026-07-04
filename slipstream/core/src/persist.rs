@@ -305,6 +305,18 @@ pub struct SparseTreeState {
     /// B0: route the Orchard subtree build to the GPU (feature `gpu`). Default false;
     /// set from `EngineConfig::gpu_subtree` at the scan-path construction site.
     pub(crate) gpu_subtree: bool,
+    /// v0.4 census (spec §3.2): shard-touch vs owned-note-shard counts, fed by every
+    /// `sparse_put_blocks` call on this state and read out at range end (ScanStats).
+    pub(crate) census_sapling: crate::census::ShardCensus,
+    pub(crate) census_orchard: crate::census::ShardCensus,
+}
+
+impl SparseTreeState {
+    /// v0.4 census read-out (spec §3.2) — (sapling, orchard). Production reads
+    /// travel via `ScanStats`; this accessor serves tests and direct hosts.
+    pub fn census(&self) -> (&crate::census::ShardCensus, &crate::census::ShardCensus) {
+        (&self.census_sapling, &self.census_orchard)
+    }
 }
 
 fn seed_sapling(db: &mut Db, _from_state: &ChainState) -> Result<SaplingSparseTree, SqliteClientError> {
@@ -524,7 +536,14 @@ pub fn sparse_put_blocks(
         sparse.orchard = Some(seed_orchard(inner, from_state)?);
     }
     let gpu_on = sparse.gpu_subtree;
-    let SparseTreeState { sapling: Some(sap_tree), orchard: Some(orch_tree), .. } = sparse else {
+    let SparseTreeState {
+        sapling: Some(sap_tree),
+        orchard: Some(orch_tree),
+        census_sapling,
+        census_orchard,
+        ..
+    } = sparse
+    else {
         return Err(SqliteClientError::CorruptedData(
             "sparse tree state missing after seed".into(),
         ));
@@ -781,6 +800,25 @@ pub fn sparse_put_blocks(
             let sap_frontier = from_state.final_sapling_tree().clone();
             let orch_frontier = from_state.final_orchard_tree().clone();
             let frontier_checkpoint_id = frontier_id;
+
+            // v0.4 census (spec §3.2): record shard touches + owned-note shards for
+            // this call BEFORE the per-pool parallel section (serial, trivial cost).
+            census_sapling.feed(
+                u64::from(sap_start),
+                sapling_commitments.len() as u64,
+                note_positions
+                    .iter()
+                    .filter(|(p, _)| *p == ShieldedProtocol::Sapling)
+                    .map(|(_, pos)| u64::from(*pos)),
+            );
+            census_orchard.feed(
+                u64::from(orch_start),
+                orchard_commitments.len() as u64,
+                note_positions
+                    .iter()
+                    .filter(|(p, _)| *p == ShieldedProtocol::Orchard)
+                    .map(|(_, pos)| u64::from(*pos)),
+            );
 
             fn map_sparse_err<E: std::fmt::Debug>(e: E) -> SqliteClientError {
                 SqliteClientError::CorruptedData(format!("sparse tree: {e:?}"))
@@ -1724,6 +1762,16 @@ impl PersistLane {
 
     pub fn total_busy(&self) -> std::time::Duration {
         self.total_busy
+    }
+
+    /// v0.4 census (spec §3.2): per-pool shard census accumulated by this lane's
+    /// sparse state — (sapling, orchard). Meaningful after `drain()` (lane
+    /// quiescent); zeros if the state is checked out mid-commit or never used.
+    pub fn census(&self) -> (crate::census::ShardCensus, crate::census::ShardCensus) {
+        match &self.sparse {
+            Some(s) => (s.census_sapling.clone(), s.census_orchard.clone()),
+            None => Default::default(),
+        }
     }
 
     /// Await the in-flight commit, if any (the full barrier when called alone —
