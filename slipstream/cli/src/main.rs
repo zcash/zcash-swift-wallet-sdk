@@ -86,6 +86,38 @@ enum Cmd {
         #[arg(long, default_value_t = false)]
         follow: bool,
     },
+    /// v0.4 P0 bench (spec §3.3): scripted fresh-restore benchmark. Restores the
+    /// given UFVK into an EMPTY wallet dir (temp by default — a bench is always a
+    /// fresh restore) and prints the engine's end-of-pass BenchSummary: stage
+    /// split + shard census + the Plan-A graftable prediction, also written as
+    /// JSON (the artifact bench-ios shares).
+    Bench {
+        /// lightwalletd URL, e.g. https://zec.rocks:443
+        #[arg(long)]
+        server: String,
+        /// UFVK of the reference wallet to restore.
+        #[arg(long)]
+        ufvk: String,
+        /// Birthday height for the restore.
+        #[arg(long)]
+        birthday: u64,
+        /// Wallet directory (must NOT already contain a data.db). Default: temp dir.
+        #[arg(long)]
+        wallet_dir: Option<std::path::PathBuf>,
+        /// Plan A graft lever (v0.4). Parses now; until the graft lands (plan Task 5+),
+        /// `--graft true` exits with an honest error instead of silently no-opping.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        graft: bool,
+        /// Banked B0 GPU offload lever (requires a `--features gpu` build).
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        gpu_subtree: bool,
+        /// Write the BenchSummary JSON here (default: <wallet_dir>/bench.json).
+        #[arg(long)]
+        json: Option<std::path::PathBuf>,
+        /// Keep the wallet dir afterwards (temp dirs are deleted by default).
+        #[arg(long, default_value_t = false)]
+        keep: bool,
+    },
     /// [API v2 Phase C acceptance] Live wallet console rendered ONLY from the v2 contract:
     /// the derived engine snapshot (state/permille/recovering/stalled), the engine-owned SQL
     /// views (`slipstream_v_recovery_balance`, `slipstream_v_tx_reconciled`), and the two
@@ -465,6 +497,133 @@ fn require_gpu_feature_if(requested: bool, flag: &str) {
     }
 }
 
+/// v0.4 P0 (spec §3.3): fresh-restore benchmark. One measured pass, honest by
+/// construction: refuses a pre-populated wallet dir (that would be a catch-up,
+/// not a restore) and prints/persists the engine-written BenchSummary.
+#[allow(clippy::too_many_arguments)]
+fn cmd_bench(
+    server: String,
+    ufvk: String,
+    birthday: u64,
+    wallet_dir: Option<std::path::PathBuf>,
+    graft: bool,
+    gpu_subtree: bool,
+    json: Option<std::path::PathBuf>,
+    keep: bool,
+) {
+    let endpoint = parse_server(&server).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+    require_gpu_feature_if(gpu_subtree, "--gpu-subtree");
+    if graft {
+        // Honest error until the graft lever lands (v0.4 plan Task 5+): a silent
+        // no-op here would produce a false A/B "no difference" verdict.
+        eprintln!("error: --graft true is not built yet (v0.4 Plan A; see docs/slipstream/plans/2026-07-04-v04-graft-dont-grind-plan.md)");
+        std::process::exit(2);
+    }
+
+    // Wallet dir: user-supplied (must be fresh) or a temp dir (deleted unless --keep).
+    let (dir, tempdir_guard) = match wallet_dir {
+        Some(d) => {
+            if d.join("data.db").exists() {
+                eprintln!(
+                    "error: {} already contains a data.db — a bench is a FRESH restore; \
+                     point --wallet-dir at an empty dir or omit it for a temp dir",
+                    d.display()
+                );
+                std::process::exit(2);
+            }
+            std::fs::create_dir_all(&d)
+                .unwrap_or_else(|e| { eprintln!("error: create {}: {e}", d.display()); std::process::exit(2) });
+            (d, None)
+        }
+        None => {
+            let td = tempfile::tempdir()
+                .unwrap_or_else(|e| { eprintln!("error: tempdir: {e}"); std::process::exit(2) });
+            (td.path().to_path_buf(), Some(td))
+        }
+    };
+
+    let json_path = json.unwrap_or_else(|| dir.join("bench.json"));
+    let mut cfg = slipstream_core::EngineConfig::new(
+        slipstream_core::Network::MainNetwork,
+        dir.join("data.db"),
+        endpoint,
+    );
+    cfg.gpu_subtree = gpu_subtree;
+    cfg.bench_json_path = Some(json_path.clone());
+
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let outcome = rt.block_on(async {
+        let progress = std::sync::Arc::new(slipstream_core::Progress::default());
+        let ticker_progress = std::sync::Arc::clone(&progress);
+        let ticker = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                println!(
+                    "progress: fetched {} | scanned {} | enhanced {} (tip {})",
+                    ticker_progress.fetched(),
+                    ticker_progress.scanned(),
+                    ticker_progress.enhanced(),
+                    ticker_progress.chain_tip()
+                );
+            }
+        });
+        let result = slipstream_core::engine::sync_once(
+            &cfg,
+            Some((ufvk.as_str(), birthday)),
+            Some(progress),
+            None,
+        )
+        .await;
+        ticker.abort();
+        result
+    });
+
+    let outcome = outcome.unwrap_or_else(|e| { eprintln!("bench failed: {e}"); std::process::exit(1) });
+
+    // Human table — same numbers the engine wrote to the JSON artifact.
+    let r = &outcome.report;
+    let wait_s = r.persist_wait_elapsed.as_secs_f64();
+    let busy_s = r.persist_busy_elapsed.as_secs_f64();
+    println!();
+    println!(
+        "bench: total {:.1}s | fetch {:.1}s | scan {:.1}s | enhance {:.1}s | persist_wait {:.1}s | overlap {:.1}s",
+        outcome.elapsed.as_secs_f64(),
+        r.fetch_elapsed.as_secs_f64(),
+        r.scan_elapsed.as_secs_f64(),
+        outcome.enhance_elapsed.as_secs_f64(),
+        wait_s,
+        (busy_s - wait_s).max(0.0),
+    );
+    for (label, c) in [("sapling", &r.census_sapling), ("orchard", &r.census_orchard)] {
+        println!(
+            "census {label}: shards {} | noted {} | graftable {:.0}%",
+            c.shards(),
+            c.noted_shards(),
+            c.graftable_fraction() * 100.0
+        );
+    }
+    println!(
+        "Plan A ceiling (orchard, the dominant combine cost): skip ~{:.0}% of shard builds on this wallet",
+        r.census_orchard.graftable_fraction() * 100.0
+    );
+    if json_path.exists() {
+        println!("json: {}", json_path.display());
+    } else {
+        eprintln!("warning: engine did not write the bench JSON at {}", json_path.display());
+    }
+    match (tempdir_guard, keep) {
+        (Some(td), true) => {
+            // Leak deliberately: --keep promotes the temp dir to a kept artifact.
+            let path = td.keep();
+            println!("wallet dir kept: {}", path.display());
+        }
+        (Some(_td), false) => {} // dropped → deleted
+        (None, _) => println!("wallet dir: {}", dir.display()),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_sync(
     server: String,
@@ -723,6 +882,9 @@ fn main() {
         Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow } => {
             cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow);
         }
+        Cmd::Bench { server, ufvk, birthday, wallet_dir, graft, gpu_subtree, json, keep } => {
+            cmd_bench(server, ufvk, birthday, wallet_dir, graft, gpu_subtree, json, keep);
+        }
         Cmd::Watch { server, wallet_dir, ufvk, birthday, interval_ms } => {
             cmd_watch(server, wallet_dir, ufvk, birthday, interval_ms);
         }
@@ -735,6 +897,59 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_bench_minimal() {
+        let cli = Cli::try_parse_from([
+            "slipstream", "bench",
+            "--server", "https://zec.rocks:443",
+            "--ufvk", "uview1abc",
+            "--birthday", "2500000",
+        ])
+        .expect("parses");
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Bench { graft: false, gpu_subtree: false, keep: false, .. }
+        ));
+    }
+
+    #[test]
+    fn parses_bench_full_flags() {
+        let cli = Cli::try_parse_from([
+            "slipstream", "bench",
+            "--server", "https://zec.rocks:443",
+            "--ufvk", "uview1abc",
+            "--birthday", "2500000",
+            "--wallet-dir", "/tmp/benchw",
+            "--graft", "true",
+            "--gpu-subtree", "true",
+            "--json", "/tmp/out.json",
+            "--keep",
+        ])
+        .expect("parses");
+        match cli.cmd {
+            Cmd::Bench { graft, gpu_subtree, keep, json, wallet_dir, .. } => {
+                assert!(graft && gpu_subtree && keep);
+                assert_eq!(json.as_deref(), Some(std::path::Path::new("/tmp/out.json")));
+                assert_eq!(wallet_dir.as_deref(), Some(std::path::Path::new("/tmp/benchw")));
+            }
+            other => panic!("wrong cmd: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bench_requires_identity() {
+        // A bench is always a fresh restore: ufvk + birthday are mandatory.
+        assert!(Cli::try_parse_from(["slipstream", "bench", "--server", "http://x:1"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "slipstream", "bench",
+                "--server", "http://x:1",
+                "--ufvk", "uview1abc",
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn parses_version_subcommand() {

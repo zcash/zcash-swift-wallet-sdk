@@ -4765,6 +4765,7 @@ dependencies = [
  "rand 0.8.6",
  "rusqlite",
  "slipstream-core",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
