@@ -269,5 +269,25 @@ persist_wait (~9.5 s) and scan-compute (~10.6 s) are nearly BALANCED — the pas
 close to its max(scan,persist) floor, so batch-affine on the surviving combines (5 noted
 + tip/straddle shards + sapling) must find ~2.5 s. Adjudication = v0.4 FINAL build.
 
-**[needs-user] rows to append:** iPhone 16 Pro via bench-ios (Task 11/P3); formal
-median-of-3 adjudication runs on the v0.4 final build after Task 10.
+**Plan B verdict (2026-07-04, lever matrix, reference wallet, back-to-back):**
+| graft | batch | total | persist_wait |
+|---|---|---|---|
+| ON | ON | 32.1 s (fetch 15.5) | **8.2** |
+| ON | off | 28.8 s (fetch 13.3) | 9.1 |
+| off | ON | 39.1 s | 19.5 |
+| off | off | 41.2 s | 20.1 |
+
+**Batch-affine ≈ +0.5–1 s persist_wait, NOISE on totals** — despite the kernel's
+honest 12.04× probe (79.3 µs → 6.6 µs/combine, KAT'd byte-identical at 100k).
+Why the gap (the park-time lesson, third verse): (a) the lookup map covers only
+`from_iter`'s intra-fragment combines — the shard-stitching combines inside
+`insert_tree`/`ensure` take store-dependent inputs and cannot be precomputed;
+(b) post-graft there is little combine work left to accelerate; (c) map/convert
+overhead taxes what remains. DISPOSITION: the lever ships (correct, gated,
+default-OFF — same banked posture as the GPU), the kernel + KATs + the shared
+lookup_build machinery stay; no NEON pass (nothing left for it to feed).
+
+**[needs-user] rows to append:** Lukas's graft+batch runs (his 5 noted shards
+give batch more coverage than the reference — the last open bet question);
+iPhone 16 Pro via bench-ios (Task 11/P3); formal median-of-3 adjudication runs
+on the v0.4 final build after Task 10.
