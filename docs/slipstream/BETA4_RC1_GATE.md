@@ -20,8 +20,9 @@ flip the matrix row(s) to ✅ with today's date.
 
 ## Precondition — the RC build
 
-- SDK `slipstream` @ `73d5de27` (tree clean; crates **0.3.6**; macOS + iOS FFI slices
-  rebuilt against it).
+- SDK `slipstream` @ `732eb89e` (tree clean; crates **0.3.6**; FULL 5-arch FFI built against
+  it — includes the writer-gate drain `7c7ef5c3` + aborted-task join `732eb89e`, i.e. stop()
+  = fully quiescent wallet file).
 - Zodl `slipstream-macos`, scheme **`zodlmac-internal`** — commit your in-flight Zodl edits
   first so the RC cut is reproducible; the SDK side is done.
 - No new FFI symbols this wave — if Xcode acts stale: Cmd+Shift+K, Reset Package Caches.
