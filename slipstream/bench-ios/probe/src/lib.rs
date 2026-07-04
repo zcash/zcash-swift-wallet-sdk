@@ -16,21 +16,20 @@ pub const BENCH_ERR_BUFFER: i32 = -4;
 
 /// Copy `json` into the caller's buffer as a NUL-terminated C string.
 /// A too-small buffer is an ERROR (never a silent truncation — a truncated
-/// bench artifact is worse than none).
-pub fn write_json_to_buf(json: &str, out: *mut c_char, cap: usize) -> i32 {
-    if out.is_null() || json.is_empty() {
+/// bench artifact is worse than none). Safe on purpose: the raw-pointer →
+/// slice conversion happens once, at the C boundary in `slipstream_bench_run`.
+pub fn write_json_to_buf(json: &str, out: &mut [c_char]) -> i32 {
+    if json.is_empty() {
         return BENCH_ERR_ARGS;
     }
     let bytes = json.as_bytes();
-    if bytes.len() + 1 > cap {
+    if bytes.len() + 1 > out.len() {
         return BENCH_ERR_BUFFER;
     }
-    // SAFETY: caller guarantees `out` points at `cap` writable bytes (the C
-    // contract in slipstream_bench.h); we checked len+1 <= cap above.
-    unsafe {
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out.cast::<u8>(), bytes.len());
-        *out.add(bytes.len()) = 0;
+    for (dst, src) in out.iter_mut().zip(bytes) {
+        *dst = *src as c_char;
     }
+    out[bytes.len()] = 0;
     BENCH_OK
 }
 
@@ -45,14 +44,17 @@ fn cstr<'a>(p: *const c_char) -> Option<&'a str> {
 /// Run ONE fresh-restore bench pass and hand back the engine-written
 /// BenchSummary JSON. Blocking — call off the main thread.
 ///
-/// * `server`      — lightwalletd URL, e.g. "https://zec.rocks:443"
-/// * `ufvk`        — viewing key of the reference wallet
-/// * `birthday`    — restore birthday height
-/// * `wallet_dir`  — writable dir that must NOT already hold a data.db
-///                   (a bench is a fresh restore; pass a new subdir per run)
-/// * `gpu_subtree` — banked B0 lever (needs a `gpu`-feature build; no-ops otherwise
-///                   is impossible: the engine build without the feature ignores it,
-///                   so the app surfaces the flag only on gpu builds)
+/// * `server` — lightwalletd URL, e.g. "https://zec.rocks:443"
+/// * `ufvk` — viewing key of the reference wallet
+/// * `birthday` — restore birthday height
+/// * `wallet_dir` — writable dir that must NOT already hold a data.db
+///   (a bench is a fresh restore; pass a new subdir per run)
+/// * `gpu_subtree` — banked B0 lever (needs a `gpu`-feature build; the engine
+///   build without the feature ignores it, so the app surfaces it only there)
+/// * `graft_subtree` — v0.4 Plan A lever: install server subtree roots instead
+///   of rebuilding note-free shards locally
+/// * `batch_combine` — v0.4 Plan B lever: batch-affine Sinsemilla for the
+///   shards that do build
 /// * `out_json`/`cap` — caller buffer for the NUL-terminated JSON (64 KiB is plenty)
 ///
 /// Returns BENCH_OK or a BENCH_ERR_* code.
@@ -67,6 +69,8 @@ pub unsafe extern "C" fn slipstream_bench_run(
     birthday: u32,
     wallet_dir: *const c_char,
     gpu_subtree: bool,
+    graft_subtree: bool,
+    batch_combine: bool,
     out_json: *mut c_char,
     cap: usize,
 ) -> i32 {
@@ -77,6 +81,13 @@ pub unsafe extern "C" fn slipstream_bench_run(
                 .unwrap_or_else(|_| "info".into()),
         )
         .try_init();
+
+    if out_json.is_null() {
+        return BENCH_ERR_ARGS;
+    }
+    // SAFETY: caller guarantees `out_json` points at `cap` writable bytes (the
+    // C contract in slipstream_bench.h) — the one place raw becomes slice.
+    let out_buf = unsafe { std::slice::from_raw_parts_mut(out_json, cap) };
 
     let (Some(server), Some(ufvk), Some(dir)) = (cstr(server), cstr(ufvk), cstr(wallet_dir))
     else {
@@ -100,6 +111,8 @@ pub unsafe extern "C" fn slipstream_bench_run(
         endpoint,
     );
     cfg.gpu_subtree = gpu_subtree;
+    cfg.graft_subtree = graft_subtree;
+    cfg.batch_combine = batch_combine;
     cfg.bench_json_path = Some(json_path.clone());
 
     let Ok(rt) = tokio::runtime::Runtime::new() else {
@@ -115,7 +128,7 @@ pub unsafe extern "C" fn slipstream_bench_run(
         return BENCH_ERR_SYNC;
     }
     match std::fs::read_to_string(&json_path) {
-        Ok(json) => write_json_to_buf(&json, out_json, cap),
+        Ok(json) => write_json_to_buf(&json, out_buf),
         Err(_) => BENCH_ERR_SYNC,
     }
 }
@@ -146,7 +159,7 @@ mod tests {
     fn json_round_trips_through_the_c_buffer() {
         let json = r#"{"total_s":1.5,"blocks":42}"#;
         let mut buf = vec![0 as c_char; 64];
-        let rc = write_json_to_buf(json, buf.as_mut_ptr(), buf.len());
+        let rc = write_json_to_buf(json, &mut buf);
         assert_eq!(rc, BENCH_OK);
         let out = unsafe { CStr::from_ptr(buf.as_ptr()) };
         assert_eq!(out.to_str().expect("utf8"), json);
@@ -157,14 +170,14 @@ mod tests {
         let json = "0123456789";
         // 10 bytes of payload + NUL needs 11; give 10.
         let mut buf = vec![0 as c_char; 10];
-        assert_eq!(write_json_to_buf(json, buf.as_mut_ptr(), buf.len()), BENCH_ERR_BUFFER);
+        assert_eq!(write_json_to_buf(json, &mut buf), BENCH_ERR_BUFFER);
     }
 
     #[test]
-    fn empty_and_null_are_rejected() {
-        assert_eq!(write_json_to_buf("x", std::ptr::null_mut(), 8), BENCH_ERR_ARGS);
+    fn empty_json_is_rejected() {
+        // (The null-pointer guard lives at the C boundary in `slipstream_bench_run`.)
         let mut buf = vec![0 as c_char; 8];
-        assert_eq!(write_json_to_buf("", buf.as_mut_ptr(), buf.len()), BENCH_ERR_ARGS);
+        assert_eq!(write_json_to_buf("", &mut buf), BENCH_ERR_ARGS);
     }
 
     #[test]
@@ -192,6 +205,8 @@ mod tests {
                 ufvk.as_ptr(),
                 2_500_000,
                 dir.as_ptr(),
+                false,
+                false,
                 false,
                 buf.as_mut_ptr(),
                 buf.len(),

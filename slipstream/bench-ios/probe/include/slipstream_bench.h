@@ -15,11 +15,14 @@
 // Run one fresh-restore bench pass; writes the engine BenchSummary JSON
 // (NUL-terminated) into out_json. Blocking — call off the main thread.
 // wallet_dir must NOT already contain a data.db (pass a new subdir per run).
+// graft_subtree / batch_combine are the v0.4 levers (Plan A / Plan B).
 int32_t slipstream_bench_run(const char *server,
                              const char *ufvk,
                              uint32_t birthday,
                              const char *wallet_dir,
                              bool gpu_subtree,
+                             bool graft_subtree,
+                             bool batch_combine,
                              char *out_json,
                              size_t cap);
 

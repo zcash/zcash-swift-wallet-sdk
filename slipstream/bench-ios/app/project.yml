@@ -34,3 +34,14 @@ targets:
         embed: false
       - sdk: Foundation.framework
       - sdk: SystemConfiguration.framework
+# Bench numbers come from the default Run action, so it must be Release with the
+# debugger detached — an attached debugger adds the Thread Performance Checker
+# and QoS-inversion tracing, which showed up as multi-second noise on device.
+schemes:
+  SlipstreamBench:
+    build:
+      targets:
+        SlipstreamBench: all
+    run:
+      config: Release
+      debugEnabled: false

@@ -302,3 +302,32 @@ Leg ledger swaps: aggregate → Claude (46.0 within 4 of his 42); SIMD → Lukas
 
 **[needs-user] rows to append:** iPhone 16 Pro via bench-ios (Task 11/P3);
 formal median-of-3 adjudication on the v0.4 final build after Task 10b.
+
+**iPhone 16 Pro results (2026-07-04 night — the cross-platform proof):**
+
+| vehicle | config | total |
+|---|---|---|
+| bench-ios | baseline (levers off) | 79.8 s (run 2: 97.3 s — debug scheme noise, fixed to Release) |
+| bench-ios | graft + batch | **51.2 s (−35.8%)** |
+| **Zodl production** (flag-on, env levers) | graft + batch | **55.4 s** — `sync stage split total_s=55.4 fetch_s=9.8 scan_s=52.5 enhance_s=1.1 persist_wait_s=11.8 blocks=285921 bound="scan"` |
+
+Lukas's line — "iPhone < 60 s, same wallet, best was 1:18" — **CLEARED in the
+production app** (78 s → 55.4 s, −29%; the bench floor is 51.2 s). Confirmations
+in the Zodl device log: `SlipstreamSynchronizer CONSTRUCTED (flag=true)`,
+`graft_subtree=true`, **8× `orch_grafted=1` with ZERO fallbacks in production**,
+census identical to the Mac (orchard 14 shards / 5 noted / 57.1% graftable;
+sapling 3 / 0 / 66.7%) — graftable fraction is a wallet property, device-proven.
+`bound="scan"`: the iPhone is trial-decryption-bound, so the remaining headroom
+lives outside v0.4's levers (a v0.5 lead, not a v0.4 gap). Note: sapling grafts
+were 0 on this run (orchard-only verdicts) — consistent with rules 1/2 (tip/
+range-end shards build; only Historic ranges buffer); zero fallbacks = healthy.
+
+Found along the way, fixed same night: bench-ios probe predated the levers (no
+graft/batch in the ABI — first iPhone "full-stack" run was actually a baseline);
+the bench scheme ran Debug with the Thread Performance Checker attached
+(Release + debugEnabled:false now); a `not_unsafe_ptr_arg_deref` deny-lint in
+the probe (safe-slice rewrite); Lukas's Mac hit disk-full mid-build (332 MB
+free — target/ debug artifacts pruned, 61 GB recovered). Still open, tracked
+separately: the Zodl iOS restore→Tor→restore silent dead-end (instrumented,
+did not reproduce on the successful run) and the UserDefaults flag-cache
+override landmine (cache beats compiled default; boot log now disambiguates).
