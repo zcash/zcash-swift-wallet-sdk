@@ -32,7 +32,7 @@ The Rust code in `rust/` is compiled into the `libzcashlc` XCFramework. Two mode
 
 Scripts:
 
-- `./Scripts/init-local-ffi.sh` — one-time setup; default builds all 5 architectures and creates `LocalPackages/`. **`--macos-only`** builds only the macOS slice from your `rust/` (good for `swift build` / `swift test` on the Mac). Use `--cached` only when your branch has no FFI changes relative to the release. Use --macos-only to rebuild for fast local development.
+- `./Scripts/init-local-ffi.sh` — one-time setup; default builds all 5 architectures and creates `LocalPackages/`. Arm-only subsets (faster on Apple Silicon — they skip the x86_64 slices): **`--arm-macos`** (macOS slice only, good for `swift build` / `swift test` on the Mac), **`--arm-ios`** (iOS simulator + device slices), **`--arm-all`** (iOS simulator + device + macOS). Use `--cached` only when your branch has no FFI changes relative to the release.
 - `./Scripts/rebuild-local-ffi.sh [ios-sim|ios-device|macos]` — fast single-arch incremental rebuild after Rust edits. `ios-sim` is default.
 - `./Scripts/reset-local-ffi.sh` — remove `LocalPackages/` and switch back to the release binary.
 

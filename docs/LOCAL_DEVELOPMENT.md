@@ -54,6 +54,16 @@ The `--cached` flag downloads a pre-built release instead of building from sourc
 
 **Warning:** Only use `--cached` if there have been no FFI changes on your branch since the last release. Using a stale pre-built binary with modified Swift bindings could cause silent data corruption and loss of funds. Additionally, `--cached` skips the Rust build entirely, so the first call to `rebuild-local-ffi.sh` will be a full (non-incremental) build.
 
+For faster iteration on Apple Silicon you can build only the arm64 slices you need, skipping the x86_64 simulator/Mac slices you can't run there anyway:
+
+```bash
+./Scripts/init-local-ffi.sh --arm-macos # macOS (swift build / swift test on the Mac)
+./Scripts/init-local-ffi.sh --arm-ios   # iOS simulator + device
+./Scripts/init-local-ffi.sh --arm-all   # iOS simulator + device + macOS
+```
+
+Building for a slice you didn't include will fail until you build it (via `rebuild-local-ffi.sh` or a full `init-local-ffi.sh`).
+
 ### Opening in Xcode
 
 You can open the project two ways:
@@ -99,14 +109,19 @@ If using Xcode, you may also need to reset package caches: File > Packages > Res
 One-time setup that creates the local development environment.
 
 ```bash
-./Scripts/init-local-ffi.sh          # Build from source (recommended)
-./Scripts/init-local-ffi.sh --cached # Download pre-built release
+./Scripts/init-local-ffi.sh             # Build from source, all 5 architectures (recommended)
+./Scripts/init-local-ffi.sh --arm-macos # arm64 macOS slice only
+./Scripts/init-local-ffi.sh --arm-ios   # arm64 iOS simulator + device slices
+./Scripts/init-local-ffi.sh --arm-all   # arm64 iOS simulator + device + macOS slices
+./Scripts/init-local-ffi.sh --cached    # Download pre-built release
 ```
 
 This script:
-- Builds the full XCFramework (all 5 architectures) or downloads a pre-built one
+- Builds the full XCFramework (all 5 architectures), an arm64-only subset (`--arm-*`, faster on Apple Silicon since it skips the x86_64 slices), or downloads a pre-built one
 - Creates `LocalPackages/` with an SPM wrapper package
 - `Package.swift` automatically detects `LocalPackages/` and switches to local mode
+
+The `--arm-*` flags always build the `aarch64-*` targets regardless of host architecture. They produce an XCFramework containing only the requested arm64 slices, so building for an x86_64 simulator/Mac (or a slice you didn't include) will fail until you build it — run `rebuild-local-ffi.sh <target>` or a full `init-local-ffi.sh` to add the missing slices. Any unrecognized flag prints usage and exits without building.
 
 ### `rebuild-local-ffi.sh`
 

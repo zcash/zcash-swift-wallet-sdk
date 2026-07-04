@@ -654,7 +654,10 @@ extension CompactBlockProcessor {
                     ZcashError.serviceLatestBlockHeightFailed, ZcashError.serviceBlockRangeFailed,
                     ZcashError.serviceSubmitFailed, ZcashError.serviceFetchTransactionFailed,
                     ZcashError.serviceFetchUTXOsFailed, ZcashError.serviceBlockStreamFailed,
-                    ZcashError.serviceSubtreeRootsStreamFailed: serviceError = true
+                    ZcashError.serviceSubtreeRootsStreamFailed,
+                    ZcashError.rustTorConnectToLightwalletd, ZcashError.rustTorLwdGetInfo,
+                    ZcashError.rustTorLwdSubmit, ZcashError.rustTorLwdFetchTransaction,
+                    ZcashError.rustTorLwdLatestBlockHeight, ZcashError.rustTorLwdGetTreeState: serviceError = true
                 default:
                     // Non-ZcashError exceptions are raw gRPC/transport failures that escaped without
                     // proper wrapping — treat them as service errors so the retry logic kicks in
