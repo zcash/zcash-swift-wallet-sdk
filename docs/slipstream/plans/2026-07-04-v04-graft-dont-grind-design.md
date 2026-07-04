@@ -261,5 +261,13 @@ persist_wait 18.2) ⇒ **+21% raw with ON drawing the worse fetch; ~+35% fetch-n
 First-live-fire lesson banked: autocommit buffer appends = fsync/row (persist_wait 96.5 s!)
 → one txn per append (`24804da6`) → 8.2 s, BELOW the graft-off floor.
 
-**[needs-user] rows to append:** Lukas's graft-ON runs (after Task 10 blesses
-correctness); iPhone 16 Pro via bench-ios (Task 11/P3).
+**Lukas's graft-ON runs (2026-07-04, 5 runs, SPEED SIGNAL — pre-Task-10 blessing):**
+totals 23.2 / 22.9 / 21.5 / 24.0 / 22.3 → **median 22.9 s**; persist_wait ~9.5 s (from
+~16.6). **Graft-only improvement: +26.2% — landing EXACTLY on Lukas's +26% bet line
+(≤22.9 s).** Claude's +42% (≤20.4 s) now rides entirely on Plan B: the remaining
+persist_wait (~9.5 s) and scan-compute (~10.6 s) are nearly BALANCED — the pass sits
+close to its max(scan,persist) floor, so batch-affine on the surviving combines (5 noted
++ tip/straddle shards + sapling) must find ~2.5 s. Adjudication = v0.4 FINAL build.
+
+**[needs-user] rows to append:** iPhone 16 Pro via bench-ios (Task 11/P3); formal
+median-of-3 adjudication runs on the v0.4 final build after Task 10.
