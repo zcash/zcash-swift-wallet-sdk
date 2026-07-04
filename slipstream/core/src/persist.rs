@@ -14,7 +14,7 @@ use rayon::iter::{IndexedParallelIterator as _, ParallelIterator};
 use rayon::slice::ParallelSliceMut as _;
 use secrecy::SecretVec;
 use shardtree::{
-    LocatedPrunableTree, PrunableTree, ShardTree,
+    LocatedPrunableTree, LocatedTree, PrunableTree, RetentionFlags, ShardTree, Tree,
     error::ShardTreeError,
     store::{Checkpoint, ShardStore},
 };
@@ -358,7 +358,12 @@ impl GraftCtx {
 /// the shards whose buffer rows die once the txn commits.
 struct PoolPlan<H> {
     segments: Vec<(Position, Vec<Option<(H, Retention<BlockHeight>)>>)>,
+    /// Task 8: clean shards with a server root — installed as root-only shards
+    /// (upstream's own put_shard_roots shape), ZERO combines.
+    grafts: Vec<(u64, H)>,
     cleanup_shards: Vec<u64>,
+    /// Clean shards with NO server root (tip lag / server gap) — built instead.
+    fallbacks: u64,
 }
 
 /// Retentions travel VERBATIM into deferred builds (fixture-proven, 7b rev 2.1):
@@ -407,7 +412,8 @@ fn plan_pool<H: Clone + zcash_primitives::merkle_tree::HashSer>(
     }
     let acc = acc.as_mut().unwrap_or_else(|| unreachable!("seeded above"));
 
-    let mut plan = PoolPlan { segments: vec![], cleanup_shards: vec![] };
+    let mut plan =
+        PoolPlan { segments: vec![], grafts: vec![], cleanup_shards: vec![], fallbacks: 0 };
     for action in acc.feed(start_position, stream, note_positions) {
         match action {
             FeedAction::Build(rows) => {
@@ -417,10 +423,16 @@ fn plan_pool<H: Clone + zcash_primitives::merkle_tree::HashSer>(
                 plan.segments.extend(rows_to_segment(rows));
             }
             FeedAction::CloseCleanShard { shard_index, rows } => {
-                // Task 7: the verdict is ALWAYS build (byte-equal gate). Task 8
-                // consults the server root here.
+                // Task 8 — THE verdict: note-free shard + server root ⇒ graft
+                // (zero combines); no root ⇒ build these exact rows (fallback).
                 plan.cleanup_shards.push(shard_index);
-                plan.segments.extend(rows_to_segment(rows));
+                match crate::graft::server_root::<H>(conn, pool, shard_index)? {
+                    Some(root) => plan.grafts.push((shard_index, root)),
+                    None => {
+                        plan.fallbacks += 1;
+                        plan.segments.extend(rows_to_segment(rows));
+                    }
+                }
             }
             FeedAction::Buffer(rows) => {
                 if let Some(first) = rows.first() {
@@ -707,7 +719,9 @@ pub fn sparse_put_blocks(
             |s| orch_tree.store().shards.contains_key(&s) || orch_tree.store().db_shard_indices.contains(&s),
         )?;
         let cleanup = (sp.cleanup_shards.clone(), op.cleanup_shards.clone());
-        (Some(sp), Some(op), Some(cleanup))
+        let verdicts =
+            ((sp.grafts.len() as u64, sp.fallbacks), (op.grafts.len() as u64, op.fallbacks));
+        (Some(sp), Some(op), Some((cleanup, verdicts)))
     } else {
         (None, None, None)
     };
@@ -1022,6 +1036,21 @@ pub fn sparse_put_blocks(
                                 }
                                 out.extend(build_subtrees::<_, SAPLING_SHARD_HEIGHT>(seg_start, &mut rows));
                             }
+                            // Task 8 installs: upstream's own root-only shape
+                            // (put_shard_roots, commitment_tree.rs:1105) — put_shard
+                            // replaces any partial content (frontier remnants) wholesale.
+                            for (idx, root) in plan.grafts {
+                                let located = LocatedTree::from_parts(
+                                    Address::from_parts(Level::from(SAPLING_SHARD_HEIGHT), idx),
+                                    Tree::leaf((root, RetentionFlags::EPHEMERAL)),
+                                )
+                                .map_err(|addr| {
+                                    SqliteClientError::CorruptedData(format!(
+                                        "graft install: bad shard address {addr:?}"
+                                    ))
+                                })?;
+                                sap_tree.store_mut().put_shard(located).map_err(map_sparse_err)?;
+                            }
                             out
                         }
                     };
@@ -1097,6 +1126,18 @@ pub fn sparse_put_blocks(
                                 }
                                 out.extend(build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(seg_start, &mut rows));
                             }
+                            for (idx, root) in plan.grafts {
+                                let located = LocatedTree::from_parts(
+                                    Address::from_parts(Level::from(ORCHARD_SHARD_HEIGHT), idx),
+                                    Tree::leaf((root, RetentionFlags::EPHEMERAL)),
+                                )
+                                .map_err(|addr| {
+                                    SqliteClientError::CorruptedData(format!(
+                                        "graft install: bad shard address {addr:?}"
+                                    ))
+                                })?;
+                                orch_tree.store_mut().put_shard(located).map_err(map_sparse_err)?;
+                            }
                             out
                         }
                     };
@@ -1168,12 +1209,21 @@ pub fn sparse_put_blocks(
     // v0.4 Plan A: buffer rows for shards built/closed this call are dead now the
     // txn committed. POST-commit on purpose (graft.rs contract): a crash before
     // this point leaves stale rows that the store-has-internals seed rule heals.
-    if let (Some(ctx), Some((sap_cleanup, orch_cleanup))) = (graft.as_ref(), graft_cleanup) {
+    if let (Some(ctx), Some(((sap_cleanup, orch_cleanup), verdicts))) =
+        (graft.as_ref(), graft_cleanup)
+    {
         for shard in sap_cleanup {
             crate::graft::delete_shard(&ctx.conn, ShieldedProtocol::Sapling, shard)?;
         }
         for shard in orch_cleanup {
             crate::graft::delete_shard(&ctx.conn, ShieldedProtocol::Orchard, shard)?;
+        }
+        let ((sap_grafted, sap_fallback), (orch_grafted, orch_fallback)) = verdicts;
+        if sap_grafted + sap_fallback + orch_grafted + orch_fallback > 0 {
+            info!(
+                sap_grafted,
+                sap_fallback, orch_grafted, orch_fallback, "graft verdicts (this call)"
+            );
         }
     }
 

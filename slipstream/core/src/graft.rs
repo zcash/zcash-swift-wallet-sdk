@@ -195,6 +195,50 @@ pub(crate) fn delete_from_position(
     Ok(())
 }
 
+fn shards_table(pool: ShieldedProtocol) -> &'static str {
+    match pool {
+        ShieldedProtocol::Sapling => "sapling_tree_shards",
+        ShieldedProtocol::Orchard => "orchard_tree_shards",
+    }
+}
+
+/// v0.4 Plan A Task 8 — the graft verdict's source of truth: the server root
+/// for `shard_index`, as ingested by the pass-start `put_subtree_roots`
+/// (engine.rs:180). Upstream writes it into `{pool}_tree_shards.root_hash`
+/// with `ON CONFLICT DO UPDATE SET root_hash = …` (commitment_tree.rs:1090),
+/// so the column is populated for every COMPLETED shard even when local
+/// `shard_data` already exists. `None` = no row, NULL root (local-only shard),
+/// or the table absent — every "no root" shape falls back to build.
+pub(crate) fn server_root<H: HashSer>(
+    conn: &Connection,
+    pool: ShieldedProtocol,
+    shard_index: u64,
+) -> Result<Option<H>, SqliteClientError> {
+    use rusqlite::OptionalExtension as _;
+    let table = shards_table(pool);
+    let bytes: Option<Option<Vec<u8>>> = conn
+        .query_row(
+            &format!("SELECT root_hash FROM {table} WHERE shard_index = ?1"),
+            [shard_index as i64],
+            |r| r.get(0),
+        )
+        .optional()
+        .or_else(|e| match e {
+            // Table absent (fresh test wallets before any migration touch):
+            // treat as "no root", never as an error.
+            rusqlite::Error::SqliteFailure(_, Some(ref m)) if m.contains("no such table") => {
+                Ok(None)
+            }
+            other => Err(other),
+        })?;
+    match bytes.flatten() {
+        Some(b) => Ok(Some(
+            H::read(&b[..]).map_err(|e| corrupt(format!("server root de: {e}")))?,
+        )),
+        None => Ok(None),
+    }
+}
+
 fn buffer_table_exists(conn: &Connection) -> Result<bool, SqliteClientError> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='slipstream_graft_buffer'",
@@ -293,6 +337,52 @@ mod tests {
         assert!(loaded.is_empty());
         delete_shard(&conn, ShieldedProtocol::Orchard, 3).expect("delete noop");
         delete_from_position(&conn, ShieldedProtocol::Orchard, 0).expect("rewind noop");
+    }
+
+    #[test]
+    fn server_root_reads_ingested_roots_and_handles_all_no_root_shapes() {
+        let conn = mem_conn();
+        // Missing table → None (not an error).
+        let none: Option<MerkleHashOrchard> =
+            server_root(&conn, ShieldedProtocol::Orchard, 3).expect("missing table");
+        assert!(none.is_none());
+        // Mini replica of the upstream shards schema (commitment_tree.rs).
+        conn.execute_batch(
+            "CREATE TABLE orchard_tree_shards (
+                shard_index INTEGER PRIMARY KEY,
+                subtree_end_height INTEGER,
+                root_hash BLOB,
+                shard_data BLOB
+            )",
+        )
+        .expect("ddl");
+        // Missing row → None.
+        let none: Option<MerkleHashOrchard> =
+            server_root(&conn, ShieldedProtocol::Orchard, 3).expect("missing row");
+        assert!(none.is_none());
+        // NULL root_hash (locally-built shard) → None.
+        conn.execute("INSERT INTO orchard_tree_shards (shard_index) VALUES (7)", [])
+            .expect("null row");
+        let none: Option<MerkleHashOrchard> =
+            server_root(&conn, ShieldedProtocol::Orchard, 7).expect("null root");
+        assert!(none.is_none());
+        // Ingested root (HashSer bytes, exactly what put_shard_roots writes) → Some.
+        let root = h(4);
+        let mut bytes = vec![];
+        use zcash_primitives::merkle_tree::HashSer as _;
+        root.write(&mut bytes).expect("ser");
+        conn.execute(
+            "INSERT INTO orchard_tree_shards (shard_index, root_hash) VALUES (3, ?1)",
+            [bytes],
+        )
+        .expect("root row");
+        let got: Option<MerkleHashOrchard> =
+            server_root(&conn, ShieldedProtocol::Orchard, 3).expect("read root");
+        assert_eq!(got, Some(root));
+        // Pools are disjoint: sapling table absent → None even though orchard has data.
+        let none: Option<sapling::Node> =
+            server_root(&conn, ShieldedProtocol::Sapling, 3).expect("other pool");
+        assert!(none.is_none());
     }
 
     #[test]
