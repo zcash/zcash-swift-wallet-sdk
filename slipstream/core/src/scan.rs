@@ -226,6 +226,9 @@ pub async fn scan_chunks(
         let drain_result = wb.lane.drain().await;
         return match (result, drain_result) {
             (Ok(mut stats), Ok(())) => {
+                // v0.4 Plan A: build the range-end/tip shard the accumulators still
+                // hold (success path only — on errors the buffer resumes the shard).
+                tokio::task::block_in_place(|| wb.lane.finish_graft_blocking())?;
                 stats.persist_wait = wb.lane.total_wait();
                 stats.persist_busy = wb.lane.total_busy();
                 // v0.4 census: the lane's sparse state ran the builds on this path.
@@ -651,6 +654,9 @@ pub async fn scan_chunks_from_treestate(
         let drain_result = wb.lane.drain().await;
         return match (result, drain_result) {
             (Ok(mut stats), Ok(())) => {
+                // v0.4 Plan A: build the range-end/tip shard the accumulators still
+                // hold (success path only — on errors the buffer resumes the shard).
+                tokio::task::block_in_place(|| wb.lane.finish_graft_blocking())?;
                 stats.persist_wait = wb.lane.total_wait();
                 stats.persist_busy = wb.lane.total_busy();
                 // v0.4 census: the lane's sparse state ran the builds on this path.

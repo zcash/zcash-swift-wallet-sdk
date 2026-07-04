@@ -173,6 +173,11 @@ impl EngineConfig {
                 "graft_subtree requires sparse_persistence (the graft verdict lives in the sparse build path)".into(),
             ));
         }
+        if self.graft_subtree && !self.write_behind {
+            return Err(SlipstreamError::Config(
+                "graft_subtree requires write_behind (the graft plan runs in the persist lane; the inline path never grafts — v0.4 plan Task 7b rev 2)".into(),
+            ));
+        }
         if self.gpu_subtree && !self.sparse_persistence {
             return Err(SlipstreamError::Config(
                 "gpu_subtree requires sparse_persistence (the GPU build replaces the sparse subtree build)".into(),

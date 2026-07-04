@@ -393,10 +393,14 @@ pub mod testkit {
     /// commit is stashed and submitted to the lane (depth-1, strictly serial),
     /// and the call drains the lane before returning. Used by the hermetic
     /// write-behind oracle tests: deferral may change TIMING, never CONTENT.
+    /// `graft` — v0.4 Plan A: run the range with the graft accumulator (the
+    /// hermetic equivalence fixture A/Bs this flag; verdict is always-build in
+    /// Task 7).
     pub async fn scan_synthetic_windows_write_behind(
         dir: &Path,
         blocks: Vec<CompactBlock>,
         window_lens: &[usize],
+        graft: bool,
     ) -> Result<(), SlipstreamError> {
         if window_lens.iter().sum::<usize>() != blocks.len() {
             return Err(SlipstreamError::Wallet(format!(
@@ -424,7 +428,7 @@ pub mod testkit {
             crate::persist::WriteBehindFacade::seed(&*session.db_mut(), SYNTH_START)
                 .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
         let mut lane =
-            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork, 1, false)?;
+            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork, 1, graft)?;
 
         let mut from_state = birthday_ts
             .to_chain_state()
@@ -478,7 +482,11 @@ pub mod testkit {
         // Full barrier before returning — mirror of scan_chunks.
         let drain_result = lane.drain().await;
         match (result, drain_result) {
-            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Ok(())) => {
+                // v0.4: build the open range-end shard (success path only).
+                lane.finish_graft_blocking()?;
+                Ok(())
+            }
             (Err(e), Ok(())) => Err(e),
             (_, Err(p)) => Err(p),
         }
@@ -710,7 +718,7 @@ mod tests {
         let lens: Vec<usize> = blocks.chunks(1000).map(<[_]>::len).collect();
         super::testkit::scan_synthetic_windows(&da, blocks.clone(), &lens, false)
             .expect("upstream scan");
-        super::testkit::scan_synthetic_windows_write_behind(&db, blocks, &lens)
+        super::testkit::scan_synthetic_windows_write_behind(&db, blocks, &lens, false)
             .await
             .expect("write-behind scan");
         let report = semantic_diff(&da.join("data.db"), &db.join("data.db")).expect("diff");
@@ -719,6 +727,69 @@ mod tests {
             "write-behind-vs-upstream diff not clean:\n{}",
             report.render()
         );
+    }
+
+    /// v0.4 Plan A Task 7 gate: graft-ON (verdict still ALWAYS-BUILD) vs
+    /// graft-OFF over the same write-behind pipeline must be semantically
+    /// identical. Multi-window on a foreign wallet ⇒ everything buffers as
+    /// carried rows until `finish_graft` builds the open shard — exercising
+    /// the accumulator, the buffer table round-trip, the carried-row residue
+    /// rule, and the range-end finish path in one sweep.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graft_verdict_build_matches_off() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let doff = dir.path().join("off");
+        let don = dir.path().join("on");
+        std::fs::create_dir_all(&doff).unwrap();
+        std::fs::create_dir_all(&don).unwrap();
+        let blocks = super::testkit::synth_blocks(3000, 3);
+        let lens: Vec<usize> = blocks.chunks(1000).map(<[_]>::len).collect();
+        super::testkit::scan_synthetic_windows_write_behind(&doff, blocks.clone(), &lens, false)
+            .await
+            .expect("graft-off scan");
+        super::testkit::scan_synthetic_windows_write_behind(&don, blocks, &lens, true)
+            .await
+            .expect("graft-on scan");
+        let report = semantic_diff(&doff.join("data.db"), &don.join("data.db")).expect("diff");
+        // The designed gate (plan Task 7b): everything semantically identical —
+        // checkpoints, caps (rebuilt from SHARD ROOTS, so cap equality proves
+        // root equality), notes, nullifiers, blocks — with ONE documented
+        // exception: the shard BLOBS may differ in retention-flag placement
+        // (a deferred build is one from_iter; the incremental path is several).
+        // Anchors and witnesses never read those flags; the semantic oracle
+        // (Task 10) is the correctness gate for the real verdict.
+        for t in &report.tables {
+            if t.table.ends_with("_tree_shards") {
+                assert_eq!(
+                    t.rows_a, t.rows_b,
+                    "shard COUNT must match even where blobs differ: {}",
+                    t.table
+                );
+                continue;
+            }
+            assert!(
+                t.is_clean(),
+                "graft-on(verdict=build) vs graft-off diff not clean in {}:\n{}",
+                t.table,
+                report.render()
+            );
+        }
+        // The buffer table must be fully drained on the ON side...
+        let conn = rusqlite::Connection::open(don.join("data.db")).expect("open on");
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM slipstream_graft_buffer", [], |r| r.get(0))
+            .expect("buffer count");
+        assert_eq!(left, 0, "buffer rows must be cleaned after build/finish");
+        // ...and must not EXIST on the OFF side (flag-off writes nothing new).
+        let conn = rusqlite::Connection::open(doff.join("data.db")).expect("open off");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='slipstream_graft_buffer'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("master probe");
+        assert_eq!(n, 0, "graft-off must not create the buffer table");
     }
 
     /// T6.9 write-behind oracle on the dense split-chunking chain (T6.8-S
@@ -748,7 +819,7 @@ mod tests {
 
         super::testkit::scan_synthetic_windows(&da, blocks.clone(), &lens, false)
             .expect("upstream scan at split boundaries");
-        super::testkit::scan_synthetic_windows_write_behind(&db, blocks, &lens)
+        super::testkit::scan_synthetic_windows_write_behind(&db, blocks, &lens, false)
             .await
             .expect("write-behind scan at split boundaries");
         let report = semantic_diff(&da.join("data.db"), &db.join("data.db")).expect("diff");

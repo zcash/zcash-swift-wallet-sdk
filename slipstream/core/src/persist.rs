@@ -310,6 +310,10 @@ pub struct SparseTreeState {
     /// `EngineConfig::graft_subtree` is on (accumulator safety rule 2 — the
     /// ChainTip range always runs today's passthrough path verbatim).
     pub(crate) graft_buffering: bool,
+    /// Live graft machinery (side connection + per-pool accumulators), opened by
+    /// the persist lane when `graft_buffering` (plan Task 7b rev 2). `None` on
+    /// every other path — and the closure then runs byte-for-byte today's code.
+    pub(crate) graft: Option<GraftCtx>,
     /// v0.4 census (spec §3.2): shard-touch vs owned-note-shard counts, fed by every
     /// `sparse_put_blocks` call on this state and read out at range end (ScanStats).
     pub(crate) census_sapling: crate::census::ShardCensus,
@@ -322,6 +326,111 @@ impl SparseTreeState {
     pub fn census(&self) -> (&crate::census::ShardCensus, &crate::census::ShardCensus) {
         (&self.census_sapling, &self.census_orchard)
     }
+}
+
+// ── v0.4 Plan A: graft machinery (plan Task 7b rev 2) ──────────────────────────
+
+/// Live graft state for one lane/range: the side connection for the buffer
+/// table (pre-txn appends, post-txn cleanup — graft.rs's ordering+idempotency
+/// contract) + the per-pool accumulators.
+pub(crate) struct GraftCtx {
+    conn: rusqlite::Connection,
+    acc_sapling: Option<crate::graft_accumulator::ShardAccumulator<sapling::Node>>,
+    acc_orchard: Option<crate::graft_accumulator::ShardAccumulator<orchard::tree::MerkleHashOrchard>>,
+}
+
+impl GraftCtx {
+    pub(crate) fn open(wallet_db_path: &std::path::Path) -> Result<Self, crate::error::SlipstreamError> {
+        // Same wait-not-die posture as every other engine connection.
+        let conn = rusqlite::Connection::open(wallet_db_path).map_err(|e| {
+            crate::error::SlipstreamError::Wallet(format!("graft side conn open: {e}"))
+        })?;
+        conn.busy_timeout(std::time::Duration::from_secs(15)).map_err(|e| {
+            crate::error::SlipstreamError::Wallet(format!("graft side conn busy_timeout: {e}"))
+        })?;
+        Ok(Self { conn, acc_sapling: None, acc_orchard: None })
+    }
+}
+
+/// One pool's build plan for one put_blocks call: contiguous row segments to
+/// build inside the main txn (passthrough spans, eager note flushes, and — in
+/// Task 7, where the verdict is still always-build — closed clean shards), plus
+/// the shards whose buffer rows die once the txn commits.
+struct PoolPlan<H> {
+    segments: Vec<(Position, Vec<Option<(H, Retention<BlockHeight>)>>)>,
+    cleanup_shards: Vec<u64>,
+}
+
+/// Retentions travel VERBATIM into deferred builds (fixture-proven, 7b rev 2.1):
+/// own-pool checkpoint TABLE entries come exclusively from the
+/// `from_iter → insert_tree(subtree, checkpoints)` path — buffered rows'
+/// checkpoints were never inserted at their origin chunk, so a deferred build
+/// MUST carry them. Stale (below-window) ones are handled by the SAME
+/// doomed-cutoff downgrade every build already applies (the first fixture run
+/// stripped them instead and lost 97 of 100 checkpoint rows vs the OFF path).
+fn rows_to_segment<H>(
+    rows: Vec<crate::graft_accumulator::AccRow<H>>,
+) -> Option<(Position, Vec<Option<(H, Retention<BlockHeight>)>>)> {
+    let first = rows.first()?.0;
+    let seg = rows.into_iter().map(|(_, h, r)| Some((h, r))).collect();
+    Some((Position::from(first), seg))
+}
+
+/// Pre-txn planner for one pool: lazily seed the accumulator (buffer resume +
+/// conservative store-presence probe), feed this call's stream, persist Buffer
+/// rows on the side connection, and return the build plan. Runs BEFORE the main
+/// transaction opens — no lock conflict, and a crash after these appends is the
+/// benign "rescan re-appends identical rows" window (graft.rs header).
+#[allow(clippy::too_many_arguments)]
+fn plan_pool<H: Clone + zcash_primitives::merkle_tree::HashSer>(
+    conn: &rusqlite::Connection,
+    acc: &mut Option<crate::graft_accumulator::ShardAccumulator<H>>,
+    pool: ShieldedProtocol,
+    start_position: u64,
+    stream: Vec<(H, Retention<BlockHeight>)>,
+    note_positions: &[u64],
+    store_has_shard: impl Fn(u64) -> bool,
+) -> Result<PoolPlan<H>, SqliteClientError> {
+    use crate::graft_accumulator::{FeedAction, ShardAccumulator};
+
+    if acc.is_none() {
+        let shard = start_position >> 16;
+        let mut resume = crate::graft::load_shard::<H>(conn, pool, shard)?;
+        let has_internals = store_has_shard(shard);
+        if has_internals && !resume.is_empty() {
+            // Stale rows for a shard the store already holds (crash between a
+            // build-commit and its cleanup) — the documented self-heal path.
+            crate::graft::delete_shard(conn, pool, shard)?;
+            resume = vec![];
+        }
+        *acc = Some(ShardAccumulator::seed(start_position, resume, has_internals));
+    }
+    let acc = acc.as_mut().unwrap_or_else(|| unreachable!("seeded above"));
+
+    let mut plan = PoolPlan { segments: vec![], cleanup_shards: vec![] };
+    for action in acc.feed(start_position, stream, note_positions) {
+        match action {
+            FeedAction::Build(rows) => {
+                if let Some(first) = rows.first() {
+                    plan.cleanup_shards.push(first.0 >> 16);
+                }
+                plan.segments.extend(rows_to_segment(rows));
+            }
+            FeedAction::CloseCleanShard { shard_index, rows } => {
+                // Task 7: the verdict is ALWAYS build (byte-equal gate). Task 8
+                // consults the server root here.
+                plan.cleanup_shards.push(shard_index);
+                plan.segments.extend(rows_to_segment(rows));
+            }
+            FeedAction::Buffer(rows) => {
+                if let Some(first) = rows.first() {
+                    crate::graft::ensure_buffer_table(conn)?;
+                    crate::graft::append_rows(conn, pool, first.0 >> 16, &rows)?;
+                }
+            }
+        }
+    }
+    Ok(plan)
 }
 
 fn seed_sapling(db: &mut Db, _from_state: &ChainState) -> Result<SaplingSparseTree, SqliteClientError> {
@@ -546,12 +655,61 @@ pub fn sparse_put_blocks(
         orchard: Some(orch_tree),
         census_sapling,
         census_orchard,
+        graft,
         ..
     } = sparse
     else {
         return Err(SqliteClientError::CorruptedData(
             "sparse tree state missing after seed".into(),
         ));
+    };
+
+    // ── v0.4 Plan A pre-txn phase (Task 7b rev 2) — graft-ON lanes only ────────
+    // Borrow-extract this call's per-pool streams + note positions, feed the
+    // accumulators, persist Buffer rows on the side connection (the main txn is
+    // not open yet — no lock conflict; ordering+idempotency per graft.rs), and
+    // hand the closure a build plan. `None` plans = today's path verbatim.
+    let (sap_plan, orch_plan, graft_cleanup) = if let Some(ctx) = graft.as_mut() {
+        let sap_start_u64 = from_state.final_sapling_tree().tree_size();
+        let orch_start_u64 = from_state.final_orchard_tree().tree_size();
+        let mut sap_stream = vec![];
+        let mut orch_stream = vec![];
+        let mut sap_notes = vec![];
+        let mut orch_notes = vec![];
+        for block in &blocks {
+            sap_stream.extend(block.sapling().commitments().iter().cloned());
+            orch_stream.extend(block.orchard().commitments().iter().cloned());
+            for wtx in block.transactions() {
+                sap_notes.extend(
+                    wtx.sapling_outputs().iter().map(|o| u64::from(o.note_commitment_tree_position())),
+                );
+                orch_notes.extend(
+                    wtx.orchard_outputs().iter().map(|o| u64::from(o.note_commitment_tree_position())),
+                );
+            }
+        }
+        let sp = plan_pool(
+            &ctx.conn,
+            &mut ctx.acc_sapling,
+            ShieldedProtocol::Sapling,
+            sap_start_u64,
+            sap_stream,
+            &sap_notes,
+            |s| sap_tree.store().shards.contains_key(&s) || sap_tree.store().db_shard_indices.contains(&s),
+        )?;
+        let op = plan_pool(
+            &ctx.conn,
+            &mut ctx.acc_orchard,
+            ShieldedProtocol::Orchard,
+            orch_start_u64,
+            orch_stream,
+            &orch_notes,
+            |s| orch_tree.store().shards.contains_key(&s) || orch_tree.store().db_shard_indices.contains(&s),
+        )?;
+        let cleanup = (sp.cleanup_shards.clone(), op.cleanup_shards.clone());
+        (Some(sp), Some(op), Some(cleanup))
+    } else {
+        (None, None, None)
     };
 
     let t_rows = std::time::Instant::now();
@@ -835,20 +993,38 @@ pub fn sparse_put_blocks(
                     let mut timers = PoolTimers::default();
                     // Downgrade doomed checkpoints (T6.3b).
                     let t = std::time::Instant::now();
-                    let sap_downgraded = doomed_checkpoint_cutoff(
+                    let sap_cutoff = doomed_checkpoint_cutoff(
                         sap_tree.store().checkpoints.keys().copied(),
                         frontier_id,
                         sapling_cp_pos.keys().copied(),
-                    )
-                    .map_or(0, |cutoff| {
-                        downgrade_doomed_checkpoints(&mut sapling_commitments, cutoff)
-                    });
+                    );
+                    let mut sap_downgraded = match (&sap_plan, sap_cutoff) {
+                        // Plan mode: the closure's own stream is never built —
+                        // segments get their downgrade below.
+                        (Some(_), _) | (None, None) => 0,
+                        (None, Some(cutoff)) => {
+                            downgrade_doomed_checkpoints(&mut sapling_commitments, cutoff)
+                        }
+                    };
                     timers.downgrade_ms = t.elapsed().as_millis();
 
                     // ll/wallet.rs:466-481 — build subtrees (rayon par_chunks, same chunk size).
+                    // v0.4 plan mode: build the accumulator's contiguous SEGMENTS instead
+                    // (current-chunk spans + carried prefixes; graft-OFF path unchanged).
                     let t = std::time::Instant::now();
-                    let sapling_subtrees =
-                        build_subtrees::<_, SAPLING_SHARD_HEIGHT>(sap_start, &mut sapling_commitments);
+                    let sapling_subtrees = match sap_plan {
+                        None => build_subtrees::<_, SAPLING_SHARD_HEIGHT>(sap_start, &mut sapling_commitments),
+                        Some(plan) => {
+                            let mut out = vec![];
+                            for (seg_start, mut rows) in plan.segments {
+                                if let Some(cutoff) = sap_cutoff {
+                                    sap_downgraded += downgrade_doomed_checkpoints(&mut rows, cutoff);
+                                }
+                                out.extend(build_subtrees::<_, SAPLING_SHARD_HEIGHT>(seg_start, &mut rows));
+                            }
+                            out
+                        }
+                    };
                     timers.build_ms = t.elapsed().as_millis();
 
                     // ll/wallet.rs:503-537 update_tree — IN MEMORY (the substitution).
@@ -893,20 +1069,37 @@ pub fn sparse_put_blocks(
                     let mut timers = PoolTimers::default();
                     // Downgrade doomed checkpoints (T6.3b).
                     let t = std::time::Instant::now();
-                    let orch_downgraded = doomed_checkpoint_cutoff(
+                    let orch_cutoff = doomed_checkpoint_cutoff(
                         orch_tree.store().checkpoints.keys().copied(),
                         frontier_id,
                         orchard_cp_pos.keys().copied(),
-                    )
-                    .map_or(0, |cutoff| {
-                        downgrade_doomed_checkpoints(&mut orchard_commitments, cutoff)
-                    });
+                    );
+                    let mut orch_downgraded = match (&orch_plan, orch_cutoff) {
+                        (Some(_), _) | (None, None) => 0,
+                        (None, Some(cutoff)) => {
+                            downgrade_doomed_checkpoints(&mut orchard_commitments, cutoff)
+                        }
+                    };
                     timers.downgrade_ms = t.elapsed().as_millis();
 
                     // ll/wallet.rs:466-481 — build subtrees (rayon par_chunks, same chunk size).
+                    // v0.4 plan mode: segments; ALWAYS the CPU path (the banked GPU offload
+                    // targets exactly the work grafting removes — combining them is
+                    // unsupported and pointless).
                     let t = std::time::Instant::now();
-                    let orchard_subtrees =
-                        build_orchard_subtrees(gpu_on, orch_start, &mut orchard_commitments);
+                    let orchard_subtrees = match orch_plan {
+                        None => build_orchard_subtrees(gpu_on, orch_start, &mut orchard_commitments),
+                        Some(plan) => {
+                            let mut out = vec![];
+                            for (seg_start, mut rows) in plan.segments {
+                                if let Some(cutoff) = orch_cutoff {
+                                    orch_downgraded += downgrade_doomed_checkpoints(&mut rows, cutoff);
+                                }
+                                out.extend(build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(seg_start, &mut rows));
+                            }
+                            out
+                        }
+                    };
                     timers.build_ms = t.elapsed().as_millis();
 
                     // ll/wallet.rs:503-537 update_tree — IN MEMORY (the substitution).
@@ -971,6 +1164,18 @@ pub fn sparse_put_blocks(
         }
         Ok(())
     })?;
+
+    // v0.4 Plan A: buffer rows for shards built/closed this call are dead now the
+    // txn committed. POST-commit on purpose (graft.rs contract): a crash before
+    // this point leaves stale rows that the store-has-internals seed rule heals.
+    if let (Some(ctx), Some((sap_cleanup, orch_cleanup))) = (graft.as_ref(), graft_cleanup) {
+        for shard in sap_cleanup {
+            crate::graft::delete_shard(&ctx.conn, ShieldedProtocol::Sapling, shard)?;
+        }
+        for shard in orch_cleanup {
+            crate::graft::delete_shard(&ctx.conn, ShieldedProtocol::Orchard, shard)?;
+        }
+    }
 
     // sap_tree_ms/orch_tree_ms are the per-pool closure wall times INSIDE the join:
     // tree_ms ≈ max(sap, orch) when the join truly runs in parallel, ≈ sap + orch when
@@ -1722,7 +1927,8 @@ impl PersistLane {
             rand::rngs::OsRng,
         );
         let lane_pool = Self::build_lane_pool(lane_pool_policy())?;
-        let sparse = SparseTreeState { graft_buffering, ..Default::default() };
+        let graft = if graft_buffering { Some(GraftCtx::open(wallet_db_path)?) } else { None };
+        let sparse = SparseTreeState { graft_buffering, graft, ..Default::default() };
         Ok(Self {
             db: Some(db),
             sparse: Some(sparse),
@@ -1781,6 +1987,112 @@ impl PersistLane {
             Some(s) => (s.census_sapling.clone(), s.census_orchard.clone()),
             None => Default::default(),
         }
+    }
+
+    /// v0.4 Plan A (Task 7b rev 2): build whatever the graft accumulators still
+    /// hold — the range-end / tip shard, which NEVER grafts (accumulator rule 1)
+    /// — inside one small transaction, then drop its buffer rows. Call after
+    /// `drain()` on the success path only (on error exits the buffered rows stay
+    /// for the restart-resume path). Blocking — wrap in `block_in_place`.
+    pub fn finish_graft_blocking(&mut self) -> Result<(), crate::error::SlipstreamError> {
+        use crate::graft_accumulator::FeedAction;
+        let werr =
+            |c: &str, e: String| crate::error::SlipstreamError::Wallet(format!("finish_graft {c}: {e}"));
+
+        let Some(sparse) = self.sparse.as_mut() else { return Ok(()) };
+        let SparseTreeState { sapling, orchard, graft: Some(ctx), .. } = sparse else {
+            return Ok(());
+        };
+        fn take_rows<H>(f: Option<FeedAction<H>>) -> Vec<crate::graft_accumulator::AccRow<H>> {
+            match f {
+                Some(FeedAction::Build(r)) => r,
+                _ => Vec::new(),
+            }
+        }
+        let sap_rows = take_rows(ctx.acc_sapling.as_mut().and_then(|a| a.finish()));
+        let orch_rows = take_rows(ctx.acc_orchard.as_mut().and_then(|a| a.finish()));
+        if sap_rows.is_empty() && orch_rows.is_empty() {
+            return Ok(());
+        }
+        fn shard_ids<H>(rows: &[crate::graft_accumulator::AccRow<H>]) -> Vec<u64> {
+            let mut v: Vec<u64> = rows.iter().map(|r| r.0 >> 16).collect();
+            v.dedup();
+            v
+        }
+        let sap_shards = shard_ids(&sap_rows);
+        let orch_shards = shard_ids(&orch_rows);
+
+        let (Some(sap_tree), Some(orch_tree)) = (sapling.as_mut(), orchard.as_mut()) else {
+            // Rows only exist if put_blocks ran, which seeds the trees first.
+            return Err(werr("trees", "finish rows without seeded trees".into()));
+        };
+        let db = self
+            .db
+            .as_mut()
+            .ok_or_else(|| werr("db", "lane connection lost (prior commit panic)".into()))?;
+
+        // Same doomed-checkpoint policy as every build (fixture-proven, rev 2.1):
+        // retentions travel verbatim; the cutoff — computed from existing ids ∪
+        // this build's own checkpoint ids (no NEW frontier at finish) — downgrades
+        // exactly what upstream's per-chunk pruning would have.
+        fn finish_cutoff<H>(
+            existing: impl Iterator<Item = BlockHeight>,
+            rows: &[Option<(H, Retention<BlockHeight>)>],
+        ) -> Option<BlockHeight> {
+            let existing: Vec<BlockHeight> = existing.collect();
+            let frontier_id = existing.iter().max().copied()?;
+            let new_ids = rows.iter().flatten().filter_map(|(_, r)| match r {
+                Retention::Checkpoint { id, .. } => Some(*id),
+                _ => None,
+            });
+            doomed_checkpoint_cutoff(existing.iter().copied(), frontier_id, new_ids)
+        }
+        db.transactionally::<_, _, SqliteClientError>(|wdb| {
+            if let Some((seg_start, mut rows)) = rows_to_segment(sap_rows) {
+                if let Some(cutoff) =
+                    finish_cutoff(sap_tree.store().checkpoints.keys().copied(), &rows)
+                {
+                    downgrade_doomed_checkpoints(&mut rows, cutoff);
+                }
+                for (subtree, checkpoints) in
+                    build_subtrees::<_, SAPLING_SHARD_HEIGHT>(seg_start, &mut rows)
+                {
+                    sap_tree.insert_tree(subtree, checkpoints).map_err(|e| {
+                        SqliteClientError::CorruptedData(format!("finish sapling insert: {e:?}"))
+                    })?;
+                }
+                flush_sapling(wdb, sap_tree)?;
+            }
+            if let Some((seg_start, mut rows)) = rows_to_segment(orch_rows) {
+                if let Some(cutoff) =
+                    finish_cutoff(orch_tree.store().checkpoints.keys().copied(), &rows)
+                {
+                    downgrade_doomed_checkpoints(&mut rows, cutoff);
+                }
+                for (subtree, checkpoints) in
+                    build_subtrees::<_, ORCHARD_SHARD_HEIGHT>(seg_start, &mut rows)
+                {
+                    orch_tree.insert_tree(subtree, checkpoints).map_err(|e| {
+                        SqliteClientError::CorruptedData(format!("finish orchard insert: {e:?}"))
+                    })?;
+                }
+                flush_orchard(wdb, orch_tree)?;
+            }
+            Ok(())
+        })
+        .map_err(|e: SqliteClientError| werr("txn", e.to_string()))?;
+
+        // Post-commit cleanup (ordering contract — crash before this self-heals).
+        for shard in sap_shards {
+            crate::graft::delete_shard(&ctx.conn, ShieldedProtocol::Sapling, shard)
+                .map_err(|e| werr("cleanup sapling", e.to_string()))?;
+        }
+        for shard in orch_shards {
+            crate::graft::delete_shard(&ctx.conn, ShieldedProtocol::Orchard, shard)
+                .map_err(|e| werr("cleanup orchard", e.to_string()))?;
+        }
+        info!("graft finish: range-end shards built + buffer cleaned");
+        Ok(())
     }
 
     /// Await the in-flight commit, if any (the full barrier when called alone —
