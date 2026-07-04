@@ -195,6 +195,38 @@ range's `seed(resume_rows)` completes the shard later, whichever order ranges ru
 - [ ] **Step 3:** Implement the routing → PASS. Flag-OFF paths must not call `ensure_buffer_table` (assert: no `slipstream_graft_buffer` table after an OFF run).
 - [ ] **Step 4:** Green + ENGINE_BUILD bump + commit `[#1755] slipstream: v0.4 P1 — accumulator wired, verdict=build (byte-equal gate)`.
 
+#### Task 7b — DESIGN AS DERIVED (2026-07-04, read-and-confirm results; supersedes the sketch above)
+
+Facts established against zcash_client_sqlite 0.21.1 source + the engine:
+- `WalletDb.conn` is private and `transactionally` yields `WalletDb<SqlTransaction>`;
+  BUT `SqlTransaction` is just a newtype over `&Transaction` with
+  `Borrow<Connection>` + `Borrow<Transaction>` impls (lib.rs:279-291), and every
+  needed trait (WalletRead/WalletWrite/CommitmentTrees/inherent SBS helpers) is
+  implemented for generic `C: Borrow<Transaction>`/`Borrow<Connection>`.
+- Therefore the graft-ON path builds its OWN transaction and its own
+  `TxnDb<'a>(&'a Transaction)` wrapper (SqlTransaction's shape, ours to construct),
+  runs the extracted put_blocks body against `WalletDb::from_connection(TxnDb(&tx))`,
+  and writes buffer rows through `&tx` (Deref → &Connection) — SAME-TXN ATOMICITY,
+  no ordering dance. Graft-OFF keeps `inner.transactionally(...)` verbatim.
+- **Scope cut:** `graft_subtree` requires `write_behind` (validate() rule). The
+  inline path never grafts — no WalletSession surgery; the lane owns the raw
+  `Connection` for graft-ON lanes (`enum LaneDb { Wrapped(Db), Raw(Connection) }`).
+- Body extraction: the `transactionally` closure body becomes
+  `sparse_put_blocks_in_txn<C: Borrow<Transaction> + Borrow<Connection>, …>` shared
+  by both paths (mechanical; timers/censuses/trees passed as &mut params).
+- Buffer writes happen SERIALLY after the rayon::join (tx is not Sync) — same
+  txn, so ordering within is irrelevant.
+- Deferred builds re-apply `downgrade_doomed_checkpoints` with the CURRENT call's
+  cutoff before `build_subtrees` (buffered rows can carry stale checkpoint
+  retentions from their origin chunk).
+- Range end: `PersistLane::finish_graft()` (post-drain, own small txn) drains
+  `ShardAccumulator::finish()` per pool → downgrade → build → insert → flush.
+- P1 gate softened where honesty requires: flag-OFF = byte-identical (trivially —
+  untouched path); flag-ON(verdict=build) gates on identical shard ROOTS +
+  anchors + semantic content; exact byte-equality of ON-vs-OFF may diverge on
+  checkpoint-retention TIMING (deferred cutoffs see more doomed ids) — the
+  fixture reports, the semantic oracle (Task 10) is the real gate.
+
 ### Task 8: Real graft — root lookup + root-only install + fallbacks (P2 heart)
 
 **Files:**
