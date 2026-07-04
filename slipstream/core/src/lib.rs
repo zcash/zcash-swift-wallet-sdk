@@ -18,6 +18,8 @@ pub mod fetch;
 // is deleted in that diff (buffer CRUD lands first so Task 6/7 build on green).
 #[allow(dead_code)]
 pub(crate) mod graft;
+#[allow(dead_code)]
+pub(crate) mod graft_accumulator;
 pub mod grpc;
 pub mod mempool;
 pub mod oracle;
