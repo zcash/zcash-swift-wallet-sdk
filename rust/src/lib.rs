@@ -4574,6 +4574,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         // Cancel any in-flight task before spawning a new one.
         if let Some(task) = h.task.take() {
             task.abort();
+            join_aborted_slipstream_task(&task);
         }
         // [B4-16 drain] The aborted pass's write-behind commit may still be running
         // (`spawn_blocking` — uncancellable); wait it out BEFORE spawning the new
@@ -4695,6 +4696,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_stop(handle: *mut SlipstreamHandle) 
         let h = &mut handle.inner;
         if let Some(task) = h.task.take() {
             task.abort();
+            join_aborted_slipstream_task(&task);
         }
         // [B4-16 drain] abort() cannot cancel an in-flight write-behind commit
         // (`spawn_blocking`) — drain it so a returned stop means the wallet file is
@@ -4717,6 +4719,27 @@ pub unsafe extern "C" fn zcashlc_slipstream_stop(handle: *mut SlipstreamHandle) 
 /// account's scan scope. Called by stop() and start() right after aborting the task.
 /// 10 s cap ≫ the worst observed device commit (a few seconds, A10); on timeout we
 /// proceed with a warning — the busy_timeouts remain the backstop.
+/// [B4-16 drain] `abort()` is ASYNCHRONOUS — the task keeps running until its next await
+/// point, so a synchronous in-flight wallet write (an enhance `decrypt_and_store`, a
+/// chain-tip or subtree-roots update — field evidence: a `deleteAccount` landing in that
+/// window failed its read→write lock upgrade, "error + try again") can land AFTER
+/// `abort()` returns. Wait (bounded) for the task to finish unwinding. Combined with
+/// `drain_slipstream_wallet_writers` (the persist lane's `spawn_blocking` commit — the
+/// engine's ONLY detached writer), a completed stop/start-abort means the wallet file is
+/// FULLY quiescent.
+fn join_aborted_slipstream_task(task: &tokio::task::AbortHandle) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !task.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!(
+                "slipstream stop/start: aborted pass still unwinding after 10 s — proceeding"
+            );
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn drain_slipstream_wallet_writers(progress: &slipstream_core::ProgressArc) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut waited = false;
