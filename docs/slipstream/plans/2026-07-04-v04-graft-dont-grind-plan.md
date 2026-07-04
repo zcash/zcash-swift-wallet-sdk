@@ -195,7 +195,33 @@ range's `seed(resume_rows)` completes the shard later, whichever order ranges ru
 - [ ] **Step 3:** Implement the routing → PASS. Flag-OFF paths must not call `ensure_buffer_table` (assert: no `slipstream_graft_buffer` table after an OFF run).
 - [ ] **Step 4:** Green + ENGINE_BUILD bump + commit `[#1755] slipstream: v0.4 P1 — accumulator wired, verdict=build (byte-equal gate)`.
 
-#### Task 7b — DESIGN AS DERIVED (2026-07-04, read-and-confirm results; supersedes the sketch above)
+#### Task 7b — FINAL DESIGN (rev 2, 2026-07-04): plan-ahead, NOT TxnDb
+
+Rev-1's TxnDb idea is DEAD: `WalletCommitmentTrees` is implemented only for the
+concrete `WalletDb<SqlTransaction>` (upstream lib.rs:2343) and `SqlTransaction`
+is unconstructible — no `with_*_tree_mut`/flush on a wrapper wdb. Final shape
+(SMALLER than rev 1 — no body extraction, no lane enum):
+
+- **Pre-txn phase** (graft-ON only, inside `sparse_put_blocks` before
+  `transactionally`): borrow-extract per-pool commitment streams + note
+  positions from `&blocks` (one clone of the chunk's commitments, ~MBs), feed
+  the accumulators, and side-conn-append Buffer rows — the main txn is not open
+  yet, so no lock conflict; the ordering+idempotency contract in graft.rs's
+  header applies verbatim (appends BEFORE main commit; Close cleanups AFTER).
+- The closure receives a per-pool `GraftPlan { full_stream, segments }`:
+  cp maps compute from `full_stream` (upstream-identical inputs), the doomed
+  downgrade + `build_subtrees` run per Build/Close SEGMENT (contiguous rows,
+  incl. cross-chunk prefixes carried by the accumulator), insert/frontier/
+  ensure/flush stay byte-for-byte today's code. Plan absent = today verbatim.
+- Buffer-row cleanup for closed/built shards runs POST-commit on the side conn
+  (crash before cleanup = stale rows = the documented store-has-internals
+  self-heal path).
+- `PersistLane` keeps `db: Option<Db>` + gains `graft_conn: Option<Connection>`
+  (+ the accumulators via its SparseTreeState). `finish_graft()` = post-drain
+  `transactionally` mini-body (finish rows → downgrade → build → insert →
+  flush). Inline path still never grafts (`graft_subtree requires write_behind`).
+
+#### Task 7b — rev-1 notes (superseded, kept for the reasoning trail)
 
 Facts established against zcash_client_sqlite 0.21.1 source + the engine:
 - `WalletDb.conn` is private and `transactionally` yields `WalletDb<SqlTransaction>`;
