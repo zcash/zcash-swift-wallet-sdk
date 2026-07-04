@@ -492,6 +492,89 @@ pub mod testkit {
         }
     }
 
+    /// v0.4 Task 9: RESUME a graft-ON write-behind scan on an EXISTING wallet from
+    /// `blocks[resume_at..]` — simulates a mid-range process restart (the new lane
+    /// re-seeds its accumulator from the buffer table) and the rewind-rescan path.
+    /// `from_state` must be the chain state at `blocks[resume_at - 1]`.
+    pub async fn resume_synthetic_windows_write_behind(
+        dir: &Path,
+        blocks: &[CompactBlock],
+        resume_at: usize,
+        window_lens: &[usize],
+        graft: bool,
+    ) -> Result<(), SlipstreamError> {
+        let tail = &blocks[resume_at..];
+        if window_lens.iter().sum::<usize>() != tail.len() {
+            return Err(SlipstreamError::Wallet(format!(
+                "window_lens sum {} != tail {}",
+                window_lens.iter().sum::<usize>(),
+                tail.len()
+            )));
+        }
+        let db_path = dir.join("data.db");
+        let mut session = WalletSession::open(crate::Network::MainNetwork, &db_path)?;
+        let range_start = tail
+            .first()
+            .map(|b| b.height)
+            .ok_or_else(|| SlipstreamError::Wallet("empty resume tail".into()))?;
+        let mut facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
+            .map_err(|e| SlipstreamError::Wallet(format!("resume write-behind seed: {e}")))?;
+        let mut lane =
+            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork, 1, graft)?;
+        let mut from_state = synth_chain_state(&blocks[resume_at - 1])?;
+        let mut offset = 0usize;
+        let mut result: Result<(), SlipstreamError> = Ok(());
+        for len in window_lens {
+            let window = &tail[offset..offset + len];
+            offset += len;
+            let (Some(first), Some(last)) = (window.first(), window.last()) else { continue };
+            let from_height = match u32::try_from(first.height) {
+                Ok(h) => h,
+                Err(_) => {
+                    result = Err(SlipstreamError::Wallet("height exceeds u32".into()));
+                    break;
+                }
+            };
+            let chunk = Chunk::from_blocks(0, window.to_vec());
+            let source = MemBlockSource::new(&chunk);
+            let network = session.network;
+            if let Err(e) = scan_cached_blocks(
+                &network,
+                &source,
+                &mut facade,
+                BlockHeight::from(from_height),
+                &from_state,
+                window.len(),
+            ) {
+                result =
+                    Err(SlipstreamError::Wallet(format!("scan_cached_blocks (resume): {e}")));
+                break;
+            }
+            if let Some(pending) = facade.take_stash()
+                && let Err(e) = lane.submit(pending).await
+            {
+                result = Err(e);
+                break;
+            }
+            from_state = match synth_chain_state(last) {
+                Ok(s) => s,
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            };
+        }
+        let drain_result = lane.drain().await;
+        match (result, drain_result) {
+            (Ok(()), Ok(())) => {
+                lane.finish_graft_blocking()?;
+                Ok(())
+            }
+            (Err(e), Ok(())) => Err(e),
+            (_, Err(p)) => Err(p),
+        }
+    }
+
     /// ChainState at `last` for the NEXT window: frontier rebuilt by replaying
     /// every cmu of the synthetic chain from the start through `last` (the
     /// global cmu counter makes this exact; cheap at test sizes).
@@ -790,6 +873,123 @@ mod tests {
             )
             .expect("master probe");
         assert_eq!(n, 0, "graft-off must not create the buffer table");
+    }
+
+    /// v0.4 Task 9(a): a process restart MID-RANGE (and mid-shard) with graft on —
+    /// the second lane re-seeds its accumulator from the buffer table and the final
+    /// wallet must equal an uninterrupted graft-ON run (modulo the documented
+    /// shard-blob retention-flag class).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graft_restart_mid_shard_resumes_from_buffer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let uninterrupted = dir.path().join("uninterrupted");
+        let restarted = dir.path().join("restarted");
+        std::fs::create_dir_all(&uninterrupted).unwrap();
+        std::fs::create_dir_all(&restarted).unwrap();
+        let blocks = super::testkit::synth_blocks(3000, 3);
+        let lens: Vec<usize> = blocks.chunks(1000).map(<[_]>::len).collect();
+        super::testkit::scan_synthetic_windows_write_behind(
+            &uninterrupted,
+            blocks.clone(),
+            &lens,
+            true,
+        )
+        .await
+        .expect("uninterrupted graft scan");
+        // Restarted: first window with one lane, then a FRESH lane for the rest
+        // (drops the first lane's in-memory accumulator — exactly a process kill).
+        super::testkit::scan_synthetic_windows_write_behind(
+            &restarted,
+            blocks[..1000].to_vec(),
+            &[1000],
+            true,
+        )
+        .await
+        .expect("pre-restart scan");
+        super::testkit::resume_synthetic_windows_write_behind(
+            &restarted,
+            &blocks,
+            1000,
+            &[1000, 1000],
+            true,
+        )
+        .await
+        .expect("post-restart resume");
+        let report = semantic_diff(&uninterrupted.join("data.db"), &restarted.join("data.db"))
+            .expect("diff");
+        for t in &report.tables {
+            if t.table.ends_with("_tree_shards") {
+                assert_eq!(t.rows_a, t.rows_b, "shard count: {}", t.table);
+                continue;
+            }
+            assert!(
+                t.is_clean(),
+                "restart-resume diff not clean in {}:\n{}",
+                t.table,
+                report.render()
+            );
+        }
+        let conn = rusqlite::Connection::open(restarted.join("data.db")).expect("open");
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM slipstream_graft_buffer", [], |r| r.get(0))
+            .expect("buffer count");
+        assert_eq!(left, 0, "resume must drain the buffer");
+    }
+
+    /// v0.4 Task 9(b): does graft change REWIND behavior? Both wallets live the
+    /// SAME lifecycle (full scan → truncate 50 blocks, inside upstream's retained
+    /// checkpoint window → rescan the tail) — one graft-OFF, one graft-ON. The
+    /// position-keyed INSERT OR REPLACE contract makes stale buffered rows
+    /// converge, so the pair must match modulo the documented shard-blob class.
+    /// (A rewind legitimately differs from a never-rewound wallet — upstream
+    /// truncate wipes height-keyed history maps — which is why the control is a
+    /// rewound graft-OFF wallet, not a straight run.)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graft_rewind_rescan_converges() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let blocks = super::testkit::synth_blocks(3000, 3);
+        let lens: Vec<usize> = blocks.chunks(1000).map(<[_]>::len).collect();
+        let mut dbs = vec![];
+        for (name, graft) in [("off", false), ("on", true)] {
+            let w = dir.path().join(name);
+            std::fs::create_dir_all(&w).unwrap();
+            super::testkit::scan_synthetic_windows_write_behind(&w, blocks.clone(), &lens, graft)
+                .await
+                .expect("initial scan");
+            {
+                use zcash_client_backend::data_api::WalletWrite as _;
+                let mut session = crate::wallet_session::WalletSession::open(
+                    crate::Network::MainNetwork,
+                    &w.join("data.db"),
+                )
+                .expect("reopen");
+                let target =
+                    zcash_protocol::consensus::BlockHeight::from(blocks[2949].height as u32);
+                session.db_mut().truncate_to_height(target).expect("truncate");
+            }
+            super::testkit::resume_synthetic_windows_write_behind(&w, &blocks, 2950, &[50], graft)
+                .await
+                .expect("rescan tail after rewind");
+            dbs.push(w.join("data.db"));
+        }
+        let report = semantic_diff(&dbs[0], &dbs[1]).expect("diff");
+        for t in &report.tables {
+            if t.table.ends_with("_tree_shards") {
+                assert_eq!(t.rows_a, t.rows_b, "shard count: {}", t.table);
+                continue;
+            }
+            assert!(
+                t.is_clean(),
+                "rewound OFF-vs-ON diff not clean in {}:\n{}",
+                t.table,
+                report.render()
+            );
+        }
+        let conn = rusqlite::Connection::open(&dbs[1]).expect("open on");
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM slipstream_graft_buffer", [], |r| r.get(0))
+            .expect("buffer count");
+        assert_eq!(left, 0, "rewind + rescan must leave the buffer drained");
     }
 
     /// T6.9 write-behind oracle on the dense split-chunking chain (T6.8-S
