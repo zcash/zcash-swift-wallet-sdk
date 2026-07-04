@@ -224,3 +224,31 @@ they matter most) get cheaper, not fewer:
 - **P5** — Plan C go/no-go from the post-A profile; if go, its own mini-spec.
 - **P6** — docs (STATE.md, CHANGELOG, HANDOFF §known-items), crates → 0.4.0, engine repo
   re-extract, Zodl flag-on sanity run (the victory lap), beer adjudication.
+
+## Addendum — baselines (P0, 2026-07-04)
+
+**Reference window (pinned):** test UFVK (canonical darkside seed, `stress_sparse_join.rs`
+provenance), **birthday 2,740,000**, mainnet via `https://zec.rocks:443` → ~660,727 blocks
+to the 2026-07-04 tip (~3,400,727). Bigger than the park-era 273k window — that's fine;
+consistency of THIS window is what A/Bs compare against. M4 Max, release CLI,
+`slipstream bench`, engine v0.3.6 (`ENGINE_BUILD 2026-06-17.torretry`).
+
+| run | total_s | fetch_s | scan_s | enhance_s | persist_wait_s | persist_overlap_s |
+|---|---|---|---|---|---|---|
+| 1 | 39.0 | 14.4 | 38.4 | 0.16 | 18.5 | 10.6 |
+| 2 | 35.4 | 11.7 | 34.9 | 0.14 | 18.5 | 10.4 |
+| **3 (median total)** | **36.6** | 11.5 | 36.2 | 0.07 | 19.5 | 10.1 |
+
+**Census (identical all 3 runs):** sapling 5 shards / 0 noted / **80% graftable**;
+orchard **19 shards / 0 noted / 94.7% graftable** (foreign wallet — noted=0 as
+predicted; Lukas's real wallet will show noted>0 and sets the bet denominator).
+
+**Reading:** bound=scan every run, and `scan-compute ≈ scan_s − persist_wait ≈ 20 s` vs
+`persist_busy ≈ 28.2 s` — **persist (combine-heavy) > scan-compute**, the park-time
+thesis reproduced by the new instrument on this window. Plan A attacks the 28 s directly:
+at ~95% orchard / 80% sapling shard-build elimination, predicted total ≈ low-20s ⇒
+**~+55–75% on this reference wallet** (its graftable fraction is near-ideal; note-dense
+wallets land lower — that's what the per-wallet census is for).
+
+**[needs-user] rows to append:** Lukas's real wallet on his M4 (bet denominator);
+iPhone 16 Pro via bench-ios (both once Task 11/P3 A-B builds exist).
