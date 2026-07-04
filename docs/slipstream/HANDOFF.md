@@ -108,14 +108,16 @@ emergency lever; it requires zero slipstream knowledge.
 - B4-18: Add-HW-wallet flow renders no "Restoring" state on first add (engine/SDK lane,
   punchlist).
 - Transparent-funds trio (flagged v3 in `plans/2026-07-03-thin-sdk-sweep.md` §3).
-- Upstreaming to `zcash/zcash-swift-wallet-sdk` main: full analysis + sequence in
-  `docs/slipstream/2026-07-03-upstreaming-analysis.md` (TL;DR: no librustzcash fork needed;
-  open an ISSUE first; publish `slipstream-core` to crates.io; ~20-line `WalletInitMode`
-  shim restores full source compat). A next-quarter effort, not operational.
-- Zodl `slipstream-macos` → `zodl-inc main` merge: mechanically ready (the flag split keeps
-  iOS on the legacy engine), but it swaps the SDK dependency and touches shared code —
-  needs an iOS QA pass and a deliberate team decision. Open a PR from
-  `LukasKorba/zodl-ios:slipstream-macos` when the team wants it.
+- Upstreaming to `zcash/zcash-swift-wallet-sdk`: **DRAFT PR open —
+  [zcash/zcash-swift-wallet-sdk#1800](https://github.com/zcash/zcash-swift-wallet-sdk/pull/1800)**.
+  It stays draft until the `WalletInitMode` source-compat shim lands, internal docs are
+  stripped, and the vendor-vs-crates.io question is settled with maintainers — the full
+  sequence is in `docs/slipstream/2026-07-03-upstreaming-analysis.md`. Nothing operational
+  depends on it.
+- Zodl `slipstream-macos` → `zodl-inc main`: **PR open and ready for review —
+  [zodl-inc/zodl-ios#1864](https://github.com/zodl-inc/zodl-ios/pull/1864)**. iOS behavior
+  is preserved by the platform-split flag default; the PR description lists what reviewers
+  should do (one iOS QA pass). The team owns the merge decision.
 
 ## 8 · Emergency contacts between the code and you
 
