@@ -287,7 +287,18 @@ overhead taxes what remains. DISPOSITION: the lever ships (correct, gated,
 default-OFF — same banked posture as the GPU), the kernel + KATs + the shared
 lookup_build machinery stay; no NEON pass (nothing left for it to feed).
 
-**[needs-user] rows to append:** Lukas's graft+batch runs (his 5 noted shards
-give batch more coverage than the reference — the last open bet question);
-iPhone 16 Pro via bench-ios (Task 11/P3); formal median-of-3 adjudication runs
-on the v0.4 final build after Task 10.
+**Plan B verdict AMENDED (Lukas's wallet, 5 full-stack runs, 2026-07-04 night):**
+graft+batch totals 19.6 / 19.5 / 20.7 / 19.8 / 23.0 → **median 19.8 s**,
+persist_wait rock-steady 8.1–8.4. vs graft-only 22.9 s: **the batch lever is
+worth +15.7% ON A NOTE-BEARING WALLET** — its coverage scales with noted/straddle
+shards (his 7–8 of 14 build; the note-free reference builds ~2, hence the earlier
+"noise" read). Plan B is COVERAGE-DEPENDENT, not dead: re-dispositioned to a
+default-ON candidate alongside graft, pending the same P3 gates.
+
+**THE FULL v0.4 STACK ON THE BET METRIC: 28.9 s → 19.8 s = +46.0%.**
+Bet lines: Claude +42% (≤20.4 s) **CLEARED**; Lukas +26% (≤22.9 s) exceeded.
+Leg ledger swaps: aggregate → Claude (46.0 within 4 of his 42); SIMD → Lukas
+(+15.7 measured vs his +15 — within 0.7!). GPU → Lukas. v0.5 → open.
+
+**[needs-user] rows to append:** iPhone 16 Pro via bench-ios (Task 11/P3);
+formal median-of-3 adjudication on the v0.4 final build after Task 10b.
