@@ -313,7 +313,19 @@ pub async fn run_to_completion(
 
         let scan_started = std::time::Instant::now();
         let scan_result: Result<ScanStats, SlipstreamError> =
-            scan_chunks(session, &mut scan_client, start, rx, progress.clone(), config, skipped_keys, tor).await;
+            scan_chunks(
+                session,
+                &mut scan_client,
+                start,
+                rx,
+                progress.clone(),
+                config,
+                skipped_keys,
+                tor,
+                // v0.4 Plan A: only Historic ranges buffer (accumulator rule 2).
+                range.priority() == ScanPriority::Historic,
+            )
+            .await;
         let scan_wall = scan_started.elapsed();
 
         // Error-precedence rationale (deviation from plan's draft `??` which loses nuance):

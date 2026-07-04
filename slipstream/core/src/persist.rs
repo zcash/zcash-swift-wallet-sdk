@@ -305,6 +305,11 @@ pub struct SparseTreeState {
     /// B0: route the Orchard subtree build to the GPU (feature `gpu`). Default false;
     /// set from `EngineConfig::gpu_subtree` at the scan-path construction site.
     pub(crate) gpu_subtree: bool,
+    /// v0.4 Plan A (spec §4): defer note-free shard builds through the graft
+    /// accumulator. Set ONLY for Historic-priority ranges when
+    /// `EngineConfig::graft_subtree` is on (accumulator safety rule 2 — the
+    /// ChainTip range always runs today's passthrough path verbatim).
+    pub(crate) graft_buffering: bool,
     /// v0.4 census (spec §3.2): shard-touch vs owned-note-shard counts, fed by every
     /// `sparse_put_blocks` call on this state and read out at range end (ScanStats).
     pub(crate) census_sapling: crate::census::ShardCensus,
@@ -1688,10 +1693,13 @@ pub struct PersistLane {
 
 impl PersistLane {
     /// Open the lane's own connection to the (already-migrated) wallet file.
+    /// `graft_buffering`: v0.4 Plan A — this range defers note-free shard builds
+    /// (Historic ranges with `graft_subtree` on; see SparseTreeState field doc).
     pub fn open(
         wallet_db_path: &std::path::Path,
         network: zcash_protocol::consensus::Network,
         depth: usize,
+        graft_buffering: bool,
     ) -> Result<Self, crate::error::SlipstreamError> {
         // [B4-16] Same wait-not-die posture as the main connection (wallet_session.rs): a
         // host write (importAccount landing mid-pass) holding the lock made the lane's
@@ -1714,9 +1722,10 @@ impl PersistLane {
             rand::rngs::OsRng,
         );
         let lane_pool = Self::build_lane_pool(lane_pool_policy())?;
+        let sparse = SparseTreeState { graft_buffering, ..Default::default() };
         Ok(Self {
             db: Some(db),
-            sparse: Some(SparseTreeState::default()),
+            sparse: Some(sparse),
             lane_pool,
             progress: None,
             in_flight: None,
@@ -2207,6 +2216,7 @@ mod write_behind_tests {
             &dir.join("lane.db"),
             zcash_protocol::consensus::Network::MainNetwork,
             1,
+            false,
         )
         .expect("lane open")
     }

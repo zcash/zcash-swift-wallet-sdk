@@ -185,7 +185,7 @@ async fn run_pipeline(
     let fetch_ep = ep.clone();
     let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
 
-    scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, sparse, write_behind, gpu_subtree)
+    scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, sparse, write_behind, gpu_subtree, false)
         .await
         .expect("scan_chunks_from_treestate");
 
@@ -563,6 +563,7 @@ async fn truncate_rescan_oracle_is_clean() {
             false, // upstream
             false,
             false,
+            false,
         )
         .await
         .expect("re-scan wallet A from birthday");
@@ -610,6 +611,7 @@ async fn truncate_rescan_oracle_is_clean() {
             initial_state_b,
             rx_b,
             true, // sparse
+            false,
             false,
             false,
         )

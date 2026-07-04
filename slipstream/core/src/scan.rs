@@ -180,10 +180,13 @@ pub async fn scan_chunks(
     config: &EngineConfig,
     skipped_keys: &mut HashSet<String>,
     tor: Option<&TorConn>,
+    historic_range: bool,
 ) -> Result<ScanStats, SlipstreamError> {
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
     }
+    // v0.4 Plan A: buffering only on Historic ranges (accumulator safety rule 2).
+    let graft_buffering = config.graft_subtree && historic_range;
 
     // ── T6.9 write-behind setup ───────────────────────────────────────────────
     // Seed the pending-aware facade from the committed DB (no-pending barrier:
@@ -192,7 +195,7 @@ pub async fn scan_chunks(
     let mut wb: Option<WriteBehind> = if config.write_behind {
         let facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
             .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
-        let mut lane = crate::persist::PersistLane::open(&config.wallet_db_path, config.network, config.persist_depth)?;
+        let mut lane = crate::persist::PersistLane::open(&config.wallet_db_path, config.network, config.persist_depth, graft_buffering)?;
         // [B4-16 drain] Every deferred commit holds the writer gate so the FFI
         // stop()/start() drain can wait out an orphan commit abort() can't cancel.
         if let Some(p) = &progress {
@@ -204,7 +207,7 @@ pub async fn scan_chunks(
     };
 
     let result =
-        scan_chunks_inner(session, client, range_start, rx, progress, config, skipped_keys, &mut wb, tor)
+        scan_chunks_inner(session, client, range_start, rx, progress, config, skipped_keys, &mut wb, tor, graft_buffering)
             .await;
 
     // ── T6.9 full barrier (range end AND every error exit) ───────────────────
@@ -263,9 +266,11 @@ async fn scan_chunks_inner(
     skipped_keys: &mut HashSet<String>,
     wb: &mut Option<WriteBehind>,
     tor: Option<&TorConn>,
+    graft_buffering: bool,
 ) -> Result<ScanStats, SlipstreamError> {
     let mut sparse_state = crate::persist::SparseTreeState::default();
     sparse_state.gpu_subtree = config.gpu_subtree; // B0: route Orchard build to GPU when set
+    sparse_state.graft_buffering = graft_buffering; // v0.4: only used on the inline path (wb's lane carries its own)
     // Read config fields once.
     let batch_target_ms = config.scan_batch_target_ms;
     let network = config.network;
@@ -594,7 +599,10 @@ async fn scan_chunks_inner(
 /// build to the GPU (feature `gpu`) exactly as production does, mirroring
 /// `EngineConfig::gpu_subtree`. Added at B0.4 so the darkside oracle can prove
 /// the GPU subtree build yields a byte-identical data.db against real fixtures.
+/// `graft` — v0.4 Plan A: run this range with the graft accumulator enabled
+/// (the byte-equal and semantic oracles A/B this flag against real fixtures).
 #[cfg(any(test, feature = "darkside"))]
+#[allow(clippy::too_many_arguments)] // test driver mirrors production toggles 1:1
 pub async fn scan_chunks_from_treestate(
     session: &mut WalletSession,
     range_start: u64,
@@ -603,6 +611,7 @@ pub async fn scan_chunks_from_treestate(
     sparse: bool,
     write_behind: bool,
     gpu_subtree: bool,
+    graft: bool,
 ) -> Result<ScanStats, SlipstreamError> {
     if range_start == 0 {
         return Err(SlipstreamError::Wallet("range_start must be >= 1".into()));
@@ -617,17 +626,22 @@ pub async fn scan_chunks_from_treestate(
             "gpu_subtree requires sparse (mirrors EngineConfig::validate)".into(),
         ));
     }
+    if graft && !sparse {
+        return Err(SlipstreamError::Wallet(
+            "graft requires sparse (mirrors EngineConfig::validate)".into(),
+        ));
+    }
     let mut wb: Option<WriteBehind> = if write_behind {
         let facade = crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
             .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
-        let lane = crate::persist::PersistLane::open(session.db_path(), session.network, 1)?;
+        let lane = crate::persist::PersistLane::open(session.db_path(), session.network, 1, graft)?;
         Some(WriteBehind { facade, lane })
     } else {
         None
     };
 
     let result =
-        scan_chunks_from_treestate_inner(session, initial_state, rx, sparse, gpu_subtree, &mut wb).await;
+        scan_chunks_from_treestate_inner(session, initial_state, rx, sparse, gpu_subtree, graft, &mut wb).await;
 
     // T6.9 full barrier — mirror of scan_chunks (persist error precedence).
     if let Some(mut wb) = wb {
@@ -664,10 +678,12 @@ async fn scan_chunks_from_treestate_inner(
     mut rx: ChunkQueueReceiver,
     sparse: bool,
     gpu_subtree: bool,
+    graft: bool,
     wb: &mut Option<WriteBehind>,
 ) -> Result<ScanStats, SlipstreamError> {
     let mut sparse_state = crate::persist::SparseTreeState::default();
     sparse_state.gpu_subtree = gpu_subtree;
+    sparse_state.graft_buffering = graft; // v0.4: inline path (wb's lane carries its own)
     let mut stats = ScanStats::default();
     let mut next_state = initial_state;
 

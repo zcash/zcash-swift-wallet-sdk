@@ -181,7 +181,7 @@ async fn follow_probe_detects_new_blocks_and_catches_up() {
     let fetch_ep = ep.clone();
     let fetch_task = tokio::spawn(async move { run_fetch(&fetch_ep, plan, tx, None).await });
 
-    scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, false, false, false)
+    scan_chunks_from_treestate(&mut session, BIRTHDAY_HEIGHT, initial_scan_state, rx, false, false, false, false)
         .await
         .expect("initial scan_chunks_from_treestate");
 
@@ -199,7 +199,7 @@ async fn follow_probe_detects_new_blocks_and_catches_up() {
 
     // ── Phase 3: probe_tip at the current tip — should_resync must be false ──
 
-    let probe_before = probe_tip(&cfg).await.expect("probe_tip at initial tip");
+    let probe_before = probe_tip(&cfg, None).await.expect("probe_tip at initial tip");
     assert_eq!(probe_before, APPLY_HEIGHT as u64, "probe must return APPLY_HEIGHT");
     assert!(
         !should_resync(initial_tip, probe_before),
@@ -218,7 +218,7 @@ async fn follow_probe_detects_new_blocks_and_catches_up() {
 
     // ── Phase 5: probe_tip must return the new tip; should_resync must be true ──
 
-    let probe_after = probe_tip(&cfg).await.expect("probe_tip after new blocks");
+    let probe_after = probe_tip(&cfg, None).await.expect("probe_tip after new blocks");
     assert_eq!(
         probe_after,
         new_apply as u64,
@@ -274,6 +274,7 @@ async fn follow_probe_detects_new_blocks_and_catches_up() {
         followup_start,
         continuation_state,
         rx2,
+        false,
         false,
         false,
         false,
@@ -346,7 +347,7 @@ async fn mempool_session_handles_quiet_mempool() {
     // One bounded session against the quiet mempool. A short idle keeps the test
     // fast; production passes mempool::MEMPOOL_SESSION_IDLE (60 s).
     let mut seen: HashSet<[u8; 32]> = HashSet::new();
-    let (end, stats) = mempool::run_session(&cfg, None, &mut seen, Duration::from_secs(4))
+    let (end, stats) = mempool::run_session(&cfg, None, &mut seen, Duration::from_secs(4), None)
         .await
         .expect("run_session must NOT error on a quiet mempool (lazy-header open is idle-bounded)");
 

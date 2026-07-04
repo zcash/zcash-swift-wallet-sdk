@@ -424,7 +424,7 @@ pub mod testkit {
             crate::persist::WriteBehindFacade::seed(&*session.db_mut(), SYNTH_START)
                 .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
         let mut lane =
-            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork, 1)?;
+            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork, 1, false)?;
 
         let mut from_state = birthday_ts
             .to_chain_state()
