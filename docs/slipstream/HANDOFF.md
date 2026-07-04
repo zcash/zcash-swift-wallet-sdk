@@ -105,6 +105,15 @@ emergency lever; it requires zero slipstream knowledge.
 
 - The six-gate RC1 session (`BETA4_RC1_GATE.md`) — Lukas runs it on the installed build;
   remaining SCENARIO_MATRIX 🟡s green out during the soak.
+- **Fork FFI release `2.6.0-slipstream.1` (team/CI-owned)** — a `Build FFI XCFramework` run
+  is in flight on the fork ([run 28707492254](https://github.com/LukasKorba/ZcashLightClientKit/actions/runs/28707492254)).
+  When it succeeds: publish the draft release it creates, then bump `Package.swift`'s
+  binaryTarget URL + checksum to it (checksum is in the draft notes / `release.env`) and
+  push. Until then, prebuilt-binary builds pull the official `2.6.0-alpha.6` zip, which has
+  **no slipstream symbols** — building the SDK requires the Rust path
+  (`./Scripts/init-local-ffi.sh`, §3). If the run failed, re-dispatch the workflow on
+  branch `slipstream` with the same version (the upload-403 bug is already fixed,
+  `04db2de1`).
 - B4-18: Add-HW-wallet flow renders no "Restoring" state on first add (engine/SDK lane,
   punchlist).
 - Transparent-funds trio (flagged v3 in `plans/2026-07-03-thin-sdk-sweep.md` §3).
