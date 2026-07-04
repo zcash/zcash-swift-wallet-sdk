@@ -250,5 +250,16 @@ at ~95% orchard / 80% sapling shard-build elimination, predicted total ≈ low-2
 **~+55–75% on this reference wallet** (its graftable fraction is near-ideal; note-dense
 wallets land lower — that's what the per-wallet census is for).
 
-**[needs-user] rows to append:** Lukas's real wallet on his M4 (bet denominator);
-iPhone 16 Pro via bench-ios (both once Task 11/P3 A-B builds exist).
+**Lukas's wallet baselines (2026-07-04, graft OFF, 5 runs — THE BET DENOMINATOR):**
+totals 28.6 / 43.4 (network outlier) / 28.0 / 29.0 / 28.9 → **median 28.9 s**;
+persist_wait 14.4–16.7 s; census stable: orchard 14 shards / 5 noted / **57% graftable**,
+sapling 3 / 0 / 67%. Bet lines: Lukas +26% ⇒ v0.4 ≤ 22.9 s; Claude +42% ⇒ ≤ 20.4 s.
+
+**First fair A/B (reference wallet, back-to-back, 2026-07-04, post-Task-8):**
+graft ON total 30.4 s (fetch 15.9, persist_wait **8.2**) vs OFF 36.9 s (fetch 12.6,
+persist_wait 18.2) ⇒ **+21% raw with ON drawing the worse fetch; ~+35% fetch-normalized**.
+First-live-fire lesson banked: autocommit buffer appends = fsync/row (persist_wait 96.5 s!)
+→ one txn per append (`24804da6`) → 8.2 s, BELOW the graft-off floor.
+
+**[needs-user] rows to append:** Lukas's graft-ON runs (after Task 10 blesses
+correctness); iPhone 16 Pro via bench-ios (Task 11/P3).
