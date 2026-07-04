@@ -335,12 +335,18 @@ impl SparseTreeState {
 /// contract) + the per-pool accumulators.
 pub(crate) struct GraftCtx {
     conn: rusqlite::Connection,
+    /// Task 10: verify every Nth graftable shard by building it anyway and
+    /// root-comparing against the server (0 = off, 1 = audit every graft).
+    verify_sample: u32,
     acc_sapling: Option<crate::graft_accumulator::ShardAccumulator<sapling::Node>>,
     acc_orchard: Option<crate::graft_accumulator::ShardAccumulator<orchard::tree::MerkleHashOrchard>>,
 }
 
 impl GraftCtx {
-    pub(crate) fn open(wallet_db_path: &std::path::Path) -> Result<Self, crate::error::SlipstreamError> {
+    pub(crate) fn open(
+        wallet_db_path: &std::path::Path,
+        verify_sample: u32,
+    ) -> Result<Self, crate::error::SlipstreamError> {
         // Same wait-not-die posture as every other engine connection.
         let conn = rusqlite::Connection::open(wallet_db_path).map_err(|e| {
             crate::error::SlipstreamError::Wallet(format!("graft side conn open: {e}"))
@@ -348,7 +354,7 @@ impl GraftCtx {
         conn.busy_timeout(std::time::Duration::from_secs(15)).map_err(|e| {
             crate::error::SlipstreamError::Wallet(format!("graft side conn busy_timeout: {e}"))
         })?;
-        Ok(Self { conn, acc_sapling: None, acc_orchard: None })
+        Ok(Self { conn, verify_sample, acc_sapling: None, acc_orchard: None })
     }
 }
 
@@ -364,6 +370,9 @@ struct PoolPlan<H> {
     cleanup_shards: Vec<u64>,
     /// Clean shards with NO server root (tip lag / server gap) — built instead.
     fallbacks: u64,
+    /// Task 10 sampling verify: shards built ANYWAY (their rows ride
+    /// `segments`) whose computed root must equal this server root.
+    verify_roots: Vec<(u64, H)>,
 }
 
 /// Retentions travel VERBATIM into deferred builds (fixture-proven, 7b rev 2.1):
@@ -389,6 +398,7 @@ fn rows_to_segment<H>(
 #[allow(clippy::too_many_arguments)]
 fn plan_pool<H: Clone + zcash_primitives::merkle_tree::HashSer>(
     conn: &rusqlite::Connection,
+    verify_sample: u32,
     acc: &mut Option<crate::graft_accumulator::ShardAccumulator<H>>,
     pool: ShieldedProtocol,
     start_position: u64,
@@ -412,8 +422,13 @@ fn plan_pool<H: Clone + zcash_primitives::merkle_tree::HashSer>(
     }
     let acc = acc.as_mut().unwrap_or_else(|| unreachable!("seeded above"));
 
-    let mut plan =
-        PoolPlan { segments: vec![], grafts: vec![], cleanup_shards: vec![], fallbacks: 0 };
+    let mut plan = PoolPlan {
+        segments: vec![],
+        grafts: vec![],
+        cleanup_shards: vec![],
+        fallbacks: 0,
+        verify_roots: vec![],
+    };
     for action in acc.feed(start_position, stream, note_positions) {
         match action {
             FeedAction::Build(rows) => {
@@ -427,7 +442,19 @@ fn plan_pool<H: Clone + zcash_primitives::merkle_tree::HashSer>(
                 // (zero combines); no root ⇒ build these exact rows (fallback).
                 plan.cleanup_shards.push(shard_index);
                 match crate::graft::server_root::<H>(conn, pool, shard_index)? {
-                    Some(root) => plan.grafts.push((shard_index, root)),
+                    Some(root) => {
+                        // Task 10: deterministic 1-in-N audit — build it anyway
+                        // and compare roots after insertion (reproducible; the
+                        // built content wins on mismatch, so audit ⊇ correct).
+                        let audit = verify_sample > 0
+                            && shard_index.is_multiple_of(u64::from(verify_sample));
+                        if audit {
+                            plan.verify_roots.push((shard_index, root));
+                            plan.segments.extend(rows_to_segment(rows));
+                        } else {
+                            plan.grafts.push((shard_index, root));
+                        }
+                    }
                     None => {
                         plan.fallbacks += 1;
                         plan.segments.extend(rows_to_segment(rows));
@@ -702,6 +729,7 @@ pub fn sparse_put_blocks(
         }
         let sp = plan_pool(
             &ctx.conn,
+            ctx.verify_sample,
             &mut ctx.acc_sapling,
             ShieldedProtocol::Sapling,
             sap_start_u64,
@@ -711,6 +739,7 @@ pub fn sparse_put_blocks(
         )?;
         let op = plan_pool(
             &ctx.conn,
+            ctx.verify_sample,
             &mut ctx.acc_orchard,
             ShieldedProtocol::Orchard,
             orch_start_u64,
@@ -1002,9 +1031,17 @@ pub fn sparse_put_blocks(
             }
 
             let (sap_result, orch_result) = rayon::join(
-                || -> Result<(u64, PoolTimers), SqliteClientError> {
+                || -> Result<(u64, PoolTimers, (u64, u64)), SqliteClientError> {
                     let t_pool = std::time::Instant::now();
                     let mut timers = PoolTimers::default();
+                    // Task 10: pull the audit list out before the plan is consumed.
+                    let (sap_plan, sap_verify_roots) = match sap_plan {
+                        Some(mut plan) => {
+                            let v = std::mem::take(&mut plan.verify_roots);
+                            (Some(plan), v)
+                        }
+                        None => (None, vec![]),
+                    };
                     // Downgrade doomed checkpoints (T6.3b).
                     let t = std::time::Instant::now();
                     let sap_cutoff = doomed_checkpoint_cutoff(
@@ -1090,12 +1127,40 @@ pub fn sparse_put_blocks(
                         }
                     }
                     timers.ensure_ms = t.elapsed().as_millis();
+                    // Task 10 audit: sampled grafts were built + inserted above —
+                    // recompute each audited shard's root and compare to the server's.
+                    let mut sap_audit = (0u64, 0u64); // (verified, mismatched)
+                    for (idx, server_root) in &sap_verify_roots {
+                        let addr = Address::from_parts(Level::from(SAPLING_SHARD_HEIGHT), *idx);
+                        let end = Position::from((idx + 1) << 16);
+                        match sap_tree.store().get_shard(addr) {
+                            Ok(Some(shard)) => match shard.root_hash(end) {
+                                Ok(computed) if &computed == server_root => sap_audit.0 += 1,
+                                Ok(_) => {
+                                    sap_audit.1 += 1;
+                                    tracing::error!(
+                                        shard = idx,
+                                        "GRAFT AUDIT MISMATCH (sapling): server root != computed — built content installed, server suspect"
+                                    );
+                                }
+                                Err(_) => tracing::warn!(shard = idx, "graft audit inconclusive (sapling): shard incomplete"),
+                            },
+                            _ => tracing::warn!(shard = idx, "graft audit: sapling shard missing post-insert"),
+                        }
+                    }
                     timers.total_ms = t_pool.elapsed().as_millis();
-                    Ok((sap_downgraded, timers))
+                    Ok((sap_downgraded, timers, sap_audit))
                 },
-                || -> Result<(u64, PoolTimers), SqliteClientError> {
+                || -> Result<(u64, PoolTimers, (u64, u64)), SqliteClientError> {
                     let t_pool = std::time::Instant::now();
                     let mut timers = PoolTimers::default();
+                    let (orch_plan, orch_verify_roots) = match orch_plan {
+                        Some(mut plan) => {
+                            let v = std::mem::take(&mut plan.verify_roots);
+                            (Some(plan), v)
+                        }
+                        None => (None, vec![]),
+                    };
                     // Downgrade doomed checkpoints (T6.3b).
                     let t = std::time::Instant::now();
                     let orch_cutoff = doomed_checkpoint_cutoff(
@@ -1177,13 +1242,41 @@ pub fn sparse_put_blocks(
                         }
                     }
                     timers.ensure_ms = t.elapsed().as_millis();
+                    let mut orch_audit = (0u64, 0u64);
+                    for (idx, server_root) in &orch_verify_roots {
+                        let addr = Address::from_parts(Level::from(ORCHARD_SHARD_HEIGHT), *idx);
+                        let end = Position::from((idx + 1) << 16);
+                        match orch_tree.store().get_shard(addr) {
+                            Ok(Some(shard)) => match shard.root_hash(end) {
+                                Ok(computed) if &computed == server_root => orch_audit.0 += 1,
+                                Ok(_) => {
+                                    orch_audit.1 += 1;
+                                    tracing::error!(
+                                        shard = idx,
+                                        "GRAFT AUDIT MISMATCH (orchard): server root != computed — built content installed, server suspect"
+                                    );
+                                }
+                                Err(_) => tracing::warn!(shard = idx, "graft audit inconclusive (orchard): shard incomplete"),
+                            },
+                            _ => tracing::warn!(shard = idx, "graft audit: orchard shard missing post-insert"),
+                        }
+                    }
                     timers.total_ms = t_pool.elapsed().as_millis();
-                    Ok((orch_downgraded, timers))
+                    Ok((orch_downgraded, timers, orch_audit))
                 },
             );
             // Propagate errors from both sides after join (no unwrap/expect).
-            let (sap_downgraded, sap_timers) = sap_result?;
-            let (orch_downgraded, orch_timers) = orch_result?;
+            let (sap_downgraded, sap_timers, sap_audit) = sap_result?;
+            let (orch_downgraded, orch_timers, orch_audit) = orch_result?;
+            if sap_audit != (0, 0) || orch_audit != (0, 0) {
+                info!(
+                    sap_verified = sap_audit.0,
+                    sap_mismatched = sap_audit.1,
+                    orch_verified = orch_audit.0,
+                    orch_mismatched = orch_audit.1,
+                    "graft audit (this call)"
+                );
+            }
             downgraded = sap_downgraded + orch_downgraded;
             sap_tree_ms = sap_timers.total_ms;
             orch_tree_ms = orch_timers.total_ms;
@@ -1955,6 +2048,7 @@ impl PersistLane {
         network: zcash_protocol::consensus::Network,
         depth: usize,
         graft_buffering: bool,
+        graft_verify_sample: u32,
     ) -> Result<Self, crate::error::SlipstreamError> {
         // [B4-16] Same wait-not-die posture as the main connection (wallet_session.rs): a
         // host write (importAccount landing mid-pass) holding the lock made the lane's
@@ -1977,7 +2071,11 @@ impl PersistLane {
             rand::rngs::OsRng,
         );
         let lane_pool = Self::build_lane_pool(lane_pool_policy())?;
-        let graft = if graft_buffering { Some(GraftCtx::open(wallet_db_path)?) } else { None };
+        let graft = if graft_buffering {
+            Some(GraftCtx::open(wallet_db_path, graft_verify_sample)?)
+        } else {
+            None
+        };
         let sparse = SparseTreeState { graft_buffering, graft, ..Default::default() };
         Ok(Self {
             db: Some(db),
@@ -2579,6 +2677,7 @@ mod write_behind_tests {
             zcash_protocol::consensus::Network::MainNetwork,
             1,
             false,
+            0,
         )
         .expect("lane open")
     }

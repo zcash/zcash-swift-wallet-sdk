@@ -95,6 +95,13 @@ pub struct EngineConfig {
     /// semantics match gpu_subtree — off = byte-for-byte today's path.
     pub graft_subtree: bool,
 
+    /// v0.4 sampling verify (spec §4 trust): every Nth graftable shard is BUILT
+    /// anyway and its computed root compared to the server root — a mismatch is
+    /// logged loudly and the BUILT shard wins (fallback beats trust). 0 = off,
+    /// 1 = verify every graft (the full-audit mode used for validation runs).
+    /// Deterministic by shard index (reproducible; no RNG in the hot path).
+    pub graft_verify_sample: u32,
+
     /// Persist-pipelining: max unpersisted units (in-flight + queued) before the scan
     /// side blocks. `1` = legacy strict depth-1 backpressure (byte-for-byte identical).
     /// Higher lets scan run further ahead so more persist hides behind scan (~22%
@@ -131,6 +138,7 @@ impl EngineConfig {
             gpu_subtree: false,
             bench_json_path: None,
             graft_subtree: false,
+            graft_verify_sample: 16,
             persist_depth: 1,
         }
     }
