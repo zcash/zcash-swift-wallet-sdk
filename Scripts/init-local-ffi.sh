@@ -136,6 +136,14 @@ build_arm_xcframework() {
     rm -rf "$XCFRAMEWORK_DIR"
     mv "$temp_xcfw" "$XCFRAMEWORK_DIR"
     rm -rf "$temp_dir"
+
+    # The slices above are assembled shallow (iOS layout). macOS embedded
+    # frameworks require the VERSIONED bundle layout, else the app build fails
+    # ("expected Versions/Current/Resources/Info.plist"). Same fix as the full
+    # make path below and rebuild-local-ffi.sh; guarded for iOS-only subsets.
+    if [[ -d "$XCFRAMEWORK_DIR/macos-arm64_x86_64/libzcashlc.framework" ]]; then
+        ./Scripts/version-macos-framework.sh "$XCFRAMEWORK_DIR/macos-arm64_x86_64/libzcashlc.framework"
+    fi
 }
 
 # Parse the single optional flag.
