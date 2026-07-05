@@ -289,6 +289,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "contiguous")]
+    #[cfg(debug_assertions)] // relies on debug_assert — meaningless (and failing) in release
     fn contiguity_is_enforced_in_debug() {
         let mut a = ShardAccumulator::<H>::seed(0, vec![], false);
         let _ = a.feed(0, items(10), &[]);

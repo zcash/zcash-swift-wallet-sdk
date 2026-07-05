@@ -3,11 +3,14 @@
 //! Trial decryption multiplies MANY ephemeral keys by the SAME incoming
 //! viewing key, so every lane of a batch takes IDENTICAL double-and-add
 //! ladder steps. This module advances all lanes one step at a time, sharing
-//! ONE Montgomery batch inversion per step with cheap affine formulas —
-//! measured ~2.1× the per-item prepared path on Apple Silicon. Degenerate
-//! lanes (identity inputs, `k = 0`, `acc == ±T` collisions, `y = 0`
-//! doublings) are poison-marked; the caller falls back to the per-item path
-//! for those lanes, so correctness never depends on the batch.
+//! ONE Montgomery batch inversion per step with cheap affine formulas.
+//! Honest edge over upstream's prepared path (which is already wNAF-4
+//! tabled): ~1.6× per multiplication at the production batch size (N=100,
+//! Apple Silicon, batch-normalized output) — the shared inversions beat the
+//! table lookups, but only modestly. Degenerate lanes (identity inputs,
+//! `k = 0`, `acc == ±T` collisions, `y = 0` doublings) are poison-marked;
+//! the caller falls back to the per-item path for those lanes, so
+//! correctness never depends on the batch.
 //!
 //! The kernel is OFF by default: [`set_enabled`] is the runtime toggle the
 //! embedding engine flips from its config (slipstream `batch_decrypt`).
@@ -15,23 +18,65 @@
 
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use group::ff::{Field, PrimeField};
-use group::Curve;
 use pasta_curves::arithmetic::CurveAffine;
 use pasta_curves::pallas;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+// Did-it-fire counters (the graft lever's lesson: a lever without a fire
+// signal is unverifiable in production — build-then-prune looked identical).
+// CALLS/LANES tick on every `batch_ka_agree_dec` entry (either path);
+// KERNEL_LANES ticks only when the lockstep kernel actually multiplies.
+static CALLS: AtomicU64 = AtomicU64::new(0);
+static LANES: AtomicU64 = AtomicU64::new(0);
+static KERNEL_LANES: AtomicU64 = AtomicU64::new(0);
+static NANOS: AtomicU64 = AtomicU64::new(0);
 
 /// Runtime toggle for the batched DH kernel (default OFF = the per-item
-/// path, byte-for-byte). Flipped by the embedding engine from its config.
+/// path, byte-for-byte). Flipped by the embedding engine from its config;
+/// resets the fire counters so each pass reads its own totals.
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
+    CALLS.store(0, Ordering::Relaxed);
+    LANES.store(0, Ordering::Relaxed);
+    KERNEL_LANES.store(0, Ordering::Relaxed);
+    NANOS.store(0, Ordering::Relaxed);
 }
 
 pub(crate) fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn note_call(lanes: usize) {
+    CALLS.fetch_add(1, Ordering::Relaxed);
+    LANES.fetch_add(lanes as u64, Ordering::Relaxed);
+}
+
+pub(crate) fn note_kernel_lanes(lanes: usize) {
+    KERNEL_LANES.fetch_add(lanes as u64, Ordering::Relaxed);
+}
+
+#[cfg(feature = "std")]
+pub(crate) fn note_nanos(n: u64) {
+    NANOS.fetch_add(n, Ordering::Relaxed);
+}
+
+/// `(calls, lanes, kernel_lanes, nanos)` since the last [`set_enabled`].
+/// `calls > 0` proves the batched seam is reached at all; `kernel_lanes > 0`
+/// proves the lockstep kernel engaged (vs. the per-item fallback). `nanos`
+/// is CPU-side wall accumulated inside `batch_ka_agree_dec` across all
+/// threads and BOTH paths (std builds only; 0 without std) — the true
+/// production DH cost, so an ON/OFF pair measures the kernel's real ratio
+/// and DH's share of scan without microbenchmark assumptions.
+pub fn stats() -> (u64, u64, u64, u64) {
+    (
+        CALLS.load(Ordering::Relaxed),
+        LANES.load(Ordering::Relaxed),
+        KERNEL_LANES.load(Ordering::Relaxed),
+        NANOS.load(Ordering::Relaxed),
+    )
 }
 
 /// Montgomery batch inversion in place. `xs` MUST contain no zeros (the
@@ -280,7 +325,7 @@ pub(crate) fn batch_mul_same_scalar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use group::{Group, GroupEncoding};
+    use group::{Curve, Group, GroupEncoding};
 
     /// KAT: the kernel must be byte-identical to the curve's own scalar mult.
     #[test]

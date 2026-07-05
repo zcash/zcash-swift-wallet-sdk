@@ -74,6 +74,23 @@ same poison-mark degenerate handling, same rayon chunking as
 Sinsemilla kernel delivered 12× on its probe with this exact pattern, so 2–3×
 END-TO-END on the DH portion is the conservative planning number.
 
+> **⚠ HONEST-BENCH CORRECTION (2026-07-05, post-wiring):** the first kernel
+> probe reported 2.13× by timing `prepare_epk` + TWO `ka_agree` calls in the
+> baseline against ONE kernel multiplication — and upstream's prepared path
+> is **already wNAF-4 tabled** (`WnafBase`/`WnafScalar`, one table serving
+> both scope ivks), which the paper arithmetic above ignored. The honest
+> rewrite (`dh_kernel_bench`, per-N, prepare amortized out of both sides)
+> measures on M4: **N=100 (production batch size, `BatchRunners::for_keys`)
+> — wired shape 1.23×, batch-normalized 1.56×; N=10k — 1.44×/1.82×.** The
+> per-point `to_affine()` in the first wiring cost one field inversion per
+> lane per ivk (~1M+ per restore) and is fixed with `Point::batch_normalize`
+> (one shared inversion per batch). Consequence: **C1 alone is a modest
+> lever (~1.6× on DH ⇒ ≤ ⅓ of the DH share off scan), and C2's endomorphism
+> split — which upstream's prepared path does NOT have — is now the
+> make-or-break for §7's 2.5× mid-case.** Lukas's device A/B (65s OFF / 68s
+> ON, fetch 22.7s vs ~10s the prior day = network-noise dominated) caught
+> what the dishonest microbenchmark hid.
+
 ### C2 — endomorphism split (stacks on C1)
 Pallas carries the Pasta cube-root endomorphism; a one-time GLV decomposition
 of the FIXED ivk scalar halves the ladder length (two half-length scalars,
@@ -121,6 +138,39 @@ The DH happens INSIDE `zcash_note_encryption::batch` (invoked by upstream's
   (default OFF) → CLI/bench toggles ride the existing plumbing.
   **Gate: KAT + semantic oracle (found-notes set identical) + A/B ≥ +15 % total
   on one iOS-class device.**
+
+  **❌ C1 PRODUCTION VERDICT (2026-07-05, gate FAILED — lever stays default
+  OFF, kernel retained as instrument + record).** Wired end-to-end and
+  byte-identical (KATs green; fire counters prove 100 % kernel coverage:
+  2,410,514 / 2,410,514 lanes, 23,446 calls ≈ the `for_keys(100)` batch
+  shape). The in-pass timer (`batch_dh_s`, cross-thread) then measured, on
+  the M4 reference wallet (113 k blocks, interleaved runs):
+  - per-item (OFF): **dh_s ≈ 149.6 / 145.7 s → 62 µs/lane** — validates the
+    honest microbench baseline (71 µs), and reveals DH is BIG (~150 core-s
+    inside a ~28 s scan wall — ~5–6 decrypt threads run concurrently);
+  - lockstep kernel (ON): **dh_s ≈ 210 s → 87 µs/lane — 1.4× SLOWER in
+    production**, the opposite of the single-threaded microbench (1.56×
+    faster). Same code, same batch width: under real concurrency the
+    kernel's per-call allocations + serial batch-inversion chains lose to
+    the per-item wNAF walk, which is allocation-free and cache-resident.
+    (Why Plan B's identical trick DID ship: `batch_sinsemilla` runs on its
+    own dedicated pool at ~10 k-wide batches; upstream fixes decrypt at
+    N≈103 and shares the scan threads.)
+  - end-to-end wall: WASH in both directions on M4 (scan stage has ≥60
+    core-s of slack — DH is off the M4 critical path either way).
+  - device note: on A18 (6 cores, ~297 k-block wallet) DH plausibly
+    saturates — the kernel's +40 % DH cost may explain part of Lukas's
+    65 s→68 s ON regression (fetch noise explains the rest). The new
+    `batch_dh_s` / `kernel_lanes` bench.json rows measure this directly on
+    device; one OFF/ON bench-ios pair decides.
+  **Consequence for C2:** endo-on-top-of-the-lockstep-kernel is DEAD (it
+  halves the ladder of a kernel that loses on memory behavior, not
+  arithmetic). C2 re-scopes to **endo-on-the-per-item path**: GLV-split the
+  ivk once per pass, ζ-map the epk's existing wNAF table (8 field muls),
+  walk two half-width scalars — allocation-free, per-item shape preserved,
+  upstream-PR-able. Honest ceiling ~1.6–1.8× on DH; transfers to wall only
+  where DH saturates cores (iOS tier, per the device reading above — gate
+  C2 on Lukas's `batch_dh_s` rows).
 - **C2 — endo split:** stacked, own toggle, same KAT. Gate: measured stack gain.
 - **C3 — fleet A/B + defaults:** the same four-device sweep v0.4 just ran;
   defaults per device class on the same ≥ +10 % rule.

@@ -417,42 +417,63 @@ mod tests {
         let fvk = usk.to_unified_full_viewing_key().orchard().expect("orchard fvk").clone();
         let pivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::External));
 
-        let points = synth_points(N, 1_000);
+        // HONEST comparison (v2 — the first version bundled prepare_epk + TWO
+        // ka_agree calls into the baseline while timing ONE kernel mult, and
+        // upstream's prepared path is already wNAF-tabled with one table
+        // serving both scope ivks — the wired device A/B exposed it):
+        //   (a) prepare ONCE per point (amortized out), time ONLY the mult;
+        //   (b) the kernel in its WIRED shape — per-ivk call, projective
+        //       inputs (to_affine cost included), at the given batch size.
+        for &n in &[100usize, 1_000, N] {
+            let points = synth_points(n, 1_000);
+            let pepks: Vec<_> = points
+                .iter()
+                .map(|p| {
+                    let epk = Option::from(OrchardDomain::epk(
+                        &zcash_note_encryption::EphemeralKeyBytes(p.to_bytes()),
+                    ))
+                    .expect("valid epk");
+                    OrchardDomain::prepare_epk(epk)
+                })
+                .collect();
 
-        // (a) upstream per-item path: prepare_epk + ka_agree_dec per point —
-        // byte-for-byte the work inside batch::try_compact_note_decryption.
-        let t = Instant::now();
-        for p in &points {
-            let epk = Option::from(OrchardDomain::epk(&zcash_note_encryption::EphemeralKeyBytes(
-                p.to_bytes(),
-            )))
-            .expect("valid epk");
-            let pepk = OrchardDomain::prepare_epk(epk);
-            black_box(OrchardDomain::ka_agree_dec(&pivk, &pepk));
+            // (a) the true baseline: one prepared mult per lane.
+            let t = Instant::now();
+            for pepk in &pepks {
+                black_box(OrchardDomain::ka_agree_dec(&pivk, pepk));
+            }
+            let upstream = t.elapsed();
+
+            // (b) the kernel as WIRED: projective in (to_affine inside the
+            // measurement, per-point — the current override's shape).
+            let k = pallas::Scalar::from(0xFEED_F00D_CAFE_BABEu64).square()
+                + pallas::Scalar::from(0x0123_4567_89AB_CDEFu64);
+            let projective: Vec<pallas::Point> =
+                points.iter().map(|p| pallas::Point::from(*p)).collect();
+            let t = Instant::now();
+            let affine: Vec<pallas::Affine> =
+                projective.iter().map(|p| p.to_affine()).collect();
+            let out = batch_mul_same_scalar(&k, &affine);
+            let kernel_wired = t.elapsed();
+            assert!(out.iter().all(Option::is_some));
+            black_box(out);
+
+            // (c) the kernel with batch-normalized inputs (the fix).
+            let t = Instant::now();
+            let mut affine2 = vec![pallas::Affine::identity(); n];
+            pallas::Point::batch_normalize(&projective, &mut affine2);
+            let out = batch_mul_same_scalar(&k, &affine2);
+            let kernel_fixed = t.elapsed();
+            black_box(out);
+
+            eprintln!(
+                "C1 honest bench N={n}: upstream {:.1} us/mult | wired {:.1} ({:.2}x) | batch-normalized {:.1} ({:.2}x)",
+                upstream.as_micros() as f64 / n as f64,
+                kernel_wired.as_micros() as f64 / n as f64,
+                upstream.as_secs_f64() / kernel_wired.as_secs_f64(),
+                kernel_fixed.as_micros() as f64 / n as f64,
+                upstream.as_secs_f64() / kernel_fixed.as_secs_f64(),
+            );
         }
-        let upstream = t.elapsed();
-
-        // (b) the lockstep kernel with a same-width scalar (the real ivk scalar
-        // is not exposed by orchard's API — the fork wiring reaches it from
-        // inside; a random full-width scalar is arithmetically equivalent work).
-        let k = pallas::Scalar::from(0xFEED_F00D_CAFE_BABEu64).square()
-            + pallas::Scalar::from(0x0123_4567_89AB_CDEFu64);
-        let t = Instant::now();
-        let out = batch_mul_same_scalar(&k, &points);
-        let kernel = t.elapsed();
-        assert!(out.iter().all(Option::is_some));
-        black_box(out);
-
-        let ratio = upstream.as_secs_f64() / kernel.as_secs_f64();
-        eprintln!("C1 dh_kernel_bench: N={N} lanes");
-        eprintln!(
-            "  (a) upstream prepared ka_agree_dec: {upstream:?}  ({:.1} us/mult)",
-            upstream.as_micros() as f64 / N as f64
-        );
-        eprintln!(
-            "  (b) lockstep-affine kernel:         {kernel:?}  ({:.1} us/mult)",
-            kernel.as_micros() as f64 / N as f64
-        );
-        eprintln!("  kernel ratio: {ratio:.2}x");
     }
 }

@@ -23,7 +23,7 @@ use crate::{
 /// tag in the log doesn't match HEAD's value, the device is running a stale
 /// XCFramework (the three-layer gotcha, consuming side). Probe a built slice with:
 /// `strings <slice>/libzcashlc.framework/libzcashlc | grep <tag>`.
-pub const ENGINE_BUILD: &str = "2026-07-05.v05-c1-wiring";
+pub const ENGINE_BUILD: &str = "2026-07-05.v05-c1-firestats";
 
 /// Current wall-clock time as a `YYYY-MM-DD HH:MM:SSZ` UTC string.
 ///
@@ -283,6 +283,21 @@ pub async fn sync_once(
         "shard census"
     );
 
+    // v0.5 C1 did-it-fire stats (the graft lever's lesson): calls proves the
+    // batched seam is reached, kernel_lanes proves the kernel engaged, dh_s
+    // is the true cross-thread production DH cost (ON/OFF pairs = real ratio).
+    let (batch_dh_calls, batch_dh_lanes, batch_dh_kernel_lanes, batch_dh_nanos) =
+        orchard::batch_dh::stats();
+    let batch_dh_s = batch_dh_nanos as f64 / 1e9;
+    info!(
+        calls = batch_dh_calls,
+        lanes = batch_dh_lanes,
+        kernel_lanes = batch_dh_kernel_lanes,
+        dh_s = batch_dh_s,
+        enabled = config.batch_decrypt,
+        "batch_dh fire stats"
+    );
+
     // v0.4 P0 (spec §3.1): the machine-readable bench artifact, host-opted via config.
     if let Some(path) = &config.bench_json_path {
         let bench = crate::census::BenchSummary {
@@ -294,6 +309,10 @@ pub async fn sync_once(
             persist_wait_s,
             persist_overlap_s: (persist_busy_s - persist_wait_s).max(0.0),
             blocks: outcome.report.scan.blocks,
+            batch_dh_calls,
+            batch_dh_lanes,
+            batch_dh_kernel_lanes,
+            batch_dh_s,
             sapling: (&outcome.report.census_sapling).into(),
             orchard: (&outcome.report.census_orchard).into(),
         };

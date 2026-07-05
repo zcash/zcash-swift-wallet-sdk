@@ -258,8 +258,9 @@ impl BatchDomain for OrchardDomain {
 
     /// [slipstream fork] Batched same-scalar DH: every trial-decryption lane
     /// multiplies by the SAME ivk, so the lockstep-affine kernel shares one
-    /// inversion per ladder step across the whole batch (~2.1x the per-item
-    /// prepared path). OFF by default — `crate::batch_dh::set_enabled` is the
+    /// inversion per ladder step across the whole batch (~1.6x the per-item
+    /// prepared path at production batch size — the prepared path is already
+    /// wNAF-tabled). OFF by default — `crate::batch_dh::set_enabled` is the
     /// engine's runtime toggle; degenerate lanes fall back per-item, so the
     /// output is byte-identical either way (KAT-gated in batch_dh.rs).
     fn batch_ka_agree_dec<'a>(
@@ -272,22 +273,35 @@ impl BatchDomain for OrchardDomain {
         use group::Curve;
 
         let epks: Vec<Option<&PreparedEphemeralPublicKey>> = epks.collect();
+        crate::batch_dh::note_call(epks.len());
+        #[cfg(feature = "std")]
+        let started = std::time::Instant::now();
         if !crate::batch_dh::enabled() {
-            return epks
+            let out = epks
                 .into_iter()
                 .map(|epk| epk.map(|epk| Self::ka_agree_dec(ivk, epk)))
                 .collect();
+            #[cfg(feature = "std")]
+            crate::batch_dh::note_nanos(started.elapsed().as_nanos() as u64);
+            return out;
         }
 
-        // Gather the live lanes' raw affine bases for the kernel.
+        // Gather the live lanes' raw bases and BATCH-normalize them — one
+        // shared inversion for the whole batch instead of one per point
+        // (per-point to_affine cost ~as much as the kernel saved).
         let mut lane_index = Vec::with_capacity(epks.len());
-        let mut bases = Vec::with_capacity(epks.len());
+        let mut projective = Vec::with_capacity(epks.len());
         for (i, epk) in epks.iter().enumerate() {
             if let Some(epk) = epk {
                 lane_index.push(i);
-                bases.push(epk.raw_point().to_affine());
+                projective.push(epk.raw_point());
             }
         }
+        use group::prime::PrimeCurveAffine as _;
+        let mut bases =
+            alloc::vec![pasta_curves::pallas::Affine::identity(); projective.len()];
+        pasta_curves::pallas::Point::batch_normalize(&projective, &mut bases);
+        crate::batch_dh::note_kernel_lanes(bases.len());
         let k = ivk.raw_scalar();
         let products = crate::batch_dh::batch_mul_same_scalar(&k, &bases);
 
@@ -301,6 +315,8 @@ impl BatchDomain for OrchardDomain {
                 None => Self::ka_agree_dec(ivk, epks[i].expect("lane was live")),
             });
         }
+        #[cfg(feature = "std")]
+        crate::batch_dh::note_nanos(started.elapsed().as_nanos() as u64);
         out
     }
 }

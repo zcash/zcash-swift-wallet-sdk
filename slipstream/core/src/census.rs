@@ -100,6 +100,18 @@ pub struct BenchSummary {
     pub persist_wait_s: f64,
     pub persist_overlap_s: f64,
     pub blocks: u64,
+    /// v0.5 C1 did-it-fire stats: `batch_ka_agree_dec` entries, total lanes
+    /// through the seam, and lanes the lockstep kernel actually multiplied
+    /// (0 with the lever off). `calls > 0, kernel = 0` = seam reached but
+    /// kernel disengaged; `calls = 0` = the scanner never hit the seam.
+    pub batch_dh_calls: u64,
+    pub batch_dh_lanes: u64,
+    pub batch_dh_kernel_lanes: u64,
+    /// CPU-side seconds accumulated inside `batch_ka_agree_dec` summed across
+    /// all scan threads and both paths — the true production DH cost. An
+    /// ON/OFF pair of these measures the kernel's real ratio; against
+    /// `scan_s × cores` it bounds DH's share of the scan.
+    pub batch_dh_s: f64,
     pub sapling: PoolCensusOut,
     pub orchard: PoolCensusOut,
 }
@@ -113,7 +125,7 @@ impl BenchSummary {
             )
         }
         format!(
-            "{{\"engine_build\":\"{}\",\"total_s\":{},\"fetch_s\":{},\"scan_s\":{},\"enhance_s\":{},\"persist_wait_s\":{},\"persist_overlap_s\":{},\"blocks\":{},\"sapling\":{},\"orchard\":{}}}",
+            "{{\"engine_build\":\"{}\",\"total_s\":{},\"fetch_s\":{},\"scan_s\":{},\"enhance_s\":{},\"persist_wait_s\":{},\"persist_overlap_s\":{},\"blocks\":{},\"batch_dh_calls\":{},\"batch_dh_lanes\":{},\"batch_dh_kernel_lanes\":{},\"batch_dh_s\":{},\"sapling\":{},\"orchard\":{}}}",
             self.engine_build,
             self.total_s,
             self.fetch_s,
@@ -122,6 +134,10 @@ impl BenchSummary {
             self.persist_wait_s,
             self.persist_overlap_s,
             self.blocks,
+            self.batch_dh_calls,
+            self.batch_dh_lanes,
+            self.batch_dh_kernel_lanes,
+            self.batch_dh_s,
             pool(&self.sapling),
             pool(&self.orchard),
         )
@@ -187,6 +203,10 @@ mod tests {
             persist_wait_s: 0.0,
             persist_overlap_s: 0.5,
             blocks: 100,
+            batch_dh_calls: 7,
+            batch_dh_lanes: 700,
+            batch_dh_kernel_lanes: 690,
+            batch_dh_s: 0.75,
             sapling: pool,
             orchard: pool,
         };
@@ -197,6 +217,7 @@ mod tests {
             "\"engine_build\":\"test-build\"",
             "\"total_s\":1.5",
             "\"blocks\":100",
+            "\"batch_dh_kernel_lanes\":690",
             "\"orchard\":{",
             "\"graftable_fraction\":0.5",
             "\"commitments\":42",
