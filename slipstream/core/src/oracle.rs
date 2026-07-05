@@ -1412,4 +1412,172 @@ mod tests {
             .expect("buffer count");
         assert_eq!(left, 0, "buffer rows must be cleaned after graft/finish");
     }
+
+    /// T10b step 2 — THE SPEND-FROM-GRAFTED-WITNESS PROOF. Restore a wallet with
+    /// graft ON (shard 0 installs the seeded server root, never built locally),
+    /// then SPEND the owned note that lives in built shard 1. Proving requires the
+    /// witness's cap-path — which crosses the grafted shard-0 root — to satisfy
+    /// the orchard Halo2 circuit against the wallet's own anchor. This is strictly
+    /// stronger than the plan's darkside shape: darkside verifies no proofs, while
+    /// here the circuit itself adjudicates the grafted tree. Sapling provers are
+    /// structurally required by the API but an orchard-only transaction never
+    /// invokes them (the stub panics if it ever were).
+    /// Heavy (76k-action scan + orchard proving key + proof): run explicitly with
+    /// `cargo test -p slipstream-core --release --lib -- --ignored graft_spend_proof`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "heavy: 76k-action scan + orchard proving; run explicitly (use --release)"]
+    async fn graft_spend_proof() {
+        use std::num::NonZeroU32;
+        use zcash_client_backend::data_api::WalletRead;
+        use zcash_client_backend::data_api::wallet::{
+            ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,
+            input_selection::GreedyInputSelector, propose_transfer,
+        };
+        use zcash_client_backend::fees::{
+            DustOutputPolicy, SplitPolicy, StandardFeeRule, zip317::MultiOutputChangeStrategy,
+        };
+        use zcash_client_backend::wallet::OvkPolicy;
+        use zcash_client_backend::zip321::{Payment, TransactionRequest};
+        use zcash_protocol::ShieldedProtocol;
+        use zcash_protocol::value::Zatoshis;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let don = dir.path().join("on");
+        std::fs::create_dir_all(&don).unwrap();
+        let (blocks, _ufvk_str, seed) = t10b_fixture();
+        let lens = vec![blocks.len()];
+        let on_verdicts = super::testkit::scan_synthetic_windows_write_behind_with(
+            &don,
+            blocks.clone(),
+            &lens,
+            true,
+            0,
+            t10b_prepare(seed, &blocks, true),
+        )
+        .await
+        .expect("graft-on scan");
+        assert_eq!(on_verdicts, ((0, 0), (1, 0)), "shard 0 must graft before the spend");
+
+        // Derive the SAME spending key the account was created from, and pay to
+        // the account's own default unified address.
+        let usk = zcash_keys::keys::UnifiedSpendingKey::from_seed(
+            &zcash_protocol::consensus::MAIN_NETWORK,
+            &seed,
+            zip32::AccountId::ZERO,
+        )
+        .expect("usk from seed");
+        let ufvk = usk.to_unified_full_viewing_key();
+        let (ua, _) = ufvk
+            .default_address(zcash_keys::keys::UnifiedAddressRequest::AllAvailableKeys)
+            .expect("default address");
+        let addr = zcash_address::ZcashAddress::try_from_encoded(
+            &ua.encode(&zcash_protocol::consensus::MAIN_NETWORK),
+        )
+        .expect("own address round-trips");
+        let request = TransactionRequest::new(vec![
+            Payment::new(addr, Some(Zatoshis::const_from_u64(100_000)), None, None, None, vec![])
+                .expect("payment"),
+        ])
+        .expect("transaction request");
+
+        let mut session = crate::wallet_session::WalletSession::open(
+            crate::Network::MainNetwork,
+            &don.join("data.db"),
+        )
+        .expect("open grafted wallet");
+        let db = session.db_mut();
+        let account_id = db.get_account_ids().expect("account ids")[0];
+
+        // Production's exact selector + change shapes (rust/src/lib.rs zip317_helper).
+        let change_strategy = MultiOutputChangeStrategy::new(
+            StandardFeeRule::Zip317,
+            None,
+            ShieldedProtocol::Orchard,
+            DustOutputPolicy::default(),
+            SplitPolicy::with_min_output_value(
+                std::num::NonZeroUsize::new(4).expect("nonzero"),
+                Zatoshis::const_from_u64(10_000_000),
+            ),
+        );
+        let input_selector = GreedyInputSelector::new();
+
+        let proposal = propose_transfer::<_, _, _, _, std::convert::Infallible>(
+            db,
+            &zcash_protocol::consensus::MAIN_NETWORK,
+            account_id,
+            &input_selector,
+            &change_strategy,
+            request,
+            ConfirmationsPolicy::new_symmetrical(NonZeroU32::MIN, true),
+            None,
+        )
+        .expect("propose_transfer must select the owned note from the grafted wallet");
+
+        // Sapling provers: structurally required, never invoked for orchard-only.
+        struct NoSapling;
+        impl sapling::prover::SpendProver for NoSapling {
+            type Proof = ();
+            fn prepare_circuit(
+                _: sapling::ProofGenerationKey,
+                _: sapling::Diversifier,
+                _: sapling::Rseed,
+                _: sapling::value::NoteValue,
+                _: jubjub::Fr,
+                _: sapling::value::ValueCommitTrapdoor,
+                _: bls12_381::Scalar,
+                _: sapling::MerklePath,
+            ) -> Option<sapling::circuit::Spend> {
+                unreachable!("orchard-only tx must not prepare sapling spends")
+            }
+            fn create_proof<R: rand::RngCore>(
+                &self,
+                _: sapling::circuit::Spend,
+                _: &mut R,
+            ) -> Self::Proof {
+                unreachable!("orchard-only tx must not prove sapling spends")
+            }
+            fn encode_proof(_: Self::Proof) -> sapling::bundle::GrothProofBytes {
+                unreachable!("orchard-only tx must not encode sapling spend proofs")
+            }
+        }
+        impl sapling::prover::OutputProver for NoSapling {
+            type Proof = ();
+            fn prepare_circuit(
+                _: &sapling::keys::EphemeralSecretKey,
+                _: sapling::PaymentAddress,
+                _: jubjub::Fr,
+                _: sapling::value::NoteValue,
+                _: sapling::value::ValueCommitTrapdoor,
+            ) -> sapling::circuit::Output {
+                unreachable!("orchard-only tx must not prepare sapling outputs")
+            }
+            fn create_proof<R: rand::RngCore>(
+                &self,
+                _: sapling::circuit::Output,
+                _: &mut R,
+            ) -> Self::Proof {
+                unreachable!("orchard-only tx must not prove sapling outputs")
+            }
+            fn encode_proof(_: Self::Proof) -> sapling::bundle::GrothProofBytes {
+                unreachable!("orchard-only tx must not encode sapling output proofs")
+            }
+        }
+
+        // THE THEOREM: creating the transaction runs the orchard prover, whose
+        // circuit must accept a merkle path (witness) whose cap-path crosses the
+        // GRAFTED shard-0 root to reach the wallet's anchor. A corrupted graft
+        // cannot pass this — the proof simply fails to construct.
+        let txids = create_proposed_transactions::<_, _, std::convert::Infallible, _, std::convert::Infallible, _>(
+            db,
+            &zcash_protocol::consensus::MAIN_NETWORK,
+            &NoSapling,
+            &NoSapling,
+            &SpendingKeys::from_unified_spending_key(usk),
+            OvkPolicy::Sender,
+            &proposal,
+            None,
+        )
+        .expect("orchard circuit must accept the spend witness over the grafted tree");
+        assert_eq!(txids.len(), 1, "exactly one spend transaction created");
+    }
 }

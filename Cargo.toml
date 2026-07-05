@@ -161,6 +161,10 @@ shardtree = "0.6"
 rayon = "1.7"
 zip32 = "0.2"
 zcash_note_encryption = "0.4.1"
+zcash_address = "0.12"
+# T10b spend-proof stub prover signatures only (already in the graph via sapling).
+jubjub = "0.10"
+bls12_381 = "0.8"
 
 # Phase B (GPU Sinsemilla offload) — used ONLY by slipstream-gpuhash, behind the
 # slipstream-core `gpu` feature. Never enters the default libzcashlc build. (Decision Log

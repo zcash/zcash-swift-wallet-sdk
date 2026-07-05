@@ -42,6 +42,9 @@ zip32 = { workspace = true }
 # v0.4 T10b (oracle testkit): real note encryption for the owned-note fixture in
 # the graft spend-proof — `Domain` trait for epk bytes; orchard supplies the rest.
 zcash_note_encryption = { workspace = true }
+# v0.4 T10b step 2: the pay-to-self ZcashAddress in the spend-proof's zip321
+# request (already in the workspace graph via the FFI — zero new compile weight).
+zcash_address = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
@@ -52,6 +55,10 @@ zcash_script = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# T10b spend-proof: the sapling stub prover's trait signatures name these types
+# (never invoked — orchard-only transactions); versions pinned by sapling 0.7.
+jubjub = { workspace = true }
+bls12_381 = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]` so the B2 transport
 # deadline tests auto-advance the mock clock instead of sleeping 30 s for real.
 # Test-only feature of an existing workspace dep (never enabled in the FFI build).

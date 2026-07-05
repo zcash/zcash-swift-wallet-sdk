@@ -4788,10 +4788,12 @@ dependencies = [
 name = "slipstream-core"
 version = "0.3.6"
 dependencies = [
+ "bls12_381",
  "ff",
  "futures-util",
  "group",
  "incrementalmerkletree",
+ "jubjub",
  "orchard",
  "pasta_curves",
  "prost",
@@ -4809,6 +4811,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tracing",
+ "zcash_address",
  "zcash_client_backend",
  "zcash_client_sqlite",
  "zcash_keys",

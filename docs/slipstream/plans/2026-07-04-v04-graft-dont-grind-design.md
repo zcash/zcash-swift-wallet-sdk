@@ -366,3 +366,20 @@ root-only leaf (build-then-prune ≡ graft, thesis confirmed); the honest signal
 is the new lane `graft_verdict_totals()`. Suite 254/0 post-change; clippy clean.
 Remaining: step 2 — the spend (USK + propose + orchard prover over the grafted
 wallet; witness cap-path crosses the grafted root inside the circuit).
+
+**T10b COMPLETE (2026-07-05) — THE SPEND-FROM-GRAFTED-WITNESS PROOF IS GREEN.**
+`graft_spend_proof` (oracle.rs, #[ignore], ~8 s release): graft-ON restore
+(verdicts ((0,0),(1,0)) asserted) → derive the USK → zip321 pay-to-self →
+`propose_transfer` selects the owned note from the grafted wallet →
+`create_proposed_transactions` runs the ORCHARD HALO2 CIRCUIT, which must accept
+a merkle witness whose cap-path crosses the grafted shard-0 root to reach the
+wallet's own anchor → Ok(1 txid). A corrupted graft cannot pass this — the proof
+fails to construct. Call shapes mirror production exactly (the FFI's
+zip317_helper selector/change strategy, ConfirmationsPolicy, SpendingKeys,
+OvkPolicy::Sender); sapling provers stubbed with panicking impls (orchard-only
+tx never invokes them — the panic proves it). Run both:
+`cargo test -p slipstream-core --release --lib -- --ignored graft_real_install graft_spend_proof`.
+**v0.4's correctness gate is CLOSED on the engine side.** Remaining before the
+defaults flip: [needs-user] P3 matrix spot rows (restore / import-during-restore /
+rewind, graft+batch ON, one device) + the formal beer medians; then defaults-ON,
+Plan C mini-spec (trigger fired), T14 close-out.
