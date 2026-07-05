@@ -91,7 +91,8 @@ fn chunk_indices(layer: u8, left: &[u8; 32], right: &[u8; 32]) -> [u16; CHUNKS] 
 
 /// Montgomery batch inversion in place. `xs` MUST contain no zeros (the caller
 /// poison-replaces zeros with ONE and marks those elements fallback).
-fn batch_invert(xs: &mut [pallas::Base]) {
+/// `pub(crate)`: shared with the v0.5 C1 batched-DH kernel (batch_ecdh.rs).
+pub(crate) fn batch_invert(xs: &mut [pallas::Base]) {
     let n = xs.len();
     if n == 0 {
         return;
