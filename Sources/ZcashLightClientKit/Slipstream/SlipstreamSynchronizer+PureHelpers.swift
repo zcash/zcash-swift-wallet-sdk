@@ -128,7 +128,7 @@ final class PendingStopSlot: @unchecked Sendable {
 // MARK: - withTaskTimeout helper (F1)
 
 /// Races `operation` against a nanosecond timer.  Returns the operation's value if it
-/// completes first; throws `_SummaryTimeoutError` when the timer wins.
+/// completes first; throws `SummaryTimeoutError` when the timer wins.
 ///
 /// Uses `Task.sleep(nanoseconds:)` for iOS 13+/macOS 12+ compatibility (the newer
 /// `Task.sleep(for: Duration)` requires iOS 16+/macOS 13+).
@@ -140,7 +140,7 @@ final class PendingStopSlot: @unchecked Sendable {
 /// `internal` (not `private`) so `@testable` test targets can exercise the timeout
 /// behaviour directly without requiring a full `SlipstreamSynchronizer` instance.
 /// (Moved here from SlipstreamSynchronizer.swift for file_length — B4 hardening.)
-struct _SummaryTimeoutError: Error {}
+struct SummaryTimeoutError: Error {}
 
 func withTaskTimeout<T: Sendable>(
     _ nanoseconds: UInt64,
@@ -150,11 +150,11 @@ func withTaskTimeout<T: Sendable>(
         group.addTask { try await operation() }
         group.addTask {
             try await Task.sleep(nanoseconds: nanoseconds)
-            throw _SummaryTimeoutError()
+            throw SummaryTimeoutError()
         }
         defer { group.cancelAll() }
         guard let result = try await group.next() else {
-            throw _SummaryTimeoutError()
+            throw SummaryTimeoutError()
         }
         return result
     }
