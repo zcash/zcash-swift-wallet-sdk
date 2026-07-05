@@ -7,6 +7,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 # Unreleased
 
 ## Added
+- **Slipstream v0.4 "graft, don't grind" — ON BY DEFAULT.** Fresh restores are 13–46% faster
+  across the device fleet (measured: M4 −46%, iPhone 16 Pro −29%, iPad 10th gen −13%,
+  iPad A10 −33%) via two engine levers, both default-on after passing the full gate suite
+  (semantic oracle, spend-from-grafted-witness circuit proof, mainnet root audit 19/19,
+  device scenario rows 100%):
+  - *Subtree-root grafting*: note-free completed shards install the server-provided subtree
+    root instead of being rebuilt locally (sampling audit verifies 1-in-16 against a local
+    build; any mismatch loses to the built shard).
+  - *Batch-affine Sinsemilla*: the shards that do build compute their tree combines
+    level-synchronously with shared Montgomery inversions (byte-identical output).
+  Kill switches: `ZCASH_GRAFT_SUBTREE=0`, `ZCASH_BATCH_COMBINE=0`.
 - **Slipstream engine API v2** (`docs/slipstream/plans/ENGINE_API_V2.md`) — the engine now exports
   the wallet semantics every host previously had to re-derive:
   - Snapshot fields `is_recovering` (engine-computed from suggested ranges vs the wallet's

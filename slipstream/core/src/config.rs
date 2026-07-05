@@ -91,8 +91,9 @@ pub struct EngineConfig {
 
     /// v0.4 Plan A (spec §4): graft server-provided subtree roots for note-free
     /// shards instead of computing them locally. Requires `sparse_persistence`.
-    /// Default off until the P3 device gates pass (spec §2 policy); kill switch
-    /// semantics match gpu_subtree — off = byte-for-byte today's path.
+    /// **Default ON since 2026-07-05** — P3 device gates passed 100% (4-device
+    /// fleet −13..−46%, T10b spend-proof green, mainnet audit 19/19). Kill
+    /// switch: `ZCASH_GRAFT_SUBTREE=0` — off = byte-for-byte the v0.3 path.
     pub graft_subtree: bool,
 
     /// v0.4 sampling verify (spec §4 trust): every Nth graftable shard is BUILT
@@ -106,7 +107,8 @@ pub struct EngineConfig {
     /// combines computed level-synchronously with shared Montgomery inversions
     /// (~12× the scalar combine in the probe), byte-identical output (KAT +
     /// lookup_build gate). Applies to every Orchard build incl. the segments
-    /// that survive grafting. Default off until the P3/P4 device A-B.
+    /// that survive grafting. **Default ON since 2026-07-05** (P3 gates passed;
+    /// +15.7% on note-bearing wallets). Kill switch: `ZCASH_BATCH_COMBINE=0`.
     pub batch_combine: bool,
 
     /// Persist-pipelining: max unpersisted units (in-flight + queued) before the scan
@@ -144,9 +146,9 @@ impl EngineConfig {
             write_behind: true,
             gpu_subtree: false,
             bench_json_path: None,
-            graft_subtree: false,
+            graft_subtree: true,
             graft_verify_sample: 16,
-            batch_combine: false,
+            batch_combine: true,
             persist_depth: 1,
         }
     }

@@ -1,5 +1,10 @@
 # Slipstream Scenario Matrix — every lifecycle × interruption × account-set combination
 
+**2026-07-05 · v0.4 P3 GATE: PASSED 100% (Lukas, device).** The graft+batch spot rows
+(restore / import-during-restore / rewind, levers ON) all green on device — the last gate
+before the v0.4 defaults flip. `graft_subtree` + `batch_combine` are DEFAULT ON as of
+engine 0.4.0 (`ENGINE_BUILD=2026-07-05.v04-defaults-on`); env vars are kill switches.
+
 **2026-07-03 · The finish-line document.** One row per reachable scenario; each row carries the
 expected behavior, the code mechanism that guarantees it, a coverage verdict, and the device
 step that turns it green. The goal: ✅ in every row before slipstream ships as the default engine.

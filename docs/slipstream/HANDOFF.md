@@ -103,6 +103,13 @@ emergency lever; it requires zero slipstream knowledge.
 
 ## 7 · Known-open items (none block RC1)
 
+> **2026-07-05 — v0.4 shipped to default.** Graft + batch-affine are DEFAULT ON
+> (engine 0.4.0, `2026-07-05.v04-defaults-on`); kill switches
+> `ZCASH_GRAFT_SUBTREE=0` / `ZCASH_BATCH_COMBINE=0`. Full gate record:
+> `plans/2026-07-04-v04-graft-dont-grind-design.md` addendum. v0.5 opener
+> approved: Plan C batched trial-decrypt (`plans/2026-07-05-plan-c-batched-decrypt-minispec.md`,
+> C0 gate passed — DH = 92.4% of compact decrypt).
+
 - The six-gate RC1 session (`BETA4_RC1_GATE.md`) — Lukas runs it on the installed build;
   remaining SCENARIO_MATRIX 🟡s green out during the soak.
 - **Fork FFI release `2.6.0-slipstream.1` (team/CI-owned)** — a `Build FFI XCFramework` run

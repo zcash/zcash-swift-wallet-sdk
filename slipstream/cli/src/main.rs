@@ -106,13 +106,15 @@ enum Cmd {
         wallet_dir: Option<std::path::PathBuf>,
         /// v0.4 Plan A graft lever: skip building note-free completed shards by
         /// installing server roots (the A/B switch for the bet legs).
-        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        /// DEFAULT ON since v0.4.0 (P3 gates passed) — pass `--graft false` for a baseline run.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         graft: bool,
         /// Banked B0 GPU offload lever (requires a `--features gpu` build).
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         gpu_subtree: bool,
         /// v0.4 Plan B lever: batch-affine Orchard combine (the SIMD bet leg).
-        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        /// DEFAULT ON since v0.4.0 — pass `--batch-combine false` for a baseline run.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         batch_combine: bool,
         /// Task 10 audit cadence: build-and-verify every Nth graftable shard
         /// against the server root (0 = off, 1 = audit EVERY graft — the
@@ -915,9 +917,11 @@ mod tests {
             "--birthday", "2500000",
         ])
         .expect("parses");
+        // v0.4.0: graft + batch_combine default ON — bench mirrors production;
+        // `--graft false --batch-combine false` is the baseline A/B form.
         assert!(matches!(
             cli.cmd,
-            Cmd::Bench { graft: false, gpu_subtree: false, keep: false, .. }
+            Cmd::Bench { graft: true, batch_combine: true, gpu_subtree: false, keep: false, .. }
         ));
     }
 

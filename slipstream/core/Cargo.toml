@@ -1,8 +1,8 @@
 [package]
 name = "slipstream-core"
-# Milestone versioning (see the slipstream repo README "Status"): v0.3 = the engine API v2
-# era — exported wallet semantics (recovery latch, blessed progress, views, unified summary).
-version = "0.3.6"
+# Milestone versioning (see the slipstream repo README "Status"): v0.4 = "graft, don't
+# grind" — server subtree-root grafting + batch-affine Sinsemilla, DEFAULT ON (P3 passed).
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"

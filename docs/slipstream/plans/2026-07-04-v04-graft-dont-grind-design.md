@@ -405,3 +405,14 @@ Fleet Δ final: **M4 −46% / A18 −29% / A14 −13% (adj) / A10 −33%** — t
 gain per device tracks its persist share, not its age. The A14 tier is Plan C's
 poster child: a 2–3× decrypt win moves it to ~55–65 s, more than v0.4 gave it.
 Mid-tier devices are where v0.5 pays most.
+
+
+**P3 GATE: PASSED 100% (Lukas, device, 2026-07-05) → DEFAULTS FLIPPED.**
+`graft_subtree` + `batch_combine` are **DEFAULT ON** (config.rs; CLI bench
+mirrors; env vars demoted to kill switches `=0`). Crates bumped **0.4.0**;
+`ENGINE_BUILD=2026-07-05.v04-defaults-on`. Every v0.4 gate is now green:
+byte/semantic oracles, T10b circuit spend-proof, mainnet root audit 19/19,
+production verdicts 8/8 across a 4-device fleet, scenario spot rows 100%.
+Remaining ceremony: [needs-user] formal beer medians (median-of-3 on THIS
+build, Mac, his wallet, vs the locked 28.9 s denominator) → engine re-extract
++ tag v0.4.0 → victory lap.
