@@ -1,6 +1,8 @@
 # Plan C mini-spec — the batched trial-decrypt kernel (parked L4a, revived)
 
-> **Status:** AWAITING GO/NO-GO (Lukas). Written per v0.4 plan Task 14 Step 1:
+> **Status:** **GO (Lukas, 2026-07-05) — as v0.5's opening lever.** C0 immediately;
+> C1 opens the v0.5 branch after the v0.4 close-out.
+> Original gate line follows: Written per v0.4 plan Task 14 Step 1:
 > *"if scan/decrypt now > 55% of wall on either device, write the Plan C
 > mini-spec and STOP for approval."* The trigger fired on every device measured.
 >
@@ -104,7 +106,11 @@ The DH happens INSIDE `zcash_note_encryption::batch` (invoked by upstream's
 
 ## 6 · Phases + gates (each behind its own switch, v0.4 discipline)
 
-- **C0 — measure first (½ day):** in-crate `decrypt_bench` probe (the
+- **C0 — measure first (½ day): ✅ DONE 2026-07-05, GATE PASSED — DH share 92.4%**
+  (M4 release, 10k real-epk actions × 2 ivks: full upstream 108.5 µs/action,
+  DH-only 100.2 µs/action; probe = `batch_ecdh.rs::decrypt_bench`). The kernel
+  target is effectively the whole scan cost; §7's projections are conservative.
+  Original plan text: in-crate `decrypt_bench` probe (the
   `combine_bench` pattern): 10k fabricated foreign actions (the T10b testkit
   fabricator) × 2 ivks; measure (i) full upstream batch decrypt, (ii) DH-only
   loop → the true DH share + µs/action on M4. **Gate: DH share ≥ 60 % or Plan C

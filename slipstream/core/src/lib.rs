@@ -3,6 +3,9 @@
 //! docs/slipstream/ROADMAP.md for the build plan.
 
 pub mod anchor;
+// v0.5 Plan C (C1 home; today only the C0 probe — test-gated, no prod code).
+#[cfg(test)]
+mod batch_ecdh;
 pub(crate) mod batch_sinsemilla;
 pub mod block_source;
 pub mod census;
