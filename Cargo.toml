@@ -123,7 +123,17 @@ crate-type = ["staticlib"]
 lto = true
 
 [workspace]
-members = ["slipstream/core", "slipstream/cli", "slipstream/protogen", "slipstream/gpuhash", "slipstream/bench-ios/probe"]
+members = [
+    "slipstream/core",
+    "slipstream/cli",
+    "slipstream/protogen",
+    "slipstream/gpuhash",
+    "slipstream/bench-ios/probe",
+    # v0.5 C1 vendored forks (also [patch.crates-io]-ed below) — members so
+    # their in-crate KATs run with `cargo test -p orchard batch_dh`.
+    "slipstream/vendor/zcash_note_encryption",
+    "slipstream/vendor/orchard",
+]
 resolver = "3"
 
 [workspace.dependencies]
@@ -177,3 +187,12 @@ sinsemilla = "0.1"
 group = "0.13"
 pasta_curves = "0.5"
 ff = "0.13"
+
+# ── v0.5 Plan C (C1 fork wiring) — vendored forks, [patch]-ed workspace-wide ──
+# zcash_note_encryption: + BatchDomain::batch_ka_agree_dec seam (default = the
+# old per-item path, byte-for-byte). orchard: + the lockstep-affine same-scalar
+# kernel override behind a runtime toggle (default OFF). Upstreaming these is
+# the follow-up (mini-spec §5 option b) once the device gate passes.
+[patch.crates-io]
+zcash_note_encryption = { path = "slipstream/vendor/zcash_note_encryption" }
+orchard = { path = "slipstream/vendor/orchard" }

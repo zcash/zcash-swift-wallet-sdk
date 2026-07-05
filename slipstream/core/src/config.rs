@@ -111,6 +111,13 @@ pub struct EngineConfig {
     /// +15.7% on note-bearing wallets). Kill switch: `ZCASH_BATCH_COMBINE=0`.
     pub batch_combine: bool,
 
+    /// v0.5 Plan C (C1): batched same-scalar trial-decrypt DH — the forked
+    /// orchard's lockstep-affine kernel (one shared inversion per ladder step
+    /// across the whole batch; ~2.1× the per-item prepared path, byte-identical,
+    /// KAT-gated in the fork). Default OFF until the C3 device gates; kill/dev
+    /// switch: `ZCASH_BATCH_DECRYPT`. Process-global toggle set at pass start.
+    pub batch_decrypt: bool,
+
     /// Persist-pipelining: max unpersisted units (in-flight + queued) before the scan
     /// side blocks. `1` = legacy strict depth-1 backpressure (byte-for-byte identical).
     /// Higher lets scan run further ahead so more persist hides behind scan (~22%
@@ -149,6 +156,7 @@ impl EngineConfig {
             graft_subtree: true,
             graft_verify_sample: 16,
             batch_combine: true,
+            batch_decrypt: false,
             persist_depth: 1,
         }
     }

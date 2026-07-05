@@ -315,6 +315,84 @@ mod tests {
         assert!(out[1].is_some(), "live lanes are unaffected by dead neighbors");
     }
 
+    /// C1 wiring A/B: FULL upstream batch decryption with the forked kernel
+    /// ENABLED vs DISABLED must be identical — hits, misses, ivk indices, and
+    /// the REAL owned note found either way. (The toggle is process-global;
+    /// concurrent tests taking the kernel path stay sound — it is KAT-gated
+    /// byte-identical.)
+    #[test]
+    fn wired_batch_decrypt_matches_per_item() {
+        use orchard::keys::{PreparedIncomingViewingKey, Scope};
+        use orchard::note_encryption::{CompactAction, OrchardDomain};
+        use zcash_note_encryption::EphemeralKeyBytes;
+
+        let usk = zcash_keys::keys::UnifiedSpendingKey::from_seed(
+            &zcash_protocol::consensus::MAIN_NETWORK,
+            &[7u8; 32],
+            zip32::AccountId::ZERO,
+        )
+        .expect("usk");
+        let ufvk = usk.to_unified_full_viewing_key();
+        let fvk = ufvk.orchard().expect("orchard fvk");
+        let ivks: Vec<PreparedIncomingViewingKey> = [Scope::External, Scope::Internal]
+            .into_iter()
+            .map(|s| PreparedIncomingViewingKey::new(&fvk.to_ivk(s)))
+            .collect();
+
+        // 500 foreign real-epk actions + ONE real owned action in the middle.
+        let owned = crate::oracle::testkit::owned_orchard_action(&ufvk, 250_000, 9);
+        let mut actions: Vec<CompactAction> = Vec::new();
+        for i in 0..500u64 {
+            if i == 250 {
+                actions.push(CompactAction::from_parts(
+                    Option::from(orchard::note::Nullifier::from_bytes(&owned.nullifier))
+                        .expect("owned nf"),
+                    Option::from(orchard::note::ExtractedNoteCommitment::from_bytes(&owned.cmx))
+                        .expect("owned cmx"),
+                    EphemeralKeyBytes(owned.ephemeral_key),
+                    owned.ciphertext.as_slice().try_into().expect("52 bytes"),
+                ));
+                continue;
+            }
+            let epk = pallas::Point::generator() * pallas::Scalar::from(50_000 + i);
+            let mut nf = [0u8; 32];
+            nf[..8].copy_from_slice(&(3_000_000u64 + i).to_le_bytes());
+            let mut cmx = [0u8; 32];
+            cmx[..8].copy_from_slice(&(4_000_000u64 + i).to_le_bytes());
+            actions.push(CompactAction::from_parts(
+                Option::from(orchard::note::Nullifier::from_bytes(&nf)).expect("nf"),
+                Option::from(orchard::note::ExtractedNoteCommitment::from_bytes(&cmx))
+                    .expect("cmx"),
+                EphemeralKeyBytes(epk.to_bytes()),
+                [0xC7u8; 52],
+            ));
+        }
+        let items: Vec<(OrchardDomain, CompactAction)> = actions
+            .iter()
+            .map(|a| (OrchardDomain::for_compact_action(a), a.clone()))
+            .collect();
+
+        orchard::batch_dh::set_enabled(false);
+        let off = zcash_note_encryption::batch::try_compact_note_decryption(&ivks, &items);
+        orchard::batch_dh::set_enabled(true);
+        let on = zcash_note_encryption::batch::try_compact_note_decryption(&ivks, &items);
+        orchard::batch_dh::set_enabled(false); // restore the default
+
+        assert_eq!(off.len(), on.len());
+        for (i, (a, b)) in off.iter().zip(&on).enumerate() {
+            match (a, b) {
+                (None, None) => {}
+                (Some(((na, _), ia)), Some(((nb, _), ib))) => {
+                    assert_eq!(ia, ib, "ivk index differs at {i}");
+                    assert_eq!(na.value(), nb.value(), "note value differs at {i}");
+                }
+                _ => panic!("hit/miss pattern differs at action {i}"),
+            }
+        }
+        assert!(off[250].is_some(), "the owned action must decrypt (kernel off)");
+        assert!(on[250].is_some(), "the owned action must decrypt (kernel on)");
+    }
+
     /// C1 kernel bench: the lockstep kernel vs the exact per-mult work the
     /// production baseline pays (prepared-key `ka_agree_dec`).
     /// `cargo test -p slipstream-core --release --lib -- --ignored dh_kernel_bench --nocapture`

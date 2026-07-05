@@ -4641,10 +4641,16 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         cfg.batch_combine = std::env::var("ZCASH_BATCH_COMBINE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(cfg.batch_combine);
+        // v0.5 C1 (#1755): batched same-scalar trial-decrypt DH (forked orchard
+        // lockstep kernel). Default OFF until the C3 device gates.
+        cfg.batch_decrypt = std::env::var("ZCASH_BATCH_DECRYPT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(cfg.batch_decrypt);
         tracing::info!(
             graft_subtree = cfg.graft_subtree,
             batch_combine = cfg.batch_combine,
-            "v0.4 graft/batch config"
+            batch_decrypt = cfg.batch_decrypt,
+            "v0.4/v0.5 lever config"
         );
 
         // ── Build the session config + reporting sink, then spawn the engine session ──────

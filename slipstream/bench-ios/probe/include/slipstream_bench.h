@@ -15,7 +15,8 @@
 // Run one fresh-restore bench pass; writes the engine BenchSummary JSON
 // (NUL-terminated) into out_json. Blocking — call off the main thread.
 // wallet_dir must NOT already contain a data.db (pass a new subdir per run).
-// graft_subtree / batch_combine are the v0.4 levers (Plan A / Plan B).
+// graft_subtree / batch_combine are the v0.4 levers (Plan A / Plan B);
+// batch_decrypt is the v0.5 C1 lever (batched same-scalar trial-decrypt DH).
 int32_t slipstream_bench_run(const char *server,
                              const char *ufvk,
                              uint32_t birthday,
@@ -23,6 +24,7 @@ int32_t slipstream_bench_run(const char *server,
                              bool gpu_subtree,
                              bool graft_subtree,
                              bool batch_combine,
+                             bool batch_decrypt,
                              char *out_json,
                              size_t cap);
 

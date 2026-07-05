@@ -55,6 +55,8 @@ fn cstr<'a>(p: *const c_char) -> Option<&'a str> {
 ///   of rebuilding note-free shards locally
 /// * `batch_combine` — v0.4 Plan B lever: batch-affine Sinsemilla for the
 ///   shards that do build
+/// * `batch_decrypt` — v0.5 C1 lever: batched same-scalar trial-decrypt DH
+///   (forked orchard lockstep kernel)
 /// * `out_json`/`cap` — caller buffer for the NUL-terminated JSON (64 KiB is plenty)
 ///
 /// Returns BENCH_OK or a BENCH_ERR_* code.
@@ -71,6 +73,7 @@ pub unsafe extern "C" fn slipstream_bench_run(
     gpu_subtree: bool,
     graft_subtree: bool,
     batch_combine: bool,
+    batch_decrypt: bool,
     out_json: *mut c_char,
     cap: usize,
 ) -> i32 {
@@ -113,6 +116,7 @@ pub unsafe extern "C" fn slipstream_bench_run(
     cfg.gpu_subtree = gpu_subtree;
     cfg.graft_subtree = graft_subtree;
     cfg.batch_combine = batch_combine;
+    cfg.batch_decrypt = batch_decrypt;
     cfg.bench_json_path = Some(json_path.clone());
 
     let Ok(rt) = tokio::runtime::Runtime::new() else {
@@ -205,6 +209,7 @@ mod tests {
                 ufvk.as_ptr(),
                 2_500_000,
                 dir.as_ptr(),
+                false,
                 false,
                 false,
                 false,

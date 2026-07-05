@@ -23,7 +23,7 @@ use crate::{
 /// tag in the log doesn't match HEAD's value, the device is running a stale
 /// XCFramework (the three-layer gotcha, consuming side). Probe a built slice with:
 /// `strings <slice>/libzcashlc.framework/libzcashlc | grep <tag>`.
-pub const ENGINE_BUILD: &str = "2026-07-05.v04-defaults-on";
+pub const ENGINE_BUILD: &str = "2026-07-05.v05-c1-wiring";
 
 /// Current wall-clock time as a `YYYY-MM-DD HH:MM:SSZ` UTC string.
 ///
@@ -167,9 +167,13 @@ pub async fn sync_once(
         gpu_subtree = config.gpu_subtree,
         graft_subtree = config.graft_subtree,
         batch_combine = config.batch_combine,
+        batch_decrypt = config.batch_decrypt,
         started_at_utc = %wall_clock_utc(),
         "engine pass starting"
     );
+    // v0.5 C1: the forked orchard's batched-DH kernel is a process-global
+    // toggle (the swap point is a trait impl with no config channel).
+    orchard::batch_dh::set_enabled(config.batch_decrypt);
 
     let mut session = WalletSession::open(config.network, &config.wallet_db_path)?;
     let mut client = connect_via(&config.endpoint, tor, ConnPurpose::MetadataUnique).await?;

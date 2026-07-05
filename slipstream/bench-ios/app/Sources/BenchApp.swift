@@ -15,8 +15,9 @@ struct BenchView: View {
     @State private var server = "https://zec.rocks:443"
     @State private var ufvk = ""
     @State private var birthday = "3105000"
-    @State private var graft = false
-    @State private var batch = false
+    @State private var graft = true
+    @State private var batch = true
+    @State private var batchDecrypt = false
     @State private var running = false
     @State private var verdict: String?
     @State private var rows: [(String, String)] = []
@@ -35,9 +36,12 @@ struct BenchView: View {
                     TextField("Birthday height", text: $birthday)
                         .keyboardType(.numberPad)
                 }
-                Section("v0.4 levers") {
+                Section("v0.4 levers (ON by default since 0.4.0)") {
                     Toggle("Graft subtree roots (Plan A)", isOn: $graft)
                     Toggle("Batch-affine Sinsemilla (Plan B)", isOn: $batch)
+                }
+                Section("v0.5 levers") {
+                    Toggle("Batched trial-decrypt DH (C1)", isOn: $batchDecrypt)
                 }
                 Section {
                     Button {
@@ -79,17 +83,18 @@ struct BenchView: View {
         let ufvk = ufvk
         let graft = graft
         let batch = batch
+        let batchDecrypt = batchDecrypt
         Task.detached(priority: .userInitiated) {
             // Fresh subdir per run — the probe refuses a dirty wallet dir.
             let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("bench-\(UUID().uuidString.prefix(8))", isDirectory: true)
             var buf = [CChar](repeating: 0, count: 64 * 1024)
-            let rc = slipstream_bench_run(server, ufvk, height, dir.path, false, graft, batch, &buf, buf.count)
+            let rc = slipstream_bench_run(server, ufvk, height, dir.path, false, graft, batch, batchDecrypt, &buf, buf.count)
             let json = rc == 0 ? String(cString: buf) : nil
             await MainActor.run {
                 running = false
                 if let json {
-                    verdict = "OK (graft=\(graft ? "on" : "off") batch=\(batch ? "on" : "off")) — json also at \(dir.path)/bench.json"
+                    verdict = "OK (graft=\(graft ? "on" : "off") batch=\(batch ? "on" : "off") decrypt=\(batchDecrypt ? "on" : "off")) — json also at \(dir.path)/bench.json"
                     rows = Self.flatten(json: json)
                 } else {
                     verdict = "failed: probe rc \(rc) (see Xcode console for engine logs)"
