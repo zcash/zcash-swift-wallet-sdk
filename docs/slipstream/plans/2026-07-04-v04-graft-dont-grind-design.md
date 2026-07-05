@@ -383,3 +383,14 @@ tx never invokes them — the panic proves it). Run both:
 defaults flip: [needs-user] P3 matrix spot rows (restore / import-during-restore /
 rewind, graft+batch ON, one device) + the formal beer medians; then defaults-ON,
 Plan C mini-spec (trigger fired), T14 close-out.
+
+**Fourth device row (newer iPad, ~A14-class, 4 GB, 2026-07-05):** production Zodl
+flag-on restore **117.0 s** (fetch 9.5 / scan 110.2 / persist_wait 28.8, 286,502
+blocks, bound="scan" 94%). Fleet complete — the silicon ladder: **A10 354 s →
+A14 117 s → A18 55 s → M4 20 s** (≈halving per ~2 chip generations, same engine,
+same levers, zero per-device tuning). Census + 8 grafts / 0 fallbacks identical
+on all four. Memory governor's second field sighting, opposite direction: 4 GB
+runs full 10k-block sub-batches (2 GB ran 2.4–7.6k) — scales up as confidently
+as down. Fetch healthy here (9.5 s) ⇒ the A10's 216 s is that device's radio/TLS
+tier, not systemic. Scan share 94–97% across all four devices — the Plan C /
+v0.5 target band.
