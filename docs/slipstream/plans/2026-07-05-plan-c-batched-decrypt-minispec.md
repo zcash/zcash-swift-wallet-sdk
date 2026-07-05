@@ -171,6 +171,35 @@ The DH happens INSIDE `zcash_note_encryption::batch` (invoked by upstream's
   upstream-PR-able. Honest ceiling ~1.6–1.8× on DH; transfers to wall only
   where DH saturates cores (iOS tier, per the device reading above — gate
   C2 on Lukas's `batch_dh_s` rows).
+
+  **❌❌ PLAN C CLOSED (2026-07-05 late night — Lukas's A18 firestats pair
+  killed C2's premise too).** The device rows (same wallet, 297 k blocks,
+  853 k orchard actions → 1,706,932 lanes = every action × 2 keys):
+  - **OFF** (thermally throttled run — enhance 20.8 s and scan 114.9 s vs
+    the 62.2 s healthy baseline an hour earlier): `batch_dh_s = 155.3 s`,
+    91.0 µs/lane. DH is REAL on the phone — biggest compute block in the
+    pass.
+  - **ON** (healthy state, scan 59.7 s): `batch_dh_s = 227.1 s`,
+    133.0 µs/lane, kernel fired on 100 % of lanes. Kernel ≥1.46× slower
+    per lane than the per-item path measured in a WORSE thermal state —
+    same-state realistically ~2×, worse than the Mac's 1.4× (E-cores have
+    less cache/bandwidth for the allocation-heavy kernel).
+  - **The C2 killer — the wall-transfer factor is ZERO on A18 too:** the
+    same-state comparison (healthy OFF scan 60.5 s on the per-item path vs
+    healthy ON scan 59.7 s carrying ~+140 EXTRA core-s of kernel DH) shows
+    the scan wall does not move. DH runs in slack on BOTH tiers; any
+    per-mult speedup (C1's or C2's) buys ~0 wall seconds fleet-wide.
+  **Verdict: Plan C is closed under its own C0-style discipline** ("killed
+  cheaply" — three device runs + the in-pass timer did it). The kernel,
+  KATs, counters and timer stay in-tree as instrument + record;
+  `batch_decrypt` stays default OFF permanently. **What the instruments
+  revealed for v0.5's re-aim:** the scan wall (60 s A18 / 29 s M4,
+  bound="scan" always) is set by the scan lane's SERIAL critical path
+  (per-chunk decode → tree feed → stash chaining), not by decrypt compute
+  — profile THAT (per-chunk stage timers, the census pattern again) and
+  attack the top item. Also observed on device, unexplained: `enhance_s`
+  swings 1.1 → 11.0 → 20.8 s across runs (bigger than fetch on the phone)
+  — worth a look in the same instrumentation pass.
 - **C2 — endo split:** stacked, own toggle, same KAT. Gate: measured stack gain.
 - **C3 — fleet A/B + defaults:** the same four-device sweep v0.4 just ran;
   defaults per device class on the same ≥ +10 % rule.
