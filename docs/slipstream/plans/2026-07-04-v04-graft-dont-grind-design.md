@@ -394,3 +394,14 @@ runs full 10k-block sub-batches (2 GB ran 2.4–7.6k) — scales up as confident
 as down. Fetch healthy here (9.5 s) ⇒ the A10's 216 s is that device's radio/TLS
 tier, not systemic. Scan share 94–97% across all four devices — the Plan C /
 v0.5 target band.
+
+**Fourth row CORRECTED by Lukas's baseline (iPad 10th gen, A14): 2:05 previous
+best, ~2:13–2:15 chain-adjusted (+20k blocks ≈ +8 s at 2.4k blocks/s) → 117 s =
+−13%, the SMALLEST of the fleet — and the most instructive.** Decomposition: the
+absolute persist win matches the iPhone's (~18–23 s both), but A14 trial-decrypt
+is ~1.9× slower than A18, so the same win dilutes into a scan-dominated wall
+(~80 s of 117 = pure decrypt; a PERFECT persist lane would only reach ~90 s).
+Fleet Δ final: **M4 −46% / A18 −29% / A14 −13% (adj) / A10 −33%** — the v0.4
+gain per device tracks its persist share, not its age. The A14 tier is Plan C's
+poster child: a 2–3× decrypt win moves it to ~55–65 s, more than v0.4 gave it.
+Mid-tier devices are where v0.5 pays most.
