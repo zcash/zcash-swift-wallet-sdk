@@ -51,14 +51,27 @@ pub struct ChunkPermit {
     _permits: tokio::sync::OwnedSemaphorePermit,
 }
 
+/// v0.5 pacer fix: the boundary-treestate fetch spawned WHEN THE CHUNK IS
+/// EMITTED, so its RTT overlaps queue wait + scan + submit instead of racing
+/// one scan call (the P1 split measured that overhang at 62 % of the Mac
+/// scan wall on a slow-treestate day).
+pub type BoundaryHandle =
+    tokio::task::JoinHandle<Result<zcash_client_backend::proto::service::TreeState, SlipstreamError>>;
+
+/// Injected at queue construction (scheduler): given a chunk's end height,
+/// spawn its boundary treestate fetch. `None` (tests, darkside) keeps the
+/// scan-side late-spawn fallback.
+pub type BoundaryFetcher = Arc<dyn Fn(u64) -> BoundaryHandle + Send + Sync>;
+
 pub struct ChunkQueueSender {
-    tx: mpsc::UnboundedSender<(Chunk, ChunkPermit)>,
+    tx: mpsc::UnboundedSender<(Chunk, ChunkPermit, Option<BoundaryHandle>)>,
     budget: Arc<Semaphore>,
     budget_bytes: usize,
+    boundary_fetcher: Option<BoundaryFetcher>,
 }
 
 pub struct ChunkQueueReceiver {
-    rx: mpsc::UnboundedReceiver<(Chunk, ChunkPermit)>,
+    rx: mpsc::UnboundedReceiver<(Chunk, ChunkPermit, Option<BoundaryHandle>)>,
 }
 
 /// `budget_bytes` bounds the estimated bytes in flight (queued + being
@@ -68,14 +81,32 @@ pub fn chunk_queue(budget_bytes: usize) -> (ChunkQueueSender, ChunkQueueReceiver
     let (tx, rx) = mpsc::unbounded_channel();
     (
         // A zero budget degenerates to 1 byte (fully serial) instead of blocking forever.
-        ChunkQueueSender { tx, budget: Arc::new(Semaphore::new(budget_bytes.max(1))), budget_bytes: budget_bytes.max(1) },
+        ChunkQueueSender {
+            tx,
+            budget: Arc::new(Semaphore::new(budget_bytes.max(1))),
+            budget_bytes: budget_bytes.max(1),
+            boundary_fetcher: None,
+        },
         ChunkQueueReceiver { rx },
     )
 }
 
 impl ChunkQueueSender {
+    /// Install the boundary-treestate fetcher (scheduler, production path).
+    pub fn set_boundary_fetcher(&mut self, f: BoundaryFetcher) {
+        self.boundary_fetcher = Some(f);
+    }
+
     /// Waits until the byte budget admits the chunk, then enqueues it.
     pub async fn send(&self, chunk: Chunk) -> Result<(), SlipstreamError> {
+        // v0.5: fire the boundary fetch BEFORE the budget wait — treestates
+        // are immutable historical data, and the earlier the RTT starts the
+        // more scan it hides under. At most (queued chunks + 1) fetches are
+        // ever in flight, so a slow server sees a trickle, never a burst.
+        let boundary = match (&self.boundary_fetcher, chunk.end_height()) {
+            (Some(f), Some(end)) => Some(f(end)),
+            _ => None,
+        };
         // Saturate: budgets beyond u32::MAX simply cap the per-chunk acquisition;
         // the semaphore itself holds the full usize budget, so backpressure stays correct.
         let need = u32::try_from(chunk.estimated_bytes.min(self.budget_bytes).max(1))
@@ -87,7 +118,7 @@ impl ChunkQueueSender {
             .await
             .map_err(|_| SlipstreamError::Stopped)?;
         self.tx
-            .send((chunk, ChunkPermit { _permits: permits }))
+            .send((chunk, ChunkPermit { _permits: permits }, boundary))
             .map_err(|_| SlipstreamError::Stopped)?;
         Ok(())
     }
@@ -95,7 +126,7 @@ impl ChunkQueueSender {
 
 impl ChunkQueueReceiver {
     /// `None` when all senders are dropped (fetch finished or aborted).
-    pub async fn recv(&mut self) -> Option<(Chunk, ChunkPermit)> {
+    pub async fn recv(&mut self) -> Option<(Chunk, ChunkPermit, Option<BoundaryHandle>)> {
         self.rx.recv().await
     }
 }
@@ -148,7 +179,7 @@ mod tests {
         }
 
         // Consume + drop the first chunk's permit -> budget freed.
-        let (got, permit) = rx.recv().await.expect("first chunk");
+        let (got, permit, _boundary) = rx.recv().await.expect("first chunk");
         assert_eq!(got.index, 0);
         drop(permit);
 

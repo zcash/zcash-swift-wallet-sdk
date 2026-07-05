@@ -4,6 +4,14 @@
 //! chunk scans (spike T2.3 outcome: ChainState must come from the server;
 //! prefetch makes its latency invisible).
 //!
+//! v0.5 REVISION of the T2.3 premise (2026-07-06 pacer plan): the P1 split
+//! measured the prefetch overhang at 62 % of the Mac scan wall — the RTT was
+//! NOT invisible, and the ChainState does NOT have to come from the server:
+//! `local_treestate` seeds one ChainState per range and absorbs the scanned
+//! blocks' own commitments into running frontiers (`treestate.rs`), serving
+//! every later boundary locally; the sampled server fetch survives as an
+//! OFF-path audit.
+//!
 //! T5.2 — Adaptive sub-batching (opt-in as of T5.5): pass
 //! `batch_target_ms = Some(ms)` to split each chunk into time-targeted
 //! sub-batches (~ms each).  Default `None` = one scan call per chunk
@@ -14,11 +22,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tracing::{debug, info, warn};
-use zcash_client_backend::data_api::chain::{error::Error as ChainError, scan_cached_blocks};
-use zcash_protocol::consensus::BlockHeight;
-
-#[cfg(any(test, feature = "darkside"))]
+use zcash_client_backend::data_api::chain::{ChainState, error::Error as ChainError, scan_cached_blocks};
 use zcash_client_backend::proto::service::TreeState;
+use zcash_primitives::block::BlockHash;
+use zcash_protocol::consensus::BlockHeight;
 
 use crate::{
     block_source::MemBlockSource,
@@ -31,6 +38,51 @@ use crate::{
     grpc::{self, LwdClient},
     wallet_session::WalletSession,
 };
+
+// ── v0.5 local treestate audit ─────────────────────────────────────────────────
+
+/// One in-flight boundary audit: the spawned server fetch plus the locally
+/// derived state it must match.
+struct AuditEntry {
+    height: u64,
+    fetch: tokio::task::JoinHandle<Result<TreeState, SlipstreamError>>,
+    expected: ChainState,
+}
+
+/// Settle boundary audits. With `force_all` every outstanding fetch is
+/// awaited (range end — the tail costs at most ~one RTT); otherwise only
+/// already-finished handles are consumed, so the audit NEVER blocks the
+/// lane. A content mismatch is fatal and trips the process fuse (the
+/// revived pass runs the server path); audit-fetch transport failures only
+/// warn — the audit is defense in depth, not a correctness dependency (see
+/// treestate.rs for the other two nets).
+async fn drain_audits(audits: &mut Vec<AuditEntry>, force_all: bool) -> Result<(), SlipstreamError> {
+    let mut remaining = Vec::with_capacity(audits.len());
+    for entry in audits.drain(..) {
+        if !force_all && !entry.fetch.is_finished() {
+            remaining.push(entry);
+            continue;
+        }
+        let AuditEntry { height, fetch, expected } = entry;
+        match fetch.await {
+            Err(join_err) => warn!(height, %join_err, "treestate audit task failed — skipped"),
+            Ok(Err(fetch_err)) => warn!(height, %fetch_err, "treestate audit fetch failed — skipped"),
+            Ok(Ok(server)) => match server.to_chain_state() {
+                Err(e) => warn!(height, %e, "treestate audit parse failed — skipped"),
+                Ok(server_state) => {
+                    if server_state != expected {
+                        crate::treestate::trip_fuse();
+                        return Err(SlipstreamError::Wallet(format!(
+                            "local treestate MISMATCH vs server at height {height} — pass aborted, fuse tripped (server path on revival)"
+                        )));
+                    }
+                }
+            },
+        }
+    }
+    *audits = remaining;
+    Ok(())
+}
 
 // ── Adaptive controller constants ──────────────────────────────────────────────
 
@@ -118,6 +170,24 @@ pub struct ScanStats {
     /// (Σ persist_busy, measured inside the persist closures). The overlap won
     /// is `persist_busy - persist_wait` (clamped at 0).
     pub persist_busy: std::time::Duration,
+    /// v0.5 pacer split (2026-07-06 plan §3): the scan lane's wall decomposed.
+    /// `scan_wall ≈ recv_wait + scan_call + prefetch_wait + interleave_drain +
+    /// final_drain + persist_wait + residue` — the residue (computed at read
+    /// time) is bookkeeping between the timed spans.
+    /// Σ awaiting rx.recv() — fetch/split starvation.
+    pub recv_wait: std::time::Duration,
+    /// Σ inside scan_cached_blocks (upstream scan; decrypt rides rayon within).
+    pub scan_call: std::time::Duration,
+    /// Σ awaiting the treestate prefetch BEYOND the scan it raced (RTT overhang).
+    pub prefetch_wait: std::time::Duration,
+    /// Σ full persist-lane drains before interleaved enhancement (counted as
+    /// scan time by the stage split — the pre-registered suspect #1).
+    pub interleave_drain: std::time::Duration,
+    /// The end-of-range persist drain barrier (also inside the scan stage).
+    pub final_drain: std::time::Duration,
+    /// v0.5 local treestate: Σ absorbing scanned commitments into the running
+    /// frontiers (the lever's own cost — replaces prefetch_wait when on).
+    pub treestate_absorb: std::time::Duration,
     /// v0.4 census (spec §3.2): per-pool shard-touch vs owned-note-shard counts
     /// for this range (copied out of whichever SparseTreeState ran the builds —
     /// the persist lane's on the write-behind path, the scan task's inline).
@@ -223,12 +293,16 @@ pub async fn scan_chunks(
             // marked unscanned — re-suggested next pass).
             warn!("write-behind: dropping an unsubmitted pending unit on error exit");
         }
+        // v0.5 pacer: the end-of-range barrier is inside the scan stage too.
+        let final_drain_started = Instant::now();
         let drain_result = wb.lane.drain().await;
+        let final_drain_elapsed = final_drain_started.elapsed();
         return match (result, drain_result) {
             (Ok(mut stats), Ok(())) => {
                 // v0.4 Plan A: build the range-end/tip shard the accumulators still
                 // hold (success path only — on errors the buffer resumes the shard).
                 tokio::task::block_in_place(|| wb.lane.finish_graft_blocking())?;
+                stats.final_drain = final_drain_elapsed;
                 stats.persist_wait = wb.lane.total_wait();
                 stats.persist_busy = wb.lane.total_busy();
                 // v0.4 census: the lane's sparse state ran the builds on this path.
@@ -288,13 +362,36 @@ async fn scan_chunks_inner(
     let mut next_state =
         grpc::retry_get_tree_state(&endpoint, range_start - 1, "initial seed", tor).await?;
 
+    // ── v0.5 local treestate (2026-07-06 pacer plan) ─────────────────────────
+    // When enabled, every boundary AFTER the seeded first sub-batch is served
+    // from running frontiers absorbed out of the scanned blocks themselves;
+    // the sampled server fetch becomes an off-path audit (drain_audits).
+    let local_mode = config.local_treestate && !crate::treestate::fuse_tripped();
+    if config.local_treestate && !local_mode {
+        warn!("local treestate requested but the process fuse is tripped — server path");
+    }
+    let mut local_ts: Option<crate::treestate::LocalTreestate> = None;
+    // (height, hash) of the last absorbed block = the next boundary identity.
+    let mut local_boundary: Option<(u64, BlockHash)> = None;
+    let mut boundary_index: u64 = 0;
+    let mut audits: Vec<AuditEntry> = Vec::new();
+    let mut boundaries_local: u64 = 0;
+    let mut boundaries_audited: u64 = 0;
+    // v0.5 pacer: notes found since the last interleaved enhancement — the
+    // interleave (and its full persist drain) only fires when > 0.
+    let mut notes_since_enhance: u64 = 0;
+
     // batch_len: for the adaptive path (batch_target_ms = Some), this is carried
     // across chunks and updated by the controller.  For the None path it is set to
     // chunk_len before every chunk and never updated — the loop executes exactly once
     // per chunk (degenerate single-iteration).
     let mut batch_len: u32 = 0;
 
-    while let Some((chunk, permit)) = rx.recv().await {
+    loop {
+        // v0.5 pacer: time the chunk wait — fetch/split starvation shows here.
+        let recv_started = Instant::now();
+        let Some((chunk, permit, mut chunk_boundary)) = rx.recv().await else { break };
+        stats.recv_wait += recv_started.elapsed();
         // Binding note 1: no expect() in non-test code — use structured error extraction.
         let (chunk_start, chunk_end) = match (chunk.start_height(), chunk.end_height()) {
             (Some(s), Some(e)) => (s, e),
@@ -347,17 +444,52 @@ async fn scan_chunks_inner(
             // attempts: backoff 1s then 3s between attempts.
             //
             // On scan failure, prefetch.abort() is called before returning. The to_chain_state() and height-overflow error paths return without aborting — the spawned task completes detached, which is harmless.
-            let prefetch = tokio::spawn({
-                let ep = endpoint.clone();
-                let tor_owned = tor.cloned();
-                async move {
-                    grpc::retry_get_tree_state(&ep, sub_end, "chunk-boundary prefetch", tor_owned.as_ref()).await
+            // v0.5: in local mode the fetch is needed only on audited
+            // boundaries (and consumed off the critical path); in server mode
+            // it is the actual next state, exactly as before. The queue may
+            // have carried a FETCH-SIDE pre-spawned handle for the chunk's end
+            // boundary (started at emit — its RTT has been hiding under queue
+            // wait + scan since); use it when this sub-batch IS that boundary,
+            // spawn late otherwise (mid-chunk sub-batches, tests, darkside).
+            let audit_this = local_mode
+                && config.treestate_verify_sample > 0
+                && boundary_index.is_multiple_of(u64::from(config.treestate_verify_sample));
+            boundary_index += 1;
+            let carried = if sub_end == chunk_end { chunk_boundary.take() } else { None };
+            let prefetch = if !local_mode || audit_this {
+                carried.or_else(|| {
+                    Some(tokio::spawn({
+                        let ep = endpoint.clone();
+                        let tor_owned = tor.cloned();
+                        async move {
+                            grpc::retry_get_tree_state(&ep, sub_end, "chunk-boundary prefetch", tor_owned.as_ref()).await
+                        }
+                    }))
+                })
+            } else {
+                if let Some(h) = carried {
+                    // Local mode, unaudited boundary — the carried fetch is unneeded.
+                    h.abort();
                 }
-            });
+                None
+            };
 
-            let from_state = next_state
-                .to_chain_state()
-                .map_err(|e| SlipstreamError::Wallet(format!("chain state: {e}")))?;
+            let from_state = match (&local_ts, &local_boundary) {
+                // v0.5: boundary served locally — zero round-trips.
+                (Some(ts), Some((bh, bhash))) => {
+                    let h = u32::try_from(*bh)
+                        .map_err(|_| SlipstreamError::Wallet(format!("height {bh} exceeds u32")))?;
+                    ts.chain_state(BlockHeight::from(h), *bhash)
+                }
+                _ => next_state
+                    .to_chain_state()
+                    .map_err(|e| SlipstreamError::Wallet(format!("chain state: {e}")))?,
+            };
+            if local_mode && local_ts.is_none() {
+                // Seed the running frontiers from the range's first (server)
+                // state — the ONE fetch this range still needs.
+                local_ts = Some(crate::treestate::LocalTreestate::seed(&from_state));
+            }
 
             let from_height = u32::try_from(sub_start)
                 .map_err(|_| SlipstreamError::Wallet(format!("height {sub_start} exceeds u32")))?;
@@ -416,7 +548,9 @@ async fn scan_chunks_inner(
             let summary = match scan_result {
                 Ok(s) => s,
                 Err(e) => {
-                    prefetch.abort();
+                    if let Some(p) = &prefetch {
+                        p.abort();
+                    }
                     return Err(map_scan_error(e));
                 }
             };
@@ -431,7 +565,9 @@ async fn scan_chunks_inner(
             {
                 let wait_before = wb.lane.total_wait();
                 if let Err(e) = wb.lane.submit(pending).await {
-                    prefetch.abort();
+                    if let Some(p) = &prefetch {
+                        p.abort();
+                    }
                     return Err(e);
                 }
                 chunk_persist_wait_ms +=
@@ -453,11 +589,64 @@ async fn scan_chunks_inner(
             );
 
             chunk_elapsed_ms += elapsed_ms;
+            // (elapsed_ms was captured immediately after scan_cached_blocks —
+            // BEFORE the submit above — so this is pure scan-call time.)
+            stats.scan_call += std::time::Duration::from_millis(elapsed_ms);
 
-            // Await the prefetch; it ran concurrently with the blocking scan.
-            let fetched = prefetch
-                .await
-                .map_err(|e| SlipstreamError::Transport(format!("prefetch task: {e}")))??;
+            // ── v0.5 local treestate: absorb this sub-batch so the NEXT
+            // boundary is served locally. Anomalies are HARD errors (a wrong
+            // from_state would corrupt note positions — never scan past one).
+            if let Some(ts) = local_ts.as_mut() {
+                let absorb_started = Instant::now();
+                for h in sub_start..=sub_end {
+                    let idx = (h - chunk_start) as usize;
+                    let block = chunk.blocks.get(idx).ok_or_else(|| {
+                        SlipstreamError::Wallet(format!("local treestate: chunk missing block {h}"))
+                    })?;
+                    if block.height != h || block.hash.len() != 32 {
+                        return Err(SlipstreamError::Wallet(format!(
+                            "local treestate: block at index {idx} is malformed (height {} hash_len {})",
+                            block.height,
+                            block.hash.len()
+                        )));
+                    }
+                    ts.absorb_block(block)
+                        .map_err(|e| SlipstreamError::Wallet(format!("local treestate absorb: {e}")))?;
+                }
+                let last = &chunk.blocks[(sub_end - chunk_start) as usize];
+                local_boundary = Some((sub_end, last.hash()));
+                boundaries_local += 1;
+                stats.treestate_absorb += absorb_started.elapsed();
+            }
+
+            // Consume the fetch: in server mode it IS the next state (awaited
+            // on the lane, timed as prefetch overhang); in local mode it is an
+            // audit — parked for off-path settlement, never blocking the lane.
+            if let Some(handle) = prefetch {
+                if local_mode {
+                    if let (Some(ts), Some((bh, bhash))) = (&local_ts, &local_boundary) {
+                        let h = u32::try_from(*bh)
+                            .map_err(|_| SlipstreamError::Wallet(format!("height {bh} exceeds u32")))?;
+                        audits.push(AuditEntry {
+                            height: *bh,
+                            fetch: handle,
+                            expected: ts.chain_state(BlockHeight::from(h), *bhash),
+                        });
+                        boundaries_audited += 1;
+                    } else {
+                        handle.abort();
+                    }
+                } else {
+                    let prefetch_started = Instant::now();
+                    let fetched = handle
+                        .await
+                        .map_err(|e| SlipstreamError::Transport(format!("prefetch task: {e}")))??;
+                    stats.prefetch_wait += prefetch_started.elapsed();
+                    next_state = fetched;
+                }
+            }
+            // Opportunistically settle audits that already finished (non-blocking).
+            drain_audits(&mut audits, false).await?;
 
             // Controller: only consulted when sub-batching is enabled (batch_target_ms = Some).
             // None path: batch_len stays at chunk_len; the loop exits after this iteration
@@ -472,8 +661,9 @@ async fn scan_chunks_inner(
                 );
             }
 
-            // Advance for the next sub-batch.
-            next_state = fetched;
+            // Advance for the next sub-batch. (next_state was already updated
+            // inside the server-mode prefetch consumption above; local mode
+            // serves the next boundary from the running frontiers instead.)
             sub_start = sub_end + 1;
         }
         // ── End sub-batch loop ────────────────────────────────────────────────
@@ -483,6 +673,7 @@ async fn scan_chunks_inner(
         stats.chunks += 1;
         stats.sapling_received += chunk_sapling;
         stats.orchard_received += chunk_orchard;
+        notes_since_enhance += chunk_sapling + chunk_orchard;
 
         // Bump the shared progress counter (poll-based; Relaxed ordering).
         if let Some(ref p) = progress {
@@ -515,12 +706,22 @@ async fn scan_chunks_inner(
         // it is an optimization (progressive tx visibility); the per-range and
         // final post-loop runs are the correctness backstops. from_state
         // threading is untouched (next_state is not read or written here).
-        if should_interleave_enhancement(stats.chunks, config.enhance_every_chunks) {
+        // v0.5 pacer: ALSO gated on notes found since the last run — the P1
+        // split showed the full persist drain below firing every K chunks
+        // even when there was nothing to reveal (~4.5 s/pass on the Mac).
+        // Statuses/address windows still ride the per-range + final backstops.
+        if should_interleave_enhancement(stats.chunks, config.enhance_every_chunks)
+            && notes_since_enhance > 0
+        {
+            notes_since_enhance = 0;
             // T6.9 full barrier: enhancement reads AND writes the wallet DB —
             // it must never see a half-committed range tail, and it must not
             // run concurrently with a deferred commit (single-writer rule).
+            // v0.5 pacer: this drain is INSIDE the scan stage (suspect #1).
             if let Some(wb) = wb.as_mut() {
+                let drain_started = Instant::now();
                 wb.lane.drain().await?;
+                stats.interleave_drain += drain_started.elapsed();
             }
             let started = Instant::now();
             let mut enhance_client = client.clone();
@@ -530,6 +731,9 @@ async fn scan_chunks_inner(
                     stats.interleaved_enhance.txs_stored += es.txs_stored;
                     stats.interleaved_enhance.statuses_set += es.statuses_set;
                     stats.interleaved_enhance.skipped += es.skipped;
+                    stats.interleaved_enhance.fetch_wait += es.fetch_wait;
+                    stats.interleaved_enhance.store += es.store;
+                    stats.interleaved_enhance.address += es.address;
                 }
                 Err(err) => {
                     warn!(%err, chunk_end, "interleaved enhancement failed — continuing scan");
@@ -547,6 +751,18 @@ async fn scan_chunks_inner(
             }
         }
     }
+    // v0.5 local treestate: settle every outstanding boundary audit (the tail
+    // costs at most ~one RTT — the fetches ran concurrently with scanning).
+    drain_audits(&mut audits, true).await?;
+    if local_mode {
+        info!(
+            boundaries_local,
+            boundaries_audited,
+            absorb_ms = stats.treestate_absorb.as_millis() as u64,
+            "local treestate summary"
+        );
+    }
+
     // v0.4 census: inline-sparse path — the local state ran the builds. (On the
     // write-behind path this is zeros; scan_chunks overwrites from the lane.)
     stats.census_sapling = std::mem::take(&mut sparse_state.census_sapling);
@@ -694,7 +910,7 @@ async fn scan_chunks_from_treestate_inner(
     let mut stats = ScanStats::default();
     let mut next_state = initial_state;
 
-    while let Some((chunk, permit)) = rx.recv().await {
+    while let Some((chunk, permit, _boundary)) = rx.recv().await {
         let (chunk_start, chunk_end) = match (chunk.start_height(), chunk.end_height()) {
             (Some(s), Some(e)) => (s, e),
             _ => return Err(SlipstreamError::Wallet("empty chunk".into())),

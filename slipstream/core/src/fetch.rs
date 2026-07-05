@@ -1006,7 +1006,7 @@ mod tests {
 
         let mut released_heights = Vec::new();
         let mut indices = Vec::new();
-        while let Some((chunk, permit)) = qrx.recv().await {
+        while let Some((chunk, permit, _boundary)) = qrx.recv().await {
             indices.push(chunk.index);
             released_heights.extend(chunk.blocks.iter().map(|b| b.height));
             drop(permit);
@@ -1035,7 +1035,7 @@ mod tests {
         assert_eq!(summary.plans_released, 2);
         drop(qtx);
         let mut released_heights = Vec::new();
-        while let Some((chunk, permit)) = qrx.recv().await {
+        while let Some((chunk, permit, _boundary)) = qrx.recv().await {
             released_heights.extend(chunk.blocks.iter().map(|b| b.height));
             drop(permit);
         }

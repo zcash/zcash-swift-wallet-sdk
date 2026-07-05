@@ -112,6 +112,21 @@ pub struct BenchSummary {
     /// ON/OFF pair of these measures the kernel's real ratio; against
     /// `scan_s × cores` it bounds DH's share of the scan.
     pub batch_dh_s: f64,
+    /// v0.5 pacer split (2026-07-06 plan §3): the scan lane's wall decomposed.
+    /// `scan_s ≈ recv_wait + call + prefetch_wait + interleave_drain +
+    /// final_drain + persist_wait_s + residue`.
+    pub scan_recv_wait_s: f64,
+    pub scan_call_s: f64,
+    pub scan_prefetch_wait_s: f64,
+    pub scan_interleave_drain_s: f64,
+    pub scan_final_drain_s: f64,
+    /// v0.5 local treestate: the lever's own cost (frontier absorption).
+    pub scan_absorb_s: f64,
+    /// Enhancement wall split: awaiting gRPC tx fetches vs serial DB applies
+    /// vs the address-window phase (explains the device enhance_s swings).
+    pub enhance_fetch_s: f64,
+    pub enhance_store_s: f64,
+    pub enhance_address_s: f64,
     pub sapling: PoolCensusOut,
     pub orchard: PoolCensusOut,
 }
@@ -125,7 +140,7 @@ impl BenchSummary {
             )
         }
         format!(
-            "{{\"engine_build\":\"{}\",\"total_s\":{},\"fetch_s\":{},\"scan_s\":{},\"enhance_s\":{},\"persist_wait_s\":{},\"persist_overlap_s\":{},\"blocks\":{},\"batch_dh_calls\":{},\"batch_dh_lanes\":{},\"batch_dh_kernel_lanes\":{},\"batch_dh_s\":{},\"sapling\":{},\"orchard\":{}}}",
+            "{{\"engine_build\":\"{}\",\"total_s\":{},\"fetch_s\":{},\"scan_s\":{},\"enhance_s\":{},\"persist_wait_s\":{},\"persist_overlap_s\":{},\"blocks\":{},\"batch_dh_calls\":{},\"batch_dh_lanes\":{},\"batch_dh_kernel_lanes\":{},\"batch_dh_s\":{},\"scan_recv_wait_s\":{},\"scan_call_s\":{},\"scan_prefetch_wait_s\":{},\"scan_interleave_drain_s\":{},\"scan_final_drain_s\":{},\"scan_absorb_s\":{},\"enhance_fetch_s\":{},\"enhance_store_s\":{},\"enhance_address_s\":{},\"sapling\":{},\"orchard\":{}}}",
             self.engine_build,
             self.total_s,
             self.fetch_s,
@@ -138,6 +153,15 @@ impl BenchSummary {
             self.batch_dh_lanes,
             self.batch_dh_kernel_lanes,
             self.batch_dh_s,
+            self.scan_recv_wait_s,
+            self.scan_call_s,
+            self.scan_prefetch_wait_s,
+            self.scan_interleave_drain_s,
+            self.scan_final_drain_s,
+            self.scan_absorb_s,
+            self.enhance_fetch_s,
+            self.enhance_store_s,
+            self.enhance_address_s,
             pool(&self.sapling),
             pool(&self.orchard),
         )
@@ -207,6 +231,15 @@ mod tests {
             batch_dh_lanes: 700,
             batch_dh_kernel_lanes: 690,
             batch_dh_s: 0.75,
+            scan_recv_wait_s: 0.1,
+            scan_call_s: 0.8,
+            scan_prefetch_wait_s: 0.05,
+            scan_interleave_drain_s: 0.03,
+            scan_final_drain_s: 0.02,
+            scan_absorb_s: 0.07,
+            enhance_fetch_s: 0.06,
+            enhance_store_s: 0.04,
+            enhance_address_s: 0.01,
             sapling: pool,
             orchard: pool,
         };
@@ -218,6 +251,8 @@ mod tests {
             "\"total_s\":1.5",
             "\"blocks\":100",
             "\"batch_dh_kernel_lanes\":690",
+            "\"scan_call_s\":0.8",
+            "\"enhance_fetch_s\":0.06",
             "\"orchard\":{",
             "\"graftable_fraction\":0.5",
             "\"commitments\":42",

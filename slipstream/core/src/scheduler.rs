@@ -156,6 +156,14 @@ pub struct SyncReport {
     pub persist_wait_elapsed: Duration,
     /// T6.9 write-behind: Σ wall time of the deferred commits themselves.
     pub persist_busy_elapsed: Duration,
+    /// v0.5 pacer split (plan §3) — the scan lane's wall decomposed, summed
+    /// across ranges. See `ScanStats` for the per-field contracts.
+    pub scan_recv_wait: Duration,
+    pub scan_call: Duration,
+    pub scan_prefetch_wait: Duration,
+    pub scan_interleave_drain: Duration,
+    pub scan_final_drain: Duration,
+    pub scan_absorb: Duration,
     /// v0.4 census (spec §3.2): per-pool shard census unioned across all ranges.
     pub census_sapling: crate::census::ShardCensus,
     pub census_orchard: crate::census::ShardCensus,
@@ -292,7 +300,28 @@ pub async fn run_to_completion(
             p.set_range_end(end);
         }
 
-        let (tx, rx) = chunk_queue(config.memory_budget_bytes);
+        let (mut tx, rx) = chunk_queue(config.memory_budget_bytes);
+        // v0.5 pacer fix: boundary treestate fetches start when the chunk is
+        // EMITTED (fetch side), so the RTT hides under queue wait + scan
+        // instead of racing one scan call (P1: that overhang was 62 % of the
+        // Mac scan wall on a slow-treestate day).
+        {
+            let ep = config.endpoint.clone();
+            let tor_owned = tor.cloned();
+            tx.set_boundary_fetcher(std::sync::Arc::new(move |end_height| {
+                let ep = ep.clone();
+                let tor_owned = tor_owned.clone();
+                tokio::spawn(async move {
+                    crate::grpc::retry_get_tree_state(
+                        &ep,
+                        end_height,
+                        "boundary prefetch (fetch-side)",
+                        tor_owned.as_ref(),
+                    )
+                    .await
+                })
+            }));
+        }
         let mut plan = FetchPlan::new(start, end, config.chunk_blocks, config.fetch_streams);
         // T6.8-S: byte-budgeted sub-chunk splitting (sandblasting-era survival).
         plan.split_bytes = config.chunk_split_bytes;
@@ -445,12 +474,22 @@ pub async fn run_to_completion(
         // persist_wait portion — it is honest loop wall time; see engine.rs log).
         report.persist_wait_elapsed += scan_stats.persist_wait;
         report.persist_busy_elapsed += scan_stats.persist_busy;
+        // v0.5 pacer split.
+        report.scan_recv_wait += scan_stats.recv_wait;
+        report.scan_call += scan_stats.scan_call;
+        report.scan_prefetch_wait += scan_stats.prefetch_wait;
+        report.scan_interleave_drain += scan_stats.interleave_drain;
+        report.scan_final_drain += scan_stats.final_drain;
+        report.scan_absorb += scan_stats.treestate_absorb;
         report.census_sapling.merge(&scan_stats.census_sapling);
         report.census_orchard.merge(&scan_stats.census_orchard);
         report.enhance.requests += scan_stats.interleaved_enhance.requests;
         report.enhance.txs_stored += scan_stats.interleaved_enhance.txs_stored;
         report.enhance.statuses_set += scan_stats.interleaved_enhance.statuses_set;
         report.enhance.skipped += scan_stats.interleaved_enhance.skipped;
+        report.enhance.fetch_wait += scan_stats.interleaved_enhance.fetch_wait;
+        report.enhance.store += scan_stats.interleaved_enhance.store;
+        report.enhance.address += scan_stats.interleaved_enhance.address;
 
         // F1: accumulate scanned blocks for next iteration's whole-pass denominator.
         scanned_so_far_in_pass += scan_stats.blocks;

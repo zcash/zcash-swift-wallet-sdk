@@ -4646,10 +4646,17 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         cfg.batch_decrypt = std::env::var("ZCASH_BATCH_DECRYPT")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(cfg.batch_decrypt);
+        // v0.5 scan-pacer lever (#1755): local chunk-boundary treestates
+        // (one seed fetch per range instead of one RPC per boundary).
+        // Default OFF until the A/B + audit gates.
+        cfg.local_treestate = std::env::var("ZCASH_LOCAL_TREESTATE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(cfg.local_treestate);
         tracing::info!(
             graft_subtree = cfg.graft_subtree,
             batch_combine = cfg.batch_combine,
             batch_decrypt = cfg.batch_decrypt,
+            local_treestate = cfg.local_treestate,
             "v0.4/v0.5 lever config"
         );
 

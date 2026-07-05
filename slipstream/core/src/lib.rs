@@ -37,6 +37,7 @@ pub mod scan_queue;
 pub mod scheduler;
 pub mod session;
 pub mod transparent;
+pub mod treestate;
 pub mod verify;
 pub mod wallet_session;
 

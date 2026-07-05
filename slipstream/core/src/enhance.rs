@@ -52,6 +52,13 @@ pub struct EnhanceStats {
     /// subsequent rounds that re-issue the same already-skipped request are silently dropped
     /// and do not increment this counter.
     pub skipped: u64,
+    /// v0.5 pacer (plan §3): where enhancement wall goes — Σ awaiting the
+    /// concurrent txid fetches (network-bound share)…
+    pub fetch_wait: std::time::Duration,
+    /// …Σ inside the serial DB applies (decrypt_and_store / set_status)…
+    pub store: std::time::Duration,
+    /// …Σ inside the serial address-window phase (its fetch+apply together).
+    pub address: std::time::Duration,
 }
 
 /// Maximum concurrent in-flight gRPC `GetTransaction` calls.
@@ -152,15 +159,23 @@ pub async fn run_enhancement(
         // All futures are already pushed; we drain them in order. The gRPC channel's
         // HTTP/2 multiplexing handles the actual concurrency (not FuturesUnordered).
         // This design is correct for typical 0-10 enhancement requests per scan pass.
-        while let Some((txid, want_enhance, fetched)) = pending.next().await {
+        loop {
+            // v0.5 pacer: awaiting the next fetch = the network-bound share.
+            let fetch_started = std::time::Instant::now();
+            let Some((txid, want_enhance, fetched)) = pending.next().await else { break };
+            stats.fetch_wait += fetch_started.elapsed();
+            let store_started = std::time::Instant::now();
             apply_txid_fetch(session, txid, want_enhance, fetched, &network, &mut stats, progress.as_deref())?;
+            stats.store += store_started.elapsed();
         }
 
         // ── Phase 2: serial address-window requests ────────────────────────────
+        let address_started = std::time::Instant::now();
         for tia in address_reqs {
             apply_address_request(session, client, &network, tia, &mut stats, skipped_keys, progress.as_deref())
                 .await?;
         }
+        stats.address += address_started.elapsed();
     }
 
     info!(

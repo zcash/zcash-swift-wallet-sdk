@@ -120,6 +120,17 @@ enum Cmd {
         /// lockstep kernel). Default OFF until the C3 device gates.
         #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         batch_decrypt: bool,
+        /// v0.5 scan-pacer lever: derive chunk-boundary treestates locally
+        /// (one seed fetch per range instead of one GetTreeState round-trip
+        /// per boundary — P1 measured those at 62% of the Mac scan wall).
+        /// Default OFF until the A/B + audit gates.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        local_treestate: bool,
+        /// Boundary-audit cadence for --local-treestate: every Nth local
+        /// boundary also fetches the server treestate OFF the critical path
+        /// and compares (0 = off, 1 = audit EVERY boundary). Default 1.
+        #[arg(long, default_value_t = 1)]
+        treestate_verify_sample: u32,
         /// Task 10 audit cadence: build-and-verify every Nth graftable shard
         /// against the server root (0 = off, 1 = audit EVERY graft — the
         /// validation mode). Default matches the engine (16).
@@ -232,7 +243,7 @@ async fn run_fetch_bench(
     streams: usize,
 ) -> Result<slipstream_core::fetch::FetchStats, slipstream_core::SlipstreamError> {
     let (tx, mut rx) = slipstream_core::chunk::chunk_queue(256 * 1024 * 1024);
-    let drain = tokio::spawn(async move { while let Some((_c, _p)) = rx.recv().await {} });
+    let drain = tokio::spawn(async move { while let Some((_c, _p, _b)) = rx.recv().await {} });
     let plan = slipstream_core::fetch::FetchPlan::new(start, end, chunk, streams);
     let stats = slipstream_core::fetch::run_fetch(endpoint, plan, tx, None).await?;
     let _ = drain.await;
@@ -524,6 +535,8 @@ fn cmd_bench(
     gpu_subtree: bool,
     batch_combine: bool,
     batch_decrypt: bool,
+    local_treestate: bool,
+    treestate_verify_sample: u32,
     graft_verify_sample: u32,
     json: Option<std::path::PathBuf>,
     keep: bool,
@@ -563,6 +576,8 @@ fn cmd_bench(
     // v0.4 Plan A lever (Task 8+): live A/B switch — the whole point of bench.
     cfg.graft_subtree = graft;
     cfg.batch_decrypt = batch_decrypt;
+    cfg.local_treestate = local_treestate;
+    cfg.treestate_verify_sample = treestate_verify_sample;
     cfg.graft_verify_sample = graft_verify_sample;
     cfg.batch_combine = batch_combine;
     cfg.bench_json_path = Some(json_path.clone());
@@ -898,8 +913,8 @@ fn main() {
         Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow } => {
             cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow);
         }
-        Cmd::Bench { server, ufvk, birthday, wallet_dir, graft, gpu_subtree, batch_combine, batch_decrypt, graft_verify_sample, json, keep } => {
-            cmd_bench(server, ufvk, birthday, wallet_dir, graft, gpu_subtree, batch_combine, batch_decrypt, graft_verify_sample, json, keep);
+        Cmd::Bench { server, ufvk, birthday, wallet_dir, graft, gpu_subtree, batch_combine, batch_decrypt, local_treestate, treestate_verify_sample, graft_verify_sample, json, keep } => {
+            cmd_bench(server, ufvk, birthday, wallet_dir, graft, gpu_subtree, batch_combine, batch_decrypt, local_treestate, treestate_verify_sample, graft_verify_sample, json, keep);
         }
         Cmd::Watch { server, wallet_dir, ufvk, birthday, interval_ms } => {
             cmd_watch(server, wallet_dir, ufvk, birthday, interval_ms);

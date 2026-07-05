@@ -118,6 +118,22 @@ pub struct EngineConfig {
     /// switch: `ZCASH_BATCH_DECRYPT`. Process-global toggle set at pass start.
     pub batch_decrypt: bool,
 
+    /// v0.5 scan-pacer lever (2026-07-06 plan): derive chunk-boundary
+    /// treestates LOCALLY (seed once per range, absorb scanned commitments
+    /// into running frontiers) instead of one `GetTreeState` round-trip per
+    /// chunk boundary — the P1 split measured those RPCs at 62 % of the Mac
+    /// scan wall (71 × ~455 ms). Default OFF until the A/B + audit gates.
+    /// Kill/dev switch: `ZCASH_LOCAL_TREESTATE`.
+    pub local_treestate: bool,
+
+    /// Boundary-audit cadence for local treestates: every Nth locally served
+    /// boundary ALSO fetches the server treestate (spawned, OFF the critical
+    /// path) and compares the full `ChainState`; a mismatch hard-aborts the
+    /// pass and trips the process fuse (server path thereafter). 0 = off,
+    /// 1 = audit EVERY boundary (validation mode + the initial production
+    /// cadence — the fetches no longer block the lane).
+    pub treestate_verify_sample: u32,
+
     /// Persist-pipelining: max unpersisted units (in-flight + queued) before the scan
     /// side blocks. `1` = legacy strict depth-1 backpressure (byte-for-byte identical).
     /// Higher lets scan run further ahead so more persist hides behind scan (~22%
@@ -157,6 +173,8 @@ impl EngineConfig {
             graft_verify_sample: 16,
             batch_combine: true,
             batch_decrypt: false,
+            local_treestate: false,
+            treestate_verify_sample: 1,
             persist_depth: 1,
         }
     }
