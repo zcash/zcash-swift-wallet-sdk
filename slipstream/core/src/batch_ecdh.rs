@@ -25,10 +25,72 @@ use pasta_curves::pallas;
 
 use crate::batch_sinsemilla::batch_invert;
 
-/// `[k]·P` for every `P` in `points` — lockstep-affine double-and-add with one
-/// shared Montgomery inversion per ladder step. `None` = degenerate lane (the
-/// caller computes that lane with the scalar path). Identity inputs are
-/// degenerate by definition (affine coordinates cannot represent them).
+/// Width-4 wNAF recode. The scalar is FIXED across the batch, so this runs
+/// once per (ivk, batch) — digits are `0` or odd `±1,±3,±5,±7`, nonzero
+/// density ~1/5 (vs ~1/2 raw bits), cutting the ladder's add steps ~60%.
+/// Index = bit position (LSB first); the top digit is always nonzero.
+fn wnaf4(repr: &[u8; 32]) -> Vec<i8> {
+    let mut k = [0u64; 5]; // one spare limb: k + 7 must not overflow
+    for (i, limb) in k.iter_mut().take(4).enumerate() {
+        *limb = u64::from_le_bytes(repr[i * 8..(i + 1) * 8].try_into().expect("8 bytes"));
+    }
+    fn is_zero(k: &[u64; 5]) -> bool {
+        k.iter().all(|&x| x == 0)
+    }
+    fn add_small(k: &mut [u64; 5], v: u64) {
+        let mut carry = v;
+        for limb in k.iter_mut() {
+            let (s, c) = limb.overflowing_add(carry);
+            *limb = s;
+            carry = u64::from(c);
+            if carry == 0 {
+                break;
+            }
+        }
+    }
+    fn sub_small(k: &mut [u64; 5], v: u64) {
+        let mut borrow = v;
+        for limb in k.iter_mut() {
+            let (s, b) = limb.overflowing_sub(borrow);
+            *limb = s;
+            borrow = u64::from(b);
+            if borrow == 0 {
+                break;
+            }
+        }
+    }
+    fn shr1(k: &mut [u64; 5]) {
+        for i in 0..4 {
+            k[i] = (k[i] >> 1) | (k[i + 1] << 63);
+        }
+        k[4] >>= 1;
+    }
+    let mut digits = Vec::with_capacity(260);
+    while !is_zero(&k) {
+        if k[0] & 1 == 1 {
+            let low = (k[0] & 0xF) as i8; // k mod 16
+            let d = if low >= 8 { low - 16 } else { low }; // signed odd residue
+            digits.push(d);
+            if d >= 0 {
+                sub_small(&mut k, d as u64);
+            } else {
+                add_small(&mut k, (-d) as u64);
+            }
+        } else {
+            digits.push(0);
+        }
+        shr1(&mut k);
+    }
+    digits
+}
+
+/// `[k]·P` for every `P` in `points` — lockstep-affine wNAF-4 ladder with one
+/// shared Montgomery inversion per ladder step. The scalar is the SAME for
+/// every lane, so every lane takes IDENTICAL steps: recode once, build the
+/// odd-multiple table {P,3P,5P,7P} per lane with 4 batched ops, then ~255
+/// batched doubles + ~51 batched adds. `None` = degenerate lane (the caller
+/// computes that lane with the scalar path). Identity inputs are degenerate
+/// by definition (affine coordinates cannot represent them).
 pub(crate) fn batch_mul_same_scalar(
     k: &pallas::Scalar,
     points: &[pallas::Affine],
@@ -37,57 +99,111 @@ pub(crate) fn batch_mul_same_scalar(
     if n == 0 {
         return vec![];
     }
-
-    // Scalar bits, most-significant first, from the top set bit. The scalar is
-    // the SAME for every lane — this is what makes the ladder lockstep.
     let repr = k.to_repr(); // 32 bytes, little-endian
     let repr_bytes: &[u8] = repr.as_ref();
-    let bit = |i: usize| (repr_bytes[i / 8] >> (i % 8)) & 1 == 1;
-    let top = match (0..256).rev().find(|&i| bit(i)) {
-        Some(t) => t,
+    let repr_arr: &[u8; 32] = repr_bytes.try_into().expect("32 bytes");
+    let digits = wnaf4(repr_arr);
+    if digits.is_empty() {
         // k == 0: [0]·P is the identity for every lane — all degenerate.
-        None => return vec![None; n],
-    };
+        return vec![None; n];
+    }
 
-    // Lane state: affine accumulator, seeded acc = P at the top set bit.
-    let mut x = Vec::with_capacity(n);
-    let mut y = Vec::with_capacity(n);
+    // ── Lane state + the odd-multiple tables, built with 4 batched steps ────
     let mut dead = vec![false; n];
+    // tbl[j][i] = (2j+1)·P_i as affine (j = 0..3 → P, 3P, 5P, 7P).
+    let mut tx = vec![vec![pallas::Base::ZERO; n]; 4];
+    let mut ty = vec![vec![pallas::Base::ZERO; n]; 4];
     for (i, p) in points.iter().enumerate() {
         let coords: Option<pasta_curves::arithmetic::Coordinates<pallas::Affine>> =
             p.coordinates().into();
         match coords {
             Some(c) => {
-                x.push(*c.x());
-                y.push(*c.y());
+                tx[0][i] = *c.x();
+                ty[0][i] = *c.y();
             }
-            None => {
-                // Point at infinity — degenerate input.
-                x.push(pallas::Base::ZERO);
-                y.push(pallas::Base::ZERO);
+            None => dead[i] = true, // point at infinity
+        }
+    }
+    let two = pallas::Base::from(2);
+    let three = pallas::Base::from(3);
+    let mut denom = vec![pallas::Base::ONE; n];
+
+    // 2P (scratch), then 3P = 2P+P, 5P = 3P+2P, 7P = 5P+2P — all batched.
+    let mut dx = vec![pallas::Base::ZERO; n];
+    let mut dy = vec![pallas::Base::ZERO; n];
+    for i in 0..n {
+        denom[i] = if dead[i] {
+            pallas::Base::ONE
+        } else {
+            let d = two * ty[0][i];
+            if bool::from(d.is_zero()) {
                 dead[i] = true;
+                pallas::Base::ONE
+            } else {
+                d
             }
+        };
+    }
+    batch_invert(&mut denom);
+    for i in 0..n {
+        if dead[i] {
+            continue;
+        }
+        let lambda = three * tx[0][i].square() * denom[i];
+        dx[i] = lambda.square() - two * tx[0][i];
+        dy[i] = lambda * (tx[0][i] - dx[i]) - ty[0][i];
+    }
+    for j in 1..4 {
+        // tbl[j] = tbl[j-1] + 2P
+        for i in 0..n {
+            denom[i] = if dead[i] {
+                pallas::Base::ONE
+            } else {
+                let d = dx[i] - tx[j - 1][i];
+                if bool::from(d.is_zero()) {
+                    dead[i] = true;
+                    pallas::Base::ONE
+                } else {
+                    d
+                }
+            };
+        }
+        batch_invert(&mut denom);
+        for i in 0..n {
+            if dead[i] {
+                continue;
+            }
+            let lambda = (dy[i] - ty[j - 1][i]) * denom[i];
+            let x3 = lambda.square() - tx[j - 1][i] - dx[i];
+            let y3 = lambda * (tx[j - 1][i] - x3) - ty[j - 1][i];
+            tx[j][i] = x3;
+            ty[j][i] = y3;
         }
     }
 
-    let mut denom = vec![pallas::Base::ONE; n];
-    let two = pallas::Base::from(2);
-    let three = pallas::Base::from(3);
+    // ── Seed at the top digit (always nonzero), then the lockstep ladder ────
+    let top = digits.len() - 1;
+    let seed = digits[top];
+    let jt = ((seed.unsigned_abs() as usize) - 1) / 2;
+    let mut x: Vec<pallas::Base> = (0..n).map(|i| tx[jt][i]).collect();
+    let mut y: Vec<pallas::Base> = (0..n)
+        .map(|i| if seed < 0 { -ty[jt][i] } else { ty[jt][i] })
+        .collect();
 
-    for step in (0..top).rev() {
-        // ── DOUBLE every lane: λ = 3x² / 2y ─────────────────────────────────
+    for pos in (0..top).rev() {
+        // DOUBLE every lane: λ = 3x² / 2y.
         for i in 0..n {
-            if dead[i] {
-                denom[i] = pallas::Base::ONE;
-                continue;
-            }
-            let d = two * y[i];
-            if bool::from(d.is_zero()) {
-                dead[i] = true; // y = 0 ⇒ doubling lands on infinity
-                denom[i] = pallas::Base::ONE;
+            denom[i] = if dead[i] {
+                pallas::Base::ONE
             } else {
-                denom[i] = d;
-            }
+                let d = two * y[i];
+                if bool::from(d.is_zero()) {
+                    dead[i] = true;
+                    pallas::Base::ONE
+                } else {
+                    d
+                }
+            };
         }
         batch_invert(&mut denom);
         for i in 0..n {
@@ -100,32 +216,32 @@ pub(crate) fn batch_mul_same_scalar(
             x[i] = x3;
             y[i] = y3;
         }
-
-        // ── conditional ADD of the base point: λ = (Py − y) / (Px − x) ──────
-        if bit(step) {
+        // ADD ±(2j+1)·P on a nonzero digit: λ = (Ty − y) / (Tx − x).
+        let d = digits[pos];
+        if d != 0 {
+            let j = ((d.unsigned_abs() as usize) - 1) / 2;
+            let neg = d < 0;
             for i in 0..n {
-                if dead[i] {
-                    denom[i] = pallas::Base::ONE;
-                    continue;
-                }
-                let c = points[i].coordinates().expect("live lanes have affine bases");
-                let d = *c.x() - x[i];
-                if bool::from(d.is_zero()) {
-                    dead[i] = true; // acc == ±P: doubling case or infinity result
-                    denom[i] = pallas::Base::ONE;
+                denom[i] = if dead[i] {
+                    pallas::Base::ONE
                 } else {
-                    denom[i] = d;
-                }
+                    let dd = tx[j][i] - x[i];
+                    if bool::from(dd.is_zero()) {
+                        dead[i] = true; // acc == ±T: double/infinity degenerate
+                        pallas::Base::ONE
+                    } else {
+                        dd
+                    }
+                };
             }
             batch_invert(&mut denom);
             for i in 0..n {
                 if dead[i] {
                     continue;
                 }
-                let c = points[i].coordinates().expect("live lanes have affine bases");
-                let (px, py) = (*c.x(), *c.y());
+                let py = if neg { -ty[j][i] } else { ty[j][i] };
                 let lambda = (py - y[i]) * denom[i];
-                let x3 = lambda.square() - x[i] - px;
+                let x3 = lambda.square() - x[i] - tx[j][i];
                 let y3 = lambda * (x[i] - x3) - y[i];
                 x[i] = x3;
                 y[i] = y3;
