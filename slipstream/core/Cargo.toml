@@ -39,6 +39,9 @@ group = { workspace = true }
 ff = { workspace = true }
 rayon = { workspace = true }
 zip32 = { workspace = true }
+# v0.4 T10b (oracle testkit): real note encryption for the owned-note fixture in
+# the graft spend-proof — `Domain` trait for epk bytes; orchard supplies the rest.
+zcash_note_encryption = { workspace = true }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }

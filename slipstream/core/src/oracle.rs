@@ -211,7 +211,8 @@ pub mod testkit {
 
     use zcash_client_backend::data_api::chain::scan_cached_blocks;
     use zcash_client_backend::proto::compact_formats::{
-        ChainMetadata, CompactBlock, CompactSaplingOutput, CompactSaplingSpend, CompactTx,
+        ChainMetadata, CompactBlock, CompactOrchardAction, CompactSaplingOutput,
+        CompactSaplingSpend, CompactTx,
     };
     use zcash_client_backend::proto::service::TreeState;
     use zcash_protocol::consensus::BlockHeight;
@@ -289,6 +290,144 @@ pub mod testkit {
             });
         }
         blocks
+    }
+
+    /// First synthetic ORCHARD height: above NU5 activation (1_687_104) so orchard
+    /// actions and orchard chain-metadata are valid — the sapling `SYNTH_START`
+    /// sits deliberately BELOW NU5 and cannot host orchard chains (v0.4 T10b).
+    pub const SYNTH_ORCHARD_START: u64 = 1_700_000;
+
+    /// One genuine orchard compact action: a REAL note encrypted to `ufvk`'s
+    /// external orchard address, so compact trial-decryption finds it and the
+    /// wallet can later SPEND it (the T10b witness proof). The nullifier field
+    /// doubles as the note's rho, so it travels with the action.
+    pub struct OwnedOrchardAction {
+        pub nullifier: [u8; 32],
+        pub cmx: [u8; 32],
+        pub ephemeral_key: [u8; 32],
+        pub ciphertext: Vec<u8>,
+    }
+
+    /// Fabricate an [`OwnedOrchardAction`] worth `value_zat` for `ufvk`. `salt`
+    /// varies rho/rseed deterministically (no RNG — oracle fixtures replay).
+    pub fn owned_orchard_action(
+        ufvk: &zcash_keys::keys::UnifiedFullViewingKey,
+        value_zat: u64,
+        salt: u64,
+    ) -> OwnedOrchardAction {
+        use zcash_note_encryption::Domain as _;
+        let fvk = ufvk.orchard().expect("test ufvk must carry an orchard fvk");
+        let recipient = fvk.address_at(0u32, orchard::keys::Scope::External);
+        // rho: any canonical Pallas base element works — small LE ints always are.
+        let mut rho_bytes = [0u8; 32];
+        rho_bytes[..8].copy_from_slice(&salt.to_le_bytes());
+        let rho = orchard::note::Rho::from_bytes(&rho_bytes)
+            .expect("small-int rho is a canonical field element");
+        // rseed: not every 32-byte string is valid for a given rho — scan for one.
+        let rseed = (0u8..=255)
+            .find_map(|i| {
+                let mut b = [i; 32];
+                b[..8].copy_from_slice(&salt.to_le_bytes());
+                Option::from(orchard::note::RandomSeed::from_bytes(b, &rho))
+            })
+            .expect("some rseed candidate must be valid");
+        let note = orchard::note::Note::from_parts(
+            recipient,
+            orchard::value::NoteValue::from_raw(value_zat),
+            rho,
+            rseed,
+        )
+        .expect("note parts are consistent by construction");
+        let cmx = orchard::note::ExtractedNoteCommitment::from(note.commitment()).to_bytes();
+        let enc = orchard::note_encryption::OrchardNoteEncryption::new(None, note, [0u8; 512]);
+        let ephemeral_key = orchard::note_encryption::OrchardDomain::epk_bytes(enc.epk()).0;
+        let full = enc.encrypt_note_plaintext();
+        let full: &[u8] = full.as_ref();
+        let ciphertext = full[..52].to_vec();
+        OwnedOrchardAction { nullifier: rho_bytes, cmx, ephemeral_key, ciphertext }
+    }
+
+    /// Deterministic synthetic ORCHARD chain (v0.4 T10b): `count` linked blocks
+    /// from [`SYNTH_ORCHARD_START`], one tx per block with `outs_per_block`
+    /// orchard actions. Foreign actions carry valid-but-undecryptable fields
+    /// (small-int cmx/nullifier — canonical Pallas base elements — and garbage
+    /// epk/ciphertext, which trial decryption skips gracefully). When `owned`
+    /// is given, the action at that GLOBAL action index is the real one.
+    /// Sapling stays empty; chain metadata carries cumulative ORCHARD sizes.
+    pub fn synth_blocks_orchard(
+        count: u64,
+        outs_per_block: u32,
+        owned: Option<(u64, &OwnedOrchardAction)>,
+    ) -> Vec<CompactBlock> {
+        let mut blocks = Vec::with_capacity(count as usize);
+        let mut tree_size: u32 = 0;
+        let mut action_counter: u64 = 0;
+        for i in 0..count {
+            let height = SYNTH_ORCHARD_START + i;
+            let actions = (0..outs_per_block)
+                .map(|_| {
+                    let a = match owned {
+                        Some((at, o)) if at == action_counter => CompactOrchardAction {
+                            nullifier: o.nullifier.to_vec(),
+                            cmx: o.cmx.to_vec(),
+                            ephemeral_key: o.ephemeral_key.to_vec(),
+                            ciphertext: o.ciphertext.clone(),
+                        },
+                        _ => CompactOrchardAction {
+                            // Offset the counters so foreign fields never collide
+                            // with each other or with an owned action's rho.
+                            nullifier: cmu(1_000_000 + action_counter),
+                            cmx: cmu(2_000_000 + action_counter),
+                            ephemeral_key: h32(0xEE, action_counter),
+                            ciphertext: vec![0xC7; 52],
+                        },
+                    };
+                    action_counter += 1;
+                    a
+                })
+                .collect::<Vec<_>>();
+            tree_size += outs_per_block;
+            let tx = CompactTx {
+                index: 0,
+                txid: h32(0x77, height),
+                fee: 0,
+                spends: vec![],
+                outputs: vec![],
+                actions,
+                ..Default::default()
+            };
+            blocks.push(CompactBlock {
+                proto_version: 0,
+                height,
+                hash: h32(0xBB, height),
+                prev_hash: if i == 0 { vec![0u8; 32] } else { h32(0xBB, height - 1) },
+                time: height as u32,
+                header: vec![],
+                vtx: vec![tx],
+                chain_metadata: Some(ChainMetadata {
+                    sapling_commitment_tree_size: 0,
+                    orchard_commitment_tree_size: tree_size,
+                }),
+            });
+        }
+        blocks
+    }
+
+    /// Level-16 root over ONE FULL orchard shard's 65,536 cmx leaves — the
+    /// hermetic stand-in for a lightwalletd-served subtree root (what
+    /// `GetSubtreeRoots` would return; darkside cannot serve these, see T10b).
+    pub fn orchard_shard_root(cmxs: &[Vec<u8>]) -> [u8; 32] {
+        use incrementalmerkletree::frontier::Frontier;
+        use orchard::tree::MerkleHashOrchard;
+        assert_eq!(cmxs.len(), 1 << 16, "a shard is exactly 65,536 leaves");
+        let mut frontier: Frontier<MerkleHashOrchard, 16> = Frontier::empty();
+        for c in cmxs {
+            let bytes: [u8; 32] = c.as_slice().try_into().expect("cmx is 32 bytes");
+            let node = Option::from(MerkleHashOrchard::from_bytes(&bytes))
+                .expect("fixture cmx must be a canonical field element");
+            assert!(frontier.append(node), "frontier overfilled");
+        }
+        frontier.root().to_bytes()
     }
 
     /// Open a fresh wallet at `dir/data.db`, import TEST_UFVK with an empty
@@ -402,6 +541,35 @@ pub mod testkit {
         window_lens: &[usize],
         graft: bool,
     ) -> Result<(), SlipstreamError> {
+        // verify_sample=1 (audit-every) — audited grafts BUILD, so these callers
+        // exercise the full build path even with graft on (the Task 7 gate shape).
+        scan_synthetic_windows_write_behind_with(dir, blocks, window_lens, graft, 1, |_, _| {
+            Ok(())
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// v0.4 T10b: [`scan_synthetic_windows_write_behind`] plus a `prepare` hook that
+    /// runs after the session opens and BEFORE `ensure_account` — fixtures use it to
+    /// seed subtree roots (a REAL graft needs a "server" root on file) and/or to
+    /// create a SPENDING account first (`ensure_account` no-ops once any account
+    /// exists; the engine itself only ever imports view-only). The birthday derives
+    /// from the first block (`height - 1`), so chains at any activation era work —
+    /// for the sapling `SYNTH_START` chains this is the same 1_499_999 as before.
+    /// `graft_verify_sample`: 0 = pure install (root-only shapes actually land),
+    /// 1 = audit-every (audited grafts install BUILT content), N = 1-in-N.
+    /// Returns the lane's cumulative graft verdicts ((sap_grafted, sap_fallback),
+    /// (orch_grafted, orch_fallback)) — the in-band DID-IT-FIRE signal, since
+    /// build-then-prune and graft converge to identical final DB bytes.
+    pub async fn scan_synthetic_windows_write_behind_with(
+        dir: &Path,
+        blocks: Vec<CompactBlock>,
+        window_lens: &[usize],
+        graft: bool,
+        graft_verify_sample: u32,
+        prepare: impl FnOnce(&mut WalletSession, &TreeState) -> Result<(), SlipstreamError>,
+    ) -> Result<((u64, u64), (u64, u64)), SlipstreamError> {
         if window_lens.iter().sum::<usize>() != blocks.len() {
             return Err(SlipstreamError::Wallet(format!(
                 "window_lens sum {} != blocks {}",
@@ -411,24 +579,33 @@ pub mod testkit {
         }
         let db_path = dir.join("data.db");
         let mut session = WalletSession::open(crate::Network::MainNetwork, &db_path)?;
+        let birthday_height = blocks.first().map_or(SYNTH_START - 1, |b| b.height - 1);
         let birthday_ts = TreeState {
             network: "main".into(),
-            height: 1_499_999, // SYNTH_START - 1
+            height: birthday_height,
             hash: "0".repeat(64),
             time: 1,
             ..Default::default()
         };
+        prepare(&mut session, &birthday_ts)?;
         session.ensure_account(TEST_UFVK, birthday_ts.clone())?;
         let tip = blocks.last().map(|b| b.height).unwrap_or(SYNTH_START);
         session.update_chain_tip(tip)?;
 
         // Seed the facade under the no-pending barrier; open the lane's own
         // connection — exactly as scan.rs::scan_chunks does.
+        let range_start = blocks.first().map_or(SYNTH_START, |b| b.height);
         let mut facade =
-            crate::persist::WriteBehindFacade::seed(&*session.db_mut(), SYNTH_START)
+            crate::persist::WriteBehindFacade::seed(&*session.db_mut(), range_start)
                 .map_err(|e| SlipstreamError::Wallet(format!("write-behind seed: {e}")))?;
-        let mut lane =
-            crate::persist::PersistLane::open(&db_path, crate::Network::MainNetwork, 1, graft, 1, false)?;
+        let mut lane = crate::persist::PersistLane::open(
+            &db_path,
+            crate::Network::MainNetwork,
+            1,
+            graft,
+            graft_verify_sample,
+            false,
+        )?;
 
         let mut from_state = birthday_ts
             .to_chain_state()
@@ -485,7 +662,7 @@ pub mod testkit {
             (Ok(()), Ok(())) => {
                 // v0.4: build the open range-end shard (success path only).
                 lane.finish_graft_blocking()?;
-                Ok(())
+                Ok(lane.graft_verdict_totals())
             }
             (Err(e), Ok(())) => Err(e),
             (_, Err(p)) => Err(p),
@@ -1028,5 +1205,211 @@ mod tests {
             "write-behind split-chunking diff not clean:\n{}",
             report.render()
         );
+    }
+
+    // ── v0.4 T10b: the REAL-graft semantic oracle (hermetic) ────────────────────
+    //
+    // The plan's Task 10 called for a darkside fixture, but darkside cannot carry
+    // this proof: (a) darksidewalletd never serves GetSubtreeRoots, and the graft
+    // verdict keys off exactly those ingested roots; (b) closing a shard needs
+    // 65,536 REAL outputs, and darkside only ingests full-format blocks/txs
+    // (~500 MB of structurally-valid orchard bundles). The hermetic vehicle is
+    // also the cryptographically stronger one: darkside performs no proof
+    // verification at all, while the follow-up spend test runs the orchard
+    // circuit itself against the grafted tree. Shared fixture for both:
+    //
+    //   660 blocks × 100 orchard actions = 66,000 leaves from SYNTH_ORCHARD_START.
+    //   Shard 0 (positions 0..65,535) closes INSIDE the range with zero owned
+    //   notes → with a seeded "server" root on file it must GRAFT. The one OWNED
+    //   note (real encryption) sits at position 65,600 — inside shard 1, the
+    //   range-end shard, which always BUILDS (accumulator rule 1) — so both
+    //   paths coexist and the owned note's witness cap-path crosses the grafted
+    //   shard-0 root.
+
+    /// The shard-0 "server" root + the spending-account prepare hook shared by the
+    /// T10b tests. Returns (blocks, ufvk_encoded, seed) — the account is created
+    /// FROM SEED (spending, not view-only) inside the hook so the follow-up spend
+    /// test can derive the USK for the same account.
+    fn t10b_fixture() -> (Vec<zcash_client_backend::proto::compact_formats::CompactBlock>, String, [u8; 32]) {
+        let seed = [7u8; 32];
+        let usk = zcash_keys::keys::UnifiedSpendingKey::from_seed(
+            &zcash_protocol::consensus::MAIN_NETWORK,
+            &seed,
+            zip32::AccountId::ZERO,
+        )
+        .expect("usk from seed");
+        let ufvk = usk.to_unified_full_viewing_key();
+        let owned = super::testkit::owned_orchard_action(&ufvk, 500_000, 3);
+        // 760 blocks × 100 = 76,000 leaves: shard 0 (0..65,535) closes clean and
+        // grafts; the LAST 100 blocks (the engine's retained-checkpoint window)
+        // sit entirely in shard 1 (positions 66,000+), which builds — mirroring
+        // production's rule-2 invariant (the ChainTip range never grafts, so the
+        // retained checkpoints always live in built territory).
+        let blocks = super::testkit::synth_blocks_orchard(760, 100, Some((65_600, &owned)));
+        let ufvk_str = ufvk.encode(&zcash_protocol::consensus::MAIN_NETWORK);
+        (blocks, ufvk_str, seed)
+    }
+
+    /// Prepare hook: create the SPENDING account from `seed`, then seed the
+    /// shard-0 "server" root (only when `with_root`) — mirroring the engine's
+    /// pass-start `put_subtree_roots` ingest.
+    fn t10b_prepare(
+        seed: [u8; 32],
+        blocks: &[zcash_client_backend::proto::compact_formats::CompactBlock],
+        with_root: bool,
+    ) -> impl FnOnce(
+        &mut crate::wallet_session::WalletSession,
+        &zcash_client_backend::proto::service::TreeState,
+    ) -> Result<(), SlipstreamError>
+    + use<> {
+        // Shard 0's 65,536 cmx leaves → the root a lightwalletd would serve.
+        let cmxs: Vec<Vec<u8>> = blocks
+            .iter()
+            .flat_map(|b| b.vtx.iter())
+            .flat_map(|t| t.actions.iter())
+            .map(|a| a.cmx.clone())
+            .take(1 << 16)
+            .collect();
+        let root = super::testkit::orchard_shard_root(&cmxs);
+        // Height of the block holding leaf 65,535: 65,536 leaves / 100 per block
+        // → block index 655 (holds positions 65,500..65,599).
+        let end_height = blocks[655].height;
+        move |session, birthday_ts| {
+            use secrecy::SecretVec;
+            use zcash_client_backend::data_api::{AccountBirthday, WalletWrite};
+            let birthday = AccountBirthday::from_treestate(birthday_ts.clone(), None)
+                .map_err(|_| SlipstreamError::Wallet("t10b birthday".into()))?;
+            session
+                .db_mut()
+                .create_account("t10b", &SecretVec::new(seed.to_vec()), &birthday, None)
+                .map_err(|e| SlipstreamError::Wallet(format!("t10b create_account: {e}")))?;
+            if with_root {
+                use orchard::tree::MerkleHashOrchard;
+                use zcash_client_backend::data_api::chain::CommitmentTreeRoot;
+                let node = Option::from(MerkleHashOrchard::from_bytes(&root))
+                    .ok_or_else(|| SlipstreamError::Wallet("t10b root decode".into()))?;
+                let roots = crate::grpc::SubtreeRoots {
+                    sapling: vec![],
+                    orchard: vec![CommitmentTreeRoot::from_parts(
+                        zcash_protocol::consensus::BlockHeight::from(end_height as u32),
+                        node,
+                    )],
+                };
+                session.put_subtree_roots(&roots)?;
+            }
+            Ok(())
+        }
+    }
+
+    /// T10b step 1: with a seeded server root, the clean shard must REALLY graft —
+    /// and the grafted wallet must be semantically identical to the built one
+    /// (modulo the documented shard-blob retention-flag class), owned note
+    /// included. The lane runs audit-every (verify_sample=1 in the driver), so a
+    /// root mismatch would fail loudly; equality of checkpoints + caps proves the
+    /// grafted root feeds the same tree the built path computes.
+    /// Heavy (2× 66k-action scans): `cargo test -p slipstream-core --release
+    /// -- --ignored graft_real_install`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "heavy: 2× 66k-action orchard scans; run explicitly (use --release)"]
+    async fn graft_real_install_matches_build() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let doff = dir.path().join("off");
+        let don = dir.path().join("on");
+        std::fs::create_dir_all(&doff).unwrap();
+        std::fs::create_dir_all(&don).unwrap();
+        let (blocks, _ufvk, seed) = t10b_fixture();
+        let lens = vec![blocks.len()];
+
+        // Control: same spending account, same seeded root, graft OFF → builds.
+        let off_verdicts = super::testkit::scan_synthetic_windows_write_behind_with(
+            &doff,
+            blocks.clone(),
+            &lens,
+            false,
+            0,
+            t10b_prepare(seed, &blocks, true),
+        )
+        .await
+        .expect("graft-off control scan");
+        assert_eq!(off_verdicts, ((0, 0), (0, 0)), "graft-off renders no verdicts");
+        // Graft ON, verify_sample=0 (pure install): shard 0 must land as the
+        // root-only leaf. Correctness is carried by cap equality below — caps are
+        // rebuilt from shard ROOTS, so a wrong installed root cannot hide.
+        let on_verdicts = super::testkit::scan_synthetic_windows_write_behind_with(
+            &don,
+            blocks.clone(),
+            &lens,
+            true,
+            0,
+            t10b_prepare(seed, &blocks, true),
+        )
+        .await
+        .expect("graft-on scan");
+        // THE did-it-fire signal: exactly one orchard graft (shard 0), ZERO
+        // fallbacks (the seeded root was found), nothing on sapling (empty pool).
+        assert_eq!(
+            on_verdicts,
+            ((0, 0), (1, 0)),
+            "graft-on must graft exactly shard 0 with no fallbacks"
+        );
+
+        // Semantic equality modulo the documented shard-blob class.
+        let report = semantic_diff(&doff.join("data.db"), &don.join("data.db")).expect("diff");
+        for t in &report.tables {
+            if t.table.ends_with("_tree_shards") {
+                assert_eq!(t.rows_a, t.rows_b, "shard COUNT must match: {}", t.table);
+                continue;
+            }
+            assert!(
+                t.is_clean(),
+                "graft-on vs graft-off diff not clean in {}:\n{}",
+                t.table,
+                report.render()
+            );
+        }
+
+        // Final shapes: BOTH sides end root-only — the control builds shard 0 and
+        // then prunes the unreferenced interior to its root, which is precisely
+        // the shape the graft installs directly (build-then-prune ≡ graft; the
+        // verdict counters above are what distinguish the paths).
+        let blob = |db: &std::path::Path| -> Vec<u8> {
+            let conn = rusqlite::Connection::open(db).expect("open");
+            conn.query_row(
+                "SELECT shard_data FROM orchard_tree_shards WHERE shard_index = 0",
+                [],
+                |r| r.get(0),
+            )
+            .expect("shard 0 row")
+        };
+        let built = blob(&doff.join("data.db"));
+        let grafted = blob(&don.join("data.db"));
+        assert!(
+            grafted.len() < 100,
+            "grafted shard 0 must be the root-only leaf, got {} bytes",
+            grafted.len()
+        );
+        assert!(
+            built.len() < 100,
+            "control's shard 0 must have pruned to the root-only leaf, got {} bytes",
+            built.len()
+        );
+
+        // The owned note (in the BUILT shard 1) must be found on both sides.
+        let owned_value = |db: &std::path::Path| -> i64 {
+            let conn = rusqlite::Connection::open(db).expect("open");
+            conn.query_row("SELECT COALESCE(SUM(value),0) FROM orchard_received_notes", [], |r| {
+                r.get(0)
+            })
+            .expect("owned value")
+        };
+        assert_eq!(owned_value(&doff.join("data.db")), 500_000, "control finds the owned note");
+        assert_eq!(owned_value(&don.join("data.db")), 500_000, "grafted finds the owned note");
+
+        // And the ON side's buffer is drained (post-commit cleanup ran).
+        let conn = rusqlite::Connection::open(don.join("data.db")).expect("open on");
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM slipstream_graft_buffer", [], |r| r.get(0))
+            .expect("buffer count");
+        assert_eq!(left, 0, "buffer rows must be cleaned after graft/finish");
     }
 }

@@ -112,6 +112,23 @@ pub struct SparseShardStore<H> {
 }
 
 impl<H> SparseShardStore<H> {
+    /// v0.4 T10b: does the store hold REAL interior content for this shard —
+    /// anything beyond the root-only leaf that upstream's `put_shard_roots`
+    /// caches for every server-ingested subtree root (and that a graft installs)?
+    /// The accumulator's seed passthrough must key on THIS, not row presence:
+    /// after the pass-start root ingest EVERY completed shard has a row, so a
+    /// presence check silently forfeits the graft of any shard a range starts
+    /// exactly on. Root-only leaves are graft/build-eligible; only a built
+    /// interior means "already have it" (the crash-heal case).
+    pub fn shard_has_interior(&self, idx: u64) -> bool {
+        match self.shards.get(&idx) {
+            Some(t) => !t.root().is_leaf(),
+            // Not in memory (seed loads every known shard, so effectively
+            // unreachable) — stay conservative: presence ⇒ interior.
+            None => self.db_shard_indices.contains(&idx),
+        }
+    }
+
     pub fn new(shard_height: u8) -> Self {
         Self {
             shard_level: Level::new(shard_height),
@@ -321,6 +338,11 @@ pub struct SparseTreeState {
     /// `sparse_put_blocks` call on this state and read out at range end (ScanStats).
     pub(crate) census_sapling: crate::census::ShardCensus,
     pub(crate) census_orchard: crate::census::ShardCensus,
+    /// v0.4 T10b: cumulative graft verdicts — ((sap_grafted, sap_fallback),
+    /// (orch_grafted, orch_fallback)). The per-call values feed the "graft
+    /// verdicts" log; this sum is the in-band DID-IT-FIRE signal (build-then-prune
+    /// and graft converge to identical final bytes, so the DB can't tell).
+    pub(crate) graft_verdict_totals: ((u64, u64), (u64, u64)),
 }
 
 impl SparseTreeState {
@@ -699,6 +721,7 @@ pub fn sparse_put_blocks(
         census_sapling,
         census_orchard,
         graft,
+        graft_verdict_totals,
         ..
     } = sparse
     else {
@@ -739,7 +762,7 @@ pub fn sparse_put_blocks(
             sap_start_u64,
             sap_stream,
             &sap_notes,
-            |s| sap_tree.store().shards.contains_key(&s) || sap_tree.store().db_shard_indices.contains(&s),
+            |s| sap_tree.store().shard_has_interior(s),
         )?;
         let op = plan_pool(
             &ctx.conn,
@@ -749,7 +772,7 @@ pub fn sparse_put_blocks(
             orch_start_u64,
             orch_stream,
             &orch_notes,
-            |s| orch_tree.store().shards.contains_key(&s) || orch_tree.store().db_shard_indices.contains(&s),
+            |s| orch_tree.store().shard_has_interior(s),
         )?;
         let cleanup = (sp.cleanup_shards.clone(), op.cleanup_shards.clone());
         let verdicts =
@@ -1324,6 +1347,12 @@ pub fn sparse_put_blocks(
                 sap_fallback, orch_grafted, orch_fallback, "graft verdicts (this call)"
             );
         }
+        // v0.4 T10b: cumulative totals — the in-band DID-IT-FIRE signal (final
+        // DB bytes can't distinguish graft from build-then-prune).
+        graft_verdict_totals.0.0 += sap_grafted;
+        graft_verdict_totals.0.1 += sap_fallback;
+        graft_verdict_totals.1.0 += orch_grafted;
+        graft_verdict_totals.1.1 += orch_fallback;
     }
 
     // sap_tree_ms/orch_tree_ms are the per-pool closure wall times INSIDE the join:
@@ -2143,6 +2172,16 @@ impl PersistLane {
     pub fn census(&self) -> (crate::census::ShardCensus, crate::census::ShardCensus) {
         match &self.sparse {
             Some(s) => (s.census_sapling.clone(), s.census_orchard.clone()),
+            None => Default::default(),
+        }
+    }
+
+    /// v0.4 T10b: cumulative graft verdicts this lane rendered —
+    /// ((sap_grafted, sap_fallback), (orch_grafted, orch_fallback)).
+    /// Meaningful after `drain()`, same caveats as [`Self::census`].
+    pub fn graft_verdict_totals(&self) -> ((u64, u64), (u64, u64)) {
+        match &self.sparse {
+            Some(s) => s.graft_verdict_totals,
             None => Default::default(),
         }
     }

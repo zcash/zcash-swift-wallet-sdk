@@ -331,3 +331,38 @@ free — target/ debug artifacts pruned, 61 GB recovered). Still open, tracked
 separately: the Zodl iOS restore→Tor→restore silent dead-end (instrumented,
 did not reproduce on the successful run) and the UserDefaults flag-cache
 override landmine (cache beats compiled default; boot log now disambiguates).
+
+**Old-iPad datapoint (A10, 2 GB, 2026-07-05 morning — Lukas):** production Zodl
+flag-on restore **354.0 s vs 8:45 (525 s) previous best = −32.6%**, 296,457
+blocks. Cross-device picture: **M4 −46% / A18 −36% / A10 −33%** — the graft is
+CPU-class-invariant, as the census predicts (orchard 57.1% graftable on all
+three, 8× orch_grafted / 0 fallbacks everywhere). Field firsts in this log:
+`batch_combine=true` visible in the pass line (new stamp), and the **memory
+governor observed adapting** (2 GB device → sub-batches shrank to 2.4–7.6k
+blocks vs 10k on the iPhone). ⚠ v0.5 planning input: `fetch_s=216` on this
+device (~0.9 MB/s radio/TLS) hides behind scan today (`bound="scan"`, 97%
+scan) — but a 3× decrypt win would make old hardware NETWORK-bound (~220 s
+floor). The A10 poetry: the device that killed the GPU plan (1.47× ceiling,
+watchdog chunking) gets −33% from skip-the-work.
+
+**T10b step 1 (hermetic real-graft oracle) — GREEN 2026-07-05:**
+`graft_real_install_matches_build` (oracle.rs, #[ignore], ~12 s release): 760
+blocks × 100 orchard actions above NU5, one REAL owned note (genuine orchard
+encryption, position 65,600 = shard 1), shard 0 closes note-free against a
+LOCALLY-COMPUTED seeded server root → verdicts ((0,0),(1,0)) — exactly one
+orchard graft, zero fallbacks — semantic equality vs the built control, owned
+note found on both sides, buffer drained. Darkside pivot recorded in-file:
+darksidewalletd serves no GetSubtreeRoots and can't ingest 65k fabricated
+full-format actions; the hermetic vehicle is STRONGER (step 2 runs the orchard
+circuit itself; darkside verifies no proofs). Three findings fixed en route:
+(1) **production fix** — the accumulator seed check keyed on shard-ROW presence,
+and the pass-start root ingest creates a row for every completed shard, so any
+range starting exactly on a shard boundary silently forfeited its graft; now
+`shard_has_interior` (root-only leaves are graft-eligible; built interiors
+still heal stale buffers). (2) Fixture must honor rule 2's invariant by shape
+(retained checkpoint window ⊄ grafted span). (3) Blob-size is a false
+did-it-fire proxy — the control PRUNES built unreferenced shards to the same
+root-only leaf (build-then-prune ≡ graft, thesis confirmed); the honest signal
+is the new lane `graft_verdict_totals()`. Suite 254/0 post-change; clippy clean.
+Remaining: step 2 — the spend (USK + propose + orchard prover over the grafted
+wallet; witness cap-path crosses the grafted root inside the circuit).

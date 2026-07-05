@@ -160,6 +160,7 @@ incrementalmerkletree = { version = "0.8", default-features = false }
 shardtree = "0.6"
 rayon = "1.7"
 zip32 = "0.2"
+zcash_note_encryption = "0.4.1"
 
 # Phase B (GPU Sinsemilla offload) — used ONLY by slipstream-gpuhash, behind the
 # slipstream-core `gpu` feature. Never enters the default libzcashlc build. (Decision Log
