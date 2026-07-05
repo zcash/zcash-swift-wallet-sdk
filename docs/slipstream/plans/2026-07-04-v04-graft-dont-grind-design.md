@@ -416,3 +416,14 @@ production verdicts 8/8 across a 4-device fleet, scenario spot rows 100%.
 Remaining ceremony: [needs-user] formal beer medians (median-of-3 on THIS
 build, Mac, his wallet, vs the locked 28.9 s denominator) → engine re-extract
 + tag v0.4.0 → victory lap.
+
+**FORMAL ADJUDICATION (2026-07-05, median-of-3 on the v0.4.0 defaults-on build
+`1dc1bcd6`, Lukas's Mac + wallet, NO flags):** 19.5 / **18.7** / 18.3 s →
+**median 18.7 s vs the locked 28.9 s denominator = +54.5%.** The final build
+beat the amendment-night 19.8 s — the T10b-discovered `shard_has_interior` fix
+(boundary-start shards no longer forfeit their graft) is visible in the formal
+number. Splits steady: fetch 6.4–7.3, persist_wait 6.4–7.2, census identical.
+**BET LEDGER SETTLED: GPU → Lukas · SIMD → Lukas (+15.7 vs +15) · Aggregate →
+Claude (+54.5: Δ12.5 from his +42 vs Δ28.5 from +26) · v0.5-exists → open
+(flavor tiebreak at v0.5 ship). Score 2–1–1. Net: Claude owes one beer.**
+v0.4 IS CLOSED: engine re-extracted + tagged v0.4.0 (standalone repo).
