@@ -191,3 +191,16 @@ switch with an A/B gate on the Mac first, then the device protocol below.
   committed p2 tree (iOS device + sim + versioned macOS in LocalPackages);
   macOS slice since refreshed with C2 (default-off — behaviorally identical
   until enabled).
+- **C2 A18 DEVICE GATE PASSED (2026-07-06 08:18, Lukas's iPhone, cool +
+  charging, healthy net): OFF 48.8 s → ON 42.29 s = +15.4 %** — formally
+  clearing the mini-spec's ≥+15 % iOS-class gate that C1 failed. The rows
+  prove the chain end-to-end: `endo_calls = 1,708,408` (100 % coverage),
+  `batch_dh_s 170.7 → 130.6` (−23 %, matching the Mac's −25 %
+  production-shape drop), and the ENTIRE wall win landed in
+  `scan_call 36.6 → 30.1 s` — exactly where DH lives. Remaining A18 split:
+  scan_call 30.1 (dh_s/scan_call ≈ 4.3 avg concurrency — still
+  DH-saturated; further DH cuts keep paying) + persist_wait 9.0 (the lane
+  targets) + drains 2.2 + recv 1.0. **iPhone arc: 78 → 55.4 (v0.4) → 49.3
+  (pacer) → 42.3 s (C2).** Defaults decision pending: A18 +15.4 % ✓, Mac
+  wall-neutral/dh −25 % ✓ (no harm); fleet rule wants an A14/A10 spot
+  check before the flip.
