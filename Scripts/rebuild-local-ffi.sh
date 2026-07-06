@@ -110,9 +110,11 @@ cargo build --target "$RUST_TARGET" --release $CARGO_FEATURES
 # Path to built static library (target/ is at repo root)
 BUILT_LIB="target/$RUST_TARGET/release/libzcashlc.a"
 
-# Atomically rebuild the xcframework with only this single slice.
-# This prevents stale binaries from remaining for other targets,
-# which could silently use outdated code if Xcode switches platforms.
+# Atomically rebuild the xcframework, PRESERVING the other platforms' slices.
+# (This script used to keep only the rebuilt slice to avoid staleness — but
+# that silently destroyed the other platforms' builds, breaking e.g. Zodl iOS
+# after a macOS-only rebuild, three times. The ENGINE_BUILD log tag is the
+# definitive per-slice freshness check; preserved slices get a loud warning.)
 TEMP_DIR=$(mktemp -d)
 TEMP_XCFW="$TEMP_DIR/libzcashlc.xcframework"
 TEMP_FRAMEWORK="$TEMP_XCFW/$XCFRAMEWORK_SLICE/libzcashlc.framework"
@@ -129,33 +131,78 @@ if [[ -d "target/Headers" ]]; then
     cp -R target/Headers/* "$TEMP_FRAMEWORK/Headers/"
 fi
 
-# Generate xcframework Info.plist describing only this slice
-VARIANT_ENTRY=""
-if [[ -n "$PLATFORM_VARIANT" ]]; then
-    VARIANT_ENTRY="			<key>SupportedPlatformVariant</key>
-			<string>${PLATFORM_VARIANT}</string>"
+# Carry over every OTHER slice from the existing xcframework, with a loud
+# staleness reminder (they contain whatever Rust they were last built with).
+if [[ -d "$XCFRAMEWORK_DIR" ]]; then
+    for slice_path in "$XCFRAMEWORK_DIR"/*/; do
+        [[ -d "$slice_path" ]] || continue
+        slice_name="$(basename "$slice_path")"
+        if [[ "$slice_name" != "$XCFRAMEWORK_SLICE" ]]; then
+            # -P: keep symlinks as symlinks (the versioned macOS framework
+            # layout relies on Versions/Current links).
+            cp -RP "$slice_path" "$TEMP_XCFW/$slice_name"
+            echo "⚠️  preserved existing slice '$slice_name' — it is NOT rebuilt by this run;"
+            echo "    check its ENGINE_BUILD tag before trusting it on that platform."
+        fi
+    done
 fi
 
-cat > "$TEMP_XCFW/Info.plist" << PLISTEOF
+# Generate the xcframework Info.plist from the slices ACTUALLY PRESENT in
+# the assembled bundle (deterministic slice-name → platform mapping).
+{
+    cat << 'PLISTHEAD'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>AvailableLibraries</key>
 	<array>
+PLISTHEAD
+    for slice_path in "$TEMP_XCFW"/*/; do
+        [[ -d "$slice_path" ]] || continue
+        slice_name="$(basename "$slice_path")"
+        entry_variant=""
+        case "$slice_name" in
+            ios-arm64)
+                entry_platform="ios"
+                entry_archs="<string>arm64</string>" ;;
+            ios-arm64_x86_64-simulator)
+                entry_platform="ios"
+                entry_archs="<string>arm64</string><string>x86_64</string>"
+                entry_variant="			<key>SupportedPlatformVariant</key>
+			<string>simulator</string>" ;;
+            ios-arm64-simulator)
+                entry_platform="ios"
+                entry_archs="<string>arm64</string>"
+                entry_variant="			<key>SupportedPlatformVariant</key>
+			<string>simulator</string>" ;;
+            macos-arm64_x86_64)
+                entry_platform="macos"
+                entry_archs="<string>arm64</string><string>x86_64</string>" ;;
+            macos-arm64)
+                entry_platform="macos"
+                entry_archs="<string>arm64</string>" ;;
+            *)
+                echo "warning: unknown slice '$slice_name' — no plist entry emitted" >&2
+                continue ;;
+        esac
+        cat << ENTRYEOF
 		<dict>
 			<key>LibraryIdentifier</key>
-			<string>${XCFRAMEWORK_SLICE}</string>
+			<string>${slice_name}</string>
 			<key>LibraryPath</key>
 			<string>libzcashlc.framework</string>
 			<key>SupportedArchitectures</key>
 			<array>
-				<string>${ARCH}</string>
+				${entry_archs}
 			</array>
 			<key>SupportedPlatform</key>
-			<string>${PLATFORM}</string>
-${VARIANT_ENTRY}
+			<string>${entry_platform}</string>
+${entry_variant}
 		</dict>
+ENTRYEOF
+    done
+    cat << 'PLISTTAIL'
 	</array>
 	<key>CFBundlePackageType</key>
 	<string>XFWK</string>
@@ -163,7 +210,8 @@ ${VARIANT_ENTRY}
 	<string>1.0</string>
 </dict>
 </plist>
-PLISTEOF
+PLISTTAIL
+} > "$TEMP_XCFW/Info.plist"
 
 # Atomic swap
 rm -rf "$XCFRAMEWORK_DIR"
