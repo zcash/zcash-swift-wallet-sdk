@@ -18,7 +18,7 @@ struct BenchView: View {
     @State private var graft = true
     @State private var batch = true
     @State private var batchDecrypt = false
-    @State private var endoMul = false
+    @State private var endoMul = true
     @State private var running = false
     @State private var verdict: String?
     @State private var rows: [(String, String)] = []

@@ -132,8 +132,9 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         treestate_verify_sample: u32,
         /// v0.5 C2 lever: GLV endomorphism per-item DH (half-length Straus
-        /// ladder, byte-identical). Default OFF until the A18 gate.
-        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        /// ladder, byte-identical). Default ON (fleet-gated 2026-07-06);
+        /// `--endo-mul false` is the baseline A/B form.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
         endo_mul: bool,
         /// Write-behind queue depth (see `sync --persist-depth`). Default 1.
         #[arg(long, default_value_t = 1, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=64))]
@@ -949,11 +950,12 @@ mod tests {
             "--birthday", "2500000",
         ])
         .expect("parses");
-        // v0.4.0: graft + batch_combine default ON — bench mirrors production;
-        // `--graft false --batch-combine false` is the baseline A/B form.
+        // v0.4.0: graft + batch_combine default ON; v0.5: endo_mul default ON —
+        // bench mirrors production; `--graft false --batch-combine false
+        // --endo-mul false` is the baseline A/B form.
         assert!(matches!(
             cli.cmd,
-            Cmd::Bench { graft: true, batch_combine: true, gpu_subtree: false, keep: false, .. }
+            Cmd::Bench { graft: true, batch_combine: true, endo_mul: true, gpu_subtree: false, keep: false, .. }
         ));
     }
 

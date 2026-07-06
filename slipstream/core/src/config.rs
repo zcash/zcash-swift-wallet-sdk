@@ -128,8 +128,11 @@ pub struct EngineConfig {
 
     /// v0.5 C2: GLV endomorphism multiplication for trial-decrypt DH (the
     /// per-item path — half-length Straus ladder, ~1.7x fewer group ops,
-    /// byte-identical, KAT-gated in the orchard fork). Default OFF until the
-    /// A18 gate. Kill/dev switch: `ZCASH_ENDO_MUL`. Process-global toggle.
+    /// byte-identical, KAT-gated in the orchard fork). Default ON since
+    /// 2026-07-06, fleet-gated: A18 production +16% wall, M4 dh −25% with
+    /// zero concurrency penalty, A14/A10 100% coverage + zero errors +
+    /// clean per-lane scaling. Kill switch: `ZCASH_ENDO_MUL=0`.
+    /// Process-global toggle.
     pub endo_mul: bool,
 
     /// Boundary-audit cadence for local treestates: every Nth locally served
@@ -181,7 +184,7 @@ impl EngineConfig {
             batch_decrypt: false,
             local_treestate: false,
             treestate_verify_sample: 1,
-            endo_mul: false,
+            endo_mul: true,
             persist_depth: 1,
         }
     }

@@ -7,6 +7,21 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 # Unreleased
 
 ## Added
+- **Slipstream v0.5 sync levers — ON BY DEFAULT.** Fresh restores are another 26–42% faster
+  on top of v0.4 across the fleet (production, same wallet: M4 ~19–20 s weather-immune;
+  iPhone 16 Pro 50.0 s → 43.1 s; iPad Air 4 117 → 67.6 s; iPad 2018 (A10, 2 GB) 525 → 283 s
+  all-time −46%). Three engine changes:
+  - *Boundary treestate prefetch* (unflagged): the per-chunk `GetTreeState` RPC — up to 62%
+    of the scan wall on bad server days — is spawned at chunk emit and fully hidden behind
+    scanning (measured `prefetch_wait` on device: microseconds). Sync times no longer swing
+    with server-side treestate cost ("network weather").
+  - *Gated interleaved enhancement* (unflagged): interleaved enhancement passes and their
+    full persist drains now fire only when notes were actually found since the last run,
+    eliminating no-op drain stalls (device `enhance_s` swings of 1–21 s collapse to <1.5 s).
+  - *GLV endomorphism trial-decrypt DH* (`endo_mul`, default ON): half-length Straus ladder
+    on the per-item Diffie–Hellman path, byte-identical output, KAT-gated; −24% DH core-time
+    at 100% coverage on every measured chip, +15–16% wall on DH-saturated devices (A-series).
+    Kill switch: `ZCASH_ENDO_MUL=0`.
 - **Slipstream v0.4 "graft, don't grind" — ON BY DEFAULT.** Fresh restores are 13–46% faster
   across the device fleet (measured: M4 −46%, iPhone 16 Pro −29%, iPad 10th gen −13%,
   iPad A10 −33%) via two engine levers, both default-on after passing the full gate suite

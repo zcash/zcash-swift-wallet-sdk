@@ -4652,7 +4652,8 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         cfg.local_treestate = std::env::var("ZCASH_LOCAL_TREESTATE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(cfg.local_treestate);
-        // v0.5 C2 (#1755): GLV endomorphism per-item DH. Default OFF until the A18 gate.
+        // v0.5 C2 (#1755): GLV endomorphism per-item DH. Default ON
+        // (fleet-gated 2026-07-06); ZCASH_ENDO_MUL=0 is the kill switch.
         cfg.endo_mul = std::env::var("ZCASH_ENDO_MUL")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(cfg.endo_mul);
