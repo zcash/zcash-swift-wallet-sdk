@@ -219,3 +219,12 @@ switch with an A/B gate on the Mac first, then the device protocol below.
   third bite) → restored via `--arm-all`; the script now PRESERVES other
   slices + regenerates the plist from slices-present (`055e40d2` +
   `8bb2272e`, pushed).
+- **ENDO IN PRODUCTION (2026-07-06 08:47, same wallet, minutes later,
+  `ZCASH_ENDO_MUL=1` via scheme env): 43.14 s** — scan_call 38.0 → 30.8,
+  dh_s 177.3 → 134.5 (−24 %), endo_calls 1,661,848 (100 %), zero errors.
+  Raw wall +16.0 % / block-normalized +12 % / A18 bench pair +15.4 % —
+  one band. Zodl switched endpoints 2 s in (eu.zec.rocks → zec.rocks);
+  engine drained + restarted cleanly, first mini-pass banked one 10 k
+  chunk (hence 287,574 vs 297,570 blocks); end-to-end incl. restart 45 s.
+  **PRODUCTION ARC: 78 → 55.4 (v0.4) → 50.0 (pacer) → 43.1 s (endo) =
+  −44.7 % all-time.** Defaults flip still gated on the A14/A10 spot pair.
