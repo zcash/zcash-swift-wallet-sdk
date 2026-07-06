@@ -25,6 +25,7 @@ int32_t slipstream_bench_run(const char *server,
                              bool graft_subtree,
                              bool batch_combine,
                              bool batch_decrypt,
+                             bool endo_mul,
                              char *out_json,
                              size_t cap);
 

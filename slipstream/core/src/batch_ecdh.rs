@@ -315,13 +315,12 @@ mod tests {
         assert!(out[1].is_some(), "live lanes are unaffected by dead neighbors");
     }
 
-    /// C1 wiring A/B: FULL upstream batch decryption with the forked kernel
-    /// ENABLED vs DISABLED must be identical — hits, misses, ivk indices, and
-    /// the REAL owned note found either way. (The toggle is process-global;
-    /// concurrent tests taking the kernel path stay sound — it is KAT-gated
-    /// byte-identical.)
-    #[test]
-    fn wired_batch_decrypt_matches_per_item() {
+    /// Shared wiring A/B harness: FULL upstream batch decryption with a fork
+    /// lever ENABLED vs DISABLED must be identical — hits, misses, ivk
+    /// indices, and the REAL owned note found either way. (The toggles are
+    /// process-global; concurrent tests taking a lever path stay sound —
+    /// each is KAT-gated byte-identical.)
+    fn wired_decrypt_ab(set_lever: impl Fn(bool)) {
         use orchard::keys::{PreparedIncomingViewingKey, Scope};
         use orchard::note_encryption::{CompactAction, OrchardDomain};
         use zcash_note_encryption::EphemeralKeyBytes;
@@ -372,11 +371,11 @@ mod tests {
             .map(|a| (OrchardDomain::for_compact_action(a), a.clone()))
             .collect();
 
-        orchard::batch_dh::set_enabled(false);
+        set_lever(false);
         let off = zcash_note_encryption::batch::try_compact_note_decryption(&ivks, &items);
-        orchard::batch_dh::set_enabled(true);
+        set_lever(true);
         let on = zcash_note_encryption::batch::try_compact_note_decryption(&ivks, &items);
-        orchard::batch_dh::set_enabled(false); // restore the default
+        set_lever(false); // restore the default
 
         assert_eq!(off.len(), on.len());
         for (i, (a, b)) in off.iter().zip(&on).enumerate() {
@@ -389,8 +388,78 @@ mod tests {
                 _ => panic!("hit/miss pattern differs at action {i}"),
             }
         }
-        assert!(off[250].is_some(), "the owned action must decrypt (kernel off)");
-        assert!(on[250].is_some(), "the owned action must decrypt (kernel on)");
+        assert!(off[250].is_some(), "the owned action must decrypt (lever off)");
+        assert!(on[250].is_some(), "the owned action must decrypt (lever on)");
+    }
+
+    /// C1 wired A/B: full batch decryption ON vs OFF is identical (incl. a
+    /// real owned note) with the lockstep kernel as the lever.
+    #[test]
+    fn wired_batch_decrypt_matches_per_item() {
+        wired_decrypt_ab(orchard::batch_dh::set_enabled);
+    }
+
+    /// C2 wired A/B: same harness with the GLV endomorphism path as the lever.
+    #[test]
+    fn wired_endo_mul_matches_per_item() {
+        wired_decrypt_ab(orchard::endo::set_enabled);
+    }
+
+    /// C2 honest per-item bench THROUGH THE REAL SEAM: `ka_agree_dec` with the
+    /// endo lever off vs on, prepared keys built once (production shape).
+    /// `cargo test -p slipstream-core --release --lib -- --ignored endo_bench --nocapture`
+    #[test]
+    #[ignore = "bench probe; run explicitly with --release --nocapture"]
+    fn endo_bench() {
+        use orchard::keys::{PreparedIncomingViewingKey, Scope};
+        use orchard::note_encryption::OrchardDomain;
+        use std::hint::black_box;
+        use std::time::Instant;
+        use zcash_note_encryption::Domain;
+
+        let usk = zcash_keys::keys::UnifiedSpendingKey::from_seed(
+            &zcash_protocol::consensus::MAIN_NETWORK,
+            &[7u8; 32],
+            zip32::AccountId::ZERO,
+        )
+        .expect("usk");
+        let fvk = usk.to_unified_full_viewing_key().orchard().expect("orchard fvk").clone();
+        let pivk = PreparedIncomingViewingKey::new(&fvk.to_ivk(Scope::External));
+
+        let n = 2_000usize;
+        let points = synth_points(n, 1_000);
+        let pepks: Vec<_> = points
+            .iter()
+            .map(|p| {
+                let epk = Option::from(OrchardDomain::epk(
+                    &zcash_note_encryption::EphemeralKeyBytes(p.to_bytes()),
+                ))
+                .expect("valid epk");
+                OrchardDomain::prepare_epk(epk)
+            })
+            .collect();
+
+        orchard::endo::set_enabled(false);
+        let t = Instant::now();
+        for pepk in &pepks {
+            black_box(OrchardDomain::ka_agree_dec(&pivk, pepk));
+        }
+        let upstream = t.elapsed();
+
+        orchard::endo::set_enabled(true);
+        let t = Instant::now();
+        for pepk in &pepks {
+            black_box(OrchardDomain::ka_agree_dec(&pivk, pepk));
+        }
+        let endo = t.elapsed();
+        orchard::endo::set_enabled(false);
+
+        eprintln!(
+            "C2 endo bench N={n}: upstream {:.1} us/mult | endo {:.1} us/mult | ratio {:.2}x",
+            upstream.as_micros() as f64 / n as f64,
+            endo.as_micros() as f64 / n as f64,
+            upstream.as_secs_f64() / endo.as_secs_f64(),
+        );
     }
 
     /// C1 kernel bench: the lockstep kernel vs the exact per-mult work the

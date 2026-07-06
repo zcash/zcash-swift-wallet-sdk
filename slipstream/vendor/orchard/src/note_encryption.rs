@@ -160,6 +160,16 @@ impl Domain for OrchardDomain {
         ivk: &Self::IncomingViewingKey,
         epk: &Self::PreparedEphemeralPublicKey,
     ) -> Self::SharedSecret {
+        // [slipstream fork] v0.5 C2: GLV endomorphism split (half-length
+        // Straus ladder) — per-item, allocation-light, byte-identical
+        // (KAT-gated in endo.rs). OFF by default.
+        if crate::endo::enabled() {
+            crate::endo::note_call();
+            return SharedSecret::from_kernel_point(crate::endo::mul_endo(
+                &epk.raw_point(),
+                &ivk.raw_scalar(),
+            ));
+        }
         epk.agree(ivk)
     }
 

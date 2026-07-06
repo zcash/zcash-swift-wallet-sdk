@@ -37,6 +37,7 @@ mod constants;
 pub mod constants;
 /// [slipstream fork] batched same-scalar DH kernel + its runtime toggle.
 pub mod batch_dh;
+pub mod endo;
 pub mod keys;
 pub mod note;
 pub mod note_encryption;

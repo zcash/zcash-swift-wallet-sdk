@@ -18,6 +18,7 @@ struct BenchView: View {
     @State private var graft = true
     @State private var batch = true
     @State private var batchDecrypt = false
+    @State private var endoMul = false
     @State private var running = false
     @State private var verdict: String?
     @State private var rows: [(String, String)] = []
@@ -42,6 +43,7 @@ struct BenchView: View {
                 }
                 Section("v0.5 levers") {
                     Toggle("Batched trial-decrypt DH (C1)", isOn: $batchDecrypt)
+                    Toggle("Endomorphism DH (C2)", isOn: $endoMul)
                 }
                 Section {
                     Button {
@@ -84,17 +86,18 @@ struct BenchView: View {
         let graft = graft
         let batch = batch
         let batchDecrypt = batchDecrypt
+        let endoMul = endoMul
         Task.detached(priority: .userInitiated) {
             // Fresh subdir per run — the probe refuses a dirty wallet dir.
             let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("bench-\(UUID().uuidString.prefix(8))", isDirectory: true)
             var buf = [CChar](repeating: 0, count: 64 * 1024)
-            let rc = slipstream_bench_run(server, ufvk, height, dir.path, false, graft, batch, batchDecrypt, &buf, buf.count)
+            let rc = slipstream_bench_run(server, ufvk, height, dir.path, false, graft, batch, batchDecrypt, endoMul, &buf, buf.count)
             let json = rc == 0 ? String(cString: buf) : nil
             await MainActor.run {
                 running = false
                 if let json {
-                    verdict = "OK (graft=\(graft ? "on" : "off") batch=\(batch ? "on" : "off") decrypt=\(batchDecrypt ? "on" : "off")) — json also at \(dir.path)/bench.json"
+                    verdict = "OK (graft=\(graft ? "on" : "off") batch=\(batch ? "on" : "off") decrypt=\(batchDecrypt ? "on" : "off") endo=\(endoMul ? "on" : "off")) — json also at \(dir.path)/bench.json"
                     rows = Self.flatten(json: json)
                 } else {
                     verdict = "failed: probe rc \(rc) (see Xcode console for engine logs)"

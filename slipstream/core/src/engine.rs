@@ -23,7 +23,7 @@ use crate::{
 /// tag in the log doesn't match HEAD's value, the device is running a stale
 /// XCFramework (the three-layer gotcha, consuming side). Probe a built slice with:
 /// `strings <slice>/libzcashlc.framework/libzcashlc | grep <tag>`.
-pub const ENGINE_BUILD: &str = "2026-07-06.v05-pacer-p2";
+pub const ENGINE_BUILD: &str = "2026-07-06.v05-c2-endo";
 
 /// Current wall-clock time as a `YYYY-MM-DD HH:MM:SSZ` UTC string.
 ///
@@ -168,6 +168,7 @@ pub async fn sync_once(
         graft_subtree = config.graft_subtree,
         batch_combine = config.batch_combine,
         batch_decrypt = config.batch_decrypt,
+        endo_mul = config.endo_mul,
         local_treestate = config.local_treestate,
         started_at_utc = %wall_clock_utc(),
         "engine pass starting"
@@ -175,6 +176,8 @@ pub async fn sync_once(
     // v0.5 C1: the forked orchard's batched-DH kernel is a process-global
     // toggle (the swap point is a trait impl with no config channel).
     orchard::batch_dh::set_enabled(config.batch_decrypt);
+    // v0.5 C2: GLV endomorphism per-item multiplication (same toggle pattern).
+    orchard::endo::set_enabled(config.endo_mul);
 
     let mut session = WalletSession::open(config.network, &config.wallet_db_path)?;
     let mut client = connect_via(&config.endpoint, tor, ConnPurpose::MetadataUnique).await?;
@@ -327,6 +330,7 @@ pub async fn sync_once(
         lanes = batch_dh_lanes,
         kernel_lanes = batch_dh_kernel_lanes,
         dh_s = batch_dh_s,
+        endo_calls = orchard::endo::calls(),
         enabled = config.batch_decrypt,
         "batch_dh fire stats"
     );
@@ -352,6 +356,7 @@ pub async fn sync_once(
             scan_interleave_drain_s: outcome.report.scan_interleave_drain.as_secs_f64(),
             scan_final_drain_s: outcome.report.scan_final_drain.as_secs_f64(),
             scan_absorb_s: outcome.report.scan_absorb.as_secs_f64(),
+            endo_calls: orchard::endo::calls(),
             enhance_fetch_s: outcome.enhance.fetch_wait.as_secs_f64(),
             enhance_store_s: outcome.enhance.store.as_secs_f64(),
             enhance_address_s: outcome.enhance.address.as_secs_f64(),

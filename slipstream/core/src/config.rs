@@ -126,6 +126,12 @@ pub struct EngineConfig {
     /// Kill/dev switch: `ZCASH_LOCAL_TREESTATE`.
     pub local_treestate: bool,
 
+    /// v0.5 C2: GLV endomorphism multiplication for trial-decrypt DH (the
+    /// per-item path — half-length Straus ladder, ~1.7x fewer group ops,
+    /// byte-identical, KAT-gated in the orchard fork). Default OFF until the
+    /// A18 gate. Kill/dev switch: `ZCASH_ENDO_MUL`. Process-global toggle.
+    pub endo_mul: bool,
+
     /// Boundary-audit cadence for local treestates: every Nth locally served
     /// boundary ALSO fetches the server treestate (spawned, OFF the critical
     /// path) and compares the full `ChainState`; a mismatch hard-aborts the
@@ -175,6 +181,7 @@ impl EngineConfig {
             batch_decrypt: false,
             local_treestate: false,
             treestate_verify_sample: 1,
+            endo_mul: false,
             persist_depth: 1,
         }
     }

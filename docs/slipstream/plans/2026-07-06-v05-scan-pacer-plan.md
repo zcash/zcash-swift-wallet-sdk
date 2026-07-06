@@ -164,3 +164,30 @@ switch with an A/B gate on the Mac first, then the device protocol below.
   device A/B was run inside network slack — remove the slack first, then
   compute levers become measurable. Fleet on p2: **M4 18.8 s · A18 49.3 s**,
   both weather-immune.
+- **C2-ENDO SHIPPED behind `endo_mul` (default OFF) + Mac production gate
+  PASSED (2026-07-06, "go on all"):** GLV endomorphism on the PER-ITEM path
+  (`vendor/orchard/src/endo.rs`) — constants derived + 300k-verified offline,
+  φ↔λ pairing settled ON-CURVE (`(ζ_p·x, y) = Fq::ZETA·P`), re-proven
+  in-crate (`decompose_reconstructs`, `endo_map_is_lambda`,
+  `mul_endo_matches_group_mul`), wired at `ka_agree_dec` (both the batched
+  seam's fallback and direct calls inherit), full-pipeline byte-equal
+  (`wired_endo_mul_matches_per_item` via the shared harness). Honest
+  per-item bench THROUGH THE REAL SEAM: 46.1 → 34.4 µs/mult = **1.34×**
+  (theory 1.6–1.7×; gap = per-call table build + normalization —
+  allocation-free recode tried, point ops dominate). **Production-shape
+  gate (the C1 lesson): `dh_s 152.4 → 114.0 core-s = −25 % at
+  `endo_calls = 2,411,814` (100 % coverage) — the ratio matches the
+  microbench exactly, i.e. ZERO concurrency penalty** (C1's killer). Mac
+  wall weather-bound as expected (slack); the wall verdict = the A18 run.
+  Plumbing: config/env `ZCASH_ENDO_MUL`/CLI `--endo-mul`/probe ABI +
+  bench-app "Endomorphism DH (C2)" toggle/JSON `endo_calls`.
+  `ENGINE_BUILD = 2026-07-06.v05-c2-endo`.
+- **persist-depth A/B (Mac): NO ship** — depth 3 left persist_wait unchanged
+  (4.1 vs 4.0 s); the Mac lane outruns the scan. The A18's ~8 s submit tail
+  needs the LANE cheaper, not deeper: named targets stand (checkpoint
+  machinery ≈ 16 s/pass on device, row inserts ≈ 15.8 s). `--persist-depth`
+  stays a bench flag for experiments.
+- **Zodl victory-lap slices READY:** `--arm-all` FFI built from the
+  committed p2 tree (iOS device + sim + versioned macOS in LocalPackages);
+  macOS slice since refreshed with C2 (default-off — behaviorally identical
+  until enabled).

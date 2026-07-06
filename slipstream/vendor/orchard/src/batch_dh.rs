@@ -102,7 +102,7 @@ fn batch_invert(xs: &mut [pallas::Base]) {
 
 /// Width-4 wNAF recode: signed odd digits, nonzero density ~1/5. Runs once
 /// per (ivk, batch) — the scalar is fixed across the batch.
-fn wnaf4(repr: &[u8; 32]) -> Vec<i8> {
+pub(crate) fn wnaf4(repr: &[u8; 32]) -> Vec<i8> {
     let mut k = [0u64; 5]; // one spare limb: k + 7 must not overflow
     for (i, limb) in k.iter_mut().take(4).enumerate() {
         *limb = u64::from_le_bytes(repr[i * 8..(i + 1) * 8].try_into().expect("8 bytes"));
@@ -325,7 +325,7 @@ pub(crate) fn batch_mul_same_scalar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use group::{Curve, Group, GroupEncoding};
+    use group::{Curve, Group};
 
     /// KAT: the kernel must be byte-identical to the curve's own scalar mult.
     #[test]

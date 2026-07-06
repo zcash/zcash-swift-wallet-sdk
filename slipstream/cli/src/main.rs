@@ -131,6 +131,13 @@ enum Cmd {
         /// and compares (0 = off, 1 = audit EVERY boundary). Default 1.
         #[arg(long, default_value_t = 1)]
         treestate_verify_sample: u32,
+        /// v0.5 C2 lever: GLV endomorphism per-item DH (half-length Straus
+        /// ladder, byte-identical). Default OFF until the A18 gate.
+        #[arg(long, default_value_t = false, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+        endo_mul: bool,
+        /// Write-behind queue depth (see `sync --persist-depth`). Default 1.
+        #[arg(long, default_value_t = 1, value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=64))]
+        persist_depth: usize,
         /// Task 10 audit cadence: build-and-verify every Nth graftable shard
         /// against the server root (0 = off, 1 = audit EVERY graft — the
         /// validation mode). Default matches the engine (16).
@@ -537,6 +544,8 @@ fn cmd_bench(
     batch_decrypt: bool,
     local_treestate: bool,
     treestate_verify_sample: u32,
+    endo_mul: bool,
+    persist_depth: usize,
     graft_verify_sample: u32,
     json: Option<std::path::PathBuf>,
     keep: bool,
@@ -578,6 +587,8 @@ fn cmd_bench(
     cfg.batch_decrypt = batch_decrypt;
     cfg.local_treestate = local_treestate;
     cfg.treestate_verify_sample = treestate_verify_sample;
+    cfg.endo_mul = endo_mul;
+    cfg.persist_depth = persist_depth;
     cfg.graft_verify_sample = graft_verify_sample;
     cfg.batch_combine = batch_combine;
     cfg.bench_json_path = Some(json_path.clone());
@@ -913,8 +924,8 @@ fn main() {
         Cmd::Sync { server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow } => {
             cmd_sync(server, wallet_dir, ufvk, birthday, streams, chunk, sparse, chunk_split_bytes, memory_budget_bytes, write_behind, gpu_subtree, persist_depth, follow);
         }
-        Cmd::Bench { server, ufvk, birthday, wallet_dir, graft, gpu_subtree, batch_combine, batch_decrypt, local_treestate, treestate_verify_sample, graft_verify_sample, json, keep } => {
-            cmd_bench(server, ufvk, birthday, wallet_dir, graft, gpu_subtree, batch_combine, batch_decrypt, local_treestate, treestate_verify_sample, graft_verify_sample, json, keep);
+        Cmd::Bench { server, ufvk, birthday, wallet_dir, graft, gpu_subtree, batch_combine, batch_decrypt, local_treestate, treestate_verify_sample, endo_mul, persist_depth, graft_verify_sample, json, keep } => {
+            cmd_bench(server, ufvk, birthday, wallet_dir, graft, gpu_subtree, batch_combine, batch_decrypt, local_treestate, treestate_verify_sample, endo_mul, persist_depth, graft_verify_sample, json, keep);
         }
         Cmd::Watch { server, wallet_dir, ufvk, birthday, interval_ms } => {
             cmd_watch(server, wallet_dir, ufvk, birthday, interval_ms);

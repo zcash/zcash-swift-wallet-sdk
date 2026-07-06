@@ -122,6 +122,8 @@ pub struct BenchSummary {
     pub scan_final_drain_s: f64,
     /// v0.5 local treestate: the lever's own cost (frontier absorption).
     pub scan_absorb_s: f64,
+    /// v0.5 C2: multiplications served by the GLV endo path (0 = lever off).
+    pub endo_calls: u64,
     /// Enhancement wall split: awaiting gRPC tx fetches vs serial DB applies
     /// vs the address-window phase (explains the device enhance_s swings).
     pub enhance_fetch_s: f64,
@@ -140,7 +142,7 @@ impl BenchSummary {
             )
         }
         format!(
-            "{{\"engine_build\":\"{}\",\"total_s\":{},\"fetch_s\":{},\"scan_s\":{},\"enhance_s\":{},\"persist_wait_s\":{},\"persist_overlap_s\":{},\"blocks\":{},\"batch_dh_calls\":{},\"batch_dh_lanes\":{},\"batch_dh_kernel_lanes\":{},\"batch_dh_s\":{},\"scan_recv_wait_s\":{},\"scan_call_s\":{},\"scan_prefetch_wait_s\":{},\"scan_interleave_drain_s\":{},\"scan_final_drain_s\":{},\"scan_absorb_s\":{},\"enhance_fetch_s\":{},\"enhance_store_s\":{},\"enhance_address_s\":{},\"sapling\":{},\"orchard\":{}}}",
+            "{{\"engine_build\":\"{}\",\"total_s\":{},\"fetch_s\":{},\"scan_s\":{},\"enhance_s\":{},\"persist_wait_s\":{},\"persist_overlap_s\":{},\"blocks\":{},\"batch_dh_calls\":{},\"batch_dh_lanes\":{},\"batch_dh_kernel_lanes\":{},\"batch_dh_s\":{},\"scan_recv_wait_s\":{},\"scan_call_s\":{},\"scan_prefetch_wait_s\":{},\"scan_interleave_drain_s\":{},\"scan_final_drain_s\":{},\"scan_absorb_s\":{},\"endo_calls\":{},\"enhance_fetch_s\":{},\"enhance_store_s\":{},\"enhance_address_s\":{},\"sapling\":{},\"orchard\":{}}}",
             self.engine_build,
             self.total_s,
             self.fetch_s,
@@ -159,6 +161,7 @@ impl BenchSummary {
             self.scan_interleave_drain_s,
             self.scan_final_drain_s,
             self.scan_absorb_s,
+            self.endo_calls,
             self.enhance_fetch_s,
             self.enhance_store_s,
             self.enhance_address_s,
@@ -237,6 +240,7 @@ mod tests {
             scan_interleave_drain_s: 0.03,
             scan_final_drain_s: 0.02,
             scan_absorb_s: 0.07,
+            endo_calls: 42,
             enhance_fetch_s: 0.06,
             enhance_store_s: 0.04,
             enhance_address_s: 0.01,
