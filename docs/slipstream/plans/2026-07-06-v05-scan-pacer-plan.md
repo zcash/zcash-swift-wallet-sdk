@@ -204,3 +204,18 @@ switch with an A/B gate on the Mac first, then the device protocol below.
   (pacer) → 42.3 s (C2).** Defaults decision pending: A18 +15.4 % ✓, Mac
   wall-neutral/dh −25 % ✓ (no harm); fleet rule wants an A14/A10 spot
   check before the flip.
+- **PRODUCTION ZODL VICTORY LAP (2026-07-06 08:43, Lukas's iPhone, his
+  real wallet, defaults only): total 50.04 s** — first sub-51 production
+  restore, 0.7 s off the 49.3 s bench floor (Zodl overhead ≈ nil).
+  297,570 blocks, bound="scan"; fetch 9.8 / scan 49.0 / **enhance 0.80**
+  (the old 1.1→20.8 s swing is gone in production too) / persist_wait 8.6.
+  Lane split: scan_call 38.0 / **prefetch_wait 99 µs** (the treestate RTT
+  fully hidden on device) / drains 2.3 / recv 1.4 / residue 7.4;
+  dh_s 177.3, endo_calls 0 (default-off). Zero errors; recovery→catch-up
+  handoff clean. Production arc: **78 → 55.4 (v0.4) → 50.0 s (v0.5
+  pacer, endo off)** = −36 % all-time; endo ON would project ~43–45 s
+  (A18 gate +15.4 %). Morning detour recorded: the xcframework was
+  macOS-only when Lukas first built (rebuild-local-ffi single-slice trap,
+  third bite) → restored via `--arm-all`; the script now PRESERVES other
+  slices + regenerates the plist from slices-present (`055e40d2` +
+  `8bb2272e`, pushed).
