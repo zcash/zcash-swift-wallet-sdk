@@ -636,7 +636,7 @@ class SlipstreamOfflineTests: ZcashTestCase {
                        "withTaskTimeout must propagate the operation's value when it finishes first")
     }
 
-    /// withTaskTimeout: operation takes longer than the deadline → throws _SummaryTimeoutError.
+    /// withTaskTimeout: operation takes longer than the deadline → throws SummaryTimeoutError.
     /// (The helper is production-unused since v2.1 Phase 2 — the engine owns the summary
     /// refresh lifecycle — but stays available; this pins its timeout contract.)
     func testWithTaskTimeoutThrowsWhenDeadlineExceeded() async throws {
@@ -648,10 +648,10 @@ class SlipstreamOfflineTests: ZcashTestCase {
                 return 99
             }
             XCTFail("withTaskTimeout must throw when the deadline is exceeded")
-        } catch is _SummaryTimeoutError {
+        } catch is SummaryTimeoutError {
             // Expected: timeout error was thrown.
         } catch {
-            XCTFail("Expected _SummaryTimeoutError, got \(error)")
+            XCTFail("Expected SummaryTimeoutError, got \(error)")
         }
     }
 
