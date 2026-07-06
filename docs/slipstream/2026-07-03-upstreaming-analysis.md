@@ -1,5 +1,25 @@
 # Upstreaming Slipstream into zcash/zcash-swift-wallet-sdk — what's actually needed
 
+> **⚠ v0.5 ADDENDUM (2026-07-06) — §2's "zero [patch] sections" claim is now STALE.**
+> v0.5 introduced vendored forks (`slipstream/vendor/orchard` 0.14.0 + `zcash_note_encryption`
+> 0.4.1) wired via workspace members + `[patch.crates-io]` (SDK root Cargo.toml AND the
+> published engine repo). The forks carry the `BatchDomain::batch_ka_agree_dec` seam and the
+> GLV `endo.rs` ladder (default ON since 2026-07-06). Consequences for this plan:
+> - **The "publish slipstream-core to crates.io" recommendation (§TL;DR-2) no longer works
+>   as-is**: `[patch.crates-io]` does not propagate to crates.io consumers, so a published
+>   slipstream-core would resolve the REAL orchard and fail to compile against the fork-only
+>   `orchard::endo`/`batch_dh` APIs.
+> - Three resolution paths, in preference order: **(a) upstream the seam** — PR the
+>   `batch_ka_agree_dec` seam to zcash/librustzcash (zcash_note_encryption) and `endo.rs`
+>   to zcash/orchard (the mini-spec §5b thread; both are small, additive, byte-identical,
+>   KAT-gated — after which the forks die and §2 is true again); **(b) vendor in-tree in the
+>   upstream SDK PR** (works today, +~14k lines of vendored fork, upstream carries the patch
+>   sections); **(c) publish the forks under distinct names** (orchard-slipstream) — last resort.
+> - Path (a) is also the strongest strategic move: the endo win (−24% DH core-time,
+>   byte-identical) benefits every orchard consumer and builds upstream credibility ahead of
+>   the SDK PR. Estimated PR size: endo.rs ~380 lines + 3 KATs; the seam ~40 lines.
+
+
 **2026-07-03 · Analysis for Lukas.** Goal (his words): get slipstream into the upstream SDK
 "off by default by flag — code there, not used, old SDK works", so the `slipstream` branch no
 longer needs to be held on the SDK fork and the only long-lived branch left is Zodl's.
