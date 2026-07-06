@@ -148,3 +148,19 @@ switch with an A/B gate on the Mac first, then the device protocol below.
   at 18.8 s: scan_call 12.5 s (upstream scan) + submit 3.5 s + recv 0.7 s —
   the next targets if v0.5 pushes further. `ENGINE_BUILD =
   2026-07-06.v05-pacer-p2`.
+- **DEVICE CONFIRMATION (Lukas's A18, 2026-07-06 07:04, cool phone, healthy
+  net, C1 off): total 49.3 s vs the 62.2 s same-conditions baseline =
+  +26 % — first sub-50 s iPhone restore.** `prefetch_wait = 77 µs` (the
+  fetch-side spawn fully hides RTT on device), enhance mystery CLOSED
+  (`enhance_s 0.82` — fetch 0.42 / store 0.15; the old 1.1→11→20.8 s swings
+  were the no-op interleave rounds), drains 2.3 s, recv 1.2 s. New device
+  split: **scan_call 36.6 s (76 % of scan) + submit ≈ 8 s (persist_wait
+  9.35)** — the named A18 targets. STRATEGIC REOPENING: `dh_s 170.7` core-s
+  over `scan_call 36.6` wall = average DH concurrency ≈ 4.7 on 6 cores —
+  with the RTT slack gone the A18 scan is now genuinely compute-saturated,
+  which re-arms **C2-endo-on-the-per-item-path for the PHONE specifically**
+  (the mini-spec's own transfer condition now holds there; the Mac at
+  scan_call 12.5 s keeps its slack). Order-of-operations lesson: C1's
+  device A/B was run inside network slack — remove the slack first, then
+  compute levers become measurable. Fleet on p2: **M4 18.8 s · A18 49.3 s**,
+  both weather-immune.
