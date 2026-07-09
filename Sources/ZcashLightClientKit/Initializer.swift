@@ -161,6 +161,11 @@ public class Initializer {
     ///  - outputParamsURL: location of the output parameters
     ///  - loggingPolicy: the `LoggingPolicy` for the logger
     ///  - enableBackendTracing: this enables tracing for super detailed debugging. it will slow down everything 10 or 100x.
+    /// - Parameter dandelionSubmitConfig: Controls how outgoing transactions are submitted.
+    ///   Use ``DandelionSubmitConfig/directP2P(network:fallbackToLightWalletD:)`` to submit
+    ///   directly to a Zcash full node via the P2P wire protocol, bypassing lightwalletd
+    ///   and preventing any intermediary from observing the IP↔transaction correlation.
+    ///   Defaults to ``DandelionSubmitConfig/lightWalletD`` for backward compatibility.
     convenience public init(
         cacheDbURL: URL?,
         fsBlockDbRoot: URL,
@@ -175,7 +180,8 @@ public class Initializer {
         alias: ZcashSynchronizerAlias = .default,
         loggingPolicy: LoggingPolicy = .default(.debug),
         isTorEnabled: Bool,
-        isExchangeRateEnabled: Bool
+        isExchangeRateEnabled: Bool,
+        dandelionSubmitConfig: DandelionSubmitConfig = .lightWalletD
     ) {
         let container = DIContainer()
 
@@ -196,7 +202,8 @@ public class Initializer {
             alias: alias,
             loggingPolicy: loggingPolicy,
             isTorEnabled: isTorEnabled,
-            isExchangeRateEnabled: isExchangeRateEnabled
+            isExchangeRateEnabled: isExchangeRateEnabled,
+            dandelionSubmitConfig: dandelionSubmitConfig
         )
 
         self.init(
@@ -318,7 +325,8 @@ public class Initializer {
         alias: ZcashSynchronizerAlias,
         loggingPolicy: LoggingPolicy = .default(.debug),
         isTorEnabled: Bool,
-        isExchangeRateEnabled: Bool
+        isExchangeRateEnabled: Bool,
+        dandelionSubmitConfig: DandelionSubmitConfig = .lightWalletD
     ) -> (URLs, ZcashError?) {
         let urls = URLs(
             fsBlockDbRoot: fsBlockDbRoot,
@@ -341,7 +349,8 @@ public class Initializer {
             endpoint: endpoint,
             loggingPolicy: loggingPolicy,
             isTorEnabled: isTorEnabled,
-            isExchangeRateEnabled: isExchangeRateEnabled
+            isExchangeRateEnabled: isExchangeRateEnabled,
+            dandelionSubmitConfig: dandelionSubmitConfig
         )
 
         return (updatedURLs, parsingError)
