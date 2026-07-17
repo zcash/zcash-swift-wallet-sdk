@@ -182,8 +182,7 @@ public class SDKSynchronizer: Synchronizer {
 
     public func prepare(
         with seed: [UInt8]?,
-        walletBirthday: BlockHeight,
-        for walletMode: WalletInitMode,
+        walletBirthday: BlockHeight?,
         name: String,
         keySource: String?
     ) async throws -> Initializer.InitializationResult {
@@ -196,7 +195,6 @@ public class SDKSynchronizer: Synchronizer {
         let initResult = try await self.initializer.initialize(
             with: seed,
             walletBirthday: walletBirthday,
-            for: walletMode,
             name: name,
             keySource: keySource
         )
@@ -545,6 +543,146 @@ public class SDKSynchronizer: Synchronizer {
                 }
             }
         })
+    }
+
+    // MARK: - Ironwood migration
+
+    public func migrationState(for account: AccountUUID) async throws -> MigrationState {
+        try await initializer.rustBackend.migrationState(for: account)
+    }
+
+    public func migrationProgress(for account: AccountUUID) async throws -> MigrationProgress? {
+        try await initializer.rustBackend.migrationProgress(for: account)
+    }
+
+    public func isNoteSplitNeeded(for account: AccountUUID) async throws -> Bool {
+        try await initializer.rustBackend.migrationIsNoteSplitNeeded(for: account)
+    }
+
+    public func prepareNoteSplit(for account: AccountUUID) async throws -> NoteSplitProposal {
+        try await initializer.rustBackend.migrationPrepareNoteSplit(for: account)
+    }
+
+    public func submitNoteSplit(
+        proposal: NoteSplitProposal,
+        spendingKey: UnifiedSpendingKey,
+        options: NetworkPrivacyOptions,
+        for account: AccountUUID
+    ) async throws -> TransferResult {
+        // `options` is accepted but ignored in v1 (see `broadcastMigrationTx`).
+        let prepared = try await initializer.rustBackend.migrationSignNoteSplit(
+            proposal: proposal,
+            usk: spendingKey,
+            for: account
+        )
+        let result = try await broadcastMigrationTx(prepared, for: account)
+        // Record the broadcast so the engine advances the split phase (mirrors
+        // `executeNextPendingTransfer`). `prepared.id` is `prep:<run_id>`, which the crate maps to
+        // the denomination-split flow; without this the state is stuck at `preparing_denominations`.
+        try await initializer.rustBackend.migrationRecordTransferResult(
+            transferId: prepared.id,
+            result: result,
+            for: account
+        )
+        return result
+    }
+
+    public func proposeMigrationTransfers(for account: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule {
+        try await initializer.rustBackend.migrationProposeTransfers(for: account, includeResidual: includeResidual)
+    }
+
+    public func proposeImmediateMigrationTransfers(for account: AccountUUID) async throws -> MigrationSchedule {
+        try await initializer.rustBackend.migrationProposeImmediate(for: account)
+    }
+
+    public func signAndStoreMigrationSchedule(
+        _ schedule: MigrationSchedule,
+        spendingKey: UnifiedSpendingKey,
+        for account: AccountUUID
+    ) async throws {
+        try await initializer.rustBackend.migrationSignAndStore(
+            schedule: schedule,
+            usk: spendingKey,
+            for: account
+        )
+    }
+
+    public func isSyncRequiredBeforeNextTransfer(for account: AccountUUID) async throws -> Bool {
+        try await initializer.rustBackend.migrationIsSyncRequired(for: account)
+    }
+
+    public func executeNextPendingTransfer(
+        options: NetworkPrivacyOptions,
+        for account: AccountUUID
+    ) async throws -> TransferResult? {
+        // `options` is accepted but ignored in v1 (see `broadcastMigrationTx`).
+        guard let prepared = try await initializer.rustBackend.migrationNextDueTransfer(for: account) else {
+            return nil
+        }
+        let result = try await broadcastMigrationTx(prepared, for: account)
+        try await initializer.rustBackend.migrationRecordTransferResult(
+            transferId: prepared.id,
+            result: result,
+            for: account
+        )
+        return result
+    }
+
+    /// Extracts the broadcast-ready consensus transaction from the crate-prepared, signed PCZT
+    /// (`PreparedTx.rawPczt`), broadcasts it through the SDK's old direct submit path
+    /// (`transactionEncoder.submit`, not the broadcaster), and maps the outcome to a `TransferResult`,
+    /// mirroring `submitTransactions`' error handling.
+    ///
+    /// `invalidNote` / `expired` are intentionally not inferred from submit errors here — the
+    /// migration engine owns deep invalidity: after broadcast, `migrationHasInvalidTransfers` /
+    /// re-querying `migrationState` surfaces `.requiresAttention`, and `restartCurrentMigrationStep`
+    /// recovers. So the Swift side maps obvious network outcomes and lets the engine reconcile.
+    private func broadcastMigrationTx(_ prepared: PreparedTx, for account: AccountUUID) async throws -> TransferResult {
+        // `PreparedTx.rawPczt` is a serialized PCZT, not a broadcastable transaction: extract the
+        // consensus transaction bytes first. An extract failure propagates (it is a crate/local error,
+        // not a network outcome) rather than being mapped to a `TransferResult`.
+        let txBytes = try await initializer.rustBackend.migrationExtractBroadcastTx(pczt: prepared.rawPczt, for: account)
+
+        // `PreparedTx.txid` is the crate's display-order hex txid; `EncodedTransaction.transactionId`
+        // and `isTransactionKnownToServer` need internal-order bytes, so decode then reverse.
+        // TODO: [MOB-1455] honor NetworkPrivacyOptions (Tor / secondary endpoint). v1 broadcasts over
+        // the SDK's already-configured service.
+        let txIdData = Data(hexEncoded: prepared.txid).map { Data($0.reversed()) } ?? Data()
+        let encoded = EncodedTransaction(transactionId: txIdData, raw: Data(txBytes))
+
+        do {
+            try await transactionEncoder.submit(transaction: encoded)
+            return .success(txid: prepared.txid)
+        } catch let ZcashError.serviceSubmitFailed(serviceError) {
+            logger.error("Migration broadcast serviceSubmitFailed: \(String(describing: serviceError))")
+            return .networkError(retryable: true)
+        } catch let TransactionEncoderError.submitError(code, message) {
+            // Surface the server's rejection reason (lightwalletd/Zebra SendResponse) — otherwise the
+            // migration engine only sees an opaque `.networkError`.
+            logger.error("Migration broadcast rejected by server: code=\(code) message=\(message)")
+            // Trust the network over the submit-side error: if the server already has this tx, the
+            // broadcast already landed. Mirror `submitTransactions`' isTransactionKnownToServer check.
+            if await transactionEncoder.isTransactionKnownToServer(txId: txIdData) {
+                return .success(txid: prepared.txid)
+            }
+            return .networkError(retryable: false)
+        }
+    }
+
+    public func hasOverdueTransfers(for account: AccountUUID) async throws -> Bool {
+        try await initializer.rustBackend.migrationHasOverdueTransfers(for: account)
+    }
+
+    public func hasInvalidTransfers(for account: AccountUUID) async throws -> Bool {
+        try await initializer.rustBackend.migrationHasInvalidTransfers(for: account)
+    }
+
+    public func refreshStaleTransfers(spendingKey: UnifiedSpendingKey, for account: AccountUUID, includeResidual: Bool) async throws -> UInt32 {
+        try await initializer.rustBackend.migrationRefreshStaleTransfers(usk: spendingKey, for: account, includeResidual: includeResidual)
+    }
+
+    public func restartCurrentMigrationStep(for account: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule {
+        try await initializer.rustBackend.migrationRestartStep(for: account, includeResidual: includeResidual)
     }
 
     public func createPCZTFromProposal(accountUUID: AccountUUID, proposal: Proposal) async throws -> Pczt {
