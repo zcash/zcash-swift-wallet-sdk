@@ -6,6 +6,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Changed
+- Internal: the Rust FFI layer's Tor plumbing (`rust/src/tor.rs`) has been replaced by the
+  shared blocking network-privacy facade in `zcash_client_backend::privacy::blocking`
+  (`PrivacyRuntime` / `LwdConn`). Every `zcashlc_tor_*` / `zcashlc_*_tor_runtime` /
+  `zcashlc_get_exchange_rate_usd*` FFI symbol keeps its exact name, signature, and
+  behaviour, so there is no public Swift API change and no `MIGRATING.md` entry is needed.
+  This is the first step toward runtime-selectable network-privacy backends; runtime
+  backend selection (e.g. Nym) will arrive in a follow-up that adds new constructors
+  alongside the existing Tor one.
+
 
 # 2.5.1 - 2026-05-14
 
