@@ -110,6 +110,23 @@ zcash_voting = "1"
 zcash_keys = { version = "0.15.0", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
 
+# Slipstream engine — the alternative sync engine the SlipstreamSynchronizer
+# drives. Consumed as a remote crate. Pinned by rev to 0.6.4 + the
+# note-locking-family compile adaptations
+# (michal/MOB-1455/MOB-1495-locking-family-compat: the WalletWrite locking
+# trait items on the persistence facades, the Tor onion-services parameter,
+# and the widened proposal-fn call sites); return to a release tag once one
+# is cut with these aboard. The engine rides the same librustzcash rev as
+# this package, so the graph stays a single family instance.
+slipstream-core = { git = "https://github.com/LukasKorba/slipstream.git", rev = "9727243537eef245728b655d8ed98acfc2a2349c" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[features]
+# GPU-accelerated Orchard subtree building in the engine (wgpu). OFF by
+# default — the released libzcashlc links zero wgpu. Enable for local device
+# builds via Scripts/init-local-ffi.sh --gpu / rebuild-local-ffi.sh --gpu.
+gpu = ["slipstream-core/gpu"]
+
 [dev-dependencies]
 hex = "0.4"
 
