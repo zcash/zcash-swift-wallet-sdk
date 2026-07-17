@@ -25,8 +25,7 @@ public protocol ClosureSynchronizer {
     // swiftlint:disable:next function_parameter_count
     func prepare(
         with seed: [UInt8]?,
-        walletBirthday: BlockHeight,
-        for walletMode: WalletInitMode,
+        walletBirthday: BlockHeight?,
         name: String,
         keySource: String?,
         completion: @escaping (Result<Initializer.InitializationResult, Error>) -> Void
