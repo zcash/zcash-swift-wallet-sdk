@@ -22,6 +22,7 @@ sapling = { package = "sapling-crypto", version = "0.7", default-features = fals
 transparent = { package = "zcash_transparent", version = "0.9", default-features = false }
 zcash_address = { version = "0.13" }
 zcash_client_backend = { version = "0.24.0-rc.1", features = [
+    "lightwalletd-blocking",
     "lightwalletd-tonic-tls-webpki-roots",
     "orchard",
     "pczt",
@@ -104,20 +105,29 @@ voting-circuits = { git = "https://github.com/zodl-inc/voting-circuits.git", rev
 imt-tree = { git = "https://github.com/zodl-inc/vote-nullifier-pir.git", rev = "0dea3485429c80033e67a1ddb18ee72cc450cefb" }
 zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting.git", rev = "464f974865f2afa82bdac15d169168c77ecb9c74" }
 
-# Pin the whole librustzcash stack to a single git rev carrying the merged Ironwood
-# historical selector, pending a crates.io release. zcash_voting no longer hard-pins
-# librustzcash (it declares crates.io versions and patches from its own root), so this
-# workspace's patch governs the rev for the entire graph and everything resolves to one
-# copy. Bump this rev in one place to advance the stack.
-equihash = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-f4jumble = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-pczt = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
-zip321 = { git = "https://github.com/zcash/librustzcash", rev = "4faf8711189950cf38f99b59b8c21208d0946427" }
+# Pin the whole librustzcash stack to a single source, pending a crates.io release.
+# zcash_voting no longer hard-pins librustzcash (it declares crates.io versions and
+# patches from its own root), so this workspace's patch governs the source for the
+# entire graph and everything resolves to one copy. Bump this in one place to advance
+# the stack.
+#
+# The stack needs BOTH librustzcash main at 4faf8711 (the previous pin: Ironwood
+# historical note selection, which the pinned zcash_voting rev calls into) AND the
+# network-privacy layer from zcash/librustzcash#2659 that the Tor FFI now delegates
+# to. The pinned rev is the tip of that PR's branch (`feat/lwd-network-privacy`,
+# based on main at 4faf8711); it carries the same crate versions as the published
+# 0.24.0-rc.1 line.
+# TODO: replace with a crates.io release (or a rev on librustzcash main) once
+# zcash/librustzcash#2659 merges.
+equihash = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+f4jumble = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "552130e7bd8b6c472d9e878fb5183913c7c0f685" }
