@@ -124,6 +124,24 @@ behavior (`SDKSynchronizer` does):
   the final residual that never migrates. External-signer session counts are a query on the result
   (`totalSigningSessions(maxTransactionsPerSession:)`), not a parameter. The zero-run estimate is a
   legitimate answer, not an error.
+## `WalletInitMode` removed — `prepare()` derives the init flow
+
+The `WalletInitMode` enum is gone. `prepare(with:walletBirthday:...)` no longer takes a
+`for walletMode:` parameter — the SDK derives the flow itself:
+
+- an account already exists in `data.db` → open the existing wallet;
+- no account + a (past) birthday → **restore**: `recover_until` is set to the current chain tip, so
+  the `[birthday … tip]` backfill is tracked as recovery (`SynchronizerState.isRecovering`);
+- no account + `nil` birthday → **new wallet**: starts at a reorg-safe recent height, no recovery phase.
+
+A deliberate re-scan is an explicit action — `rewind(_:)` — not an init mode. Update call sites:
+
+```swift
+// OLD:
+try await synchronizer.prepare(with: seed, walletBirthday: birthday, for: .restoreWallet, ...)
+// NEW:
+try await synchronizer.prepare(with: seed, walletBirthday: birthday, ...)
+```
 
 ## The live per-transaction migration status read joins the migration group
 
