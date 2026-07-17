@@ -197,6 +197,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "unimplemented" protocol-extension defaults for the three throwing members like the rest of the
   group (`resetKeystoneSignBatchDecoder()` gets the group's fourth inert default instead, since it
   is itself infallible).
+- `SlipstreamSynchronizer` — an alternative, engine-driven implementation of `Synchronizer` backed
+  by the `slipstream-core` sync engine (consumed as a remote crate): non-linear Spend-before-Sync
+  scheduling, concurrent density-adaptive fetch, sparse commitment-tree persistence (byte-identical
+  to the upstream path, oracle-gated), an autonomous session with per-call Tor policy and server
+  failover, poll-model snapshots (`SynchronizerState.isRecovering`), and a stall watchdog. FFI
+  surface `zcashlc_slipstream_*` with error codes `ZRUST0093–0097`. Hosts opt in by constructing
+  it; `SDKSynchronizer` remains the default engine.
+- `Synchronizer.allTransactions()` is a formal protocol requirement, and
+  `TransactionRepository.unreconciledTxids()` exposes the read-side reconciliation view (defaults
+  to empty when the engine's view is absent).
 - Ironwood (NU6.3) receive/sync readiness. The lightwalletd protocol gains the Ironwood fields
   (`CompactTx.ironwoodActions`, `ChainMetadata.ironwoodCommitmentTreeSize`, `TreeState.ironwoodTree`,
   `ShieldedProtocol.ironwood`); `UpdateSubtreeRootsAction` fetches and stores Ironwood subtree roots
@@ -248,6 +258,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unreleased `zcash_pool_migration` crate), pinned via `[patch.crates-io]` until the 0.24-era
   crates.io release; `orchard` 0.15.0 and `shardtree` 0.7.0 resolve from crates.io. The pin
   returns to a main rev in one move once the migration crate lands upstream.
+- `prepare(with:walletBirthday:name:keySource:)` no longer takes a `WalletInitMode` — the SDK
+  derives new-vs-restore from the wallet state and the (now optional) birthday, and the enum is
+  removed. See `MIGRATING.md`.
+- The wallet database opens with a 15 s SQLite `busy_timeout` (the engine can hold a short writer
+  lock during `deleteAccount`/`importAccount`; the legacy path has no concurrent writer, so the
+  timeout never engages there).
+- The FFI's tracing subscriber caps `zcash_client_backend` spans at WARN — its per-block/batch
+  `#[instrument]` spans cost syscalls on the scan producer thread through os_log/signpost
+  (measured: production first pass 3.4 s → 0.5 s).
+- The Rust core builds against `zcash/librustzcash` main (Ironwood is merged and ungated upstream),
+  pinned via `[patch.crates-io]` until the 0.24-era crates.io release; `orchard` 0.15.0 and
+  `shardtree` 0.7.0 resolve from crates.io.
 - Voting rides upstream `zcash_voting` (a pinned rev of its repository's main, aligned to the same
   librustzcash rev and orchard 0.15; the published 0.11 release pins `orchard ^0.14` and cannot
   coexist with the Ironwood graph) with **real implementations across the FFI**. Behavioral changes
