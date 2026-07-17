@@ -77,8 +77,9 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Tor
-fs-mistrust = "0.12"
-tor-rtcompat = "0.35"
+# The Tor client, its runtime, and filesystem-permission handling are now owned by
+# `zcash_client_backend::privacy::blocking` (behind the `lightwalletd-blocking` + `tor`
+# features), so the SDK no longer depends on `tor-rtcompat` or `fs-mistrust` directly.
 rust_decimal = { version = "1", default-features = false, features = ["c-repr"] }
 # - The "static" feature is required for the "compression" default feature of arti-client.
 xz2 = { version = "0.1", features = ["static"] }

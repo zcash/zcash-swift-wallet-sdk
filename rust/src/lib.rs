@@ -25,7 +25,6 @@ use pczt::{
 use prost::Message;
 use rand::rngs::OsRng;
 use secrecy::Secret;
-use tor_rtcompat::ToplevelBlockOn as _;
 use tracing::{debug, metadata::LevelFilter};
 use tracing_subscriber::prelude::*;
 use uuid::Uuid;
@@ -57,6 +56,7 @@ use zcash_client_backend::{
         DecodingError, Era, ReceiverRequirement, ReceiverRequirementError, UnifiedAddressRequest,
         UnifiedFullViewingKey, UnifiedSpendingKey,
     },
+    privacy::{DormantMode, blocking},
     proto::{proposal::Proposal, service::TreeState},
     tor::http::{HttpError, cryptex},
     wallet::{Exposure, GapMetadata, NoteId, OvkPolicy, WalletTransparentOutput},
@@ -90,13 +90,27 @@ use zip32::fingerprint::SeedFingerprint;
 mod derivation;
 mod eip681;
 mod ffi;
-mod tor;
 mod voting;
 
 #[cfg(target_vendor = "apple")]
 mod os_log;
 
-use crate::tor::TorRuntime;
+/// The opaque Tor runtime handle exposed across the FFI boundary.
+///
+/// The hand-rolled `TorRuntime`/`LwdConn` wrappers (formerly `rust/src/tor.rs`) have been
+/// replaced by the shared blocking network-privacy facade in
+/// `zcash_client_backend::privacy::blocking`. The FFI symbols keep their historical
+/// `tor`/`TorRuntime` names for Swift-side compatibility.
+///
+/// This is a crate-local wrapper struct (not a type alias) so that cbindgen renders the
+/// same opaque `TorRuntime` type in the generated header as before the migration.
+pub struct TorRuntime(blocking::PrivacyRuntime);
+
+/// The opaque handle to a blocking `lightwalletd` connection over Tor exposed across the
+/// FFI boundary.
+///
+/// See [`TorRuntime`] for why this is a wrapper struct rather than a type alias.
+pub struct LwdConn(blocking::LwdConn);
 
 fn unwrap_exc_or<T>(exc: Result<T, ()>, def: T) -> T {
     match exc {
@@ -3203,7 +3217,7 @@ pub unsafe extern "C" fn zcashlc_create_tor_runtime(
         #[cfg(not(target_os = "ios"))]
         let dangerously_trust_everyone = false;
 
-        let tor = crate::tor::TorRuntime::create(tor_dir, dangerously_trust_everyone)?;
+        let tor = TorRuntime(blocking::PrivacyRuntime::create_tor(tor_dir, dangerously_trust_everyone)?);
 
         Ok(Box::into_raw(Box::new(tor)))
     });
@@ -3257,7 +3271,7 @@ pub unsafe extern "C" fn zcashlc_tor_isolated_client(
         let tor_runtime =
             unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
 
-        let isolated_client = tor_runtime.isolated_client();
+        let isolated_client = TorRuntime(tor_runtime.0.isolated_client());
 
         Ok(Box::into_raw(Box::new(isolated_client)))
     });
@@ -3292,7 +3306,10 @@ pub unsafe extern "C" fn zcashlc_tor_set_dormant(
         let tor_runtime =
             unsafe { tor_runtime.as_mut() }.ok_or_else(|| anyhow!("A Tor runtime is required"))?;
 
-        tor_runtime.set_dormant(mode);
+        tor_runtime.0.set_dormant(match mode {
+            ffi::TorDormantMode::Normal => DormantMode::Normal,
+            ffi::TorDormantMode::Soft => DormantMode::Soft,
+        });
 
         Ok(true)
     });
@@ -3357,25 +3374,20 @@ pub unsafe extern "C" fn zcashlc_tor_http_get(
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let response = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .http_get(
-                    url,
-                    |builder| {
-                        headers.iter().fold(builder, |builder, (key, value)| {
-                            builder.header(*key, *value)
-                        })
-                    },
-                    |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
-                    retry_limit,
-                    |res| {
-                        res.is_err()
-                            .then_some(zcash_client_backend::tor::http::Retry::Same)
-                    },
-                )
-                .await
-        })?;
+        let response = tor_runtime.0.http_get(
+            url,
+            |builder| {
+                headers.iter().fold(builder, |builder, (key, value)| {
+                    builder.header(*key, *value)
+                })
+            },
+            |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
+            retry_limit,
+            |res| {
+                res.is_err()
+                    .then_some(zcash_client_backend::tor::http::Retry::Same)
+            },
+        )?;
 
         ffi::HttpResponseBytes::from_rust(response)
     });
@@ -3450,26 +3462,21 @@ pub unsafe extern "C" fn zcashlc_tor_http_post(
 
         let body = unsafe { slice::from_raw_parts(body, body_len) };
 
-        let response = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .http_post(
-                    url,
-                    |builder| {
-                        headers.iter().fold(builder, |builder, (key, value)| {
-                            builder.header(*key, *value)
-                        })
-                    },
-                    http_body_util::Full::new(body),
-                    |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
-                    retry_limit,
-                    |res| {
-                        res.is_err()
-                            .then_some(zcash_client_backend::tor::http::Retry::Same)
-                    },
-                )
-                .await
-        })?;
+        let response = tor_runtime.0.http_post(
+            url,
+            |builder| {
+                headers.iter().fold(builder, |builder, (key, value)| {
+                    builder.header(*key, *value)
+                })
+            },
+            http_body_util::Full::new(body),
+            |body| async { Ok(body.collect().await.map_err(HttpError::from)?.to_bytes()) },
+            retry_limit,
+            |res| {
+                res.is_err()
+                    .then_some(zcash_client_backend::tor::http::Retry::Same)
+            },
+        )?;
 
         ffi::HttpResponseBytes::from_rust(response)
     });
@@ -3510,12 +3517,7 @@ pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd(
             .with(cryptex::exchanges::Mexc::unauthenticated())
             .build();
 
-        let rate = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .get_latest_zec_to_usd_rate(&exchanges)
-                .await
-        })?;
+        let rate = tor_runtime.0.get_latest_zec_to_usd_rate(&exchanges)?;
 
         ffi::Decimal::from_rust(rate)
             .ok_or_else(|| anyhow!("Exchange rate has too many significant figures: {}", rate))
@@ -3642,12 +3644,7 @@ pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd_from(
             builder.build()
         };
 
-        let rate = tor_runtime.runtime().block_on(async {
-            tor_runtime
-                .client()
-                .get_latest_zec_to_usd_rate(&exchanges)
-                .await
-        })?;
+        let rate = tor_runtime.0.get_latest_zec_to_usd_rate(&exchanges)?;
 
         ffi::Decimal::from_rust(rate)
             .ok_or_else(|| anyhow!("Exchange rate has too many significant figures: {}", rate))
@@ -3674,7 +3671,7 @@ pub unsafe extern "C" fn zcashlc_get_exchange_rate_usd_from(
 pub unsafe extern "C" fn zcashlc_tor_connect_to_lightwalletd(
     tor_runtime: *mut TorRuntime,
     endpoint: *const c_char,
-) -> *mut tor::LwdConn {
+) -> *mut LwdConn {
     // SAFETY: Callers would have to do the following for unwind safety (#194):
     // - using `*mut TorRuntime` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
@@ -3689,7 +3686,7 @@ pub unsafe extern "C" fn zcashlc_tor_connect_to_lightwalletd(
             .try_into()
             .map_err(|e| anyhow!("Invalid lightwalletd endpoint: {e}"))?;
 
-        let lwd_conn = tor_runtime.connect_to_lightwalletd(endpoint)?;
+        let lwd_conn = LwdConn(tor_runtime.0.connect_to_lightwalletd(endpoint)?);
 
         Ok(Box::into_raw(Box::new(lwd_conn)))
     });
@@ -3701,11 +3698,11 @@ pub unsafe extern "C" fn zcashlc_tor_connect_to_lightwalletd(
 /// # Safety
 ///
 /// - If `ptr` is non-null, it must be a pointer returned by a `zcashlc_*` method with
-///   return type `*mut tor::LwdConn` that has not previously been freed.
+///   return type `*mut LwdConn` that has not previously been freed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_free_tor_lwd_conn(ptr: *mut tor::LwdConn) {
+pub unsafe extern "C" fn zcashlc_free_tor_lwd_conn(ptr: *mut LwdConn) {
     if !ptr.is_null() {
-        let s: Box<tor::LwdConn> = unsafe { Box::from_raw(ptr) };
+        let s: Box<LwdConn> = unsafe { Box::from_raw(ptr) };
         drop(s);
     }
 }
@@ -3715,25 +3712,25 @@ pub unsafe extern "C" fn zcashlc_free_tor_lwd_conn(ptr: *mut tor::LwdConn) {
 /// # Safety
 ///
 /// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
-///   return type `*mut tor::LwdConn` that has not previously been freed.
+///   return type `*mut LwdConn` that has not previously been freed.
 /// - `lwd_conn` must not be passed to two FFI calls at the same time.
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_info(
-    lwd_conn: *mut tor::LwdConn,
+    lwd_conn: *mut LwdConn,
 ) -> *mut ffi::BoxedSlice {
     // SAFETY: We ensure unwind safety by:
-    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    // - using `*mut LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
-    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    // - discarding the `LwdConn` whenever we get an error that is due to a panic.
     let lwd_conn = AssertUnwindSafe(lwd_conn);
 
     let res = catch_panic(|| {
         let lwd_conn = unsafe { lwd_conn.as_mut() }
             .ok_or_else(|| anyhow!("A Tor lightwalletd connection is required"))?;
 
-        let info = lwd_conn.get_lightd_info()?;
+        let info = lwd_conn.0.get_lightd_info()?;
 
         Ok(ffi::BoxedSlice::some(info.encode_to_vec()))
     });
@@ -3745,7 +3742,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_info(
 /// # Safety
 ///
 /// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
-///   return type `*mut tor::LwdConn` that has not previously been freed.
+///   return type `*mut LwdConn` that has not previously been freed.
 /// - `lwd_conn` must not be passed to two FFI calls at the same time.
 /// - `height_ret` must be non-null and valid for writes for 4 bytes, and it must have an
 ///   alignment of `1`.
@@ -3753,13 +3750,13 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_info(
 ///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_latest_block(
-    lwd_conn: *mut tor::LwdConn,
+    lwd_conn: *mut LwdConn,
     height_ret: *mut u32,
 ) -> *mut ffi::BoxedSlice {
     // SAFETY: We ensure unwind safety by:
-    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    // - using `*mut LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
-    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    // - discarding the `LwdConn` whenever we get an error that is due to a panic.
     let lwd_conn = AssertUnwindSafe(lwd_conn);
 
     let res = catch_panic(|| {
@@ -3770,7 +3767,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_latest_block(
             anyhow!("A mutable pointer to a UInt32 is required to return the height")
         })?;
 
-        let (height, hash) = lwd_conn.get_latest_block()?;
+        let (height, hash) = lwd_conn.0.get_latest_block()?;
 
         *height_ret = height.into();
 
@@ -3784,7 +3781,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_latest_block(
 /// # Safety
 ///
 /// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
-///   return type `*mut tor::LwdConn` that has not previously been freed.
+///   return type `*mut LwdConn` that has not previously been freed.
 /// - `lwd_conn` must not be passed to two FFI calls at the same time.
 /// - `txid_bytes` must be non-null and valid for reads for 32 bytes, and it must have an
 ///   alignment of `1`.
@@ -3794,14 +3791,14 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_latest_block(
 ///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
-    lwd_conn: *mut tor::LwdConn,
+    lwd_conn: *mut LwdConn,
     txid_bytes: *const u8,
     height_ret: *mut u64,
 ) -> *mut ffi::BoxedSlice {
     // SAFETY: Callers would have to do the following for unwind safety (#194):
-    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    // - using `*mut LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
-    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    // - discarding the `LwdConn` whenever we get an error that is due to a panic.
     let lwd_conn = AssertUnwindSafe(lwd_conn);
 
     let res = catch_panic(|| {
@@ -3815,7 +3812,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
             anyhow!("A mutable pointer to a UInt64 is required to return the height")
         })?;
 
-        let (tx, height) = lwd_conn.get_transaction(txid)?;
+        let (tx, height) = lwd_conn.0.get_transaction(txid)?;
 
         *height_ret = height;
 
@@ -3829,7 +3826,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
 /// # Safety
 ///
 /// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
-///   return type `*mut tor::LwdConn` that has not previously been freed.
+///   return type `*mut LwdConn` that has not previously been freed.
 /// - `lwd_conn` must not be passed to two FFI calls at the same time.
 /// - `tx` must be non-null and valid for reads for `tx_len` bytes, and it must have an
 ///   alignment of `1`.
@@ -3838,14 +3835,14 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_transaction(
 ///   documentation of pointer::offset.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_submit_transaction(
-    lwd_conn: *mut tor::LwdConn,
+    lwd_conn: *mut LwdConn,
     tx: *const u8,
     tx_len: usize,
 ) -> bool {
     // SAFETY: Callers would have to do the following for unwind safety (#194):
-    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    // - using `*mut LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
-    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    // - discarding the `LwdConn` whenever we get an error that is due to a panic.
     let lwd_conn = AssertUnwindSafe(lwd_conn);
 
     let res = catch_panic(|| {
@@ -3854,7 +3851,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_submit_transaction(
 
         let tx_bytes = unsafe { slice::from_raw_parts(tx, tx_len) };
 
-        lwd_conn.send_transaction(tx_bytes.to_vec())?;
+        lwd_conn.0.send_transaction(tx_bytes.to_vec())?;
 
         Ok(true)
     });
@@ -3866,19 +3863,19 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_submit_transaction(
 /// # Safety
 ///
 /// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
-///   return type `*mut tor::LwdConn` that has not previously been freed.
+///   return type `*mut LwdConn` that has not previously been freed.
 /// - `lwd_conn` must not be passed to two FFI calls at the same time.
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_tree_state(
-    lwd_conn: *mut tor::LwdConn,
+    lwd_conn: *mut LwdConn,
     height: u32,
 ) -> *mut ffi::BoxedSlice {
     // SAFETY: We ensure unwind safety by:
-    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    // - using `*mut LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
-    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    // - discarding the `LwdConn` whenever we get an error that is due to a panic.
     let lwd_conn = AssertUnwindSafe(lwd_conn);
 
     let res = catch_panic(|| {
@@ -3887,7 +3884,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_tree_state(
 
         let height = BlockHeight::from(height);
 
-        let treestate = lwd_conn.get_tree_state(height)?;
+        let treestate = lwd_conn.0.get_tree_state(height)?;
 
         Ok(ffi::BoxedSlice::some(treestate.encode_to_vec()))
     });
@@ -3908,7 +3905,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_tree_state(
 /// # Safety
 ///
 /// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
-///   return type `*mut tor::LwdConn` that has not previously been freed.
+///   return type `*mut LwdConn` that has not previously been freed.
 /// - `lwd_conn` must not be passed to two FFI calls at the same time.
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be a string representing a valid system path in the
@@ -3920,7 +3917,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_get_tree_state(
 ///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_update_transparent_address_transactions(
-    lwd_conn: *mut tor::LwdConn,
+    lwd_conn: *mut LwdConn,
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
@@ -3929,9 +3926,9 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_update_transparent_address_transac
     end: i64,
 ) -> *mut ffi::AddressCheckResult {
     // SAFETY: We ensure unwind safety by:
-    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    // - using `*mut LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
-    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    // - discarding the `LwdConn` whenever we get an error that is due to a panic.
     let lwd_conn = AssertUnwindSafe(lwd_conn);
 
     let res = catch_panic(|| {
@@ -3949,7 +3946,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_update_transparent_address_transac
             .ok_or(SqliteClientError::ChainHeightUnknown)?;
 
         let mut found = None;
-        lwd_conn.with_taddress_transactions(
+        lwd_conn.0.with_taddress_transactions::<anyhow::Error>(
             &network,
             addr,
             BlockHeight::from(start),
@@ -3983,7 +3980,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_update_transparent_address_transac
 /// # Safety
 ///
 /// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
-///   return type `*mut tor::LwdConn` that has not previously been freed.
+///   return type `*mut LwdConn` that has not previously been freed.
 /// - `lwd_conn` must not be passed to two FFI calls at the same time.
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be a string representing a valid system path in the
@@ -3995,7 +3992,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_update_transparent_address_transac
 ///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_utxos_by_address(
-    lwd_conn: *mut tor::LwdConn,
+    lwd_conn: *mut LwdConn,
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
@@ -4003,9 +4000,9 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_utxos_by_address(
     address: *const c_char,
 ) -> *mut ffi::AddressCheckResult {
     // SAFETY: We ensure unwind safety by:
-    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    // - using `*mut LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
-    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    // - discarding the `LwdConn` whenever we get an error that is due to a panic.
     let lwd_conn = AssertUnwindSafe(lwd_conn);
 
     let res = catch_panic(|| {
@@ -4021,7 +4018,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_utxos_by_address(
 
         let mut found = None;
         if let Some(meta) = db_data.get_transparent_address_metadata(account_uuid, &addr)? {
-            lwd_conn.with_taddress_utxos(
+            lwd_conn.0.with_taddress_utxos::<anyhow::Error>(
                 &network,
                 addr,
                 match meta.exposure() {
@@ -4031,8 +4028,26 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_utxos_by_address(
                     }
                 },
                 None,
-                |output| {
+                |output: WalletTransparentOutput<()>| {
                     found = Some(addr);
+                    // The shared privacy layer yields account-agnostic
+                    // `WalletTransparentOutput<()>` values; rebuild with the wallet's
+                    // account-id type so the output can be persisted. As before this
+                    // change, no account context is carried at this call site — the
+                    // persistence layer derives the owning account from the address.
+                    let output = WalletTransparentOutput::<AccountUuid>::from_parts(
+                        output.outpoint().clone(),
+                        output.txout().clone(),
+                        output.mined_height(),
+                        None,
+                        output.recipient_key_scope(),
+                        None,
+                    )
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Received UTXO that doesn't correspond to a valid P2PKH or P2SH address"
+                        )
+                    })?;
                     db_data.put_received_transparent_utxo(&output)?;
                     Ok(())
                 },
@@ -4057,7 +4072,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_utxos_by_address(
 /// # Safety
 ///
 /// - `lwd_conn` must be a non-null pointer returned by a `zcashlc_*` method with
-///   return type `*mut tor::LwdConn` that has not previously been freed.
+///   return type `*mut LwdConn` that has not previously been freed.
 /// - `lwd_conn` must not be passed to two FFI calls at the same time.
 /// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must have an
 ///   alignment of `1`. Its contents must be a string representing a valid system path in the
@@ -4069,16 +4084,16 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_fetch_utxos_by_address(
 ///   pointer when done using it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
-    lwd_conn: *mut tor::LwdConn,
+    lwd_conn: *mut LwdConn,
     db_data: *const u8,
     db_data_len: usize,
     network_id: u32,
     account_uuid_bytes: *const u8,
 ) -> *mut ffi::AddressCheckResult {
     // SAFETY: We ensure unwind safety by:
-    // - using `*mut tor::LwdConn` and respecting mutability rules on the Swift side, to
+    // - using `*mut LwdConn` and respecting mutability rules on the Swift side, to
     //   avoid observing the effects of a panic in another thread.
-    // - discarding the `tor::LwdConn` whenever we get an error that is due to a panic.
+    // - discarding the `LwdConn` whenever we get an error that is due to a panic.
     let lwd_conn = AssertUnwindSafe(lwd_conn);
 
     let res = catch_panic(|| {
@@ -4111,7 +4126,7 @@ pub unsafe extern "C" fn zcashlc_tor_lwd_conn_check_single_use_taddr(
 
         let mut found = None;
         if let Some((addr, meta)) = selected_addr_meta {
-            lwd_conn.with_taddress_transactions(
+            lwd_conn.0.with_taddress_transactions::<anyhow::Error>(
                 &network,
                 addr,
                 match meta.exposure() {
