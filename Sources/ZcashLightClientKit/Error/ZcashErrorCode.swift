@@ -276,36 +276,6 @@ public enum ZcashErrorCode: String {
     /// Operation is not supported by `SlipstreamSynchronizer` (wipe / switchTo).
     case rustSlipstreamUnsupported = "ZRUST0097"
     /// Error from rust layer when calling ZcashRustBackend.migrationState
-    case rustMigrationState = "ZRUST0111"
-    /// Error from rust layer when calling ZcashRustBackend.migrationProgress
-    case rustMigrationProgress = "ZRUST0112"
-    /// Error from rust layer when calling ZcashRustBackend.migrationIsNoteSplitNeeded
-    case rustMigrationIsNoteSplitNeeded = "ZRUST0113"
-    /// Error from rust layer when calling ZcashRustBackend.migrationPrepareNoteSplit
-    case rustMigrationPrepareNoteSplit = "ZRUST0114"
-    /// Error from rust layer when calling ZcashRustBackend.migrationSignNoteSplit
-    case rustMigrationSignNoteSplit = "ZRUST0115"
-    /// Error from rust layer when calling ZcashRustBackend.migrationProposeTransfers
-    case rustMigrationProposeTransfers = "ZRUST0116"
-    /// Error from rust layer when calling ZcashRustBackend.migrationSignAndStore
-    case rustMigrationSignAndStore = "ZRUST0117"
-    /// Error from rust layer when calling ZcashRustBackend.migrationIsSyncRequired
-    case rustMigrationIsSyncRequired = "ZRUST0118"
-    /// Error from rust layer when calling ZcashRustBackend.migrationNextDueTransfer
-    case rustMigrationNextDueTransfer = "ZRUST0119"
-    /// Error from rust layer when calling ZcashRustBackend.migrationRecordTransferResult
-    case rustMigrationRecordTransferResult = "ZRUST0120"
-    /// Error from rust layer when calling ZcashRustBackend.migrationHasOverdueTransfers
-    case rustMigrationHasOverdueTransfers = "ZRUST0121"
-    /// Error from rust layer when calling ZcashRustBackend.migrationHasInvalidTransfers
-    case rustMigrationHasInvalidTransfers = "ZRUST0122"
-    /// Error from rust layer when calling ZcashRustBackend.migrationRestartStep
-    case rustMigrationRestartStep = "ZRUST0123"
-    /// Error from rust layer when calling ZcashRustBackend.migrationExtractBroadcastTx
-    case rustMigrationExtractBroadcastTx = "ZRUST0124"
-    /// Error from rust layer when calling ZcashRustBackend.migrationRefreshStaleTransfers
-    case rustMigrationRefreshStaleTransfers = "ZRUST0125"
-    /// Error from rust layer when calling ZcashRustBackend.migrationState
     case rustMigrationState = "ZRUST0098"
     /// Error from rust layer when calling ZcashRustBackend.migrationProgress
     case rustMigrationProgress = "ZRUST0099"
