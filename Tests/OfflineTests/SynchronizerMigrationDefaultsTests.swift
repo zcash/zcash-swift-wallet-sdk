@@ -268,8 +268,7 @@ private final class NonMigratingSynchronizer: Synchronizer {
 
     func prepare(
         with seed: [UInt8]?,
-        walletBirthday: BlockHeight,
-        for walletMode: WalletInitMode,
+        walletBirthday: BlockHeight?,
         name: String,
         keySource: String?
     ) async throws -> Initializer.InitializationResult { Self.unused() }
