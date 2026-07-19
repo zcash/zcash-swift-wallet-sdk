@@ -50,6 +50,14 @@ public actor SlipstreamSynchronizer: Synchronizer {
     private let transactionEncoder: TransactionEncoder
     private let broadcasterStorage: Broadcaster
 
+    /// The one migration host this synchronizer owns (see `OrchardMigrationHost`'s type doc: each
+    /// synchronizer holds exactly one). Registered on `initializer.container` and resolved
+    /// immediately in `init`, mirroring `SDKSynchronizer`'s exact idiom -- see that type's
+    /// `migrationHost` property doc for the full registration-timing rationale. Two live
+    /// synchronizers over one `Initializer` stay unsupported (round note N3): each synchronizer
+    /// type registers its own host on its own initializer's container.
+    private let migrationHost: OrchardMigrationHost
+
     // ── State subjects (mirrors SDKSynchronizer) ───────────────────────────────
     private let stateSubject = CurrentValueSubject<SynchronizerState, Never>(.zero)
     private let eventSubject = PassthroughSubject<SynchronizerEvent, Never>()
@@ -169,6 +177,23 @@ public actor SlipstreamSynchronizer: Synchronizer {
         let eventSubjectRef = eventSubject
 
         let logger = initializer.logger
+
+        // `[weak initializer]` breaks the initializer -> container -> closure -> initializer cycle
+        // (`initializer` owns `container`, and `container` would otherwise hold this closure -- and
+        // therefore `initializer` -- for its own lifetime). The `nil` branch is unreachable: this
+        // closure only ever runs synchronously from `resolve`, on the next line, while `initializer`
+        // is still alive; by the time anything could resolve this singleton again, `resolve` has
+        // already cached the instance and will not invoke the factory a second time. Mirrors
+        // `SDKSynchronizer.init`'s registration exactly (a strong capture here is a known,
+        // review-flagged retain cycle -- B-1 in the round's review).
+        initializer.container.register(type: OrchardMigrationHost.self, isSingleton: true) { [weak initializer] _ in
+            guard let initializer else {
+                preconditionFailure("OrchardMigrationHost resolved after its Initializer was released")
+            }
+            return OrchardMigrationHost(initializer: initializer)
+        }
+        self.migrationHost = initializer.container.resolve(OrchardMigrationHost.self)
+
         let transactionEncoderRef = WalletTransactionEncoder(initializer: initializer)
         // [#1755] zcash #1757 (multiserver submission) reworked SDKBroadcaster's init: it now
         // takes submitPlanStore + multiEndpointSubmitter (resolved from the container, same as
@@ -259,6 +284,14 @@ public actor SlipstreamSynchronizer: Synchronizer {
         guard latestState.internalSyncStatus.isPrepared else {
             throw ZcashError.synchronizerNotPrepared
         }
+        // Migration privacy gate — parity with SDKSynchronizer.start's `.stopped, .synced,
+        // .disconnected, .error` branch: a migration broadcast's post-broadcast privacy buffer must
+        // not be immediately followed by a sync session. Only blocks a NEW start(); an already-running
+        // engine is unaffected (this synchronizer has no separate "already syncing" branch to skip
+        // into, unlike SDKSynchronizer's status switch), and stop() is untouched.
+        if await migrationHost.isSyncBlocked() {
+            throw ZcashError.migrationSyncBlocked
+        }
         // [audit SDK-1] A `stop()` registers its (chained) teardown in `pendingStop`; let the
         // whole chain land BEFORE this run's `engine.start()` so the engine actor can't order
         // an old stop after the new start (which would abort the fresh pass).
@@ -335,6 +368,29 @@ public actor SlipstreamSynchronizer: Synchronizer {
         // [v2.1 Phase 2] Re-masking after a stop is ENGINE-OWNED: the FFI stop() stamps the
         // moment, and a start() more than 120 s later re-masks via snapshot.tipFresh (E-2).
         await engine.stop()
+    }
+
+    /// Test-only seam: overrides `latestState`'s `internalSyncStatus` directly, without touching the
+    /// engine, the poll loop, or `pendingStop`. `internal` (not `private`) so `@testable` tests can
+    /// drive the actor into a specific status (e.g. `.disconnected` to satisfy `start(retry:)`'s
+    /// `isPrepared` guard, or `.syncing` to exercise `throwIfSyncingForMigrationBroadcast()`)
+    /// deterministically and instantly. `SDKSynchronizer` has an analogous production-code seam
+    /// (`updateStatus(_:updateExternalStatus:)`) that its own tests reuse; `SlipstreamSynchronizer` has
+    /// no equivalent single choke point (state is written from several call sites directly), and the
+    /// only other way to reach a non-`.unprepared` status is the real `prepare()`/`start()` pair --
+    /// which opens a real engine handle and spawns the real poll loop, unsuitable for fast, isolated
+    /// migration-group tests (see `SlipstreamSynchronizerMigrationTests`: driving `.syncing` through a
+    /// real `start()` left a background poll task whose `tickPoll()` → `engine.walletSummary()` call
+    /// can run long against an unreachable server -- documented as unsafe "mid-scan" on `walletSummary()`
+    /// itself -- and that in turn blocked `engine.stop()` behind it, since both share the
+    /// `SlipstreamEngine` actor; the resulting slow teardown bled into unrelated later tests).
+    func setInternalSyncStatusForTesting(_ status: InternalSyncStatus) {
+        stateSubject.send(SynchronizerState(
+            syncSessionID: latestState.syncSessionID,
+            accountsBalances: latestState.accountsBalances,
+            internalSyncStatus: status,
+            latestBlockHeight: latestState.latestBlockHeight
+        ))
     }
 
     // ── Polling (D8) ──────────────────────────────────────────────────────────
@@ -1070,6 +1126,135 @@ public actor SlipstreamSynchronizer: Synchronizer {
             subject.send(completion: .finished)
         } catch {
             subject.send(completion: .failure(error))
+        }
+    }
+
+    // ── Migration (Orchard -> Ironwood) ────────────────────────────────────────
+    //
+    // Thin forwards to `migrationHost.migration(for:)`'s per-account `OrchardMigration` actor (or,
+    // for the three wallet-scope gate members, to the host itself) -- mirrors `SDKSynchronizer`'s
+    // "MARK: Migration" section exactly. The two members that can broadcast (`submitNoteSplit`,
+    // `executeNextPendingMigrationTransfer`) are guarded here by `throwIfSyncingForMigrationBroadcast()`
+    // -- an advisory point-in-time check, not a hard mutual-exclusion lock: sync and migration
+    // broadcasts must never share a session, and hosts still sequence sessions themselves.
+
+    public func migrationState(accountUUID: AccountUUID) async throws -> MigrationState {
+        try await migrationHost.migration(for: accountUUID).migrationState()
+    }
+
+    public func migrationProgress(accountUUID: AccountUUID) async throws -> MigrationProgress? {
+        try await migrationHost.migration(for: accountUUID).migrationProgress()
+    }
+
+    public func isNoteSplitNeeded(accountUUID: AccountUUID) async throws -> Bool {
+        try await migrationHost.migration(for: accountUUID).isNoteSplitNeeded()
+    }
+
+    public func prepareNoteSplit(accountUUID: AccountUUID) async throws -> NoteSplitProposal {
+        try await migrationHost.migration(for: accountUUID).prepareNoteSplit()
+    }
+
+    public func submitNoteSplit(
+        accountUUID: AccountUUID,
+        proposal: NoteSplitProposal,
+        usk: UnifiedSpendingKey,
+        options: MigrationNetworkPrivacyOptions
+    ) async throws -> MigrationTransferResult {
+        try throwIfSyncingForMigrationBroadcast()
+        return try await migrationHost.migration(for: accountUUID).submitNoteSplit(proposal: proposal, usk: usk, options: options)
+    }
+
+    public func proposeMigrationTransfers(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule {
+        try await migrationHost.migration(for: accountUUID).proposeMigrationTransfers(includeResidual: includeResidual)
+    }
+
+    public func proposeImmediateMigration(accountUUID: AccountUUID) async throws -> MigrationSchedule {
+        try await migrationHost.migration(for: accountUUID).proposeImmediateMigration()
+    }
+
+    public func residualAfterMigration(accountUUID: AccountUUID) async throws -> Zatoshi? {
+        try await migrationHost.migration(for: accountUUID).residualAfterMigration()
+    }
+
+    public func signAndStoreMigrationSchedule(accountUUID: AccountUUID, _ schedule: MigrationSchedule, usk: UnifiedSpendingKey) async throws {
+        try await migrationHost.migration(for: accountUUID).signAndStoreMigrationSchedule(schedule, usk: usk)
+    }
+
+    public func isSyncRequiredBeforeNextMigrationTransfer(accountUUID: AccountUUID) async throws -> Bool {
+        try await migrationHost.migration(for: accountUUID).isSyncRequiredBeforeNextTransfer()
+    }
+
+    public func executeNextPendingMigrationTransfer(
+        accountUUID: AccountUUID,
+        options: MigrationNetworkPrivacyOptions
+    ) async throws -> MigrationTransferResult? {
+        try throwIfSyncingForMigrationBroadcast()
+        return try await migrationHost.migration(for: accountUUID).executeNextPendingTransfer(options: options)
+    }
+
+    public func isMigrationSyncBlocked() async -> Bool {
+        await migrationHost.isSyncBlocked()
+    }
+
+    public nonisolated var migrationSyncBlockedStream: AnyPublisher<Bool, Never> {
+        migrationHost.syncBlockedStream
+    }
+
+    public nonisolated var migrationPrivacySyncBufferDuration: TimeInterval {
+        migrationHost.privacySyncBufferDuration
+    }
+
+    public func hasOverdueMigrationTransfers(accountUUID: AccountUUID) async throws -> Bool {
+        try await migrationHost.migration(for: accountUUID).hasOverdueTransfers()
+    }
+
+    public func hasInvalidMigrationTransfers(accountUUID: AccountUUID) async throws -> Bool {
+        try await migrationHost.migration(for: accountUUID).hasInvalidTransfers()
+    }
+
+    public func rescheduleOverdueMigrationTransfer(accountUUID: AccountUUID) async throws -> MigrationTransferProposal? {
+        try await migrationHost.migration(for: accountUUID).rescheduleOverdueTransfer()
+    }
+
+    public func restartCurrentMigrationStep(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule {
+        try await migrationHost.migration(for: accountUUID).restartCurrentMigrationStep(includeResidual: includeResidual)
+    }
+
+    public func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey, includeResidual: Bool) async throws -> UInt32 {
+        try await migrationHost.migration(for: accountUUID).refreshStaleTransfers(usk: usk, includeResidual: includeResidual)
+    }
+
+    public func createUnsignedNoteSplitPCZT(accountUUID: AccountUUID) async throws -> Data {
+        try await migrationHost.migration(for: accountUUID).createUnsignedNoteSplitPCZT()
+    }
+
+    public func storeSignedNoteSplitPCZT(accountUUID: AccountUUID, _ pczt: Data) async throws -> PreparedMigrationTransfer {
+        try await migrationHost.migration(for: accountUUID).storeSignedNoteSplitPCZT(pczt)
+    }
+
+    public func createUnsignedMigrationTransferPCZTs(
+        accountUUID: AccountUUID,
+        for schedule: MigrationSchedule
+    ) async throws -> [MigrationUnsignedTransferPczt] {
+        try await migrationHost.migration(for: accountUUID).createUnsignedTransferPCZTs(for: schedule)
+    }
+
+    public func storeSignedMigrationSchedulePCZTs(accountUUID: AccountUUID, _ signed: [MigrationSignedTransferPczt]) async throws {
+        try await migrationHost.migration(for: accountUUID).storeSignedSchedulePCZTs(signed)
+    }
+
+    /// Throws ``ZcashError/migrationBroadcastDuringSync`` when the synchronizer is actively syncing.
+    ///
+    /// Guards the two migration entry points that broadcast (``submitNoteSplit(accountUUID:proposal:usk:options:)``
+    /// and ``executeNextPendingMigrationTransfer(accountUUID:options:)``): sync and migration
+    /// broadcasts must never share a session. Reads `latestState.internalSyncStatus` -- the same
+    /// nonisolated status surface `start(retry:)`'s unprepared guard reads -- so the guard triggers on
+    /// the syncing case only; unprepared/stopped/synced/disconnected/error all proceed. Advisory,
+    /// point-in-time enforcement, not a hard mutual-exclusion lock: hosts still sequence sync and
+    /// migration-broadcast sessions themselves.
+    private func throwIfSyncingForMigrationBroadcast() throws {
+        if case .syncing = latestState.internalSyncStatus {
+            throw ZcashError.migrationBroadcastDuringSync
         }
     }
 
