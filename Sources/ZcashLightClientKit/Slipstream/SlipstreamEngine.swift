@@ -239,12 +239,15 @@ public actor SlipstreamEngine {
     /// Returns `nil` when the engine is not open, the call fails, or the wallet has no
     /// balance data yet (the FFI "none" summary).
     ///
-    /// COST + THREADING: this runs the full upstream summary walk (seconds on old
-    /// devices) SYNCHRONOUSLY on this actor — which also serializes it with `close()`,
-    /// making use-after-free impossible. Call it only from QUIET states (prepare, idle,
-    /// error, done): mid-scan it would starve `snapshot()`/`drainEvents()` polls. The
-    /// mid-scan boundary refresh stays on the legacy `@DBActor` path until E-1 moves
-    /// the rationing policy inside this FFI.
+    /// COST + THREADING: the FFI rations the walk internally (E-1), so this is freely
+    /// callable per poll tick — every call serves the cached summary (including a cached
+    /// "none" / no-balance-data-yet summary), and refreshes run on a background thread at
+    /// range/state boundaries or after a 2 s idle TTL. Synchronous cost on this actor is
+    /// limited to two cases: the FIRST call on a handle (the cache prime — hosts do it at
+    /// prepare/open time, a quiet state), and, during recovery, a bounded (~250 ms
+    /// worst-case) recovery-balance view read that falls back to the last-good nets on
+    /// contention. It still runs on THIS actor deliberately — that serializes it with
+    /// `close()`, making use-after-free impossible.
     /// (Internal because `WalletSummary` is an internal model — the synchronizer is the consumer.)
     func walletSummary(
         confirmationsPolicy: ConfirmationsPolicy = ConfirmationsPolicy.defaultTransferPolicy()
