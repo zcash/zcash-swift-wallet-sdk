@@ -4642,6 +4642,12 @@ pub struct SlipstreamHandle {
     summary_cache: std::sync::Arc<std::sync::Mutex<Option<SummaryCacheEntry>>>,
     /// [API v2.1 E-1] One background refresh in flight at a time.
     summary_refresh_inflight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// [#1806] Last successfully-read recovery-balance nets (account-uuid bytes → reconciled
+    /// net zatoshi), used ONLY as a fallback when the bounded (250 ms) read of
+    /// `slipstream_v_recovery_balance` is contended — so a momentarily-locked view never
+    /// nulls the whole summary. `None` until the first successful read; see
+    /// [`zcashlc_slipstream_wallet_summary`].
+    recovery_nets_cache: std::sync::Mutex<Option<std::collections::HashMap<[u8; 16], i64>>>,
     /// [API v2.1 E-2] Tip-freshness for the [#1591] stale-tip spendable mask — the engine
     /// owns the FACT (it is the thing refreshing the tip); hosts apply the mask transform.
     /// `shouldMarkChainTipUpdated` semantics at the source: fresh once THIS run has
@@ -4672,7 +4678,9 @@ struct SummaryCacheEntry {
     captured_at: std::time::Instant,
     ranges_completed: u64,
     state: u8,
-    summary: zcash_client_backend::data_api::WalletSummary<AccountUuid>,
+    /// [#1806] `None` = a walked "no balance data yet" result, cached like any other so a
+    /// fresh / just-imported wallet does not re-walk synchronously on every poll tick.
+    summary: Option<zcash_client_backend::data_api::WalletSummary<AccountUuid>>,
 }
 
 /// [API v2.1 E-1] Idle refresh TTL — matches the SDK's historical idle/error refetch cadence.
@@ -4889,6 +4897,8 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
             inner,
             summary_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
             summary_refresh_inflight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            // [#1806] Empty until the first successful recovery-balance read fills it.
+            recovery_nets_cache: std::sync::Mutex::new(None),
             // Freshness baseline = the refresh COUNTER (0 on a fresh handle; the E-3 seed
             // above never bumps it) — a DB-seeded tip is persisted state, not freshness.
             tip_refreshes_at_run_start: std::sync::atomic::AtomicU64::new(0),
@@ -5520,8 +5530,9 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
         //     against `free()` racing it) that swaps the cache for later calls.
         // Between boundaries while Syncing, NO walk ever runs: the T5.5
         // no-summary-while-scanning invariant, now engine-owned. The recovery-balance
-        // REPLACEMENT below is NOT cached — it re-reads the cheap view on every call, so a
-        // recovering host sees the per-tick climb.
+        // REPLACEMENT below still re-reads the cheap view on every call, so a recovering
+        // host sees the per-tick climb; [#1806] only bounds that read and adds a
+        // contended-read fallback cache — it is not a serve-cached policy.
         let cached: Option<SummaryCacheEntry> = {
             let guard = handle
                 .summary_cache
@@ -5535,9 +5546,13 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
             })
         };
 
-        let summary = match cached {
+        let resolved: Option<zcash_client_backend::data_api::WalletSummary<AccountUuid>> = match cached {
             None => {
-                // First call on this handle: walk synchronously and prime the cache.
+                // First call on this handle: walk synchronously and prime the cache with the
+                // walked Option in BOTH arms. [#1806] A None walk ("no balance data yet" on a
+                // fresh / just-imported wallet) is cached too, so later poll ticks serve that
+                // cached None instead of repeating this synchronous walk; the boundary/TTL
+                // refresh below then replaces it once the first scan commits real balances.
                 let path_bytes = db_path.as_os_str().as_bytes();
                 let db_data = unsafe {
                     wallet_db(
@@ -5550,21 +5565,16 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                 let walked = db_data
                     .get_wallet_summary(policy)
                     .map_err(|e| anyhow!("Error while fetching wallet summary: {}", e))?;
-                if let Some(ref s) = walked {
-                    *handle
-                        .summary_cache
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner()) = Some(SummaryCacheEntry {
-                        captured_at: std::time::Instant::now(),
-                        ranges_completed: snap.ranges_completed,
-                        state: snap.state,
-                        summary: s.clone(),
-                    });
-                }
-                match walked {
-                    Some(s) => s,
-                    None => return Ok(ffi::WalletSummary::none()),
-                }
+                *handle
+                    .summary_cache
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some(SummaryCacheEntry {
+                    captured_at: std::time::Instant::now(),
+                    ranges_completed: snap.ranges_completed,
+                    state: snap.state,
+                    summary: walked.clone(),
+                });
+                walked
             }
             Some(entry) => {
                 let boundary_crossed = snap.ranges_completed != entry.ranges_completed
@@ -5599,15 +5609,20 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                                 .get_wallet_summary(policy)
                                 .map_err(|e| anyhow!("summary refresh: {}", e))
                         };
-                        if let Ok(Some(s)) = walk() {
+                        // [#1806] Store the whole walked Option: a refresh that walks to None
+                        // caches None (later ticks then serve that cached None). Only an Err
+                        // leaves the cache untouched — a contended refresh must not clobber a
+                        // good entry with nothing.
+                        if let Ok(walked) = walk() {
                             *cache.lock().unwrap_or_else(|p| p.into_inner()) =
                                 Some(SummaryCacheEntry {
                                     captured_at: std::time::Instant::now(),
                                     ranges_completed: ranges_at,
                                     state: state_at,
-                                    summary: s,
+                                    summary: walked,
                                 });
                         }
+                        // Always clears — on the stored, walked-None, and Err paths alike.
                         inflight.store(false, std::sync::atomic::Ordering::SeqCst);
                     });
                 }
@@ -5615,17 +5630,40 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
             }
         };
 
-        let summary_ptr = ffi::WalletSummary::some(summary)?;
+        // [#1806] Serve the resolved Option: a real summary marshals via `some`; a cached /
+        // walked None serves the `none()` sentinel (fully_scanned_height = -1, no balances).
+        // The recovery override below runs on either — `none()` exposes an empty balance
+        // slice, so it is a safe no-op there and never over-shows.
+        let summary_ptr = match resolved {
+            Some(s) => ffi::WalletSummary::some(s)?,
+            None => ffi::WalletSummary::none(),
+        };
 
         // Phase resolution. `is_recovering` carries the engine's fail-safe latch (terminal
         // Done/Error force 0), so a dead pass falls back to the upstream summary here too.
         if snap.is_recovering == 1 {
-            let conn = rusqlite::Connection::open(&db_path)
-                .map_err(|e| anyhow!("recovery balance open: {}", e))?;
-            conn.busy_timeout(std::time::Duration::from_secs(5))
-                .map_err(|e| anyhow!("recovery balance busy_timeout: {}", e))?;
-            let mut nets: std::collections::HashMap<[u8; 16], i64> = std::collections::HashMap::new();
-            {
+            // [#1806] Bounded recovery-balance read. Every summary tick (cached serves
+            // included) consults the engine-owned recovery view to REPLACE the possibly-
+            // over-showing upstream balances. The read is synchronous on the FFI actor, so it
+            // is bounded hard:
+            //   • 250 ms busy timeout, NOT the 5 s used elsewhere: under mid-restore write
+            //     contention a longer wait would pin the Swift engine actor and starve
+            //     close()/snapshot()/drainEvents() polls (the ~20 s stop() starvation class).
+            //   • On ANY failure (busy or otherwise) we do NOT propagate the error — a
+            //     momentarily-contended view must never null the whole summary call. We fall
+            //     back to the last successfully-read nets, or — if we have never read them —
+            //     an empty map.
+            //   • The override is applied UNCONDITIONALLY while recovering (fresh, cached, OR
+            //     the empty-map zero): an empty map makes every account read 0 via the "no
+            //     reconciled rows ⇒ 0" semantics below, which never over-shows. Serving raw
+            //     upstream balances mid-recovery is the one outcome the invariant forbids.
+            let read_nets = || -> anyhow::Result<std::collections::HashMap<[u8; 16], i64>> {
+                let conn = rusqlite::Connection::open(&db_path)
+                    .map_err(|e| anyhow!("recovery balance open: {}", e))?;
+                conn.busy_timeout(std::time::Duration::from_millis(250))
+                    .map_err(|e| anyhow!("recovery balance busy_timeout: {}", e))?;
+                let mut nets: std::collections::HashMap<[u8; 16], i64> =
+                    std::collections::HashMap::new();
                 let mut stmt = conn
                     .prepare("SELECT account_uuid, balance_zat FROM slipstream_v_recovery_balance")
                     .map_err(|e| anyhow!("recovery balance prepare: {}", e))?;
@@ -5639,7 +5677,29 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                         nets.insert(uuid16, net);
                     }
                 }
-            }
+                Ok(nets)
+            };
+            let nets = match read_nets() {
+                Ok(fresh) => {
+                    // Success: refresh the fallback cache, then use the fresh nets.
+                    *handle
+                        .recovery_nets_cache
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) = Some(fresh.clone());
+                    fresh
+                }
+                Err(e) => {
+                    // Contended/failed read: keep the summary alive with the last-good nets,
+                    // or an empty map (which zeroes every balance — safe, never over-shows).
+                    tracing::warn!(error = %e, "recovery balance read failed; using cached/zero fallback");
+                    handle
+                        .recovery_nets_cache
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                        .unwrap_or_default()
+                }
+            };
             // Accounts with no reconciled rows yet read 0 — the SDK's `?? .zero` semantics.
             let summary_mut = unsafe { &mut *summary_ptr };
             for balance in summary_mut.account_balances_mut() {
