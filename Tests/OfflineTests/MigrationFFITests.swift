@@ -251,6 +251,63 @@ final class MigrationFFITests: XCTestCase {
         }
     }
 
+    // MARK: - Ironwood activation height
+
+    /// Verified against the pinned rust source directly: zcash_protocol 0.10.0 @ e0e1277
+    /// (components/zcash_protocol/src/consensus.rs), `impl Parameters for MainNetwork` ->
+    /// `NetworkUpgrade::Nu6_3 => Some(BlockHeight(3_428_143))`. Also asserts the public
+    /// `OrchardMigration.ironwoodActivationHeight(for:)` accessor delegates to the same value, so
+    /// the public surface -- not just the internal backend -- is test-covered.
+    func testIronwoodActivationHeightMainnet() throws {
+        let height = try XCTUnwrap(ZcashRustBackend.ironwoodActivationHeight(networkType: .mainnet))
+        XCTAssertEqual(height, 3_428_143)
+
+        let publicHeight = try XCTUnwrap(OrchardMigration.ironwoodActivationHeight(for: .mainnet))
+        XCTAssertEqual(publicHeight, height)
+
+        // The public `ZcashNetwork.ironwoodActivationHeight` extension (the app-facing home that
+        // replaces hosts' hardcoded NU heights) resolves to the same value.
+        let networkHeight = try XCTUnwrap(ZcashNetworkBuilder.network(for: .mainnet).ironwoodActivationHeight)
+        XCTAssertEqual(networkHeight, height)
+    }
+
+    /// Verified against the pinned rust source directly: zcash_protocol 0.10.0 @ e0e1277
+    /// (components/zcash_protocol/src/consensus.rs), `impl Parameters for TestNetwork` ->
+    /// `NetworkUpgrade::Nu6_3 => Some(BlockHeight(4_134_000))`. Matches the brief's expectation
+    /// exactly; no discrepancy to flag.
+    func testIronwoodActivationHeightTestnet() throws {
+        let height = try XCTUnwrap(ZcashRustBackend.ironwoodActivationHeight(networkType: .testnet))
+        XCTAssertEqual(height, 4_134_000)
+
+        // The public `ZcashNetwork.ironwoodActivationHeight` extension resolves to the same value.
+        let networkHeight = try XCTUnwrap(ZcashNetworkBuilder.network(for: .testnet).ironwoodActivationHeight)
+        XCTAssertEqual(networkHeight, height)
+    }
+
+    /// The public `ZcashNetwork.ironwoodActivationHeight` extension on a custom (regtest-slot)
+    /// network resolves through the same FFI path and reports `nil` -- the documented "no known
+    /// Ironwood activation for that network" case: the regtest network id carries no fixed NU6.3
+    /// height. Registers the same idempotent custom heights as
+    /// `testOrchardMigrationRegistersCustomActivationHeightsOnInit` /
+    /// `RegtestActivationHeightsTests.testRegtestConsensusBranchIdReflectsCustomActivationHeights`
+    /// (`zcashlc_set_custom_network` is process-global and a conflicting re-registration asserts, so
+    /// identical values keep every registrant idempotent regardless of run order).
+    func testIronwoodActivationHeightForCustomNetworkIsNil() {
+        let activationHeights = NetworkActivationHeights(
+            overwinter: 1,
+            sapling: 1,
+            blossom: 1,
+            heartwood: 1,
+            canopy: 1,
+            nu5: 100,
+            nu6: 200
+        )
+        _ = ZcashRustBackend.setCustomNetwork(base: .regtest, activationHeights)
+        let network = ZcashNetworkBuilder.custom(base: .mainnet, activationHeights: activationHeights)
+
+        XCTAssertNil(network.ironwoodActivationHeight)
+    }
+
     // MARK: - Marshaling determinism
 
     func testMigrationProgressNilIsStableAcrossRepeatedCalls() async throws {
@@ -343,5 +400,129 @@ final class MigrationFFITests: XCTestCase {
 
         let hasOverdue = try await rustBackend.migrationHasOverdueTransfers(for: account)
         XCTAssertFalse(hasOverdue)
+    }
+
+    // MARK: - Actor integration over real FFI (nil paths)
+
+    /// Constructs a real `OrchardMigration` via the injecting initializer, wired to the SAME
+    /// real-FFI-backed welding as the rest of this file (not a mock) plus a real, temp-file-backed
+    /// `MigrationSyncGate`. On this fresh wallet `migrationNextDueTransfer` legitimately returns
+    /// `nil`, so `executeNextPendingTransfer` must short-circuit before ever reaching the broadcaster
+    /// -- proven here with a fake that fails the assertion (via a non-zero call count) rather than
+    /// the test itself if that contract regresses. `rescheduleOverdueTransfer` likewise resolves
+    /// `nil` (no active run), exercising the engine-backed pending-proposal accessor over real FFI.
+    func testFreshWalletActorNextPendingTransferAndRescheduleAreNilOverRealFFI() async throws {
+        let storageDirectory = try makeUniqueStorageDirectory()
+        defer { try? FileManager.default.removeItem(at: storageDirectory) }
+
+        let broadcaster = ScriptedBroadcaster(script: .throwing(ZcashError.migrationTorUnavailable))
+        let migration = OrchardMigration(
+            welding: rustBackend,
+            accountUUID: account,
+            broadcaster: broadcaster,
+            syncGate: MigrationSyncGate(
+                directory: storageDirectory,
+                accountUUID: account,
+                bufferDuration: 600,
+                tickInterval: 3600,
+                overdueProvider: { false },
+                logger: logger
+            ),
+            logger: logger
+        )
+
+        let result = try await migration.executeNextPendingTransfer(
+            options: MigrationNetworkPrivacyOptions(
+                useTor: false,
+                submissionEndpoint: LightWalletEndpoint(address: "default.example", port: 9067)
+            )
+        )
+        XCTAssertNil(result)
+        XCTAssertEqual(broadcaster.receivedCalls.count, 0)
+
+        let rescheduled = try await migration.rescheduleOverdueTransfer()
+        XCTAssertNil(rescheduled)
+    }
+
+    // MARK: - Custom network registration
+
+    /// `OrchardMigration.init(config:)` builds its own `ZcashRustBackend` rather than sharing the
+    /// synchronizer's, so it -- like `Initializer.setup` -- must register a custom network's
+    /// activation heights with the Rust core itself; nothing else does it on this path. Pre-fix,
+    /// every migration FFI call on a `.regtest`/custom network id (2) throws "custom network (id 2)
+    /// used before it was configured" (see `rust/src/lib.rs`'s `parse_network`), which
+    /// `migrationState()` surfaces as `rustMigrationState`, and which `isSyncBlocked()`/the gate's
+    /// `overdueProvider` silently swallow via `try?` instead (finding 5's "migration dead on
+    /// .custom/.regtest").
+    ///
+    /// `NetworkActivationHeights` here intentionally matches
+    /// `RegtestActivationHeightsTests.testRegtestConsensusBranchIdReflectsCustomActivationHeights`'s
+    /// values exactly: `zcashlc_set_custom_network` is process-global, `swift test` runs the whole
+    /// `OfflineTests` bundle in one process, and a conflicting re-registration is a host
+    /// configuration bug this code path asserts on (`assertionFailure`, live in a debug/test build).
+    /// Identical values make both tests' registrations idempotent regardless of run order.
+    ///
+    /// The engine's store tables ride the wallet schema migrations (the FFI no longer creates
+    /// them on first touch), so the fixture initializes the wallet database first — exactly like
+    /// a real caller, whose `Initializer`/`prepare` runs `initDataDb` before any migration read —
+    /// and then verifies `migrationState()` reads `NotStarted` over the custom network the
+    /// `OrchardMigration` initializer registered.
+    func testOrchardMigrationRegistersCustomActivationHeightsOnInit() async throws {
+        let activationHeights = NetworkActivationHeights(
+            overwinter: 1,
+            sapling: 1,
+            blossom: 1,
+            heartwood: 1,
+            canopy: 1,
+            nu5: 100,
+            nu6: 200
+        )
+        let network = ZcashNetworkBuilder.regtest(activationHeights: activationHeights)
+
+        let storageDirectory = try makeUniqueStorageDirectory()
+        defer { try? FileManager.default.removeItem(at: storageDirectory) }
+
+        let migration = OrchardMigration(
+            config: OrchardMigration.Config(
+                dataDbURL: storageDirectory.appendingPathComponent("data.db"),
+                fsBlockDbRoot: storageDirectory.appendingPathComponent("fs_cache", isDirectory: true),
+                spendParamsURL: storageDirectory.appendingPathComponent("sapling-spend.params"),
+                outputParamsURL: storageDirectory.appendingPathComponent("sapling-output.params"),
+                network: network,
+                accountUUID: AccountUUID(id: [UInt8](repeating: 9, count: 16)),
+                torDirURL: storageDirectory.appendingPathComponent("tor", isDirectory: true),
+                generalStorageURL: storageDirectory,
+                loggingPolicy: .noLogging
+            )
+        )
+
+        let initBackend = ZcashRustBackend.makeForTests(
+            dbData: storageDirectory.appendingPathComponent("data.db"),
+            fsBlockDbRoot: storageDirectory.appendingPathComponent("fs_cache", isDirectory: true),
+            networkType: network.networkType
+        )
+        let dbInit = try await initBackend.initDataDb(seed: nil)
+        guard case .success = dbInit else {
+            XCTFail("Failed to initDataDb. Expected `.success`, got \(String(describing: dbInit))")
+            return
+        }
+
+        do {
+            let state = try await migration.migrationState()
+            XCTAssertEqual(state, MigrationState.notStarted)
+        } catch {
+            XCTFail("Expected migrationState() to succeed once the custom network is registered by init(config:); got \(error)")
+        }
+    }
+
+    // MARK: - Helpers
+
+    private func makeUniqueStorageDirectory() throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "MigrationFFITests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 }
