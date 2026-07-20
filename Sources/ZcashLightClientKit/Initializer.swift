@@ -548,3 +548,60 @@ public class Initializer {
         DerivationTool(networkType: network.networkType).isValidTransparentAddress(address)
     }
 }
+
+extension Initializer.LoggingPolicy {
+    /// Builds the `Logger` this policy specifies.
+    ///
+    /// Extracted from what were two independently maintained copies of this exact mapping
+    /// (`Synchronizer/Dependencies.swift`'s DI registration, `OrchardMigration`'s standalone
+    /// backend setup) so there is one implementation to keep in sync with `LoggingPolicy`'s cases.
+    ///
+    /// - Parameters:
+    ///   - category: the OSLog category for the `.default` case's `OSLogger`. Defaults to
+    ///     `OSLogger`'s own default (`"sdkLogs"`).
+    ///   - alias: the synchronizer alias folded into the `.default` case's `OSLogger` category
+    ///     suffix, mirroring the DI-registered per-synchronizer-instance logger. Pass `nil` when the
+    ///     logger is not scoped to a synchronizer instance (e.g. `OrchardMigration`, which predates
+    ///     any `Synchronizer`).
+    func makeLogger(category: String = "sdkLogs", alias: ZcashSynchronizerAlias? = nil) -> Logger {
+        switch self {
+        case let .default(logLevel):
+            return OSLogger(logLevel: logLevel, category: category, alias: alias)
+        case let .custom(customLogger):
+            return customLogger
+        case .noLogging:
+            return NullLogger()
+        }
+    }
+
+    /// Maps this policy to the Rust FFI's log-level enum: `.default` translates its `OSLogger.LogLevel`
+    /// directly, `.custom` reads the supplied logger's own `maxLogLevel()` (`nil` -> `.off`), and
+    /// `.noLogging` is always `.off`. Extracted alongside `makeLogger(category:alias:)` -- see its
+    /// doc for the two call sites this used to be duplicated across.
+    func makeRustLogging() -> RustLogging {
+        switch self {
+        case .default(let logLevel):
+            return Self.rustLogging(for: logLevel)
+        case .custom(let customLogger):
+            guard let logLevel = customLogger.maxLogLevel() else {
+                return RustLogging.off
+            }
+            return Self.rustLogging(for: logLevel)
+        case .noLogging:
+            return RustLogging.off
+        }
+    }
+
+    private static func rustLogging(for logLevel: OSLogger.LogLevel) -> RustLogging {
+        switch logLevel {
+        case .debug:
+            return RustLogging.debug
+        case .info, .event:
+            return RustLogging.info
+        case .warning:
+            return RustLogging.warn
+        case .error:
+            return RustLogging.error
+        }
+    }
+}
