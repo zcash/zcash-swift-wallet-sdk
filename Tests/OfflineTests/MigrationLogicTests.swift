@@ -818,14 +818,20 @@ final class MigrationLogicTests: ZcashTestCase {
     }
 
     static func makeSchedule(count: Int) -> MigrationSchedule {
-        let transfers = (0..<count).map { index in
-            MigrationTransferProposal(
+        // An explicit accumulator rather than `(0..<count).map { ... }`: CI's Xcode 16.0 compiler
+        // times out type-checking the closure-wrapped multi-argument literal expression ("unable to
+        // type-check this expression in reasonable time"); newer local toolchains accept either form.
+        var transfers: [MigrationTransferProposal] = []
+        for index in 0..<count {
+            let amount = Zatoshi(Int64((index + 1) * 100_000))
+            let transfer = MigrationTransferProposal(
                 id: "transfer-\(index)",
-                amount: Zatoshi(Int64((index + 1) * 100_000)),
+                amount: amount,
                 anchorHeight: 2_000_000 + index,
                 nextExecutableAfterHeight: 2_000_100 + index,
                 expiryHeight: 2_010_000 + index
             )
+            transfers.append(transfer)
         }
         return MigrationSchedule(transfers: transfers, estimatedDurationHours: count * 6)
     }
