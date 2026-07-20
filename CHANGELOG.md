@@ -7,6 +7,54 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 # Unreleased
 
 ## Added
+- Orchard→Ironwood pool-migration engine, exposed as a 23-member migration group on the
+  `Synchronizer` protocol, built over the pool-migration FFI/welding layer introduced in the entry
+  below: the app talks only to `Synchronizer` — the per-account migration engine, broadcaster, and
+  privacy gate behind it are internal. Account-scoped members take an `AccountUUID`, and two
+  migrations can run concurrently (for example a software account and a hardware-wallet account):
+  all engine state is account-keyed, per-account broadcasts stay single-flight without
+  cross-account serialization, and every account shares one dedicated migration Tor runtime. The
+  group covers the migration state machine and progress, note-split propose/sign/submit, gradual
+  (randomized-cadence) and immediate schedule proposal, one-confirmation
+  `signAndStoreMigrationSchedule`, height-gated background delivery
+  (`executeNextPendingMigrationTransfer` — migration members work without `prepare()`, so a
+  background session can broadcast without starting sync), overdue/invalid detection with the
+  engine-backed reschedule accessor and restart/refresh recovery, the sub-0.01-ZEC residual
+  opt-in, and an external-signer (PCZT) path for hardware wallets (`createUnsignedNoteSplitPCZT` /
+  `storeSignedNoteSplitPCZT` / `createUnsignedMigrationTransferPCZTs` /
+  `storeSignedMigrationSchedulePCZTs`). Migration broadcasts run over a dedicated Tor runtime (own
+  state directory `<torDir>/migration_tor`, fresh isolated circuit per submission, one bootstrap
+  shared across accounts, independent of the global `tor(enabled:)` toggle) with fail-closed
+  semantics — Tor requested but unavailable throws `ZcashError.migrationTorUnavailable`, never a
+  silent clearnet fallback — to exactly one submission endpoint per attempt
+  (`MigrationNetworkPrivacyOptions.submissionEndpoint` is required: the host picks the submission
+  server explicitly per broadcast, and the SDK never falls back to the sync server), with no
+  multi-endpoint fan-out and no post-broadcast txid polling: confirmation comes from block
+  scanning alone. Session separation is SDK-enforced in both directions: `start()` throws
+  `ZcashError.migrationSyncBlocked` (ZRUST0125) while the wallet-scope 10-minute broadcast→sync
+  privacy gate is active (`isMigrationSyncBlocked()` / `migrationSyncBlockedStream` /
+  `migrationPrivacySyncBufferDuration`, aggregated across every account including dormant ones),
+  and the broadcast-performing migration methods throw `ZcashError.migrationBroadcastDuringSync`
+  (ZRUST0126) while a sync runs — an advisory point-in-time check, not a hard lock.
+  `ZcashNetwork.ironwoodActivationHeight` exposes the NU6.3 activation height so hosts can stop
+  hardcoding it. Schedule persistence after commit is the host's responsibility: the SDK
+  deliberately keeps no local copy of the committed proposal list. The Closure/Combine wrapper
+  synchronizers deliberately do not mirror the migration group.
+  - Duplicate re-submissions self-heal: a submit rejection identifying the transaction as already
+    known (zcashd's already-in-chain code −27, or the already-in-block-chain/mempool-duplicate
+    reject messages) is recorded as success, so a retried broadcast whose first attempt actually
+    landed completes the transfer instead of parking the migration on a bogus failure.
+  - A record failure after a successful broadcast no longer skips the 10-minute privacy buffer:
+    the sync gate marks the moment the submit outcome is a success, before the engine records the
+    result, and the call then throws the distinguishable
+    `ZcashError.migrationRecordFailedAfterBroadcast` (ZRUST0124) — transient, since a later
+    execution window self-heals via the duplicate-rejection→success mapping.
+  - Migration works on custom (regtest-style) networks without a prior `Initializer`: the internal
+    engine registers the configured custom activation heights itself.
+  - Hardened per the adversarial review: sync-gate emissions are serialized behind a
+    re-entrancy-safe two-lock design, concurrent migration broadcasts share a single-flight Tor
+    bootstrap, the sync-gate ticker runs only while the blocked stream has subscribers, and the
+    migration gate state file is excluded from device backups.
 - Orchard→Ironwood pool-migration FFI, welding, models, and error codes — the layer beneath the
   `Synchronizer` migration surface that lands in the follow-up PR, wired to the FINAL migration
   engine (`zcash_pool_migration_backend` plus the account-keyed store that now lives inside
