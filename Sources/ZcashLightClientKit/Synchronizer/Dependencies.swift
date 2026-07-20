@@ -32,48 +32,10 @@ enum Dependencies {
         }
 
         container.register(type: Logger.self, isSingleton: true) { _ in
-            let logger: Logger
-            switch loggingPolicy {
-            case let .default(logLevel):
-                logger = OSLogger(logLevel: logLevel, alias: alias)
-            case let .custom(customLogger):
-                logger = customLogger
-            case .noLogging:
-                logger = NullLogger()
-            }
-
-            return logger
+            loggingPolicy.makeLogger(alias: alias)
         }
 
-        let rustLogging: RustLogging
-        switch loggingPolicy {
-        case .default(let logLevel):
-            switch logLevel {
-            case .debug:
-                rustLogging = RustLogging.debug
-            case .info, .event:
-                rustLogging = RustLogging.info
-            case .warning:
-                rustLogging = RustLogging.warn
-            case .error:
-                rustLogging = RustLogging.error
-            }
-        case .custom(let logger):
-            switch logger.maxLogLevel() {
-            case .debug:
-                rustLogging = RustLogging.debug
-            case .info, .event:
-                rustLogging = RustLogging.info
-            case .warning:
-                rustLogging = RustLogging.warn
-            case .error:
-                rustLogging = RustLogging.error
-            case .none:
-                rustLogging = RustLogging.off
-            }
-        case .noLogging:
-            rustLogging = RustLogging.off
-        }
+        let rustLogging = loggingPolicy.makeRustLogging()
 
         container.register(type: ZcashRustBackendWelding.self, isSingleton: true) { di in
             let sdkFlags = di.resolve(SDKFlags.self)
