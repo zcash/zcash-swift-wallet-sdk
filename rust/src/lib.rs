@@ -93,6 +93,9 @@ mod derivation;
 mod eip681;
 mod ffi;
 mod migration;
+mod migration_engine;
+mod migration_finalize;
+mod migration_plan_cache;
 mod tor;
 // Voting stays UNGATED: the module compiles as honest-error stubs (15 C symbols preserved —
 // Zodl macOS links them; a cargo feature gate would drop them from the staticlib and break
@@ -2695,6 +2698,8 @@ pub unsafe extern "C" fn zcashlc_create_proposed_transactions(
             &SpendingKeys::from_unified_spending_key(usk),
             OvkPolicy::Sender,
             &proposal,
+            // No expiry override: keep the builder-derived expiry the SDK has always used.
+            None,
         )
         .map_err(|e| anyhow!("Error while sending funds: {}", e))?;
 

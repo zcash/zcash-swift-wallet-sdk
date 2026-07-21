@@ -16,7 +16,6 @@ use zcash_client_backend::{
     tor::{Client, DormantMode},
     wallet::WalletTransparentOutput,
 };
-use zcash_client_sqlite::AccountUuid;
 use zcash_primitives::block::BlockHash;
 use zcash_protocol::{
     TxId,

@@ -34,13 +34,17 @@ zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.29"
 zcash_proofs = "0.29"
 zcash_protocol = { version = "0.10", features = ["local-consensus"] }
-# Not on crates.io yet — lives only on the `michal/ironwood-migration` line of
-# zcash/librustzcash. Direct git dependency at the same rev as the
-# [patch.crates-io] family below so the whole graph stays one family instance.
-zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
+# Not on crates.io yet — the final pool-migration engine and its SQLite store live
+# only on the `feat/pool-migration-sqlite` line of zcash/librustzcash, extended by
+# the account-keyed store (librustzcash PR #2712). Direct git dependencies at the
+# same rev as the [patch.crates-io] family below so the whole graph stays one
+# family instance.
+zcash_pool_migration_backend = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89", features = ["wallet"] }
+zcash_pool_migration_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
 zcash_script = "0.4"
 zip32 = "0.2"
 pczt = { version = "0.8.0-rc.1", features = ["prover"] }
+shardtree = "0.7"
 
 # EIP-681
 eip681 = "0.1.0"
@@ -120,24 +124,32 @@ zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting.git", rev = "46
 # declares crates.io versions and patches from its own root), so this block is what
 # governs the rev for the entire graph.
 #
-# [MOB-1495 / #1806] The pinned rev is currently the tip of `michal/ironwood-migration`
-# — NOT zcash/librustzcash main — carrying `zcash_pool_migration` (the direct git
-# dependency declared above in [dependencies]): based ~22 commits behind main, plus a
-# cherry-pick of main's e9581a78 "Add Ironwood historical note selection" which
-# zcash_voting@464f9748 requires. Bump the rev deliberately (build + OfflineTests
-# green). When the migration crate lands on main, advance this back to a main rev in
-# one move together with the `zcash_pool_migration` dependency; delete the
-# librustzcash-family patch entries below once the family reaches a 0.24-era
-# crates.io release.
-equihash = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-f4jumble = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-pczt = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
-zip321 = { git = "https://github.com/zcash/librustzcash", rev = "5115cf26da590a3d610446f1d926ff7f2873c9d1" }
+# [MOB-1495 / #1806] The pinned rev is the tip of
+# `michal/MOB-1455/MOB-1495-pool-migration-account-key` — `feat/pool-migration-sqlite`
+# (the final pool-migration engine line, recent-main-based) plus the account-keyed
+# migration store (librustzcash PR #2712, draft against that branch), which the
+# multi-account wallet (software account + imported hardware-wallet account in one
+# wallet database) requires. It carries `zcash_pool_migration_backend` and
+# `zcash_pool_migration_sqlite` (the direct git dependencies declared above in
+# [dependencies]). Bump the rev deliberately (build + OfflineTests green). When
+# PR #2712 is absorbed into `feat/pool-migration-sqlite`, advance to that branch's
+# rev; when the migration crates land on main, advance to a main rev; delete the
+# librustzcash-family patch entries below once the family reaches a crates.io
+# release.
+#
+# `orchard` rides the same story: the pinned librustzcash patches it to the merged
+# orchard #535 commit on orchard main (ZIP 374 deferred-anchor builder + PCZT
+# `Updater` setters), so this graph pins the identical rev.
+orchard = { git = "https://github.com/zcash/orchard.git", rev = "fa6e5fee02ce38b54193005a35289ec705d4f5b2" }
+equihash = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+f4jumble = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "1974ce536c56fb9674085fff1e171c785280ff89" }

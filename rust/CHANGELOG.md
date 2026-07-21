@@ -7,12 +7,27 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- Pool-migration (Orchard→Ironwood) FFI surface over the `zcash_pool_migration`
-  crate: 23 entry points plus their `#[repr(C)]` return types and
-  `zcashlc_free_migration_*` destructors. Each call builds a `MigrationContext`
-  from the wallet-db path, 16-byte account uuid, and network id, and reports
-  failures through the thread-local last-error channel (`NULL` / `false` / `-1`
-  sentinels).
+- Pool-migration (Orchard→Ironwood) FFI surface over the final engine crates
+  (`zcash_pool_migration_backend` + `zcash_pool_migration_sqlite`, pinned to the
+  account-keyed store line — librustzcash PR #2712 on `feat/pool-migration-sqlite`):
+  23 entry points plus their `#[repr(C)]` return types and
+  `zcashlc_free_migration_*` destructors. Each call opens the wallet database and
+  the account-keyed migration store (a second connection into the same file) from
+  the wallet-db path, 16-byte account uuid, and network id, and reports failures
+  through the thread-local last-error channel (`NULL` / `false` / `-1` sentinels),
+  with two stable prefixes (`MIGRATION_PLAN_STALE`, `MIGRATION_PROVING_UNAVAILABLE`)
+  for the actionable conditions. The engine plans previews (`plan_migration`,
+  carried propose→commit by an in-process plan cache), commits the note split and
+  the transfer schedule atomically (pre-signing every transaction), defers anchors
+  and witnesses to proving time (ZIP 374) — proving currently targets the wallet's
+  natural anchor for transfers too, an approved stopgap pending upstream
+  anchor-checkpoint retention (librustzcash #2700) — and leaves broadcasting,
+  mined-reconciliation, rejection classification (the `sdk_invalid_marks` side
+  table), and the platform's 6-state derivation to this layer. `Complete` is
+  per-run; sequential runs commit over a terminal predecessor. The external-signer
+  note-split pair is plural (`zcashlc_migration_create_unsigned_note_split_pczts` /
+  `zcashlc_migration_store_signed_note_split_pczts`): the engine builds N
+  preparation transactions, not one split transaction.
   - State: `zcashlc_migration_state`, `zcashlc_migration_progress`,
     `zcashlc_migration_is_note_split_needed`,
     `zcashlc_migration_has_overdue_transfers`,
@@ -30,8 +45,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `zcashlc_migration_is_sync_required`.
   - Recovery: `zcashlc_migration_restart_step`,
     `zcashlc_migration_refresh_stale_transfers`.
-  - External signer: `zcashlc_migration_create_unsigned_note_split_pczt`,
-    `zcashlc_migration_store_signed_note_split_pczt`,
+  - External signer: `zcashlc_migration_create_unsigned_note_split_pczts`,
+    `zcashlc_migration_store_signed_note_split_pczts`,
     `zcashlc_migration_create_unsigned_transfer_pczts`,
     `zcashlc_migration_store_signed_schedule_pczts`.
   - Helper: `zcashlc_ironwood_activation_height` (NU6.3 activation height for
