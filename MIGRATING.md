@@ -1,5 +1,37 @@
 # Migrating from previous versions to _Unreleased_
 
+## The pool-migration surface rides the final engine
+
+The Orchard→Ironwood migration group (never in a released SDK) is rewired onto the final engine
+crates (`zcash_pool_migration_backend` + `zcash_pool_migration_sqlite`). For integrators tracking
+the unreleased surface:
+
+- **The external-signer note-split pair went plural.** The engine builds N preparation
+  transactions, not one split transaction, so
+  `createUnsignedNoteSplitPCZT(accountUUID:) -> Data` is now
+  `createUnsignedNoteSplitPCZTs(accountUUID:) -> [MigrationUnsignedTransferPczt]` (it also creates
+  the run, persisted unsigned), and `storeSignedNoteSplitPCZT(accountUUID:_: Data)` is now
+  `storeSignedNoteSplitPCZTs(accountUUID:_: [MigrationSignedTransferPczt])` (all-or-nothing; the
+  returned `PreparedMigrationTransfer` is a storage receipt with a zeroed `txid` — the
+  broadcastable value is served by the delivery lane). One signing ceremony still covers the whole
+  migration together with `createUnsignedMigrationTransferPCZTs`.
+- **`MigrationState.complete` is PER-RUN.** It means "the stored run is fully mined", never
+  "nothing left to migrate": ask `proposeMigrationTransfers` whether anything remains (an empty
+  schedule means no), and only then treat the account as done. Sequential runs are first-class — a
+  new commit over a completed run starts the next one.
+- **`MigrationState.readyToPropose` and `MigrationAttentionReason.syncRequiredBeforeNext` are
+  never emitted** (the note split and the schedule commit atomically). The cases remain for source
+  compatibility.
+- **`includeResidual` is accepted and ignored** everywhere it appears: the engine plans
+  canonically and the residual stays in Orchard per ZIP 318.
+- **`refreshStaleMigrationTransfers` always throws** (rebuild-on-expiry is an explicit upstream
+  later-slice); cancel and re-plan via `restartCurrentMigrationStep`, which now also cancels the
+  stored run.
+- **Two new errors:** `migrationPlanStale` (ZRUST0128 — a commit no longer matches the previewed
+  plan; propose again) and `migrationProvingUnavailable` (ZRUST0127 — proving failed hard).
+- **`MigrationTransferProposal.anchorHeight` is a reference height** (the proposal-time tip), not
+  a commitment-tree anchor: ZIP 374 defers real anchors to proving time.
+
 ## `prepare` now validates the seed against the existing wallet
 
 If the wallet database already contains seed-derived account(s) and the seed passed to `prepare`

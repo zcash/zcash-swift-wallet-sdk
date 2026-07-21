@@ -581,6 +581,12 @@ public protocol Synchronizer: AnyObject {
 
     /// The current Orchard -> Ironwood migration state for `accountUUID`. Also the reconciliation hub:
     /// call it on launch and after every migration operation.
+    ///
+    /// `MigrationState.complete` is PER-RUN — "the stored run is fully mined", never "nothing left
+    /// to migrate". A large balance can need several successive runs and later-received funds
+    /// re-create a migratable balance, so hosts must NOT latch "never migrate again" off this
+    /// state: after completion, ask `proposeMigrationTransfers(accountUUID:includeResidual:)`
+    /// whether anything remains (an empty schedule means no).
     /// - Parameter accountUUID: the account whose migration state is of interest.
     func migrationState(accountUUID: AccountUUID) async throws -> MigrationState
 
@@ -627,11 +633,15 @@ public protocol Synchronizer: AnyObject {
         options: MigrationNetworkPrivacyOptions
     ) async throws -> MigrationTransferResult
 
-    /// The full migration schedule for `accountUUID`'s spendable Orchard balance.
+    /// The full migration schedule preview for `accountUUID`'s live spendable Orchard balance, in
+    /// chronological broadcast order. Plans fresh (drawing new ZIP 318 schedule randomness) and
+    /// caches the preview — a later commit signs exactly this plan, so always confirm the schedule
+    /// the user actually saw. An EMPTY schedule means there is nothing to migrate; after a
+    /// completed run this is the "does anything remain" answer of the sequential-runs contract.
     /// - Parameters:
     ///   - accountUUID: the account to propose a migration schedule for.
-    ///   - includeResidual: when `true` and a worthwhile residual exists, one extra transfer for it
-    ///     is appended to the schedule.
+    ///   - includeResidual: accepted and IGNORED (documented-inert): the final engine plans
+    ///     canonically, and ZIP 318 expects the residual to remain in Orchard.
     func proposeMigrationTransfers(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule
 
     /// Proposes the immediate (single-transaction) migration for `accountUUID`: sweeps the whole
@@ -752,17 +762,23 @@ public protocol Synchronizer: AnyObject {
     ///   - includeResidual: should match the schedule's original choice.
     func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey, includeResidual: Bool) async throws -> UInt32
 
-    /// Builds `accountUUID`'s note-split transaction as an unsigned, proven PCZT for an external
-    /// signer.
-    /// - Parameter accountUUID: the account to build the PCZT for.
-    func createUnsignedNoteSplitPCZT(accountUUID: AccountUUID) async throws -> Data
+    /// Builds `accountUUID`'s whole previewed migration UNSIGNED — the run is created by this
+    /// call, with every transaction persisted awaiting its signature — and returns the preparation
+    /// (note-split) subset of the PCZTs for the signing ceremony. The transfer subset of the same
+    /// build is served by `createUnsignedMigrationTransferPCZTs(accountUUID:for:)`, so one
+    /// ceremony signs everything (the final engine builds N preparation transactions, not one
+    /// split transaction).
+    /// - Parameter accountUUID: the account to build the PCZTs for.
+    func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID) async throws -> [MigrationUnsignedTransferPczt]
 
-    /// Accepts `accountUUID`'s externally signed note-split PCZT and returns the broadcastable
-    /// prepared transfer.
+    /// Applies the ceremony's signatures to `accountUUID`'s preparation (note-split) transactions,
+    /// all-or-nothing: every element must match a stored transaction awaiting its signature or
+    /// nothing is persisted. Returns a STORAGE RECEIPT for the first preparation transaction (its
+    /// `txid` is zeroed — the broadcastable, proven value is served by the delivery lane).
     /// - Parameters:
-    ///   - accountUUID: the account the PCZT belongs to.
-    ///   - pczt: the externally signed note-split PCZT.
-    func storeSignedNoteSplitPCZT(accountUUID: AccountUUID, _ pczt: Data) async throws -> PreparedMigrationTransfer
+    ///   - accountUUID: the account the PCZTs belong to.
+    ///   - signed: the externally signed preparation PCZTs, each paired with its engine id.
+    func storeSignedNoteSplitPCZTs(accountUUID: AccountUUID, _ signed: [MigrationSignedTransferPczt]) async throws -> PreparedMigrationTransfer
 
     /// Builds one unsigned, proven PCZT per transfer of `schedule` for `accountUUID`, for an external
     /// signer.
@@ -980,11 +996,11 @@ public extension Synchronizer {
         throw MigrationUnimplemented(member: #function)
     }
 
-    func createUnsignedNoteSplitPCZT(accountUUID: AccountUUID) async throws -> Data {
+    func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {
         throw MigrationUnimplemented(member: #function)
     }
 
-    func storeSignedNoteSplitPCZT(accountUUID: AccountUUID, _ pczt: Data) async throws -> PreparedMigrationTransfer {
+    func storeSignedNoteSplitPCZTs(accountUUID: AccountUUID, _ signed: [MigrationSignedTransferPczt]) async throws -> PreparedMigrationTransfer {
         throw MigrationUnimplemented(member: #function)
     }
 
