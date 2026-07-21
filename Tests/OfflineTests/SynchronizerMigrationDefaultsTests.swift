@@ -119,13 +119,16 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
         }
     }
 
-    func testCreateUnsignedNoteSplitPCZTDefaultThrowsUnimplemented() async {
-        await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.createUnsignedNoteSplitPCZT(accountUUID: self.accountUUID) }
+    func testCreateUnsignedNoteSplitPCZTsDefaultThrowsUnimplemented() async {
+        await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.createUnsignedNoteSplitPCZTs(accountUUID: self.accountUUID) }
     }
 
-    func testStoreSignedNoteSplitPCZTDefaultThrowsUnimplemented() async {
+    func testStoreSignedNoteSplitPCZTsDefaultThrowsUnimplemented() async {
         await assertThrowsMigrationUnimplemented {
-            _ = try await self.synchronizer.storeSignedNoteSplitPCZT(accountUUID: self.accountUUID, Data([0x01, 0x02]))
+            _ = try await self.synchronizer.storeSignedNoteSplitPCZTs(
+                accountUUID: self.accountUUID,
+                [MigrationSignedTransferPczt(id: "0", pczt: Data([0x01, 0x02]))]
+            )
         }
     }
 
