@@ -2677,48 +2677,6 @@ class SynchronizerMock: Synchronizer {
         try await deleteAccountClosure!(accountUUID)
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     // MARK: - migrationState
 
     var migrationStateAccountUUIDThrowableError: Error?
@@ -3207,51 +3165,51 @@ class SynchronizerMock: Synchronizer {
         }
     }
 
-    // MARK: - createUnsignedNoteSplitPCZT
+    // MARK: - createUnsignedNoteSplitPCZTs
 
-    var createUnsignedNoteSplitPCZTAccountUUIDThrowableError: Error?
-    var createUnsignedNoteSplitPCZTAccountUUIDCallsCount = 0
-    var createUnsignedNoteSplitPCZTAccountUUIDCalled: Bool {
-        return createUnsignedNoteSplitPCZTAccountUUIDCallsCount > 0
+    var createUnsignedNoteSplitPCZTsAccountUUIDThrowableError: Error?
+    var createUnsignedNoteSplitPCZTsAccountUUIDCallsCount = 0
+    var createUnsignedNoteSplitPCZTsAccountUUIDCalled: Bool {
+        return createUnsignedNoteSplitPCZTsAccountUUIDCallsCount > 0
     }
-    var createUnsignedNoteSplitPCZTAccountUUIDReceivedAccountUUID: AccountUUID?
-    var createUnsignedNoteSplitPCZTAccountUUIDReturnValue: Data!
-    var createUnsignedNoteSplitPCZTAccountUUIDClosure: ((AccountUUID) async throws -> Data)?
+    var createUnsignedNoteSplitPCZTsAccountUUIDReceivedAccountUUID: AccountUUID?
+    var createUnsignedNoteSplitPCZTsAccountUUIDReturnValue: [MigrationUnsignedTransferPczt]!
+    var createUnsignedNoteSplitPCZTsAccountUUIDClosure: ((AccountUUID) async throws -> [MigrationUnsignedTransferPczt])?
 
-    func createUnsignedNoteSplitPCZT(accountUUID: AccountUUID) async throws -> Data {
-        if let error = createUnsignedNoteSplitPCZTAccountUUIDThrowableError {
+    func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {
+        if let error = createUnsignedNoteSplitPCZTsAccountUUIDThrowableError {
             throw error
         }
-        createUnsignedNoteSplitPCZTAccountUUIDCallsCount += 1
-        createUnsignedNoteSplitPCZTAccountUUIDReceivedAccountUUID = accountUUID
-        if let closure = createUnsignedNoteSplitPCZTAccountUUIDClosure {
+        createUnsignedNoteSplitPCZTsAccountUUIDCallsCount += 1
+        createUnsignedNoteSplitPCZTsAccountUUIDReceivedAccountUUID = accountUUID
+        if let closure = createUnsignedNoteSplitPCZTsAccountUUIDClosure {
             return try await closure(accountUUID)
         } else {
-            return createUnsignedNoteSplitPCZTAccountUUIDReturnValue
+            return createUnsignedNoteSplitPCZTsAccountUUIDReturnValue
         }
     }
 
-    // MARK: - storeSignedNoteSplitPCZT
+    // MARK: - storeSignedNoteSplitPCZTs
 
-    var storeSignedNoteSplitPCZTAccountUUIDThrowableError: Error?
-    var storeSignedNoteSplitPCZTAccountUUIDCallsCount = 0
-    var storeSignedNoteSplitPCZTAccountUUIDCalled: Bool {
-        return storeSignedNoteSplitPCZTAccountUUIDCallsCount > 0
+    var storeSignedNoteSplitPCZTsAccountUUIDThrowableError: Error?
+    var storeSignedNoteSplitPCZTsAccountUUIDCallsCount = 0
+    var storeSignedNoteSplitPCZTsAccountUUIDCalled: Bool {
+        return storeSignedNoteSplitPCZTsAccountUUIDCallsCount > 0
     }
-    var storeSignedNoteSplitPCZTAccountUUIDReceivedArguments: (accountUUID: AccountUUID, pczt: Data)?
-    var storeSignedNoteSplitPCZTAccountUUIDReturnValue: PreparedMigrationTransfer!
-    var storeSignedNoteSplitPCZTAccountUUIDClosure: ((AccountUUID, Data) async throws -> PreparedMigrationTransfer)?
+    var storeSignedNoteSplitPCZTsAccountUUIDReceivedArguments: (accountUUID: AccountUUID, signed: [MigrationSignedTransferPczt])?
+    var storeSignedNoteSplitPCZTsAccountUUIDReturnValue: PreparedMigrationTransfer!
+    var storeSignedNoteSplitPCZTsAccountUUIDClosure: ((AccountUUID, [MigrationSignedTransferPczt]) async throws -> PreparedMigrationTransfer)?
 
-    func storeSignedNoteSplitPCZT(accountUUID: AccountUUID, _ pczt: Data) async throws -> PreparedMigrationTransfer {
-        if let error = storeSignedNoteSplitPCZTAccountUUIDThrowableError {
+    func storeSignedNoteSplitPCZTs(accountUUID: AccountUUID, _ signed: [MigrationSignedTransferPczt]) async throws -> PreparedMigrationTransfer {
+        if let error = storeSignedNoteSplitPCZTsAccountUUIDThrowableError {
             throw error
         }
-        storeSignedNoteSplitPCZTAccountUUIDCallsCount += 1
-        storeSignedNoteSplitPCZTAccountUUIDReceivedArguments = (accountUUID: accountUUID, pczt: pczt)
-        if let closure = storeSignedNoteSplitPCZTAccountUUIDClosure {
-            return try await closure(accountUUID, pczt)
+        storeSignedNoteSplitPCZTsAccountUUIDCallsCount += 1
+        storeSignedNoteSplitPCZTsAccountUUIDReceivedArguments = (accountUUID: accountUUID, signed: signed)
+        if let closure = storeSignedNoteSplitPCZTsAccountUUIDClosure {
+            return try await closure(accountUUID, signed)
         } else {
-            return storeSignedNoteSplitPCZTAccountUUIDReturnValue
+            return storeSignedNoteSplitPCZTsAccountUUIDReturnValue
         }
     }
 
@@ -4637,54 +4595,6 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     // MARK: - initBlockMetadataDb
 
     var initBlockMetadataDbThrowableError: Error?
@@ -5353,51 +5263,51 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
     }
 
-    // MARK: - migrationCreateUnsignedNoteSplitPczt
+    // MARK: - migrationCreateUnsignedNoteSplitPczts
 
-    var migrationCreateUnsignedNoteSplitPcztForThrowableError: Error?
-    var migrationCreateUnsignedNoteSplitPcztForCallsCount = 0
-    var migrationCreateUnsignedNoteSplitPcztForCalled: Bool {
-        return migrationCreateUnsignedNoteSplitPcztForCallsCount > 0
+    var migrationCreateUnsignedNoteSplitPcztsForThrowableError: Error?
+    var migrationCreateUnsignedNoteSplitPcztsForCallsCount = 0
+    var migrationCreateUnsignedNoteSplitPcztsForCalled: Bool {
+        return migrationCreateUnsignedNoteSplitPcztsForCallsCount > 0
     }
-    var migrationCreateUnsignedNoteSplitPcztForReceivedAccount: AccountUUID?
-    var migrationCreateUnsignedNoteSplitPcztForReturnValue: Data!
-    var migrationCreateUnsignedNoteSplitPcztForClosure: ((AccountUUID) async throws -> Data)?
+    var migrationCreateUnsignedNoteSplitPcztsForReceivedAccount: AccountUUID?
+    var migrationCreateUnsignedNoteSplitPcztsForReturnValue: [MigrationUnsignedTransferPczt]!
+    var migrationCreateUnsignedNoteSplitPcztsForClosure: ((AccountUUID) async throws -> [MigrationUnsignedTransferPczt])?
 
-    func migrationCreateUnsignedNoteSplitPczt(for account: AccountUUID) async throws -> Data {
-        if let error = migrationCreateUnsignedNoteSplitPcztForThrowableError {
+    func migrationCreateUnsignedNoteSplitPczts(for account: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {
+        if let error = migrationCreateUnsignedNoteSplitPcztsForThrowableError {
             throw error
         }
-        migrationCreateUnsignedNoteSplitPcztForCallsCount += 1
-        migrationCreateUnsignedNoteSplitPcztForReceivedAccount = account
-        if let closure = migrationCreateUnsignedNoteSplitPcztForClosure {
+        migrationCreateUnsignedNoteSplitPcztsForCallsCount += 1
+        migrationCreateUnsignedNoteSplitPcztsForReceivedAccount = account
+        if let closure = migrationCreateUnsignedNoteSplitPcztsForClosure {
             return try await closure(account)
         } else {
-            return migrationCreateUnsignedNoteSplitPcztForReturnValue
+            return migrationCreateUnsignedNoteSplitPcztsForReturnValue
         }
     }
 
-    // MARK: - migrationStoreSignedNoteSplitPczt
+    // MARK: - migrationStoreSignedNoteSplitPczts
 
-    var migrationStoreSignedNoteSplitPcztForThrowableError: Error?
-    var migrationStoreSignedNoteSplitPcztForCallsCount = 0
-    var migrationStoreSignedNoteSplitPcztForCalled: Bool {
-        return migrationStoreSignedNoteSplitPcztForCallsCount > 0
+    var migrationStoreSignedNoteSplitPcztsForThrowableError: Error?
+    var migrationStoreSignedNoteSplitPcztsForCallsCount = 0
+    var migrationStoreSignedNoteSplitPcztsForCalled: Bool {
+        return migrationStoreSignedNoteSplitPcztsForCallsCount > 0
     }
-    var migrationStoreSignedNoteSplitPcztForReceivedArguments: (pczt: Data, account: AccountUUID)?
-    var migrationStoreSignedNoteSplitPcztForReturnValue: PreparedMigrationTransfer!
-    var migrationStoreSignedNoteSplitPcztForClosure: ((Data, AccountUUID) async throws -> PreparedMigrationTransfer)?
+    var migrationStoreSignedNoteSplitPcztsForReceivedArguments: (signed: [MigrationSignedTransferPczt], account: AccountUUID)?
+    var migrationStoreSignedNoteSplitPcztsForReturnValue: PreparedMigrationTransfer!
+    var migrationStoreSignedNoteSplitPcztsForClosure: (([MigrationSignedTransferPczt], AccountUUID) async throws -> PreparedMigrationTransfer)?
 
-    func migrationStoreSignedNoteSplitPczt(_ pczt: Data, for account: AccountUUID) async throws -> PreparedMigrationTransfer {
-        if let error = migrationStoreSignedNoteSplitPcztForThrowableError {
+    func migrationStoreSignedNoteSplitPczts(_ signed: [MigrationSignedTransferPczt], for account: AccountUUID) async throws -> PreparedMigrationTransfer {
+        if let error = migrationStoreSignedNoteSplitPcztsForThrowableError {
             throw error
         }
-        migrationStoreSignedNoteSplitPcztForCallsCount += 1
-        migrationStoreSignedNoteSplitPcztForReceivedArguments = (pczt: pczt, account: account)
-        if let closure = migrationStoreSignedNoteSplitPcztForClosure {
-            return try await closure(pczt, account)
+        migrationStoreSignedNoteSplitPcztsForCallsCount += 1
+        migrationStoreSignedNoteSplitPcztsForReceivedArguments = (signed: signed, account: account)
+        if let closure = migrationStoreSignedNoteSplitPcztsForClosure {
+            return try await closure(signed, account)
         } else {
-            return migrationStoreSignedNoteSplitPcztForReturnValue
+            return migrationStoreSignedNoteSplitPcztsForReturnValue
         }
     }
 
