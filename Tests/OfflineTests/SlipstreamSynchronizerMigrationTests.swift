@@ -117,16 +117,16 @@ final class SlipstreamSynchronizerMigrationTests: ZcashTestCase {
         XCTAssertEqual(welding.migrationHasOverdueTransfersForReceivedAccount, accountUUID)
     }
 
-    func testCreateUnsignedNoteSplitPCZTForwards() async throws {
+    func testCreateUnsignedNoteSplitPCZTsForwards() async throws {
         let welding = ZcashRustBackendWeldingMock()
-        let expected = Data([0xAA, 0xBB])
-        welding.migrationCreateUnsignedNoteSplitPcztForReturnValue = expected
+        let expected = [MigrationUnsignedTransferPczt(id: "0", pczt: Data([0xAA, 0xBB]))]
+        welding.migrationCreateUnsignedNoteSplitPcztsForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
 
-        let pczt = try await synchronizer.createUnsignedNoteSplitPCZT(accountUUID: accountUUID)
+        let pczts = try await synchronizer.createUnsignedNoteSplitPCZTs(accountUUID: accountUUID)
 
-        XCTAssertEqual(pczt, expected)
-        XCTAssertEqual(welding.migrationCreateUnsignedNoteSplitPcztForReceivedAccount, accountUUID)
+        XCTAssertEqual(pczts, expected)
+        XCTAssertEqual(welding.migrationCreateUnsignedNoteSplitPcztsForReceivedAccount, accountUUID)
     }
 
     // MARK: - Forwarding: wallet-scope gate members

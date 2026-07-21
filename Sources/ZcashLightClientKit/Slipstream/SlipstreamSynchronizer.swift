@@ -1224,12 +1224,12 @@ public actor SlipstreamSynchronizer: Synchronizer {
         try await migrationHost.migration(for: accountUUID).refreshStaleTransfers(usk: usk, includeResidual: includeResidual)
     }
 
-    public func createUnsignedNoteSplitPCZT(accountUUID: AccountUUID) async throws -> Data {
-        try await migrationHost.migration(for: accountUUID).createUnsignedNoteSplitPCZT()
+    public func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {
+        try await migrationHost.migration(for: accountUUID).createUnsignedNoteSplitPCZTs()
     }
 
-    public func storeSignedNoteSplitPCZT(accountUUID: AccountUUID, _ pczt: Data) async throws -> PreparedMigrationTransfer {
-        try await migrationHost.migration(for: accountUUID).storeSignedNoteSplitPCZT(pczt)
+    public func storeSignedNoteSplitPCZTs(accountUUID: AccountUUID, _ signed: [MigrationSignedTransferPczt]) async throws -> PreparedMigrationTransfer {
+        try await migrationHost.migration(for: accountUUID).storeSignedNoteSplitPCZTs(signed)
     }
 
     public func createUnsignedMigrationTransferPCZTs(
