@@ -452,12 +452,12 @@ final class OrchardMigrationCompositionTests: ZcashTestCase {
     // MARK: - Keystone flow
 
     /// Documents the engine's prep-first contract at the actor level: immediately after
-    /// `storeSignedNoteSplitPCZT`, the engine keeps reporting the split as the next due transfer
-    /// (mirrored here by stubbing `migrationNextDueTransfer` to return the same prepared transfer
-    /// `storeSignedNoteSplitPczt` handed back), so `executeNextPendingTransfer` broadcasts it.
-    func testKeystoneFlowStoreSignedNoteSplitPCZTThenExecuteNextBroadcastsThePrepTransfer() async throws {
+    /// `storeSignedNoteSplitPCZTs`, the delivery lane serves the stored preparation transaction as
+    /// next due (mirrored here by stubbing `migrationNextDueTransfer` to return the proven
+    /// counterpart of the storage receipt), so `executeNextPendingTransfer` broadcasts it.
+    func testKeystoneFlowStoreSignedNoteSplitPCZTsThenExecuteNextBroadcastsThePrepTransfer() async throws {
         let prepTransfer = makePreparedTransfer(id: "prep:run-0")
-        welding.migrationStoreSignedNoteSplitPcztForReturnValue = prepTransfer
+        welding.migrationStoreSignedNoteSplitPcztsForReturnValue = prepTransfer
         welding.migrationNextDueTransferForReturnValue = prepTransfer
         welding.migrationExtractBroadcastTxPcztForClosure = { pczt, _ in
             XCTAssertEqual(pczt, prepTransfer.pczt)
@@ -467,7 +467,9 @@ final class OrchardMigrationCompositionTests: ZcashTestCase {
         let broadcaster = ScriptedBroadcaster(script: .outcome(.submitted))
         let migration = makeMigration(broadcaster: broadcaster)
 
-        let stored = try await migration.storeSignedNoteSplitPCZT(Data([0x09]))
+        let stored = try await migration.storeSignedNoteSplitPCZTs([
+            MigrationSignedTransferPczt(id: prepTransfer.id, pczt: Data([0x09]))
+        ])
         XCTAssertEqual(stored, prepTransfer)
 
         let result = try await migration.executeNextPendingTransfer(options: MigrationNetworkPrivacyOptions(useTor: false, submissionEndpoint: defaultEndpoint))
