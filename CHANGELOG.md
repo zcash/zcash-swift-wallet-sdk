@@ -18,11 +18,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (randomized-cadence) and immediate schedule proposal, one-confirmation
   `signAndStoreMigrationSchedule`, height-gated background delivery
   (`executeNextPendingMigrationTransfer` — migration members work without `prepare()`, so a
-  background session can broadcast without starting sync), overdue/invalid detection with the
-  engine-backed reschedule accessor and restart/refresh recovery, the sub-0.01-ZEC residual
-  opt-in, and an external-signer (PCZT) path for hardware wallets (`createUnsignedNoteSplitPCZT` /
-  `storeSignedNoteSplitPCZT` / `createUnsignedMigrationTransferPCZTs` /
-  `storeSignedMigrationSchedulePCZTs`). Migration broadcasts run over a dedicated Tor runtime (own
+  background session can broadcast without starting sync; the delivery lane serves preparation
+  transactions and transfers alike, proving each at broadcast time per ZIP 374), overdue/invalid
+  detection with the stored-run reschedule accessor and cancel-and-replan restart recovery
+  (`refreshStaleMigrationTransfers` always throws: rebuild-on-expiry is an upstream later-slice),
+  the per-run `complete` + fresh-propose sequential-runs contract, and an external-signer (PCZT)
+  path for hardware wallets (`createUnsignedNoteSplitPCZTs` / `storeSignedNoteSplitPCZTs` — plural:
+  the engine builds N preparation transactions, and one ceremony signs them together with
+  `createUnsignedMigrationTransferPCZTs` / `storeSignedMigrationSchedulePCZTs`). Migration broadcasts run over a dedicated Tor runtime (own
   state directory `<torDir>/migration_tor`, fresh isolated circuit per submission, one bootstrap
   shared across accounts, independent of the global `tor(enabled:)` toggle) with fail-closed
   semantics — Tor requested but unavailable throws `ZcashError.migrationTorUnavailable`, never a
