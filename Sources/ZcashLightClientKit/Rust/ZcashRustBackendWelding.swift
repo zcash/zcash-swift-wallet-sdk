@@ -502,32 +502,46 @@ protocol ZcashRustBackendWelding {
     /// - Throws: `rustMigrationIsSyncRequired` if the rust layer returns an error.
     func migrationIsSyncRequired(for account: AccountUUID) async throws -> Bool
 
-    /// Re-evaluates the remaining spendable Orchard balance and returns a fresh schedule.
-    /// `includeResidual` should match the choice made when the schedule being restarted was first
-    /// proposed.
+    /// Cancels the stored run (its pre-signed transactions are abandoned; already-broadcast ones
+    /// are unaffected on-chain), clears the invalid marks, and previews a fresh schedule against
+    /// the live balance for the re-confirm lane. `includeResidual` is accepted and ignored
+    /// (documented-inert — the engine plans canonically).
     /// - Throws: `rustMigrationRestartStep` if the rust layer returns an error.
     func migrationRestartStep(includeResidual: Bool, for account: AccountUUID) async throws -> MigrationSchedule
 
-    /// Re-proposes at a fresh anchor and re-signs the active run's scheduled transfers; returns
-    /// the number refreshed. `includeResidual` should match the schedule's original choice.
-    /// - Throws: `rustMigrationRefreshStaleTransfers` if the rust layer returns an error.
+    /// Unsupported by the final migration engine (rebuild-on-expiry is an explicit upstream
+    /// later-slice): always throws. Cancel and re-plan via `migrationRestartStep` instead.
+    /// - Throws: `rustMigrationRefreshStaleTransfers` always.
     func migrationRefreshStaleTransfers(
         usk: UnifiedSpendingKey,
         includeResidual: Bool,
         for account: AccountUUID
     ) async throws -> UInt32
 
-    /// Builds the note-split transaction as an unsigned, proven PCZT for an external signer.
-    /// - Throws: `rustMigrationCreateUnsignedNoteSplitPczt` if the rust layer returns an error.
-    func migrationCreateUnsignedNoteSplitPczt(for account: AccountUUID) async throws -> Data
+    /// Builds the whole previewed migration UNSIGNED for an external signer — the run is created
+    /// by this call, with every transaction persisted awaiting its signature — and returns the
+    /// preparation (note-split) subset of the PCZTs for the signing ceremony. The transfer subset
+    /// of the same build is served by `migrationCreateUnsignedTransferPczts`. Resumes a stored
+    /// non-terminal run; replaces a terminal one (the sequential-runs path).
+    /// - Throws: `migrationPlanStale` when no previewed plan is cached for the account;
+    ///   `rustMigrationCreateUnsignedNoteSplitPczt` for other rust-layer errors.
+    func migrationCreateUnsignedNoteSplitPczts(for account: AccountUUID) async throws -> [MigrationUnsignedTransferPczt]
 
-    /// Accepts the externally signed note-split PCZT and returns the broadcastable prepared
-    /// transfer.
+    /// Applies the ceremony's signatures to the run's preparation (note-split) transactions,
+    /// all-or-nothing: every element must match a stored transaction awaiting its signature or
+    /// nothing is persisted. Returns a STORAGE RECEIPT for the first preparation transaction (its
+    /// `txid` is zeroed — the broadcastable, proven value is served by the delivery lane).
     /// - Throws: `rustMigrationStoreSignedNoteSplitPczt` if the rust layer returns an error.
-    func migrationStoreSignedNoteSplitPczt(_ pczt: Data, for account: AccountUUID) async throws -> PreparedMigrationTransfer
+    func migrationStoreSignedNoteSplitPczts(
+        _ signed: [MigrationSignedTransferPczt],
+        for account: AccountUUID
+    ) async throws -> PreparedMigrationTransfer
 
-    /// Builds one unsigned, proven PCZT per transfer of `schedule` for an external signer.
-    /// - Throws: `rustMigrationCreateUnsignedTransferPczts` if the rust layer returns an error.
+    /// Serves the TRANSFER subset of the unsigned build for the signing ceremony (see
+    /// `migrationCreateUnsignedNoteSplitPczts` — the schedule echo is accepted and ignored; the
+    /// engine signs the stored build, not a caller echo).
+    /// - Throws: `migrationPlanStale` when nothing is committed and no previewed plan is cached;
+    ///   `rustMigrationCreateUnsignedTransferPczts` for other rust-layer errors.
     func migrationCreateUnsignedTransferPczts(
         for schedule: MigrationSchedule,
         for account: AccountUUID

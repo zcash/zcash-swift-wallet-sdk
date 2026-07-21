@@ -1541,6 +1541,20 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         return proposalPtr.pointee.toNoteSplitProposal()
     }
 
+    /// Routes the rust layer's stable error prefixes to their dedicated `ZcashError` cases:
+    /// `MIGRATION_PLAN_STALE` -> `.migrationPlanStale` (re-propose) and
+    /// `MIGRATION_PROVING_UNAVAILABLE` -> `.migrationProvingUnavailable` (proving failed hard).
+    /// Anything else falls back to the member's own case.
+    nonisolated private func migrationRoutedError(_ message: String, fallback: (String) -> ZcashError) -> ZcashError {
+        if message.hasPrefix("MIGRATION_PLAN_STALE") {
+            return .migrationPlanStale
+        }
+        if message.hasPrefix("MIGRATION_PROVING_UNAVAILABLE") {
+            return .migrationProvingUnavailable(message)
+        }
+        return fallback(message)
+    }
+
     @DBActor
     func migrationSignNoteSplit(
         proposal: NoteSplitProposal,
@@ -1562,7 +1576,10 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         )
 
         guard let preparedPtr else {
-            throw ZcashError.rustMigrationSignNoteSplit(lastErrorMessage(fallback: "`migrationSignNoteSplit` failed with unknown error"))
+            throw migrationRoutedError(
+                lastErrorMessage(fallback: "`migrationSignNoteSplit` failed with unknown error"),
+                fallback: ZcashError.rustMigrationSignNoteSplit
+            )
         }
 
         defer { zcashlc_free_migration_prepared_transfer(preparedPtr) }
@@ -1687,8 +1704,9 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         }
 
         guard success else {
-            throw ZcashError.rustMigrationSignAndStoreSchedule(
-                lastErrorMessage(fallback: "`migrationSignAndStoreSchedule` failed with unknown error")
+            throw migrationRoutedError(
+                lastErrorMessage(fallback: "`migrationSignAndStoreSchedule` failed with unknown error"),
+                fallback: ZcashError.rustMigrationSignAndStoreSchedule
             )
         }
     }
@@ -1703,7 +1721,10 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         )
 
         guard let preparedPtr else {
-            throw ZcashError.rustMigrationNextDueTransfer(lastErrorMessage(fallback: "`migrationNextDueTransfer` failed with unknown error"))
+            throw migrationRoutedError(
+                lastErrorMessage(fallback: "`migrationNextDueTransfer` failed with unknown error"),
+                fallback: ZcashError.rustMigrationNextDueTransfer
+            )
         }
 
         defer { zcashlc_free_migration_prepared_transfer(preparedPtr) }
@@ -1892,45 +1913,79 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     }
 
     @DBActor
-    func migrationCreateUnsignedNoteSplitPczt(for account: AccountUUID) async throws -> Data {
-        let pcztPtr = zcashlc_migration_create_unsigned_note_split_pczt(
+    func migrationCreateUnsignedNoteSplitPczts(for account: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {
+        let pcztsPtr = zcashlc_migration_create_unsigned_note_split_pczts(
             dbData.0,
             dbData.1,
             account.id,
             networkType.networkId
         )
 
-        guard let pcztPtr else {
-            throw ZcashError.rustMigrationCreateUnsignedNoteSplitPczt(
-                lastErrorMessage(fallback: "`migrationCreateUnsignedNoteSplitPczt` failed with unknown error")
+        guard let pcztsPtr else {
+            throw migrationRoutedError(
+                lastErrorMessage(fallback: "`migrationCreateUnsignedNoteSplitPczts` failed with unknown error"),
+                fallback: ZcashError.rustMigrationCreateUnsignedNoteSplitPczt
             )
         }
 
-        defer { zcashlc_free_boxed_slice(pcztPtr) }
+        defer { zcashlc_free_migration_unsigned_transfer_pczts(pcztsPtr) }
 
-        return Data(bytes: pcztPtr.pointee.ptr, count: Int(pcztPtr.pointee.len))
+        var unsignedPczts: [MigrationUnsignedTransferPczt] = []
+        unsignedPczts.reserveCapacity(Int(pcztsPtr.pointee.len))
+
+        for index in 0 ..< Int(pcztsPtr.pointee.len) {
+            guard let unsignedPczt = pcztsPtr.pointee.ptr.advanced(by: index).pointee.unsafeToMigrationUnsignedTransferPczt() else {
+                throw ZcashError.rustMigrationCreateUnsignedNoteSplitPczt(
+                    lastErrorMessage(fallback: "`migrationCreateUnsignedNoteSplitPczts` returned a malformed pczt")
+                )
+            }
+
+            unsignedPczts.append(unsignedPczt)
+        }
+
+        return unsignedPczts
     }
 
     @DBActor
-    func migrationStoreSignedNoteSplitPczt(_ pczt: Data, for account: AccountUUID) async throws -> PreparedMigrationTransfer {
-        let preparedPtr: UnsafeMutablePointer<FfiPreparedTransfer>? = pczt.withUnsafeBytes { buffer in
-            guard let bufferPtr = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
-                return nil
-            }
+    func migrationStoreSignedNoteSplitPczts(
+        _ signed: [MigrationSignedTransferPczt],
+        for account: AccountUUID
+    ) async throws -> PreparedMigrationTransfer {
+        let idsCStrings = makeCStrings(signed.map { $0.id })
+        defer { freeCStrings(idsCStrings) }
+        let idsConstPointers = constPointers(idsCStrings)
 
-            return zcashlc_migration_store_signed_note_split_pczt(
-                dbData.0,
-                dbData.1,
-                account.id,
-                networkType.networkId,
-                bufferPtr,
-                UInt(pczt.count)
-            )
+        // One owned buffer per pczt (see `migrationStoreSignedSchedulePczts` for the rationale).
+        let pcztBuffers: [UnsafeMutablePointer<UInt8>] = signed.map { transfer in
+            let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: transfer.pczt.count)
+            transfer.pczt.copyBytes(to: buffer, count: transfer.pczt.count)
+            return buffer
+        }
+        defer { pcztBuffers.forEach { $0.deallocate() } }
+
+        let pcztPointers: [UnsafePointer<UInt8>?] = pcztBuffers.map { UnsafePointer($0) }
+        let pcztLens: [UInt] = signed.map { UInt($0.pczt.count) }
+
+        let preparedPtr = idsConstPointers.withUnsafeBufferPointer { idsPtr in
+            pcztPointers.withUnsafeBufferPointer { pcztsPtr in
+                pcztLens.withUnsafeBufferPointer { lensPtr in
+                    zcashlc_migration_store_signed_note_split_pczts(
+                        dbData.0,
+                        dbData.1,
+                        account.id,
+                        networkType.networkId,
+                        idsPtr.baseAddress,
+                        UInt(idsPtr.count),
+                        pcztsPtr.baseAddress,
+                        lensPtr.baseAddress
+                    )
+                }
+            }
         }
 
         guard let preparedPtr else {
             throw ZcashError.rustMigrationStoreSignedNoteSplitPczt(
-                lastErrorMessage(fallback: "`migrationStoreSignedNoteSplitPczt` failed with unknown error")
+                lastErrorMessage(fallback: "`migrationStoreSignedNoteSplitPczts` failed with unknown error")
             )
         }
 
@@ -1938,7 +1993,7 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
 
         guard let prepared = preparedPtr.pointee.unsafeToPreparedMigrationTransfer() else {
             throw ZcashError.rustMigrationStoreSignedNoteSplitPczt(
-                lastErrorMessage(fallback: "`migrationStoreSignedNoteSplitPczt` returned a malformed prepared transfer")
+                lastErrorMessage(fallback: "`migrationStoreSignedNoteSplitPczts` returned a malformed prepared transfer")
             )
         }
 
@@ -1973,8 +2028,9 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         }
 
         guard let pcztsPtr else {
-            throw ZcashError.rustMigrationCreateUnsignedTransferPczts(
-                lastErrorMessage(fallback: "`migrationCreateUnsignedTransferPczts` failed with unknown error")
+            throw migrationRoutedError(
+                lastErrorMessage(fallback: "`migrationCreateUnsignedTransferPczts` failed with unknown error"),
+                fallback: ZcashError.rustMigrationCreateUnsignedTransferPczts
             )
         }
 

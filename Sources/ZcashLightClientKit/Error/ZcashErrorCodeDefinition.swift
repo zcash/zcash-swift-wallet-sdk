@@ -631,6 +631,15 @@ enum ZcashErrorDefinition {
     /// Stop sync first: sync and migration broadcasts must never share a session.
     // sourcery: code="ZRUST0126"
     case migrationBroadcastDuringSync
+    /// Proving a migration transaction failed.
+    /// The witness or anchor for a due migration transaction could not be resolved, or proof creation failed. Transient "not witnessable yet" states are NOT reported this way (they surface as "nothing due"); this error means proving failed hard.
+    /// - `message` is the underlying rust error message.
+    // sourcery: code="ZRUST0127"
+    case migrationProvingUnavailable(_ message: String)
+    /// A migration commit was requested without a matching previewed plan.
+    /// The process restarted between propose and confirm, or the wallet's balance changed underneath the preview, or the echoed values do not match it. Propose again and re-confirm — ZIP 318 draws fresh schedule randomness on every proposal, so the SDK never silently signs a plan the user did not see.
+    // sourcery: code="ZRUST0128"
+    case migrationPlanStale
 
     // MARK: - Account DAO
 

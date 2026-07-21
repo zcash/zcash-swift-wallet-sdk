@@ -605,6 +605,15 @@ public enum ZcashError: Equatable, Error {
     /// Stop sync first: sync and migration broadcasts must never share a session.
     /// ZRUST0126
     case migrationBroadcastDuringSync
+    /// Proving a migration transaction failed.
+    /// The witness or anchor for a due migration transaction could not be resolved, or proof creation failed. Transient "not witnessable yet" states are NOT reported this way (they surface as "nothing due"); this error means proving failed hard.
+    /// - `message` is the underlying rust error message.
+    /// ZRUST0127
+    case migrationProvingUnavailable(_ message: String)
+    /// A migration commit was requested without a matching previewed plan.
+    /// The process restarted between propose and confirm, or the wallet's balance changed underneath the preview, or the echoed values do not match it. Propose again and re-confirm — ZIP 318 draws fresh schedule randomness on every proposal, so the SDK never silently signs a plan the user did not see.
+    /// ZRUST0128
+    case migrationPlanStale
     /// SQLite query failed when fetching all accounts from the database.
     /// - `sqliteError` is error produced by SQLite library.
     /// ZADAO0001
@@ -1050,6 +1059,8 @@ public enum ZcashError: Equatable, Error {
         case .migrationRecordFailedAfterBroadcast: return "The migration engine failed to record a successfully submitted broadcast. The broadcast DID land and the privacy sync gate is already marked; the engine reconciles the transfer on a later execution attempt (a duplicate re-submission records as success) or when the mined transaction is scanned."
         case .migrationSyncBlocked: return "Synchronizer.start() was refused because the migration privacy gate is active."
         case .migrationBroadcastDuringSync: return "A broadcast-performing migration method was called while the synchronizer is actively syncing."
+        case .migrationProvingUnavailable: return "Proving a migration transaction failed."
+        case .migrationPlanStale: return "A migration commit was requested without a matching previewed plan."
         case .accountDAOGetAll: return "SQLite query failed when fetching all accounts from the database."
         case .accountDAOGetAllCantDecode: return "Fetched accounts from SQLite but can't decode them."
         case .accountDAOFindBy: return "SQLite query failed when seaching for accounts in the database."
@@ -1302,6 +1313,8 @@ public enum ZcashError: Equatable, Error {
         case .migrationRecordFailedAfterBroadcast: return .migrationRecordFailedAfterBroadcast
         case .migrationSyncBlocked: return .migrationSyncBlocked
         case .migrationBroadcastDuringSync: return .migrationBroadcastDuringSync
+        case .migrationProvingUnavailable: return .migrationProvingUnavailable
+        case .migrationPlanStale: return .migrationPlanStale
         case .accountDAOGetAll: return .accountDAOGetAll
         case .accountDAOGetAllCantDecode: return .accountDAOGetAllCantDecode
         case .accountDAOFindBy: return .accountDAOFindBy

@@ -10,17 +10,22 @@ import Foundation
 /// The app fetches this via `ZcashRustBackendWelding.migrationState(for:)` on launch and after
 /// every migration-related operation; it is the reconciliation hub for driving the migration UI.
 public enum MigrationState: Equatable, Sendable {
-    /// No migration has been initiated (or a run was abandoned).
+    /// No migration run is stored: none was started, or a previous run was cancelled.
     case notStarted
-    /// The note-split transaction has been submitted and awaits confirmation.
+    /// The run is committed and its preparation (note-split) transactions are not yet all mined.
     case splitPendingConfirmation
-    /// The split is confirmed (or was not needed); ready to propose transfers.
+    /// Never emitted by the final engine (the note split and the transfer schedule commit
+    /// atomically, so the v1 "split confirmed, schedule pending" moment no longer exists). Kept
+    /// for source compatibility.
     case readyToPropose
-    /// The schedule has been committed and transfers are executing.
+    /// Preparation is mined and the run's transfers are executing.
     case inProgress(MigrationProgress)
     /// A transfer cannot proceed automatically; the app must act.
     case requiresAttention(MigrationAttentionReason)
-    /// All transfers are confirmed; the Orchard balance is fully migrated.
+    /// Every transaction of the STORED RUN is mined. This is PER-RUN — it does not mean the
+    /// account has nothing left to migrate: a large balance can need several successive runs, and
+    /// funds received later re-create a migratable balance. After completion, ask
+    /// `proposeMigrationTransfers` whether anything remains (an empty schedule means no).
     case complete
 }
 
@@ -31,7 +36,8 @@ public struct MigrationProgress: Equatable, Sendable {
     public let completedTransfers: Int
     /// The total number of transfers in the current schedule.
     public let totalTransfers: Int
-    /// The Orchard-pool value not yet migrated to Ironwood.
+    /// The Orchard-pool value not yet migrated to Ironwood: the account's live spendable Orchard
+    /// balance (what is still in the old pool), not a run-internal remainder.
     public let remainingOrchard: Zatoshi
     /// The height at which the next transfer becomes broadcastable, or `nil` if none is scheduled.
     public let nextTransferReadyAtHeight: BlockHeight?
@@ -71,7 +77,10 @@ public struct MigrationTransferProposal: Identifiable, Equatable, Sendable, Coda
     public let id: String
     /// The value that crosses the turnstile.
     public let amount: Zatoshi
-    /// The anchor height this transfer's PCZT is built against.
+    /// The "now" reference height at proposal time (the chain tip). With ZIP 374 the real anchor
+    /// is drawn per transfer and installed at proving time, so this field is NOT a commitment-tree
+    /// anchor; it exists so duration math can measure waits from the proposal's own "now", and for
+    /// `Codable` compatibility with previously persisted schedules.
     public let anchorHeight: BlockHeight
     /// The height after which the platform may broadcast this transfer.
     public let nextExecutableAfterHeight: BlockHeight
@@ -118,7 +127,9 @@ public struct PreparedMigrationTransfer: Equatable, Sendable {
     /// The transfer's opaque, engine-issued id.
     public let id: String
     /// The finalized transaction's id, in the SDK's raw/internal byte order (matching `TxId.id`,
-    /// not the reversed display-hex order produced by `Data.toHexStringTxId()`).
+    /// not the reversed display-hex order produced by `Data.toHexStringTxId()`). Zeroed when the
+    /// value is a STORAGE RECEIPT (`migrationStoreSignedNoteSplitPczts`) whose transaction has not
+    /// been proven yet — the broadcastable value is served by the delivery lane.
     public let txid: Data
     /// The serialized, signed PCZT backing this transfer.
     public let pczt: Data

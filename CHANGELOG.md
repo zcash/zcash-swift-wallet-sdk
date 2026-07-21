@@ -8,8 +8,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Added
 - Orchard→Ironwood pool-migration FFI, welding, models, and error codes — the layer beneath the
-  `Synchronizer` migration surface that lands in the follow-up PR. The `zcash_pool_migration`
-  crate is bound through 22 `zcashlc_migration_*` FFI functions plus the
+  `Synchronizer` migration surface that lands in the follow-up PR, wired to the FINAL migration
+  engine (`zcash_pool_migration_backend` + `zcash_pool_migration_sqlite` on librustzcash's
+  `feat/pool-migration-sqlite` line, extended by the account-keyed store of librustzcash PR
+  #2712 so several accounts of one wallet database — a software account next to an imported
+  hardware-wallet account — migrate independently, concurrently or one after another). The
+  engine is bound through 23 `zcashlc_migration_*` FFI functions plus the
   `zcashlc_ironwood_activation_height` helper (house conventions throughout: catch_panic,
   thread-local last-error channel, paired free functions), welded as `@DBActor` methods on the
   internal `ZcashRustBackendWelding` surface. The public migration model types ship here
@@ -17,12 +21,24 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MigrationSchedule`, `PreparedMigrationTransfer`, `MigrationTransferResult`,
   `MigrationAttentionReason`, `MigrationUnsignedTransferPczt`, `MigrationSignedTransferPczt`),
   together with the complete migration error vocabulary — new error codes ZRUST0098–ZRUST0108 and
-  ZRUST0111–ZRUST0126 — including the codes whose throwing call sites arrive with the Synchronizer
+  ZRUST0111–ZRUST0128 — including the codes whose throwing call sites arrive with the Synchronizer
   surface (`migrationTorUnavailable`, `migrationRecordFailedAfterBroadcast` ZRUST0124,
-  `migrationSyncBlocked` ZRUST0125, `migrationBroadcastDuringSync` ZRUST0126). Hardened per the
-  adversarial review: the FFI last-error channel is cleared before every sentinel read (stale
-  errors can no longer surface as spurious throws elsewhere) and one-time rust initialization is
-  race-free. No `Synchronizer` API changes in this PR.
+  `migrationSyncBlocked` ZRUST0125, `migrationBroadcastDuringSync` ZRUST0126) and the final
+  engine's actionable conditions (`migrationProvingUnavailable` ZRUST0127, `migrationPlanStale`
+  ZRUST0128 — the "propose again" signal: proposals re-randomize per ZIP 318, so the SDK never
+  silently signs a plan the user did not see). Final-engine semantics surfaced by this layer:
+  `MigrationState.complete` is PER-RUN (ask `proposeMigrationTransfers` whether anything remains —
+  an empty schedule means no; sequential runs are first-class), `readyToPropose` and the
+  `syncRequiredBeforeNext` attention reason are never emitted (the note split and the schedule
+  commit atomically), `includeResidual` is accepted and ignored (the engine plans canonically;
+  the residual stays in Orchard per ZIP 318), and the external-signer note-split pair went plural
+  (`migrationCreateUnsignedNoteSplitPczts` / `migrationStoreSignedNoteSplitPczts`): the engine
+  builds N preparation transactions rather than one split transaction, and one signing ceremony
+  covers them all. Transfers currently prove against the wallet's natural anchor (an approved,
+  loudly-documented ZIP 318 stopgap pending upstream anchor-checkpoint retention, librustzcash
+  #2700). Hardened per the adversarial review: the FFI last-error channel is cleared before every
+  sentinel read (stale errors can no longer surface as spurious throws elsewhere) and one-time
+  rust initialization is race-free. No `Synchronizer` API changes in this PR.
 - Ironwood (NU6.3) receive/sync readiness. The lightwalletd protocol gains the Ironwood fields
   (`CompactTx.ironwoodActions`, `ChainMetadata.ironwoodCommitmentTreeSize`, `TreeState.ironwoodTree`,
   `ShieldedProtocol.ironwood`); `UpdateSubtreeRootsAction` fetches and stores Ironwood subtree roots

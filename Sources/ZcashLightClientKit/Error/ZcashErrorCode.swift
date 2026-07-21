@@ -319,6 +319,10 @@ public enum ZcashErrorCode: String {
     case migrationSyncBlocked = "ZRUST0125"
     /// A broadcast-performing migration method was called while the synchronizer is actively syncing.
     case migrationBroadcastDuringSync = "ZRUST0126"
+    /// Proving a migration transaction failed.
+    case migrationProvingUnavailable = "ZRUST0127"
+    /// A migration commit was requested without a matching previewed plan.
+    case migrationPlanStale = "ZRUST0128"
     /// SQLite query failed when fetching all accounts from the database.
     case accountDAOGetAll = "ZADAO0001"
     /// Fetched accounts from SQLite but can't decode them.
