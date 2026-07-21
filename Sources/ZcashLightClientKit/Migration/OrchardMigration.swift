@@ -426,12 +426,14 @@ actor OrchardMigration {
     /// The migration engine's next height-due pending transfer proposal, or `nil` when nothing is
     /// pending.
     ///
-    /// A straight delegation to the engine-backed accessor: it returns the engine's stored proposal
-    /// untouched — deliberately with **no** local time-shifting of `nextExecutableAfterHeight` (the
-    /// Android implementation clamps it to `now + interval`, which the SDK does not port). The host
-    /// re-arms its own background execution window from the returned proposal's heights; the local
-    /// decision not to broadcast before that window *is* the reschedule. `nil` means there is nothing
-    /// to re-arm (no active run, the plan is complete, or only the note-split prep is pending).
+    /// A straight readback of the stored run's next due-and-unbroadcast transfer — deliberately
+    /// with **no** local time-shifting of `nextExecutableAfterHeight` (the Android implementation
+    /// clamps it to `now + interval` with a known unit bug the SDK does not port). The host re-arms
+    /// its own background execution window from the returned proposal's heights; the local decision
+    /// not to broadcast before that window *is* the reschedule, and the ZIP 318 "re-spread the
+    /// remainder" property is carried by the delivery machinery itself (one broadcast per session,
+    /// the 10-minute privacy buffer between sessions). `nil` means there is nothing to re-arm (no
+    /// stored run, the run is terminal, or only preparation transactions are pending).
     /// - Throws: `rustMigrationPendingTransferProposal` if the engine returns an error.
     func rescheduleOverdueTransfer() async throws -> MigrationTransferProposal? {
         try await welding.migrationPendingTransferProposal(for: accountUUID)
@@ -439,38 +441,40 @@ actor OrchardMigration {
 
     // MARK: - Invalidity recovery
 
-    /// Re-evaluates the remaining spendable Orchard balance and returns a fresh schedule.
+    /// Cancels the stored run and previews a fresh schedule against the live balance.
     ///
-    /// The old plan is no longer valid; the engine discards it and derives a new one, which the
-    /// follow-up ``signAndStoreMigrationSchedule(_:usk:)`` (or PCZT store) then signs and persists.
-    /// `includeResidual` should match the choice made when the schedule being restarted was first
-    /// proposed.
+    /// The stored run is persisted as cancelled (its pre-signed transactions are abandoned;
+    /// already-broadcast ones are unaffected on-chain), the invalid marks are cleared, and a fresh
+    /// plan is previewed for the re-confirm lane — the follow-up
+    /// ``signAndStoreMigrationSchedule(_:usk:)`` / ``submitNoteSplit(proposal:usk:options:)`` (or
+    /// PCZT store) then commits it. `includeResidual` is accepted and ignored (documented-inert —
+    /// the engine plans canonically).
     func restartCurrentMigrationStep(includeResidual: Bool = false) async throws -> MigrationSchedule {
         try await welding.migrationRestartStep(includeResidual: includeResidual, for: accountUUID)
     }
 
-    /// Re-proposes at a fresh anchor and re-signs the active run's scheduled transfers; returns the
-    /// number refreshed.
-    ///
-    /// Unlike ``restartCurrentMigrationStep(includeResidual:)``, this re-signs the *same* logical plan
-    /// (only the anchor moves) and returns a count rather than a schedule. The transfer ids are
-    /// unchanged but their anchors have moved, so a host that persisted the committed schedule for
-    /// display should re-fetch the current heights (e.g. via ``rescheduleOverdueTransfer()``) rather
-    /// than trust its stored copy. `includeResidual` should match the schedule's original choice.
+    /// Unsupported by the final migration engine (rebuild-on-expiry is an explicit upstream
+    /// later-slice): always throws. Cancel and re-plan via
+    /// ``restartCurrentMigrationStep(includeResidual:)`` instead.
     func refreshStaleTransfers(usk: UnifiedSpendingKey, includeResidual: Bool = false) async throws -> UInt32 {
         try await welding.migrationRefreshStaleTransfers(usk: usk, includeResidual: includeResidual, for: accountUUID)
     }
 
     // MARK: - External signing (PCZT)
 
-    /// Builds the note-split transaction as an unsigned, proven PCZT for an external signer.
-    func createUnsignedNoteSplitPCZT() async throws -> Data {
-        try await welding.migrationCreateUnsignedNoteSplitPczt(for: accountUUID)
+    /// Builds the whole previewed migration UNSIGNED — the run is created by this call — and
+    /// returns the preparation (note-split) subset of its PCZTs for the signing ceremony. The
+    /// transfer subset of the same build is served by ``createUnsignedTransferPCZTs(for:)``, so one
+    /// ceremony signs everything.
+    func createUnsignedNoteSplitPCZTs() async throws -> [MigrationUnsignedTransferPczt] {
+        try await welding.migrationCreateUnsignedNoteSplitPczts(for: accountUUID)
     }
 
-    /// Accepts the externally signed note-split PCZT and returns the broadcastable prepared transfer.
-    func storeSignedNoteSplitPCZT(_ pczt: Data) async throws -> PreparedMigrationTransfer {
-        try await welding.migrationStoreSignedNoteSplitPczt(pczt, for: accountUUID)
+    /// Applies the ceremony's signatures to the run's preparation (note-split) transactions,
+    /// all-or-nothing, and returns a STORAGE RECEIPT for the first one (its `txid` is zeroed — the
+    /// broadcastable, proven value is served by the delivery lane).
+    func storeSignedNoteSplitPCZTs(_ signed: [MigrationSignedTransferPczt]) async throws -> PreparedMigrationTransfer {
+        try await welding.migrationStoreSignedNoteSplitPczts(signed, for: accountUUID)
     }
 
     /// Builds one unsigned, proven PCZT per transfer of `schedule` for an external signer.
