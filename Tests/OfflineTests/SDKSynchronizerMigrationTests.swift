@@ -96,16 +96,54 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
         XCTAssertEqual(welding.migrationHasOverdueTransfersForReceivedAccount, accountUUID)
     }
 
-    func testCreateUnsignedNoteSplitPCZTForwards() async throws {
+    /// The sequential-runs contract at the API level: `.complete` is per-run, and the authority
+    /// for "does anything remain to migrate" is a fresh propose — an empty schedule means no, a
+    /// non-empty one is the next run's proposal. Hosts must not latch "never migrate again" off
+    /// the state machine alone.
+    func testAfterCompleteProposeMigrationTransfersAnswersWhetherAnythingRemains() async throws {
         let welding = ZcashRustBackendWeldingMock()
-        let expected = Data([0xAA, 0xBB])
-        welding.migrationCreateUnsignedNoteSplitPcztForReturnValue = expected
+        welding.migrationStateForReturnValue = .complete
+        welding.migrationProposeTransfersIncludeResidualForReturnValue = MigrationSchedule(
+            transfers: [],
+            estimatedDurationHours: 0
+        )
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
 
-        let pczt = try await synchronizer.createUnsignedNoteSplitPCZT(accountUUID: accountUUID)
+        let state = try await synchronizer.migrationState(accountUUID: accountUUID)
+        XCTAssertEqual(state, .complete)
 
-        XCTAssertEqual(pczt, expected)
-        XCTAssertEqual(welding.migrationCreateUnsignedNoteSplitPcztForReceivedAccount, accountUUID)
+        let remains = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID, includeResidual: false)
+        XCTAssertTrue(remains.transfers.isEmpty, "an empty schedule is the 'nothing remains' answer")
+
+        // Funds arrive later (or a large balance needed another round): the same call now answers
+        // with the next run's proposal.
+        let nextRun = MigrationSchedule(
+            transfers: [
+                MigrationTransferProposal(
+                    id: "3",
+                    amount: Zatoshi(100_000_000),
+                    anchorHeight: BlockHeight(1_000),
+                    nextExecutableAfterHeight: BlockHeight(1_010),
+                    expiryHeight: BlockHeight(70_000)
+                )
+            ],
+            estimatedDurationHours: 1
+        )
+        welding.migrationProposeTransfersIncludeResidualForReturnValue = nextRun
+        let proposed = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID, includeResidual: false)
+        XCTAssertEqual(proposed, nextRun, "a non-empty schedule is the next run's proposal")
+    }
+
+    func testCreateUnsignedNoteSplitPCZTsForwards() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let expected = [MigrationUnsignedTransferPczt(id: "0", pczt: Data([0xAA, 0xBB]))]
+        welding.migrationCreateUnsignedNoteSplitPcztsForReturnValue = expected
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let pczts = try await synchronizer.createUnsignedNoteSplitPCZTs(accountUUID: accountUUID)
+
+        XCTAssertEqual(pczts, expected)
+        XCTAssertEqual(welding.migrationCreateUnsignedNoteSplitPcztsForReceivedAccount, accountUUID)
     }
 
     // MARK: - Forwarding: wallet-scope gate members
