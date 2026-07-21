@@ -111,56 +111,39 @@ final class MigrationFFITests: XCTestCase {
         XCTAssertNil(pending)
     }
 
-    /// `isNoteSplitNeeded` ultimately reads the spendable Orchard balance (the engine's
-    /// `orchard_spendable` -> `pool_balances` -> `get_wallet_summary`), which requires a known chain
-    /// tip (`scan_queue` populated by `updateChainTip`/scanning). This fixture never syncs, so
-    /// `get_wallet_summary` returns `None` and the crate reports `MigrationError::NotSynced` rather
-    /// than a legitimate "no split needed". Per t2-report's documented last-error-gated `bool`
-    /// contract (a plain `false` overloads "no" and "error"), that surfaces on the Swift side as a
-    /// thrown `rustMigrationIsNoteSplitNeeded`, not a benign `false` -- asserting the case (not the
-    /// message), matching the brief's "false-or-throws" contract by nailing down which one it
-    /// actually is for this fixture.
-    func testFreshUnsyncedWalletIsNoteSplitNeededThrowsNotFalse() async throws {
-        do {
-            _ = try await rustBackend.migrationIsNoteSplitNeeded(for: account)
-            XCTFail("Expected migrationIsNoteSplitNeeded to throw on an unsynced wallet (no chain tip)")
-        } catch ZcashError.rustMigrationIsNoteSplitNeeded {
-            // expected
-        } catch {
-            XCTFail("Expected rustMigrationIsNoteSplitNeeded but got \(error)")
-        }
+    /// `isNoteSplitNeeded` plans fresh against the live balance. On this never-synced fixture the
+    /// engine reports "nothing to migrate" (no spendable Orchard notes), which the FFI maps to a
+    /// benign `false` — the same answer the platform's "does anything remain" sequential-runs check
+    /// consumes. (The v1 crate threw `NotSynced` here; the final engine plans over whatever the
+    /// wallet database knows.)
+    func testFreshUnsyncedWalletIsNoteSplitNeededIsFalse() async throws {
+        let needed = try await rustBackend.migrationIsNoteSplitNeeded(for: account)
+        XCTAssertFalse(needed, "a fresh wallet with nothing to migrate needs no note split")
     }
 
-    /// Same `NotSynced` root cause as `isNoteSplitNeeded` above: `residualAfterMigration` always
-    /// reads the spendable Orchard balance, so on this never-synced fixture it throws rather than
-    /// returning `nil`. This is the actual contract for a truly fresh (never-scanned) wallet; a
-    /// wallet that has synced to its birthday with a zero balance would instead resolve `nil`, but
-    /// establishing that state needs a real sync pipeline, out of scope for OfflineTests.
-    func testFreshUnsyncedWalletResidualAfterMigrationThrows() async throws {
-        do {
-            _ = try await rustBackend.migrationResidualAfterMigration(for: account)
-            XCTFail("Expected migrationResidualAfterMigration to throw on an unsynced wallet (no chain tip)")
-        } catch ZcashError.rustMigrationResidualAfterMigration {
-            // expected
-        } catch {
-            XCTFail("Expected rustMigrationResidualAfterMigration but got \(error)")
-        }
+    /// Same root behavior as `isNoteSplitNeeded` above: with nothing to migrate there is no note
+    /// split and therefore no residual — `nil`, not a throw. (The v1 crate threw `NotSynced` on
+    /// this fixture.)
+    func testFreshUnsyncedWalletResidualAfterMigrationIsNil() async throws {
+        let residual = try await rustBackend.migrationResidualAfterMigration(for: account)
+        XCTAssertNil(residual, "a fresh wallet with nothing to migrate has no residual")
     }
 
     // MARK: - Invalid-state transitions
 
-    /// The crate refuses an empty schedule outright (before touching any wallet state), so this is a
-    /// deterministic, sync-independent throw -- signing/storing "nothing" would advance the run into
-    /// a post-schedule phase with no queued transfers, which the engine treats as invalid input.
-    func testSignAndStoreEmptyScheduleThrows() async throws {
+    /// A commit without a matching previewed plan is the plan-stale contract: the engine signs
+    /// exactly the plan the most recent propose call cached (ZIP 318 draws fresh schedule
+    /// randomness on every proposal), so committing with nothing cached must surface
+    /// `migrationPlanStale` — the actionable "propose again" signal — not a generic failure.
+    func testSignAndStoreWithoutAPreviewedPlanThrowsPlanStale() async throws {
         let emptySchedule = MigrationSchedule(transfers: [], estimatedDurationHours: 0)
         do {
             try await rustBackend.migrationSignAndStoreSchedule(emptySchedule, usk: usk, for: account)
-            XCTFail("Expected signing an empty schedule to throw")
-        } catch ZcashError.rustMigrationSignAndStoreSchedule {
+            XCTFail("Expected committing without a previewed plan to throw")
+        } catch ZcashError.migrationPlanStale {
             // expected
         } catch {
-            XCTFail("Expected rustMigrationSignAndStoreSchedule but got \(error)")
+            XCTFail("Expected migrationPlanStale but got \(error)")
         }
     }
 
@@ -226,34 +209,40 @@ final class MigrationFFITests: XCTestCase {
         XCTAssertEqual(first, second)
     }
 
-    func testMigrationResidualAfterMigrationThrowIsStableAcrossRepeatedCalls() async throws {
-        for _ in 0..<2 {
-            do {
-                _ = try await rustBackend.migrationResidualAfterMigration(for: account)
-                XCTFail("Expected migrationResidualAfterMigration to throw on an unsynced wallet")
-            } catch ZcashError.rustMigrationResidualAfterMigration {
-                // expected, both times
-            } catch {
-                XCTFail("Expected rustMigrationResidualAfterMigration but got \(error)")
-            }
+    func testMigrationResidualAfterMigrationNilIsStableAcrossRepeatedCalls() async throws {
+        let first = try await rustBackend.migrationResidualAfterMigration(for: account)
+        let second = try await rustBackend.migrationResidualAfterMigration(for: account)
+        XCTAssertNil(first)
+        XCTAssertEqual(first, second)
+    }
+
+    /// The final engine does not support rebuild-on-expiry (an explicit upstream later-slice), so
+    /// `refreshStaleTransfers` deterministically throws its member case, sync-independent.
+    func testRefreshStaleTransfersAlwaysThrowsUnsupported() async throws {
+        do {
+            _ = try await rustBackend.migrationRefreshStaleTransfers(usk: usk, includeResidual: false, for: account)
+            XCTFail("Expected migrationRefreshStaleTransfers to throw (unsupported by the final engine)")
+        } catch ZcashError.rustMigrationRefreshStaleTransfers {
+            // expected
+        } catch {
+            XCTFail("Expected rustMigrationRefreshStaleTransfers but got \(error)")
         }
     }
 
-    /// Guards against last-error-channel pollution across calls: a throwing ambiguous-bool-sentinel
-    /// call (`isNoteSplitNeeded`, gated on `zcashlc_last_error_length()`) must not corrupt the next
-    /// legitimate `false` answer from a DIFFERENT ambiguous-bool-sentinel call
-    /// (`hasOverdueTransfers`, which never touches the wallet at all on a fresh db) sandwiched around
-    /// it.
-    func testHasOverdueTransfersIsUnaffectedByAPrecedingThrowFromIsNoteSplitNeeded() async throws {
+    /// Guards against last-error-channel pollution across calls: a throwing call
+    /// (`refreshStaleTransfers`, which deterministically errors — see above) must not corrupt the
+    /// next legitimate `false` answer from an ambiguous-bool-sentinel call (`hasOverdueTransfers`,
+    /// which reads only the empty migration store on a fresh db) sandwiched around it.
+    func testHasOverdueTransfersIsUnaffectedByAPrecedingThrowFromRefreshStaleTransfers() async throws {
         let before = try await rustBackend.migrationHasOverdueTransfers(for: account)
         XCTAssertFalse(before)
 
         do {
-            _ = try await rustBackend.migrationIsNoteSplitNeeded(for: account)
-            XCTFail("Expected migrationIsNoteSplitNeeded to throw on an unsynced wallet")
+            _ = try await rustBackend.migrationRefreshStaleTransfers(usk: usk, includeResidual: false, for: account)
+            XCTFail("Expected migrationRefreshStaleTransfers to throw")
         } catch {
             // Expected; the specific case is asserted by
-            // testFreshUnsyncedWalletIsNoteSplitNeededThrowsNotFalse above.
+            // testRefreshStaleTransfersAlwaysThrowsUnsupported above.
         }
 
         let after = try await rustBackend.migrationHasOverdueTransfers(for: account)
