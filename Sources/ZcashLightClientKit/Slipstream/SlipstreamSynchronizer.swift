@@ -1180,6 +1180,18 @@ public actor SlipstreamSynchronizer: Synchronizer {
         try await migrationHost.migration(for: accountUUID).residualAfterMigration()
     }
 
+    public func lockMigrationResidual(accountUUID: AccountUUID) async throws -> Zatoshi {
+        try await migrationHost.migration(for: accountUUID).lockMigrationResidual()
+    }
+
+    public func unlockMigrationResidual(accountUUID: AccountUUID) async throws -> Int {
+        try await migrationHost.migration(for: accountUUID).unlockMigrationResidual()
+    }
+
+    public func estimateMigrationRuns(accountUUID: AccountUUID) async throws -> MigrationRunEstimate {
+        try await migrationHost.migration(for: accountUUID).estimateMigrationRuns()
+    }
+
     public func signAndStoreMigrationSchedule(accountUUID: AccountUUID, _ schedule: MigrationSchedule, usk: UnifiedSpendingKey) async throws {
         try await migrationHost.migration(for: accountUUID).signAndStoreMigrationSchedule(schedule, usk: usk)
     }
