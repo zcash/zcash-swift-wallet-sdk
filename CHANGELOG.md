@@ -14,9 +14,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   migrations can run concurrently (for example a software account and a hardware-wallet account):
   all engine state is account-keyed, per-account broadcasts stay single-flight without
   cross-account serialization, and every account shares one dedicated migration Tor runtime. The
-  group covers the migration state machine and progress, note-split propose/sign/submit, gradual
-  (randomized-cadence) and immediate schedule proposal, one-confirmation
-  `signAndStoreMigrationSchedule`, height-gated background delivery
+  group covers the migration state machine and progress, note-split propose/sign/submit, a gradual
+  (randomized-cadence) schedule proposal with one-confirmation `signAndStoreMigrationSchedule`,
+  height-gated background delivery
   (`executeNextPendingMigrationTransfer` — migration members work without `prepare()`, so a
   background session can broadcast without starting sync; the delivery lane serves preparation
   transactions and transfers alike, proving each at broadcast time per ZIP 374), overdue/invalid
@@ -71,8 +71,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`MigrationState`, `MigrationProgress`, `NoteSplitProposal`, `MigrationTransferProposal`,
   `MigrationSchedule`, `PreparedMigrationTransfer`, `MigrationTransferResult`,
   `MigrationAttentionReason`, `MigrationUnsignedTransferPczt`, `MigrationSignedTransferPczt`),
-  together with the complete migration error vocabulary — new error codes ZRUST0098–ZRUST0108 and
-  ZRUST0111–ZRUST0128 — including the codes whose throwing call sites arrive with the Synchronizer
+  together with the complete migration error vocabulary — new error codes ZRUST0098–ZRUST0106,
+  ZRUST0108, and ZRUST0111–ZRUST0131 (ZRUST0107 was retired with `migrationProposeImmediateTransfers`;
+  ZRUST0129–ZRUST0131 arrived with the immediate-migration lane change below) — including the codes
+  whose throwing call sites arrive with the Synchronizer
   surface (`migrationTorUnavailable`, `migrationRecordFailedAfterBroadcast` ZRUST0124,
   `migrationSyncBlocked` ZRUST0125, `migrationBroadcastDuringSync` ZRUST0126) and the final
   engine's actionable conditions (`migrationProvingUnavailable` ZRUST0127, `migrationPlanStale`
@@ -116,6 +118,16 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of silently opening a wallet the seed cannot spend from. See `MIGRATING.md`.
 
 ## Changed
+- The immediate (single-transaction) migration lane leaves the engine:
+  `proposeImmediateMigration(accountUUID:)` now returns an ordinary `ImmediateMigrationProposal` (a
+  `Proposal` plus its decoded `amount`/`fee`) instead of a `MigrationSchedule`, executed through the
+  normal transfer pipeline (`createProposedTransactions` / `createPCZTFromProposal`) rather than the
+  engine's schedule/commit machinery; a new `recordImmediateMigration(accountUUID:txid:)` folds a
+  successful broadcast into the same platform state machine (`InProgress` / `Complete` / re-offer).
+  The welding `migrationProposeImmediateTransfers` and its FFI
+  `zcashlc_migration_propose_immediate_transfers` are removed, replaced by the general-purpose
+  `proposeSendMaxTransfer(accountUUID:recipient:memo:orchardOnly:)` (an ordinary send-max primitive
+  the migration engine itself never touches). See `MIGRATING.md`.
 - The Rust core builds against the `michal/ironwood-migration` line of `zcash/librustzcash`
   (its base of main plus the cherry-picked Ironwood historical note selector, carrying the
   unreleased `zcash_pool_migration` crate), pinned via `[patch.crates-io]` until the 0.24-era

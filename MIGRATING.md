@@ -32,6 +32,36 @@ the unreleased surface:
 - **`MigrationTransferProposal.anchorHeight` is a reference height** (the proposal-time tip), not
   a commitment-tree anchor: ZIP 374 defers real anchors to proving time.
 
+## The immediate migration lane leaves the engine
+
+The immediate (single-transaction) Orchard→Ironwood migration is no longer proposed or tracked by
+the migration engine's own schedule/commit machinery. It is now an ordinary send-max transfer that
+the app executes through the normal transaction pipeline, with one new call to record the outcome:
+
+- **`proposeImmediateMigration(accountUUID:) async throws -> MigrationSchedule` is now
+  `proposeImmediateMigration(accountUUID:) async throws -> ImmediateMigrationProposal`.**
+  `ImmediateMigrationProposal` carries an ordinary `Proposal` — feed it to
+  `createProposedTransactions(proposal:spendingKey:)` (software accounts) or
+  `createPCZTFromProposal(accountUUID:proposal:)` (Keystone accounts) exactly like any other
+  transfer — plus the decoded `amount` (the net value crossing into Ironwood) and `fee`. There is
+  no engine plan cache behind it: nothing about the returned proposal can go stale the way a
+  `MigrationSchedule` preview can, and `signAndStoreMigrationSchedule` is not part of this lane (it
+  remains for `proposeMigrationTransfers`'s gradual path).
+- **New: `recordImmediateMigration(accountUUID:txid:) async throws`.** Call it after a successful
+  broadcast (software or Keystone lane) so the platform migration state machine reports the sweep:
+  `InProgress(0 of 1)` while unmined, `Complete` once mined, or a re-offer (`NotStarted`) if it
+  expires unmined. One row per account — a new record supersedes any previous one. Not
+  broadcast-sensitive itself (no `migrationBroadcastDuringSync` guard): the actual broadcast already
+  rides the guarded `createProposedTransactions`/`createTransactionFromPCZT` path.
+- **Removed** (internal welding surface, never reachable from outside the SDK):
+  `ZcashRustBackendWelding.migrationProposeImmediateTransfers` and its FFI,
+  `zcashlc_migration_propose_immediate_transfers`. Replaced by the general-purpose
+  `proposeSendMaxTransfer(accountUUID:recipient:memo:orchardOnly:)` (called with `orchardOnly: true`
+  and `recipient` set to the account's own address, `memo: nil`) — a plain "spend everything to one
+  recipient" primitive the migration engine itself never touches.
+- **`MigrationSchedule` itself is unaffected** and still backs `proposeMigrationTransfers` /
+  `signAndStoreMigrationSchedule` (the gradual, privacy-path schedule).
+
 ## `prepare` now validates the seed against the existing wallet
 
 If the wallet database already contains seed-derived account(s) and the seed passed to `prepare`
