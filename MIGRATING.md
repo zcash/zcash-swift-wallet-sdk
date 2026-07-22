@@ -49,10 +49,19 @@ the app executes through the normal transaction pipeline, with one new call to r
   remains for `proposeMigrationTransfers`'s gradual path).
 - **New: `recordImmediateMigration(accountUUID:txid:) async throws`.** Call it after a successful
   broadcast (software or Keystone lane) so the platform migration state machine reports the sweep:
-  `InProgress(0 of 1)` while unmined, `Complete` once mined, or a re-offer (`NotStarted`) if it
-  expires unmined. One row per account — a new record supersedes any previous one. Not
+  `InProgress(0 of 1)` while unmined, then a quiet `NotStarted` once it mines. A MINED immediate
+  sweep is CONSUMED — it is NOT surfaced as `Complete`, so there is nothing for the user to
+  acknowledge and no per-run completion screen (the sweep zeroes the spendable Orchard balance, so
+  the balance-gated "Migration Required" prompt does not re-offer unless new Orchard funds arrive
+  later; an unmined sweep that expires likewise falls back to `NotStarted` so the prompt re-offers
+  while funds remain). One row per account — a new record supersedes any previous one. Not
   broadcast-sensitive itself (no `migrationBroadcastDuringSync` guard): the actual broadcast already
   rides the guarded `createProposedTransactions`/`createTransactionFromPCZT` path.
+- **`MigrationProgress` gains `isImmediate: Bool`** (additive — the public memberwise initializer
+  defaults it to `false`, so existing `MigrationProgress(...)` construction sites keep compiling
+  unchanged). It is `true` only while the immediate (send-max) lane's sweep is in progress and
+  `false` for engine-tracked schedule runs, letting the app keep the immediate aftermath quiet (no
+  per-transfer progress UI).
 - **Removed** (internal welding surface, never reachable from outside the SDK):
   `ZcashRustBackendWelding.migrationProposeImmediateTransfers` and its FFI,
   `zcashlc_migration_propose_immediate_transfers`. Replaced by the general-purpose
