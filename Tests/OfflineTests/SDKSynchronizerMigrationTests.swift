@@ -24,6 +24,9 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
     private let accountUUID = AccountUUID(id: [UInt8](repeating: 0x0A, count: 16))
     private let submissionEndpoint = LightWalletEndpoint(address: "submit.example", port: 9067)
     private var cancellables: [AnyCancellable] = []
+    private static let uaString = """
+    u1l9f0l4348negsncgr9pxd9d3qaxagmqv3lnexcplmufpq7muffvfaue6ksevfvd7wrz7xrvn95rc5zjtn7ugkmgh5rnxswmcj30y0pw52pn0zjvy38rn2esfgve64rj5pcmazxgpyuj
+    """
 
     override func setUp() {
         super.setUp()
@@ -144,6 +147,57 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
 
         XCTAssertEqual(pczts, expected)
         XCTAssertEqual(welding.migrationCreateUnsignedNoteSplitPcztsForReceivedAccount, accountUUID)
+    }
+
+    /// MOB-1513: the immediate lane's `proposeImmediateMigration` forwards to the per-account actor
+    /// and returns its `ImmediateMigrationProposal` untouched -- unlike `proposeMigrationTransfers`,
+    /// there is no engine schedule involved, so this is a plain one-hop forward like every other
+    /// member in this group.
+    func testProposeImmediateMigrationForwardsToTheAccountsActor() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let ownAddress = UnifiedAddress(validatedEncoding: Self.uaString, networkType: .testnet)
+        welding.getCurrentAddressAccountUUIDReturnValue = ownAddress
+        var proposal = FfiProposal()
+        var step = FfiProposalStep()
+        var input = FfiProposedInput()
+        var receivedOutput = FfiReceivedOutput()
+        receivedOutput.value = 500_000
+        input.receivedOutput = receivedOutput
+        step.inputs = [input]
+        var balance = FfiTransactionBalance()
+        balance.feeRequired = 10_000
+        step.balance = balance
+        proposal.steps = [step]
+        welding.proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyReturnValue = proposal
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let immediateProposal = try await synchronizer.proposeImmediateMigration(accountUUID: accountUUID)
+
+        XCTAssertEqual(immediateProposal.fee, Zatoshi(10_000))
+        XCTAssertEqual(immediateProposal.amount, Zatoshi(500_000 - 10_000))
+        XCTAssertEqual(welding.getCurrentAddressAccountUUIDReceivedAccountUUID, accountUUID)
+        XCTAssertEqual(welding.proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyReceivedArguments?.recipient, ownAddress.stringEncoded)
+    }
+
+    /// `recordImmediateMigration` forwards the account and txid to the per-account actor, which in
+    /// turn forwards to the welding record call -- this is NOT broadcast-sensitive (no
+    /// `throwIfSyncingForMigrationBroadcast()` guard), matching the contract that only the two
+    /// actual broadcasting members are guarded.
+    func testRecordImmediateMigrationForwardsToTheAccountsActor() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        var receivedTxid: Data?
+        var receivedAccount: AccountUUID?
+        welding.migrationRecordImmediateRunTxidForClosure = { txid, account in
+            receivedTxid = txid
+            receivedAccount = account
+        }
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+        let txid = Data(repeating: 0xEF, count: 32)
+
+        try await synchronizer.recordImmediateMigration(accountUUID: accountUUID, txid: txid)
+
+        XCTAssertEqual(receivedTxid, txid)
+        XCTAssertEqual(receivedAccount, accountUUID)
     }
 
     // MARK: - Forwarding: wallet-scope gate members

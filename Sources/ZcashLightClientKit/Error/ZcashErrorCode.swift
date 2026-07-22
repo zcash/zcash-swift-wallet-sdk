@@ -283,8 +283,6 @@ public enum ZcashErrorCode: String {
     case rustMigrationResidualAfterMigration = "ZRUST0105"
     /// Error from rust layer when calling ZcashRustBackend.migrationProposeTransfers
     case rustMigrationProposeTransfers = "ZRUST0106"
-    /// Error from rust layer when calling ZcashRustBackend.migrationProposeImmediateTransfers
-    case rustMigrationProposeImmediateTransfers = "ZRUST0107"
     /// Error from rust layer when calling ZcashRustBackend.migrationSignAndStoreSchedule
     case rustMigrationSignAndStoreSchedule = "ZRUST0108"
     /// Error from rust layer when calling ZcashRustBackend.migrationNextDueTransfer
@@ -321,6 +319,12 @@ public enum ZcashErrorCode: String {
     case migrationProvingUnavailable = "ZRUST0127"
     /// A migration commit was requested without a matching previewed plan.
     case migrationPlanStale = "ZRUST0128"
+    /// Error from rust layer when calling ZcashRustBackend.proposeSendMaxTransfer
+    case rustProposeSendMaxTransfer = "ZRUST0129"
+    /// `migrationRecordImmediateRun` was called with a `txid` that is not exactly 32 bytes.
+    case migrationRecordImmediateRunInvalidTxId = "ZRUST0130"
+    /// Error from rust layer when calling ZcashRustBackend.migrationRecordImmediateRun
+    case rustMigrationRecordImmediateRun = "ZRUST0131"
     /// Error from rust layer when calling ZcashRustBackend.lockMigrationResidual
     case rustMigrationLockResidual = "ZRUST0132"
     /// Error from rust layer when calling ZcashRustBackend.unlockMigrationResidual
