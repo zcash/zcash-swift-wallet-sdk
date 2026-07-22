@@ -305,10 +305,53 @@ actor OrchardMigration {
         try await welding.migrationProposeTransfers(includeResidual: includeResidual, for: accountUUID)
     }
 
-    /// Proposes the immediate (single-transaction) migration: sweeps the whole spendable Orchard
-    /// balance into one Ironwood output, executable now.
-    func proposeImmediateMigration() async throws -> MigrationSchedule {
-        try await welding.migrationProposeImmediateTransfers(for: accountUUID)
+    /// Proposes the immediate (single-transaction) migration: an ordinary send-max that spends ALL
+    /// spendable Orchard notes and pays everything minus the ZIP-317 fee to the account's own
+    /// unified address -- post-NU6.3 the payment lands in the Ironwood pool (the UA's Orchard
+    /// receiver doubles as the Ironwood receiver). Entirely outside the migration engine: the
+    /// returned proposal is an ORDINARY proposal held by the caller, so no engine plan-cache
+    /// staleness applies to it (unlike ``proposeMigrationTransfers(includeResidual:)``).
+    func proposeImmediateMigration() async throws -> ImmediateMigrationProposal {
+        let ownAddress = try await welding.getCurrentAddress(accountUUID: accountUUID)
+        let ffiProposal = try await welding.proposeSendMaxTransfer(
+            accountUUID: accountUUID,
+            recipient: ownAddress.stringEncoded,
+            memo: nil,
+            orchardOnly: true
+        )
+        let proposal = Proposal(inner: ffiProposal)
+        let fee = proposal.totalFeeRequired()
+        let amount = OrchardMigration.sweptPaymentValue(of: ffiProposal) - fee
+        return ImmediateMigrationProposal(proposal: proposal, amount: amount, fee: fee)
+    }
+
+    /// Records a broadcast immediate-migration sweep so the platform migration state machine
+    /// reports it: `InProgress` (0 of 1) while unmined, `Complete` once mined, or a re-offer
+    /// (`NotStarted`) if it expires unmined. Not broadcast-performing itself (the broadcast rides
+    /// the ordinary `createProposedTransactions`/`createTransactionFromPCZT` pipeline, already
+    /// guarded there) -- this only records the outcome, so it is not gated by
+    /// ``serializedBroadcastFlow(_:)``.
+    func recordImmediateMigration(txid: Data) async throws {
+        try await welding.migrationRecordImmediateRun(txid: txid, for: accountUUID)
+    }
+
+    /// The net value swept by an immediate-migration `FfiProposal` before its fee is subtracted:
+    /// the total value of the notes it consumes, minus any declared change. A send-max proposal
+    /// declares no change (there is nothing left to return), so this is ordinarily just the input
+    /// total; the change subtraction is defensive rather than load-bearing.
+    private static func sweptPaymentValue(of proposal: FfiProposal) -> Zatoshi {
+        proposal.steps.reduce(Zatoshi.zero) { total, step in
+            let stepInput = step.inputs.reduce(Zatoshi.zero) { inputTotal, input in
+                guard case .receivedOutput(let output) = input.value else {
+                    return inputTotal
+                }
+                return inputTotal + Zatoshi(Int64(output.value))
+            }
+            let stepChange = step.balance.proposedChange.reduce(Zatoshi.zero) { changeTotal, change in
+                changeTotal + Zatoshi(Int64(change.value))
+            }
+            return total + stepInput - stepChange
+        }
     }
 
     /// The leftover Orchard balance a migration would not cross, when large enough to be worth
