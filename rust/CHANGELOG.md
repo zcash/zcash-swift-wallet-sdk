@@ -74,6 +74,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is deliberately NOT a parameter: the platform evaluates signing sessions
   from the per-run transaction counts.
 
+### Changed
+- Immediate-migration state derivation (`zcashlc_migration_state` /
+  `zcashlc_migration_progress`): a MINED immediate (send-max) run is now CONSUMED —
+  it derives no migration state (the derivation falls through to `NotStarted`) and
+  masks a stale engine `Complete` left by an earlier engine-tracked run, so the app
+  goes fully quiet once the sweep mines instead of showing a per-run `Complete`. An
+  UNMINED, unexpired immediate run still derives `InProgress` of one, and the
+  expired-unmined re-offer is unchanged. To let the app keep the immediate
+  aftermath quiet, `FfiMigrationProgress` gains a trailing `is_immediate` boolean —
+  `true` for the immediate lane, `false` for engine-tracked runs (and for the
+  absent sentinel). Part of the still-unreleased migration surface above.
+
 ## 2.6.0-alpha.6 - 2026-06-26
 
 ### Fixed

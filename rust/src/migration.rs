@@ -23,8 +23,10 @@
 //! - `include_residual` is accepted and ignored (documented-inert; the engine plans canonically
 //!   and ZIP 318 expects the residual to remain in Orchard).
 //! - The immediate lane (an ordinary send-max sweep, entirely outside the engine) is tracked in
-//!   its own SDK-owned `sdk_immediate_runs` side table and folded into [`derive_state`] — see that
-//!   function's precedence rule.
+//!   its own SDK-owned `sdk_immediate_runs` side table and folded into [`derive_state`]: while
+//!   unmined it derives `InProgress` (flagged `is_immediate`); once mined it is CONSUMED — it
+//!   derives nothing and masks any stale engine `Complete`, so the aftermath stays quiet — and past
+//!   its expiry it is ignored. See that function's precedence rule.
 //!
 //! Error channel: failures land in the thread-local last-error message. Two stable prefixes let
 //! the Swift layer surface dedicated errors: `MIGRATION_PLAN_STALE:` (commit without a matching
@@ -686,6 +688,9 @@ enum DerivedState {
         completed_transfers: u32,
         total_transfers: u32,
         next_transfer_ready_at_height: Option<BlockHeight>,
+        /// Whether this run is the immediate (single-transaction) send-max sweep rather than an
+        /// engine-tracked schedule. `true` only for the immediate lane; engine runs carry `false`.
+        is_immediate: bool,
     },
     InvalidTransfer(u32),
     TransferExpired,
@@ -724,17 +729,29 @@ impl ImmediateRunLookup {
     }
 }
 
-/// The immediate-run row's derivation, or `None` when it should be ignored (expired unmined, or
-/// vanished) so the caller falls through to the engine's own terminal/absent verdict.
+/// The immediate-run row's derivation:
+/// - mined -> `NotStarted`: the sweep is CONSUMED (its swept balance is zero, nothing to
+///   acknowledge). Returning a state here — rather than `None` — masks any stale engine `Complete`
+///   the caller would otherwise fall back to, keeping the aftermath quiet.
+/// - unmined and not past its expiry bound -> `InProgress` of one, flagged `is_immediate`.
+/// - `None` when the row should be ignored (expired unmined, or vanished) so the caller falls
+///   through to the engine's own terminal/absent verdict.
 fn derive_immediate_run(run: &ImmediateRunLookup, tip: BlockHeight) -> Option<DerivedState> {
     if run.mined_height.is_some() {
-        return Some(DerivedState::Complete);
+        // A mined immediate sweep is CONSUMED: it swept the whole spendable Orchard balance to
+        // zero, so there is nothing for the app to acknowledge and no `Complete` screen to show.
+        // It derives `NotStarted` — which, returned here (the caller only consults an immediate run
+        // once no engine run is active), also MASKS any stale engine `Complete` left by an earlier
+        // engine-tracked run, keeping the immediate aftermath fully quiet. If new Orchard funds
+        // arrive later, the ordinary balance-gated re-offer path applies afresh.
+        return Some(DerivedState::NotStarted);
     }
     if tip <= run.expiry_bound() {
         return Some(DerivedState::InProgress {
             completed_transfers: 0,
             total_transfers: 1,
             next_transfer_ready_at_height: None,
+            is_immediate: true,
         });
     }
     None
@@ -754,8 +771,9 @@ fn derive_immediate_run(run: &ImmediateRunLookup, tip: BlockHeight) -> Option<De
 /// Precedence: an engine run counts as ACTIVE — and wins outright, exactly as before the immediate
 /// lane existed — whenever one is stored and has not reached a terminal status. A `Failed` or
 /// `Complete` engine run, or no stored engine run at all, instead defers to `immediate_run` (mined
-/// -> `Complete`; unmined and not expired -> `InProgress` of one; expired or vanished -> ignored)
-/// before falling back to the engine's own terminal/absent verdict.
+/// -> consumed: `NotStarted`, masking any stale engine `Complete`; unmined and not expired ->
+/// `InProgress` of one, flagged `is_immediate`; expired or vanished -> ignored) before falling back
+/// to the engine's own terminal/absent verdict.
 fn derive_state(
     persisted: Option<&MigrationState>,
     tip: BlockHeight,
@@ -816,6 +834,7 @@ fn derive_state(
         completed_transfers: completed,
         total_transfers: transfers.len() as u32,
         next_transfer_ready_at_height: next_ready,
+        is_immediate: false,
     }
 }
 
@@ -857,6 +876,10 @@ pub struct FfiMigrationProgress {
     pub remaining_orchard_value: i64,
     /// The height at which the next transfer becomes broadcastable, or `-1` if none is scheduled.
     pub next_transfer_ready_at_height: i64,
+    /// Whether this progress belongs to the immediate (single-transaction) send-max migration lane
+    /// rather than an engine-tracked schedule. The app uses it to keep the immediate aftermath
+    /// quiet (no per-transfer UI). Engine-tracked runs report `false`.
+    pub is_immediate: bool,
 }
 
 impl FfiMigrationProgress {
@@ -867,6 +890,7 @@ impl FfiMigrationProgress {
             total_transfers: 0,
             remaining_orchard_value: 0,
             next_transfer_ready_at_height: -1,
+            is_immediate: false,
         }
     }
 }
@@ -1229,12 +1253,14 @@ fn marshal_state(
             completed_transfers,
             total_transfers,
             next_transfer_ready_at_height,
+            is_immediate,
         } => FfiMigrationState::InProgress(FfiMigrationProgress {
             is_present: true,
             completed_transfers,
             total_transfers,
             remaining_orchard_value: zat_to_i64(remaining_orchard),
             next_transfer_ready_at_height: height_opt_to_i64(next_transfer_ready_at_height),
+            is_immediate,
         }),
         DerivedState::InvalidTransfer(id) => {
             FfiMigrationState::RequiresAttention(FfiAttentionReason::InvalidTransfer {
@@ -1335,12 +1361,14 @@ pub unsafe extern "C" fn zcashlc_migration_progress(
                 completed_transfers,
                 total_transfers,
                 next_transfer_ready_at_height,
+                is_immediate,
             } => FfiMigrationProgress {
                 is_present: true,
                 completed_transfers,
                 total_transfers,
                 remaining_orchard_value: zat_to_i64(remaining_orchard(&mut ctx)?),
                 next_transfer_ready_at_height: height_opt_to_i64(next_transfer_ready_at_height),
+                is_immediate,
             },
             _ => FfiMigrationProgress::absent(),
         };
@@ -2443,10 +2471,15 @@ mod tests {
                 completed_transfers,
                 total_transfers,
                 next_transfer_ready_at_height,
+                is_immediate,
             } => {
                 assert_eq!(completed_transfers, 1);
                 assert_eq!(total_transfers, 3);
                 assert_eq!(next_transfer_ready_at_height, Some(h(50)));
+                assert!(
+                    !is_immediate,
+                    "an engine-tracked run must carry is_immediate = false"
+                );
             }
             _ => panic!("expected InProgress"),
         }
@@ -2504,21 +2537,43 @@ mod tests {
                 completed_transfers,
                 total_transfers,
                 next_transfer_ready_at_height,
+                is_immediate,
             } => {
                 assert_eq!(completed_transfers, 0);
                 assert_eq!(total_transfers, 1);
                 assert_eq!(next_transfer_ready_at_height, None);
+                assert!(
+                    is_immediate,
+                    "an immediate-lane run must carry is_immediate = true"
+                );
             }
             _ => panic!("expected InProgress"),
         }
     }
 
     #[test]
-    fn derive_immediate_run_mined_is_complete() {
+    fn derive_immediate_run_mined_is_consumed() {
+        // R2: a mined immediate sweep is CONSUMED — the swept balance is zero and there is nothing
+        // for the app to acknowledge, so it derives no migration UI (NotStarted), not a `Complete`
+        // screen. If new Orchard funds arrive later, the ordinary balance-gated re-offer applies.
         let run = immediate_lookup(100, Some(250), Some(500));
         assert!(matches!(
             derive_state(None, h(300), &[], Some(&run)),
-            DerivedState::Complete
+            DerivedState::NotStarted
+        ));
+    }
+
+    #[test]
+    fn derive_mined_immediate_run_masks_stale_complete_engine_state() {
+        // R2 masking rule: a consumed (mined) immediate run must suppress a stale engine `Complete`
+        // left by an earlier engine-tracked run, so the user sees NO migration UI at all — neither
+        // the immediate run's own screen (a mined immediate run has none) nor the stale Complete.
+        // Net: NotStarted.
+        let state = test_state(MigrationStatus::Complete, &[MINED], &[MINED], 50, 10_000);
+        let run = immediate_lookup(1_000, Some(1_050), Some(1_500));
+        assert!(matches!(
+            derive_state(Some(&state), h(1_100), &[], Some(&run)),
+            DerivedState::NotStarted
         ));
     }
 
@@ -2556,7 +2611,8 @@ mod tests {
             50,
             10_000,
         );
-        // This immediate run would derive to Complete on its own — but must not win.
+        // This immediate run is mined, so on its own it would be consumed (NotStarted) — but the
+        // active engine run wins regardless.
         let run = immediate_lookup(100, Some(250), Some(500));
         assert!(matches!(
             derive_state(Some(&state), h(300), &[], Some(&run)),
@@ -2565,19 +2621,26 @@ mod tests {
     }
 
     #[test]
-    fn derive_immediate_run_overrides_stale_complete_engine_state() {
-        // A `Complete` engine run is terminal (not "active"), so a separate, later immediate run
-        // still gets a say instead of being masked by the stale Complete verdict.
+    fn derive_unmined_immediate_run_overrides_stale_complete_engine_state() {
+        // A `Complete` engine run is terminal (not "active"), so a separate, later UNMINED (still
+        // live) immediate run still gets a say instead of being masked by the stale Complete
+        // verdict: it derives its own `InProgress`. (A MINED immediate run instead masks the stale
+        // Complete to NotStarted — see `derive_mined_immediate_run_masks_stale_complete_engine_state`.)
         let state = test_state(MigrationStatus::Complete, &[MINED], &[MINED], 50, 10_000);
         let run = immediate_lookup(1_000, None, Some(1_500));
         match derive_state(Some(&state), h(1_100), &[], Some(&run)) {
             DerivedState::InProgress {
                 completed_transfers,
                 total_transfers,
+                is_immediate,
                 ..
             } => {
                 assert_eq!(completed_transfers, 0);
                 assert_eq!(total_transfers, 1);
+                assert!(
+                    is_immediate,
+                    "the immediate run that wins is an immediate-lane run"
+                );
             }
             _ => panic!(
                 "expected the immediate run's InProgress to win over the stale Complete engine state"
