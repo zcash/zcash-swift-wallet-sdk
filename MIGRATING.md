@@ -62,6 +62,32 @@ the app executes through the normal transaction pipeline, with one new call to r
 - **`MigrationSchedule` itself is unaffected** and still backs `proposeMigrationTransfers` /
   `signAndStoreMigrationSchedule` (the gradual, privacy-path schedule).
 
+## Residual locking and the run-count estimate join the migration group
+
+The `Synchronizer` migration group gains three account-scoped requirements. Like the rest of the
+group they come with protocol-extension defaults that throw an "unimplemented" `LocalizedError`, so
+a custom `Synchronizer` conformer keeps compiling — but it must override them to offer the real
+behavior (`SDKSynchronizer` does):
+
+- **New: `lockMigrationResidual(accountUUID:) async throws -> Zatoshi`.** The "Lock balance" choice
+  at migration `Complete`: locks every currently-spendable, not-already-locked legacy-Orchard note
+  until explicit unlock and returns the total locked (`Zatoshi(0)` is legitimate — nothing was
+  spendable). The lock never expires on its own; locked value leaves `PoolBalance.spendableValue`
+  but stays in `PoolBalance.lockedValue` (and therefore in `total()`). Idempotent-additive:
+  repeating the call locks (and reports) only notes that became spendable since. A concurrent-lock
+  race throws (`rustMigrationLockResidual`, ZRUST0132) and may be retried.
+- **New: `unlockMigrationResidual(accountUUID:) async throws -> Int`.** The release half: clears
+  ALL of the account's output locks and returns the cleared count (safe — the SDK never creates
+  proposal-scoped output locks). "Migrate anyway" over a locked residual composes as this call
+  followed by `proposeImmediateMigration(accountUUID:)`; locked notes are excluded from note
+  selection, so the unlock must come first.
+- **New: `estimateMigrationRuns(accountUUID:) async throws -> MigrationRunEstimate`.** The rounds
+  preview for the multi-round migration UI: how many migration RUNS ("rounds") migrating the whole
+  spendable Orchard balance takes, per run both what it migrates and what preparing it costs, and
+  the final residual that never migrates. External-signer session counts are a query on the result
+  (`totalSigningSessions(maxTransactionsPerSession:)`), not a parameter. The zero-run estimate is a
+  legitimate answer, not an error.
+
 ## `prepare` now validates the seed against the existing wallet
 
 If the wallet database already contains seed-derived account(s) and the seed passed to `prepare`

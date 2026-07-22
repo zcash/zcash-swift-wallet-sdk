@@ -363,6 +363,28 @@ actor OrchardMigration {
         try await welding.migrationResidualAfterMigration(for: accountUUID)
     }
 
+    /// Locks every currently-spendable, not-already-locked legacy-Orchard note until explicit
+    /// unlock and returns the total value locked — the "Lock balance" choice at migration
+    /// `Complete`. A straight delegation to the welding lock call, bound to this actor's own
+    /// account; not broadcast-performing, so it is not gated by ``serializedBroadcastFlow(_:)``.
+    func lockMigrationResidual() async throws -> Zatoshi {
+        try await welding.lockMigrationResidual(accountUUID: accountUUID)
+    }
+
+    /// Unlocks the account's locked outputs — the release half of ``lockMigrationResidual()`` —
+    /// and returns the number of outputs unlocked. A straight delegation to the welding unlock
+    /// call, bound to this actor's own account.
+    func unlockMigrationResidual() async throws -> Int {
+        try await welding.unlockMigrationResidual(accountUUID: accountUUID)
+    }
+
+    /// The multi-run ("rounds") estimate for migrating the whole spendable Orchard balance. A
+    /// straight delegation to the welding estimate call, bound to this actor's own account; the
+    /// zero-run estimate is a legitimate answer, not an error.
+    func estimateMigrationRuns() async throws -> MigrationRunEstimate {
+        try await welding.estimateMigrationRuns(accountUUID: accountUUID)
+    }
+
     /// Pre-signs and persists every transfer in `schedule` in the migration engine.
     ///
     /// The SDK does not retain the proposal list: hosts that need to render the committed schedule
