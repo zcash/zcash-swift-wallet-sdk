@@ -2324,6 +2324,9 @@ pub unsafe extern "C" fn zcashlc_propose_transfer(
 /// - `to` must be non-null and must point to a null-terminated UTF-8 string.
 /// - `memo` must either be null (indicating an empty memo or a transparent recipient) or point to a
 ///   512-byte array.
+/// - `orchard_only`: when `true`, restricts the spendable pools to Orchard alone (the Orchard→
+///   Ironwood immediate migration lane's sweep, which must not draw on Sapling funds); when
+///   `false`, spends from both Sapling and Orchard (pre-existing behavior).
 /// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
 ///   pointer when done using it.
 #[unsafe(no_mangle)]
@@ -2336,6 +2339,7 @@ pub unsafe extern "C" fn zcashlc_propose_send_max_transfer(
     memo: *const u8,
     mode: ffi::MaxSpendMode,
     confirmations_policy: ffi::ConfirmationsPolicy,
+    orchard_only: bool,
 ) -> *mut ffi::BoxedSlice {
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
@@ -2363,11 +2367,17 @@ pub unsafe extern "C" fn zcashlc_propose_send_max_transfer(
 
         let confirmation_policy = wallet::ConfirmationsPolicy::try_from(confirmations_policy)?;
 
+        let pools: &[ShieldedPool] = if orchard_only {
+            &[ShieldedPool::Orchard]
+        } else {
+            &[ShieldedPool::Sapling, ShieldedPool::Orchard]
+        };
+
         let proposal = propose_send_max_transfer::<_, _, _, Infallible>(
             &mut db_data,
             &network,
             account_uuid,
-            &[ShieldedPool::Sapling, ShieldedPool::Orchard],
+            pools,
             &StandardFeeRule::Zip317,
             to,
             memo,
