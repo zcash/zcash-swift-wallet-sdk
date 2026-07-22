@@ -420,6 +420,22 @@ impl AccountBalance {
         self.ironwood_balance = Balance::zero();
         self.unshielded = 0;
     }
+
+    /// [#1806] Build a balance carrying ONLY the recovery-view net, for the post-restore hold's
+    /// synthesized summary (see [`WalletSummary::recovery_hold`]). Mirrors
+    /// [`Self::override_with_recovery_net`]: the whole clamped net becomes orchard
+    /// `spendable_value`, every other pool zero.
+    pub(crate) fn recovery_only(account_uuid: [u8; 16], net_zat: i64) -> Self {
+        let mut balance = Self {
+            account_uuid,
+            sapling_balance: Balance::zero(),
+            orchard_balance: Balance::zero(),
+            ironwood_balance: Balance::zero(),
+            unshielded: 0,
+        };
+        balance.override_with_recovery_net(net_zat);
+        balance
+    }
 }
 
 /// A struct that contains details about scan progress.
@@ -536,6 +552,35 @@ impl WalletSummary {
         } else {
             unsafe { std::slice::from_raw_parts_mut(self.account_balances, self.account_balances_len) }
         }
+    }
+
+    /// [#1806] Synthesize a balance-only summary for the post-restore hold: when the upstream
+    /// `get_wallet_summary` transiently returns `None` right after a restore's
+    /// `is_recovering 1→0` flip, the engine still holds the recovered notes in its reconciled
+    /// recovery view. Rather than serve empty balances (which vanish the just-restored funds),
+    /// this surfaces the per-account recovery nets. `fully_scanned_height` MUST stay ≥ 0 — the
+    /// Swift bridge (`WalletSummary.fromFFI`) drops any summary with `fully_scanned_height < 0` as
+    /// "no data yet" — so the caller passes the last-known real scanned/chain-tip heights (clamped
+    /// here defensively). Scan-progress pointers are null: this is a pure balance carrier, and the
+    /// Slipstream host derives sync progress from the engine snapshot, never from these fields.
+    pub(crate) fn recovery_hold(
+        balances: Vec<AccountBalance>,
+        chain_tip_height: i32,
+        fully_scanned_height: i32,
+    ) -> *mut Self {
+        let (account_balances, account_balances_len) = ptr_from_vec(balances);
+        Box::into_raw(Box::new(Self {
+            account_balances,
+            account_balances_len,
+            chain_tip_height: chain_tip_height.max(0),
+            // Clamp ≥ 0: the Swift bridge drops any summary with `fully_scanned_height < 0`.
+            fully_scanned_height: fully_scanned_height.max(0),
+            scan_progress: ptr::null_mut(),
+            recovery_progress: ptr::null_mut(),
+            next_sapling_subtree_index: 0,
+            next_orchard_subtree_index: 0,
+            next_ironwood_subtree_index: 0,
+        }))
     }
 }
 
@@ -1365,5 +1410,53 @@ pub unsafe extern "C" fn zcashlc_free_address_check_result(ptr: *mut AddressChec
             unsafe { zcashlc_string_free(address) }
         };
         drop(res)
+    }
+}
+
+#[cfg(test)]
+mod recovery_hold_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_only_puts_clamped_net_in_orchard_spendable() {
+        let b = AccountBalance::recovery_only([7u8; 16], 12_345);
+        assert_eq!(b.uuid_bytes(), &[7u8; 16]);
+        assert_eq!(b.orchard_balance.spendable_value, 12_345);
+        assert_eq!(b.orchard_balance.value_pending_spendability, 0);
+        assert_eq!(b.sapling_balance.spendable_value, 0);
+        assert_eq!(b.ironwood_balance.spendable_value, 0);
+        assert_eq!(b.unshielded, 0);
+    }
+
+    #[test]
+    fn recovery_only_clamps_negative_net_to_zero() {
+        let b = AccountBalance::recovery_only([1u8; 16], -5);
+        assert_eq!(b.orchard_balance.spendable_value, 0);
+    }
+
+    #[test]
+    fn recovery_hold_synthesizes_balances_with_nonnegative_scanned_height() {
+        let entries = vec![
+            AccountBalance::recovery_only([1u8; 16], 100),
+            AccountBalance::recovery_only([2u8; 16], 200),
+        ];
+        let ptr = WalletSummary::recovery_hold(entries, 2_800_000, 2_799_900);
+        // SAFETY: freshly built by `recovery_hold`; freed below.
+        let summary = unsafe { &mut *ptr };
+        assert!(summary.fully_scanned_height >= 0);
+        assert_eq!(summary.fully_scanned_height, 2_799_900);
+        assert_eq!(summary.chain_tip_height, 2_800_000);
+        assert_eq!(summary.account_balances_mut().len(), 2);
+        unsafe { zcashlc_free_wallet_summary(ptr) };
+    }
+
+    #[test]
+    fn recovery_hold_clamps_negative_scanned_height_so_swift_keeps_it() {
+        let ptr = WalletSummary::recovery_hold(Vec::new(), 0, -1);
+        // SAFETY: freshly built by `recovery_hold`; freed below.
+        let summary = unsafe { &mut *ptr };
+        assert!(summary.fully_scanned_height >= 0);
+        assert_eq!(summary.account_balances_mut().len(), 0);
+        unsafe { zcashlc_free_wallet_summary(ptr) };
     }
 }

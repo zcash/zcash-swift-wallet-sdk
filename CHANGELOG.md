@@ -339,6 +339,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `markVoteSubmitted` surfaces the real cause of a vote-tx-hash lookup failure (missing vote row, locked/corrupt database) instead of always reporting "requires a stored vote tx hash"; that guidance now appears only when the vote exists but has no stored hash yet.
 - Tor-layer errors (`rustTorConnectToLightwalletd`, `rustTorLwdGetInfo`, `rustTorLwdSubmit`, `rustTorLwdFetchTransaction`, `rustTorLwdLatestBlockHeight`, `rustTorLwdGetTreeState`) are now classified as retryable service errors in `CompactBlockProcessor`. Previously these errors bypassed the service-error retry path and went straight to a fatal sync failure, so a transient Tor circuit/stream issue (e.g. "remote hostname lookup failure", "Failed to obtain exit circuit for ports", "Tor network protocol violation") required a full app restart to recover. They now trigger the same reset-and-retry behavior (including tearing down cached Tor connections via `service.closeConnections()`) as other transport errors, up to `ZcashSDK.serviceFailureRetries` times.
 - `MigrationSchedule.estimatedDurationHours` now measures from proposal (or re-serve) time to the last scheduled transfer, matching its documented "how long the schedule takes to fully execute" contract. Previously it measured only the first-to-last scheduled-transfer span, which excluded the wait until the first transfer fires and could read shorter than the per-transfer ETAs computed from the same schedule. Correspondingly, the post-commit consent-echo validation no longer exact-matches the echoed duration (it is serve-time-relative display metadata now); the pre-commit validation still checks it byte-for-byte.
+- `getAccountsBalances()` (and the migration-eligibility read that depends on it) no longer briefly
+  reports empty balances right after a wallet restore completes. When the engine flips out of
+  recovery, the upstream wallet summary can transiently report no balance data for up to ~30 s while
+  it finalizes the just-restored notes; the Slipstream unified summary was serving that gap as empty,
+  so the restored funds — and the "Migration Required" eligibility — flickered to zero. The summary
+  now holds the engine-owned reconciled recovery-view balances across that window: bounded to 120 s,
+  released the instant the upstream summary returns real balances (whose value then wins
+  unconditionally), and suppressed whenever a pending unmined outgoing spend could otherwise make the
+  held value over-show. A process restart inside the window falls back to the prior behavior.
 
 # 2.6.0-alpha.6
 
