@@ -2109,7 +2109,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.18",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -4823,7 +4823,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slipstream-core"
 version = "0.6.4"
-source = "git+https://github.com/LukasKorba/slipstream.git?rev=9727243537eef245728b655d8ed98acfc2a2349c#9727243537eef245728b655d8ed98acfc2a2349c"
+source = "git+https://github.com/LukasKorba/slipstream.git?branch=michal%2FMOB-1455%2FMOB-1495-update-librustzcash-deps#9727243537eef245728b655d8ed98acfc2a2349c"
 dependencies = [
  "ff",
  "futures-util",
@@ -4860,7 +4860,7 @@ dependencies = [
 [[package]]
 name = "slipstream-gpuhash"
 version = "0.0.1"
-source = "git+https://github.com/LukasKorba/slipstream.git?rev=9727243537eef245728b655d8ed98acfc2a2349c#9727243537eef245728b655d8ed98acfc2a2349c"
+source = "git+https://github.com/LukasKorba/slipstream.git?branch=michal%2FMOB-1455%2FMOB-1495-update-librustzcash-deps#9727243537eef245728b655d8ed98acfc2a2349c"
 dependencies = [
  "bytemuck",
  "ff",
