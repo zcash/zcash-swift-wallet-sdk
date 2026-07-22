@@ -859,6 +859,108 @@ final class MigrationLogicTests: ZcashTestCase {
         XCTAssertEqual(receivedAccount, accountA)
     }
 
+    // MARK: - Residual locking and the run-count estimate (delegation)
+
+    /// `lockMigrationResidual()` is a straight delegation to the welding lock call, bound to this
+    /// actor's own account: the total the welding reports comes back untouched.
+    func testLockMigrationResidualForwardsTotalAndAccount() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.lockMigrationResidualAccountUUIDReturnValue = Zatoshi(38_000)
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        let locked = try await migration.lockMigrationResidual()
+
+        XCTAssertEqual(locked, Zatoshi(38_000))
+        XCTAssertEqual(welding.lockMigrationResidualAccountUUIDReceivedAccountUUID, accountA)
+    }
+
+    /// A zero locked total is a legitimate outcome (nothing was spendable, or everything spendable
+    /// was already locked), not an error: it passes through unchanged.
+    func testLockMigrationResidualZeroTotalPassesThrough() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.lockMigrationResidualAccountUUIDReturnValue = Zatoshi.zero
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        let locked = try await migration.lockMigrationResidual()
+
+        XCTAssertEqual(locked, Zatoshi.zero)
+    }
+
+    /// The concurrent-lock race (and any other engine failure) surfaces as the welding's own
+    /// `rustMigrationLockResidual`, rethrown untouched so the caller can retry.
+    func testLockMigrationResidualRethrowsWhenWeldingThrows() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.lockMigrationResidualAccountUUIDThrowableError = ZcashError.rustMigrationLockResidual("boom")
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        do {
+            _ = try await migration.lockMigrationResidual()
+            XCTFail("Expected lockMigrationResidual to rethrow the welding error")
+        } catch ZcashError.rustMigrationLockResidual {
+            // expected
+        } catch {
+            XCTFail("Expected rustMigrationLockResidual but got \(error)")
+        }
+    }
+
+    /// `unlockMigrationResidual()` is the release half: a straight delegation returning the
+    /// welding's cleared-lock count, bound to this actor's own account.
+    func testUnlockMigrationResidualForwardsCountAndAccount() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.unlockMigrationResidualAccountUUIDReturnValue = 4
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        let cleared = try await migration.unlockMigrationResidual()
+
+        XCTAssertEqual(cleared, 4)
+        XCTAssertEqual(welding.unlockMigrationResidualAccountUUIDReceivedAccountUUID, accountA)
+    }
+
+    func testUnlockMigrationResidualRethrowsWhenWeldingThrows() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.unlockMigrationResidualAccountUUIDThrowableError = ZcashError.rustMigrationUnlockResidual("boom")
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        do {
+            _ = try await migration.unlockMigrationResidual()
+            XCTFail("Expected unlockMigrationResidual to rethrow the welding error")
+        } catch ZcashError.rustMigrationUnlockResidual {
+            // expected
+        } catch {
+            XCTFail("Expected rustMigrationUnlockResidual but got \(error)")
+        }
+    }
+
+    /// `estimateMigrationRuns()` returns the welding's estimate untouched: every per-run field
+    /// (crossings, preparation layers/transactions, migratable value) and the final residual flow
+    /// through, so the model's derived queries answer over exactly what the engine reported.
+    func testEstimateMigrationRunsReturnsWeldingEstimateUntouched() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let estimate = Self.makeRunEstimate()
+        welding.estimateMigrationRunsAccountUUIDReturnValue = estimate
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        let returned = try await migration.estimateMigrationRuns()
+
+        XCTAssertEqual(returned, estimate)
+        XCTAssertEqual(welding.estimateMigrationRunsAccountUUIDReceivedAccountUUID, accountA)
+    }
+
+    func testEstimateMigrationRunsRethrowsWhenWeldingThrows() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.estimateMigrationRunsAccountUUIDThrowableError = ZcashError.rustMigrationEstimateRuns("boom")
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        do {
+            _ = try await migration.estimateMigrationRuns()
+            XCTFail("Expected estimateMigrationRuns to rethrow the welding error")
+        } catch ZcashError.rustMigrationEstimateRuns {
+            // expected
+        } catch {
+            XCTFail("Expected rustMigrationEstimateRuns but got \(error)")
+        }
+    }
+
     // MARK: - Broadcast composition (I1 canary)
 
     /// Canary for the privacy-critical composition in `OrchardMigration.broadcastAndRecord`: a
@@ -955,6 +1057,29 @@ final class MigrationLogicTests: ZcashTestCase {
             transfers.append(transfer)
         }
         return MigrationSchedule(transfers: transfers, estimatedDurationHours: count * 6)
+    }
+
+    /// Builds a deliberately non-trivial `MigrationRunEstimate` fixture: two runs whose fields are
+    /// all distinct (so any cross-wiring of a field in the pass-through would break equality) plus
+    /// a non-zero final residual.
+    static func makeRunEstimate() -> MigrationRunEstimate {
+        MigrationRunEstimate(
+            runs: [
+                MigrationRunEstimate.Run(
+                    migratable: Zatoshi(75_000_000),
+                    crossings: 15,
+                    preparationLayers: 2,
+                    preparationTransactions: 5
+                ),
+                MigrationRunEstimate.Run(
+                    migratable: Zatoshi(1_200_000),
+                    crossings: 3,
+                    preparationLayers: 1,
+                    preparationTransactions: 1
+                )
+            ],
+            finalResidual: Zatoshi(42_000)
+        )
     }
 
     /// Builds a single-step `FfiProposal` fixture shaped like a send-max proposal: one

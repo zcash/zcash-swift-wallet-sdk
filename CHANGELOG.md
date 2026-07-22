@@ -7,7 +7,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 # Unreleased
 
 ## Added
-- Orchard→Ironwood pool-migration engine, exposed as a 23-member migration group on the
+- Orchard→Ironwood pool-migration engine, exposed as a 27-member migration group on the
   `Synchronizer` protocol, built over the pool-migration FFI/welding layer introduced in the entry
   below: the app talks only to `Synchronizer` — the per-account migration engine, broadcaster, and
   privacy gate behind it are internal. Account-scoped members take an `AccountUUID`, and two
@@ -130,7 +130,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   locks and returns the cleared count). New error codes `rustMigrationLockResidual` ZRUST0132
   and `rustMigrationUnlockResidual` ZRUST0133. The public `PoolBalance` gains `lockedValue`:
   locked value leaves `spendableValue` but stays in the account — `total()` now includes it —
-  marshaled from the rust balance so locked funds never vanish from app-visible sums.
+  marshaled from the rust balance so locked funds never vanish from app-visible sums. Both are
+  surfaced on the `Synchronizer` protocol under the same names — account-scoped thin forwards
+  through the per-account migration actor, with throwing "unimplemented" protocol-extension
+  defaults like the rest of the group: the app's "Lock balance" choice calls
+  `lockMigrationResidual(accountUUID:)`, and "Migrate anyway" over a locked residual composes as
+  `unlockMigrationResidual(accountUUID:)` followed by `proposeImmediateMigration(accountUUID:)`
+  (locked notes are excluded from note selection, so the unlock must come first).
 - Migration run-count estimate. `ZcashRustBackendWelding` gains
   `estimateMigrationRuns(accountUUID:)`, returning the new public `MigrationRunEstimate` model:
   how many migration RUNS ("rounds") migrating the whole spendable Orchard balance takes, and
@@ -140,7 +146,11 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `totalSigningSessions(maxTransactionsPerSession:)` — the latter deliberately sums per-run
   sessions rather than pooling transactions across runs, because a later run's transactions
   spend notes an earlier run must mine first). A zero balance yields the zero-run estimate, not
-  an error. New error code `rustMigrationEstimateRuns` ZRUST0134.
+  an error. New error code `rustMigrationEstimateRuns` ZRUST0134. Surfaced on the `Synchronizer`
+  protocol under the same name — the rounds preview behind the multi-round migration UI, an
+  account-scoped thin forward through the per-account migration actor that hands the engine's
+  estimate through unchanged, with a throwing "unimplemented" protocol-extension default like the
+  rest of the group.
 - Ironwood (NU6.3) receive/sync readiness. The lightwalletd protocol gains the Ironwood fields
   (`CompactTx.ironwoodActions`, `ChainMetadata.ironwoodCommitmentTreeSize`, `TreeState.ironwoodTree`,
   `ShieldedProtocol.ironwood`); `UpdateSubtreeRootsAction` fetches and stores Ironwood subtree roots

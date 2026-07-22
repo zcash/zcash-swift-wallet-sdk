@@ -2,7 +2,7 @@
 //  SDKSynchronizerMigrationTests.swift
 //  OfflineTests
 //
-//  Tests `SDKSynchronizer`'s migration group (R4-B): the 23 protocol requirements as thin forwards
+//  Tests `SDKSynchronizer`'s migration group (R4-B): the 27 protocol requirements as thin forwards
 //  to a seamed `OrchardMigrationHost`, and the two SDK-enforced session-separation behaviors --
 //  the start() privacy gate and the submitNoteSplit/executeNextPendingMigrationTransfer broadcast
 //  guard. Driven through the host's injecting initializer + a scripted actor factory, mirroring
@@ -198,6 +198,89 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
 
         XCTAssertEqual(receivedTxid, txid)
         XCTAssertEqual(receivedAccount, accountUUID)
+    }
+
+    /// `lockMigrationResidual` — the "Lock balance" choice at migration `Complete` — forwards to
+    /// the per-account actor and returns the welding's locked total untouched. Like the rest of the
+    /// group it needs no `prepare()` and carries no broadcast guard (locking is a data-db write,
+    /// nothing is broadcast).
+    func testLockMigrationResidualForwardsToTheAccountsActor() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.lockMigrationResidualAccountUUIDReturnValue = Zatoshi(21_500)
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let locked = try await synchronizer.lockMigrationResidual(accountUUID: accountUUID)
+
+        XCTAssertEqual(locked, Zatoshi(21_500))
+        XCTAssertEqual(welding.lockMigrationResidualAccountUUIDReceivedAccountUUID, accountUUID)
+    }
+
+    /// A lock failure (in particular the concurrent-lock race, which the caller may retry)
+    /// propagates through the `Synchronizer` surface untouched.
+    func testLockMigrationResidualPropagatesTheWeldingError() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.lockMigrationResidualAccountUUIDThrowableError = ZcashError.rustMigrationLockResidual("concurrent lock race")
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        do {
+            _ = try await synchronizer.lockMigrationResidual(accountUUID: accountUUID)
+            XCTFail("expected rustMigrationLockResidual to propagate")
+        } catch ZcashError.rustMigrationLockResidual {
+            // expected
+        } catch {
+            XCTFail("expected rustMigrationLockResidual, got \(error)")
+        }
+    }
+
+    /// `unlockMigrationResidual` — the release half; "Migrate anyway" composes as this call
+    /// followed by `proposeImmediateMigration` — forwards to the per-account actor and returns the
+    /// cleared-lock count untouched.
+    func testUnlockMigrationResidualForwardsToTheAccountsActor() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.unlockMigrationResidualAccountUUIDReturnValue = 7
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let cleared = try await synchronizer.unlockMigrationResidual(accountUUID: accountUUID)
+
+        XCTAssertEqual(cleared, 7)
+        XCTAssertEqual(welding.unlockMigrationResidualAccountUUIDReceivedAccountUUID, accountUUID)
+    }
+
+    /// `estimateMigrationRuns` forwards to the per-account actor and hands the engine's
+    /// `MigrationRunEstimate` through unchanged — pinned with a non-trivial two-run fixture so any
+    /// field cross-wiring in the pass-through would break equality, and the derived signing-session
+    /// math answers over exactly what the engine reported.
+    func testEstimateMigrationRunsForwardsToTheAccountsActor() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let estimate = MigrationRunEstimate(
+            runs: [
+                MigrationRunEstimate.Run(
+                    migratable: Zatoshi(75_000_000),
+                    crossings: 15,
+                    preparationLayers: 2,
+                    preparationTransactions: 5
+                ),
+                MigrationRunEstimate.Run(
+                    migratable: Zatoshi(1_200_000),
+                    crossings: 3,
+                    preparationLayers: 1,
+                    preparationTransactions: 1
+                )
+            ],
+            finalResidual: Zatoshi(42_000)
+        )
+        welding.estimateMigrationRunsAccountUUIDReturnValue = estimate
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let returned = try await synchronizer.estimateMigrationRuns(accountUUID: accountUUID)
+
+        XCTAssertEqual(returned, estimate)
+        XCTAssertEqual(welding.estimateMigrationRunsAccountUUIDReceivedAccountUUID, accountUUID)
+        XCTAssertEqual(
+            returned.totalSigningSessions(maxTransactionsPerSession: 8),
+            estimate.totalSigningSessions(maxTransactionsPerSession: 8),
+            "the derived signing-session math must answer over the forwarded runs"
+        )
     }
 
     // MARK: - Forwarding: wallet-scope gate members
