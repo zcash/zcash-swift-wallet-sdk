@@ -1459,4 +1459,266 @@ mod recovery_hold_tests {
         assert_eq!(summary.account_balances_mut().len(), 0);
         unsafe { zcashlc_free_wallet_summary(ptr) };
     }
+
+    // ── serve_wallet_summary: the extracted serve path driven with a real fixture DB (C1) ────
+    //
+    // These drive the REAL serve path (classify → gate → decide → build), not just the pure
+    // decision function — the seam the reviewer flagged: a STALE cached `Some` at the flip must
+    // route to a synthesized hold, never release. `build_upstream` is injected so the marshalling
+    // of a real upstream `Some` (which needs a `data_api::WalletSummary` the harness cannot
+    // fabricate) is stubbed with a distinctive sentinel; the DB reads hit a real fixture SQLite.
+
+    use crate::{
+        HoldLatch, POST_FLIP_HOLD_CAP, UpstreamKind, classify_upstream, serve_wallet_summary,
+    };
+    use std::time::{Duration, Instant};
+
+    fn acct(n: u8) -> [u8; 16] {
+        [n; 16]
+    }
+
+    /// A temp wallet DB carrying the two tables the serve path reads: the recovery-view balances
+    /// and `v_transactions` (for the unmined-spend gate). Returns its path; caller removes it.
+    fn temp_wallet_db(
+        recovery: &[([u8; 16], i64)],
+        spends: &[([u8; 16], Option<i64>, i64, Option<i64>)],
+    ) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "e2fix_serve_{}_{}.db",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE slipstream_v_recovery_balance (account_uuid BLOB, balance_zat INTEGER);
+             CREATE TABLE v_transactions (account_uuid BLOB, mined_height INTEGER, spent_note_count INTEGER, expired_unmined INTEGER);",
+        )
+        .unwrap();
+        for (u, bal) in recovery {
+            conn.execute(
+                "INSERT INTO slipstream_v_recovery_balance (account_uuid, balance_zat) VALUES (?1, ?2)",
+                rusqlite::params![u.to_vec(), bal],
+            )
+            .unwrap();
+        }
+        for (u, mined, spent, expired) in spends {
+            conn.execute(
+                "INSERT INTO v_transactions (account_uuid, mined_height, spent_note_count, expired_unmined) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![u.to_vec(), mined, spent, expired],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        path
+    }
+
+    /// (uuid, orchard spendable) for each account slot of the served summary.
+    fn balances_of(ptr: *mut WalletSummary) -> Vec<([u8; 16], i64)> {
+        // SAFETY: `ptr` was just built by the serve path; borrowed only for this read.
+        let summary = unsafe { &mut *ptr };
+        summary
+            .account_balances_mut()
+            .iter()
+            .map(|b| (*b.uuid_bytes(), b.orchard_balance.spendable_value))
+            .collect()
+    }
+
+    /// A distinctive SENTINEL upstream `Some` (account 0xEE, orchard 999) — served only when the
+    /// decision is `Upstream`/`RecoveringOverride`, so tests can tell it from a synthesized hold.
+    fn sentinel_upstream() -> anyhow::Result<*mut WalletSummary> {
+        Ok(WalletSummary::recovery_hold(
+            vec![AccountBalance::recovery_only(acct(0xEE), 999)],
+            100,
+            90,
+        ))
+    }
+    fn empty_upstream() -> anyhow::Result<*mut WalletSummary> {
+        Ok(WalletSummary::none())
+    }
+
+    /// C1 (wiring): the flip tick with a STALE cached `Some` serves the SYNTHESIZED recovery
+    /// balances from the fixture DB — NOT the stale upstream — and does NOT release the latch.
+    #[test]
+    fn serve_flip_tick_with_stale_some_holds_recovery() {
+        let db = temp_wallet_db(&[(acct(1), 5000)], &[]);
+        let cache =
+            std::sync::Mutex::new(Some(std::collections::HashMap::from([(acct(1), 5000i64)])));
+        let base = Instant::now();
+        let kind = classify_upstream(true, true);
+        assert_eq!(kind, UpstreamKind::StaleSome);
+        let (latch, ptr) = serve_wallet_summary(
+            false,
+            kind,
+            Some((100, 90)),
+            Some(true),
+            HoldLatch::Idle,
+            base,
+            POST_FLIP_HOLD_CAP,
+            &db,
+            &cache,
+            sentinel_upstream,
+        )
+        .unwrap();
+        assert!(
+            matches!(latch, HoldLatch::Engaged { .. }),
+            "a stale Some at the flip must engage the hold, not release"
+        );
+        assert_eq!(
+            balances_of(ptr),
+            vec![(acct(1), 5000)],
+            "must serve synthesized recovery balances, not the stale upstream sentinel"
+        );
+        unsafe { zcashlc_free_wallet_summary(ptr) };
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// C1 (wiring): once engaged, a later `None` tick keeps serving the synthesized hold.
+    #[test]
+    fn serve_engaged_none_tick_keeps_holding() {
+        let db = temp_wallet_db(&[(acct(1), 7000)], &[]);
+        let cache = std::sync::Mutex::new(None);
+        let base = Instant::now();
+        let (latch, ptr) = serve_wallet_summary(
+            false,
+            UpstreamKind::None,
+            Some((100, 90)),
+            Some(false),
+            HoldLatch::Engaged { flip_at: base },
+            base + Duration::from_secs(20),
+            POST_FLIP_HOLD_CAP,
+            &db,
+            &cache,
+            empty_upstream,
+        )
+        .unwrap();
+        assert!(matches!(latch, HoldLatch::Engaged { .. }));
+        assert_eq!(balances_of(ptr), vec![(acct(1), 7000)]);
+        unsafe { zcashlc_free_wallet_summary(ptr) };
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// A FRESH post-flip `Some` releases the latch and serves the upstream (sentinel) balances.
+    #[test]
+    fn serve_fresh_some_releases_and_serves_upstream() {
+        let db = temp_wallet_db(&[(acct(1), 5000)], &[]);
+        let cache = std::sync::Mutex::new(None);
+        let base = Instant::now();
+        let (latch, ptr) = serve_wallet_summary(
+            false,
+            UpstreamKind::FreshSome,
+            Some((100, 90)),
+            Some(false),
+            HoldLatch::Engaged { flip_at: base },
+            base + Duration::from_secs(5),
+            POST_FLIP_HOLD_CAP,
+            &db,
+            &cache,
+            sentinel_upstream,
+        )
+        .unwrap();
+        assert_eq!(latch, HoldLatch::Released);
+        assert_eq!(
+            balances_of(ptr),
+            vec![(acct(0xEE), 999)],
+            "a fresh Some serves the upstream, not the hold"
+        );
+        unsafe { zcashlc_free_wallet_summary(ptr) };
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// The safety gate at the wiring level: an unmined, unexpired spend (read from the real
+    /// `v_transactions` fixture) releases the latch and serves empty.
+    #[test]
+    fn serve_unmined_spend_releases_and_serves_empty() {
+        let db = temp_wallet_db(&[(acct(1), 5000)], &[(acct(1), None, 1, Some(0))]);
+        let cache = std::sync::Mutex::new(None);
+        let base = Instant::now();
+        let (latch, ptr) = serve_wallet_summary(
+            false,
+            UpstreamKind::None,
+            Some((100, 90)),
+            Some(false),
+            HoldLatch::Engaged { flip_at: base },
+            base + Duration::from_secs(10),
+            POST_FLIP_HOLD_CAP,
+            &db,
+            &cache,
+            empty_upstream,
+        )
+        .unwrap();
+        assert_eq!(latch, HoldLatch::Released);
+        assert!(
+            balances_of(ptr).is_empty(),
+            "a pending spend must serve empty"
+        );
+        unsafe { zcashlc_free_wallet_summary(ptr) };
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// The recovering path reads the DB nets and overrides every slot with them.
+    #[test]
+    fn serve_recovering_overrides_with_db_nets() {
+        let db = temp_wallet_db(&[(acct(1), 5000)], &[]);
+        let cache = std::sync::Mutex::new(None);
+        let base = Instant::now();
+        let (latch, ptr) = serve_wallet_summary(
+            true,
+            UpstreamKind::StaleSome,
+            Some((100, 90)),
+            Some(true),
+            HoldLatch::Idle,
+            base,
+            POST_FLIP_HOLD_CAP,
+            &db,
+            &cache,
+            || {
+                Ok(WalletSummary::recovery_hold(
+                    vec![AccountBalance::recovery_only(acct(1), 111)],
+                    100,
+                    90,
+                ))
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            latch,
+            HoldLatch::Idle,
+            "recovering must not engage the hold latch"
+        );
+        assert_eq!(
+            balances_of(ptr),
+            vec![(acct(1), 5000)],
+            "recovering overrides slots with DB nets"
+        );
+        unsafe { zcashlc_free_wallet_summary(ptr) };
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// I1: an ordinary `None`-serving tick with an IDLE latch (never flipped) must not touch the
+    /// DB — proven by pointing the serve path at a non-existent DB and still getting a clean empty.
+    #[test]
+    fn serve_idle_none_tick_never_touches_db() {
+        let cache = std::sync::Mutex::new(None);
+        let base = Instant::now();
+        let bogus = std::path::Path::new("/nonexistent/e2fix/does_not_exist.db");
+        let (latch, ptr) = serve_wallet_summary(
+            false,
+            UpstreamKind::None,
+            None,
+            Some(false),
+            HoldLatch::Idle,
+            base,
+            POST_FLIP_HOLD_CAP,
+            bogus,
+            &cache,
+            empty_upstream,
+        )
+        .unwrap();
+        assert_eq!(latch, HoldLatch::Idle);
+        assert!(balances_of(ptr).is_empty());
+        unsafe { zcashlc_free_wallet_summary(ptr) };
+    }
 }
