@@ -2447,7 +2447,8 @@ extension FfiMigrationProgress {
             completedTransfers: Int(completed_transfers),
             totalTransfers: Int(total_transfers),
             remainingOrchard: Zatoshi(remaining_orchard_value),
-            nextTransferReadyAtHeight: next_transfer_ready_at_height >= 0 ? BlockHeight(next_transfer_ready_at_height) : nil
+            nextTransferReadyAtHeight: next_transfer_ready_at_height >= 0 ? BlockHeight(next_transfer_ready_at_height) : nil,
+            isImmediate: is_immediate
         )
     }
 }

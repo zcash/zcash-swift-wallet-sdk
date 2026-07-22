@@ -23,6 +23,7 @@
 //
 
 import XCTest
+import libzcashlc
 @testable import TestUtils
 @testable import ZcashLightClientKit
 
@@ -266,6 +267,42 @@ final class MigrationFFITests: XCTestCase {
         }
         XCTAssertEqual(progress.completedTransfers, 0)
         XCTAssertEqual(progress.totalTransfers, 1)
+        XCTAssertTrue(
+            progress.isImmediate,
+            "a recorded immediate-lane run must map to isImmediate = true through the real FFI"
+        )
+    }
+
+    /// MOB-1513 R2: the FFI→model mapping (`FfiMigrationProgress.unsafeToMigrationProgress()`) must
+    /// copy `is_immediate` straight through, so the immediate lane's quiet-aftermath flag survives
+    /// the boundary and the model's defaulted `isImmediate` can never silently swallow it. Both
+    /// paths are exercised on the mapping directly (constructing the `#[repr(C)]` struct) because an
+    /// engine-tracked InProgress — the only real-FFI `is_immediate == false` source — needs a
+    /// seeded, synced Orchard balance this offline suite does not have. The `true` path is
+    /// additionally covered end-to-end over the real FFI by
+    /// `testMigrationRecordImmediateRunThenMigrationStateReportsInProgress` above.
+    func testMigrationProgressMappingCarriesIsImmediateBothWays() throws {
+        let immediate = FfiMigrationProgress(
+            is_present: true,
+            completed_transfers: 0,
+            total_transfers: 1,
+            remaining_orchard_value: 0,
+            next_transfer_ready_at_height: -1,
+            is_immediate: true
+        )
+        let immediateProgress = try XCTUnwrap(immediate.unsafeToMigrationProgress())
+        XCTAssertTrue(immediateProgress.isImmediate, "an immediate-lane FFI struct must map to isImmediate = true")
+
+        let engine = FfiMigrationProgress(
+            is_present: true,
+            completed_transfers: 1,
+            total_transfers: 3,
+            remaining_orchard_value: 12_345,
+            next_transfer_ready_at_height: 100,
+            is_immediate: false
+        )
+        let engineProgress = try XCTUnwrap(engine.unsafeToMigrationProgress())
+        XCTAssertFalse(engineProgress.isImmediate, "an engine-tracked FFI struct must map to isImmediate = false")
     }
 
     // MARK: - Ironwood activation height
