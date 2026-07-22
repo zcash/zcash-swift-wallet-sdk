@@ -4684,6 +4684,11 @@ struct SummaryCacheEntry {
     /// [#1806] `None` = a walked "no balance data yet" result, cached like any other so a
     /// fresh / just-imported wallet does not re-walk synchronously on every poll tick.
     summary: Option<zcash_client_backend::data_api::WalletSummary<AccountUuid>>,
+    /// [#1806] The `is_recovering` flag captured when THIS entry's walk STARTED. A `Some`
+    /// walked while recovering predates the `is_recovering 1→0` flip, so it is a STALE pre-flip
+    /// summary (see [`classify_upstream`] / C1): the post-restore hold must not release on it or
+    /// serve it raw. `false` for a walk that ran outside recovery (post-flip → fresh).
+    walked_while_recovering: bool,
 }
 
 /// [API v2.1 E-1] Idle refresh TTL — matches the SDK's historical idle/error refetch cadence.
@@ -5568,6 +5573,37 @@ enum SummaryServe {
     HoldOverride,
 }
 
+/// [#1806] Freshness-tagged classification of the resolved upstream summary. The summary served
+/// to hosts comes from a RATIONED cache, so a `Some` observed at a given tick may be STALE — its
+/// walk started before the `is_recovering 1→0` flip and therefore predates the restored notes.
+/// Releasing the hold on such a stale `Some` (or serving it raw) would re-expose the very ~30 s
+/// empty/regressed window the hold exists to cover (MOB-1513 E2-FIX / C1). The latch may be
+/// released only by a `Some` KNOWN to be post-flip (`FreshSome`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum UpstreamKind {
+    /// The cache walked to `None` (no balance data) — regardless of when the walk ran.
+    None,
+    /// A `Some` whose walk STARTED while the engine was still recovering (pre-flip). Not yet
+    /// trustworthy: treated exactly like `None` by the hold (do not serve it, do not release).
+    StaleSome,
+    /// A `Some` whose walk started while NOT recovering (post-flip) — real, current balances.
+    FreshSome,
+}
+
+/// [#1806] Classify the resolved upstream summary by presence + the recovery state its walk ran
+/// under. `walked_while_recovering` is the `is_recovering` flag captured when the cache entry's
+/// walk started; a `Some` produced during recovery is `StaleSome` (pre-flip), otherwise
+/// `FreshSome`.
+fn classify_upstream(summary_is_some: bool, walked_while_recovering: bool) -> UpstreamKind {
+    if !summary_is_some {
+        UpstreamKind::None
+    } else if walked_while_recovering {
+        UpstreamKind::StaleSome
+    } else {
+        UpstreamKind::FreshSome
+    }
+}
+
 /// [#1806] Pure post-restore-hold state-machine step for the unified wallet summary. Factored out
 /// of [`zcashlc_slipstream_wallet_summary`] so the whole serving policy — engage-on-flip,
 /// first-`Some`-wins, cap expiry, and the unmined-spend safety gate — is exhaustively unit
@@ -5577,8 +5613,8 @@ enum SummaryServe {
 /// - `is_recovering`: the engine snapshot's recovery flag.
 /// - `last_is_recovering`: the previous tick's flag (for 1→0 edge detection); `None` on the
 ///   first observation on this handle.
-/// - `upstream_is_some`: whether the resolved upstream summary is `Some` (real balances) vs
-///   `None` (empty).
+/// - `upstream`: freshness-tagged classification of the resolved summary (see [`UpstreamKind`]);
+///   only a `FreshSome` (post-flip) releases the latch.
 /// - `prior_recovery_nonzero`: whether the recovery override had been serving a non-zero value
 ///   just before the flip (only consulted AT the flip; guards case (f) — nothing to hold).
 /// - `spend`: per-account unmined-outgoing-spend status (only consulted while holding).
@@ -5588,7 +5624,7 @@ enum SummaryServe {
 fn decide_summary_serving(
     is_recovering: bool,
     last_is_recovering: Option<bool>,
-    upstream_is_some: bool,
+    upstream: UpstreamKind,
     prior_recovery_nonzero: bool,
     spend: UnminedSpendStatus,
     latch: HoldLatch,
@@ -5611,16 +5647,19 @@ fn decide_summary_serving(
         latch = HoldLatch::Engaged { flip_at: now };
     }
 
-    // (2) The FIRST upstream `Some` after the flip permanently releases the latch: upstream truth
-    //     wins unconditionally thereafter, even if lower than the recovery view.
-    if upstream_is_some {
+    // (2) Only a FRESH post-flip `Some` releases the latch: upstream truth wins thereafter, even if
+    //     lower than the recovery view. A STALE cached `Some` (its walk started pre-flip, so it
+    //     predates the restored notes — C1) is NOT trustworthy yet: treat it exactly like `None`
+    //     below and keep holding, covering the window where the rationed cache still serves the
+    //     pre-flip `Some`.
+    if matches!(upstream, UpstreamKind::FreshSome) {
         if matches!(latch, HoldLatch::Engaged { .. }) {
             latch = HoldLatch::Released;
         }
         return (latch, SummaryServe::Upstream);
     }
 
-    // (3) Upstream is `None` — evaluate the hold.
+    // (3) Upstream is `None` or `StaleSome` — evaluate the hold.
     match latch {
         HoldLatch::Engaged { flip_at } => {
             if now.saturating_duration_since(flip_at) > cap {
@@ -5660,8 +5699,13 @@ fn read_unmined_spend_accounts_conn(
     let mut accounts = std::collections::HashSet::new();
     let mut stmt = conn
         .prepare(
+            // `COALESCE(expired_unmined, 0) = 0`, NOT `expired_unmined = 0`: `expired_unmined` is
+            // NULL when the tx's `expiry_height` is unknown (e.g. an un-enhanced pending tx), and a
+            // bare `= 0` silently drops NULL rows — letting such a hazard slip the gate (M1). NULL
+            // ⇒ treat as not-yet-expired ⇒ a hazard the hold must respect.
             "SELECT DISTINCT account_uuid FROM v_transactions \
-             WHERE mined_height IS NULL AND spent_note_count > 0 AND expired_unmined = 0",
+             WHERE mined_height IS NULL AND spent_note_count > 0 \
+             AND COALESCE(expired_unmined, 0) = 0",
         )
         .map_err(|e| anyhow!("unmined-spend prepare: {}", e))?;
     let mut rows = stmt
@@ -5692,6 +5736,171 @@ fn read_unmined_spend_accounts(
     conn.busy_timeout(std::time::Duration::from_millis(250))
         .map_err(|e| anyhow!("unmined-spend busy_timeout: {}", e))?;
     read_unmined_spend_accounts_conn(&conn)
+}
+
+/// [#1806] The testable core of [`zcashlc_slipstream_wallet_summary`]'s serve path: given this
+/// tick's classified upstream, the hold state, and DB access, it runs the I1 gates and the
+/// [`decide_summary_serving`] state machine, then builds the summary to serve. Extracted so the
+/// WIRING (classify → gate → decide → build) can be driven in tests with a fabricated cache
+/// classification + a real fixture DB — the seam the pure-function tests alone cannot cover (C1).
+///
+/// `build_upstream` marshals the resolved upstream summary (a real `Some`, or the empty `none()`
+/// sentinel) and is invoked ONLY for the `Upstream`/`RecoveringOverride` decisions — never for a
+/// synthesized hold. The DB reads (recovery-view nets, unmined-spend gate) run against `db_path`.
+///
+/// I1: the unmined-spend query and the `prior_recovery_nonzero` scan run ONLY when the hold could
+/// actually serve this tick (engaged-or-engaging, within cap, upstream not `FreshSome`) — never on
+/// an ordinary `None`-serving tick with an idle/released latch — so there is no per-tick DB hit or
+/// warn spam on a wallet that is merely between balances, and the warn is bounded by the 120 s cap.
+#[allow(clippy::too_many_arguments)]
+fn serve_wallet_summary(
+    is_recovering: bool,
+    upstream: UpstreamKind,
+    hold_heights: Option<(i32, i32)>,
+    last_is_recovering: Option<bool>,
+    latch_in: HoldLatch,
+    now: std::time::Instant,
+    cap: std::time::Duration,
+    db_path: &std::path::Path,
+    recovery_nets_cache: &std::sync::Mutex<Option<std::collections::HashMap<[u8; 16], i64>>>,
+    build_upstream: impl FnOnce() -> anyhow::Result<*mut ffi::WalletSummary>,
+) -> anyhow::Result<(HoldLatch, *mut ffi::WalletSummary)> {
+    // `prior_recovery_nonzero` is consulted only at the flip (Idle + flipped), so gate the
+    // in-memory scan there — it must not run on every tick (I1).
+    let flipped = !is_recovering && last_is_recovering == Some(true);
+    let prior_recovery_nonzero = if flipped && latch_in == HoldLatch::Idle {
+        recovery_nets_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|m| m.values().any(|&v| v > 0))
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
+    // Whether the hold could serve `HoldOverride` this tick — this gates the unmined-spend DB read
+    // (I1). `FreshSome` is excluded: it releases rather than holds, so its gate never runs.
+    let engaging = flipped && latch_in == HoldLatch::Idle && prior_recovery_nonzero;
+    let engaged_now = matches!(latch_in, HoldLatch::Engaged { .. }) || engaging;
+    let within_cap = match latch_in {
+        HoldLatch::Engaged { flip_at } => now.saturating_duration_since(flip_at) <= cap,
+        _ => true,
+    };
+    let hold_window =
+        !is_recovering && engaged_now && within_cap && !matches!(upstream, UpstreamKind::FreshSome);
+    let spend_status = if hold_window {
+        match read_unmined_spend_accounts(db_path) {
+            Ok(set) if set.is_empty() => UnminedSpendStatus::Absent,
+            Ok(_) => UnminedSpendStatus::Present,
+            Err(e) => {
+                tracing::warn!(error = %e, "unmined-spend gate read failed; suspending hold this tick");
+                UnminedSpendStatus::Unknown
+            }
+        }
+    } else {
+        UnminedSpendStatus::Absent
+    };
+
+    let (latch_after, decision) = decide_summary_serving(
+        is_recovering,
+        last_is_recovering,
+        upstream,
+        prior_recovery_nonzero,
+        spend_status,
+        latch_in,
+        now,
+        cap,
+    );
+
+    // The bounded recovery-balance read + last-good fallback, shared by the recovering override and
+    // the hold synthesis. 250 ms busy timeout (NOT the 5 s used elsewhere): under mid-restore write
+    // contention a longer wait would pin the Swift engine actor. On ANY failure, fall back to the
+    // last successfully-read nets (or an empty map, which zeroes every balance — safe).
+    let resolve_recovery_nets = || -> std::collections::HashMap<[u8; 16], i64> {
+        let read = || -> anyhow::Result<std::collections::HashMap<[u8; 16], i64>> {
+            let conn = rusqlite::Connection::open(db_path)
+                .map_err(|e| anyhow!("recovery balance open: {}", e))?;
+            conn.busy_timeout(std::time::Duration::from_millis(250))
+                .map_err(|e| anyhow!("recovery balance busy_timeout: {}", e))?;
+            let mut nets: std::collections::HashMap<[u8; 16], i64> =
+                std::collections::HashMap::new();
+            let mut stmt = conn
+                .prepare("SELECT account_uuid, balance_zat FROM slipstream_v_recovery_balance")
+                .map_err(|e| anyhow!("recovery balance prepare: {}", e))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| anyhow!("recovery balance query: {}", e))?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| anyhow!("recovery balance row: {}", e))?
+            {
+                let uuid: Vec<u8> = row
+                    .get(0)
+                    .map_err(|e| anyhow!("recovery balance uuid: {}", e))?;
+                let net: i64 = row
+                    .get(1)
+                    .map_err(|e| anyhow!("recovery balance net: {}", e))?;
+                if let Ok(uuid16) = <[u8; 16]>::try_from(uuid.as_slice()) {
+                    nets.insert(uuid16, net);
+                }
+            }
+            Ok(nets)
+        };
+        match read() {
+            Ok(fresh) => {
+                *recovery_nets_cache
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some(fresh.clone());
+                fresh
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "recovery balance read failed; using cached/zero fallback");
+                recovery_nets_cache
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                    .unwrap_or_default()
+            }
+        }
+    };
+
+    let summary_ptr = match decision {
+        // Serve the resolved upstream summary unchanged (real `Some` balances, or the empty
+        // `none()` sentinel). A `StaleSome` reaches here only in a non-hold latch state, where
+        // serving today's cache is correct.
+        SummaryServe::Upstream => build_upstream()?,
+        // Recovering: marshal upstream, then REPLACE every slot with the recovery-view net.
+        SummaryServe::RecoveringOverride => {
+            let ptr = build_upstream()?;
+            let nets = resolve_recovery_nets();
+            let summary_mut = unsafe { &mut *ptr };
+            for balance in summary_mut.account_balances_mut() {
+                let net = nets.get(balance.uuid_bytes()).copied().unwrap_or(0);
+                balance.override_with_recovery_net(net);
+            }
+            ptr
+        }
+        // Post-restore hold: synthesize a balance-only summary from the FRESH recovery-view nets.
+        // Needs real heights (Swift drops `fully_scanned_height < 0`); lacking them, serve the
+        // empty sentinel — never the stale raw upstream, and never fabricate a height.
+        // (M2) The synthesis carries one slot per recovery-view row, so an account with no recovery
+        // row is present-as-ABSENT during the hold (reads 0 via the SDK's `?? .zero`), not
+        // present-as-zero. Benign for the migration read (it only asks whether Orchard > 0), so the
+        // hold deliberately does not re-plumb full account enumeration.
+        SummaryServe::HoldOverride => match hold_heights {
+            Some((chain_tip_h, fully_scanned_h)) => {
+                let nets = resolve_recovery_nets();
+                let entries: Vec<ffi::AccountBalance> = nets
+                    .iter()
+                    .map(|(uuid, net)| ffi::AccountBalance::recovery_only(*uuid, *net))
+                    .collect();
+                ffi::WalletSummary::recovery_hold(entries, chain_tip_h, fully_scanned_h)
+            }
+            None => ffi::WalletSummary::none(),
+        },
+    };
+    Ok((latch_after, summary_ptr))
 }
 
 /// [API v2 §0-5] The unified, PHASE-RESOLVING wallet summary for Slipstream hosts: one call
@@ -5751,10 +5960,16 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                 ranges_completed: e.ranges_completed,
                 state: e.state,
                 summary: e.summary.clone(),
+                walked_while_recovering: e.walked_while_recovering,
             })
         };
 
-        let resolved: Option<zcash_client_backend::data_api::WalletSummary<AccountUuid>> = match cached {
+        // [#1806 / C1] Resolve the served summary AND the recovery state its walk ran under, so a
+        // stale (pre-flip) cached `Some` can be told from a fresh (post-flip) one below.
+        let (resolved, walked_while_recovering): (
+            Option<zcash_client_backend::data_api::WalletSummary<AccountUuid>>,
+            bool,
+        ) = match cached {
             None => {
                 // First call on this handle: walk synchronously and prime the cache with the
                 // walked Option in BOTH arms. [#1806] A None walk ("no balance data yet" on a
@@ -5773,6 +5988,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                 let walked = db_data
                     .get_wallet_summary(policy)
                     .map_err(|e| anyhow!("Error while fetching wallet summary: {}", e))?;
+                let recovering_at = snap.is_recovering == 1;
                 *handle
                     .summary_cache
                     .lock()
@@ -5781,8 +5997,9 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                     ranges_completed: snap.ranges_completed,
                     state: snap.state,
                     summary: walked.clone(),
+                    walked_while_recovering: recovering_at,
                 });
-                walked
+                (walked, recovering_at)
             }
             Some(entry) => {
                 let boundary_crossed = snap.ranges_completed != entry.ranges_completed
@@ -5798,7 +6015,8 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                     let inflight = std::sync::Arc::clone(&handle.summary_refresh_inflight);
                     let thread_db_path = db_path.clone();
                     let thread_policy = confirmations_policy;
-                    let (ranges_at, state_at) = (snap.ranges_completed, snap.state);
+                    let (ranges_at, state_at, recovering_at) =
+                        (snap.ranges_completed, snap.state, snap.is_recovering == 1);
                     std::thread::spawn(move || {
                         let walk = || -> anyhow::Result<
                             Option<zcash_client_backend::data_api::WalletSummary<AccountUuid>>,
@@ -5828,19 +6046,24 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                                     ranges_completed: ranges_at,
                                     state: state_at,
                                     summary: walked,
+                                    walked_while_recovering: recovering_at,
                                 });
                         }
                         // Always clears — on the stored, walked-None, and Err paths alike.
                         inflight.store(false, std::sync::atomic::Ordering::SeqCst);
                     });
                 }
-                entry.summary
+                (entry.summary, entry.walked_while_recovering)
             }
         };
 
-        // [#1806] Capture the heights of a real (Some) upstream summary BEFORE marshalling — the
-        // post-restore hold reuses them so its synthesized summary carries a real, ≥0 scanned
-        // height (the Swift bridge drops `fully_scanned_height < 0` as "no data yet").
+        // [#1806 / C1] Classify the resolved summary by presence + the recovery state its walk ran
+        // under, then serve via the extracted, unit-tested [`serve_wallet_summary`]. A `Some` whose
+        // walk started pre-flip is `StaleSome` — the hold must not release on it or serve it raw
+        // (the cache lags the flip, so the first post-flip tick still holds the pre-flip `Some`).
+        let upstream_kind = classify_upstream(resolved.is_some(), walked_while_recovering);
+        // Heights of a real (Some) upstream summary — the hold reuses them so its synthesized
+        // summary carries a real, ≥0 scanned height (the Swift bridge drops `< 0` as "no data").
         let resolved_heights: Option<(i32, i32)> = resolved.as_ref().map(|s| {
             (
                 u32::from(s.chain_tip_height()) as i32,
@@ -5848,9 +6071,7 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
             )
         });
         let is_recovering = snap.is_recovering == 1;
-        let upstream_is_some = resolved_heights.is_some();
 
-        // Snapshot the hold latch + last-observed recovery flag + last-known heights.
         let (latch_before, last_is_recovering, last_heights) = {
             let g = handle
                 .post_flip_hold
@@ -5858,48 +6079,25 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                 .unwrap_or_else(|p| p.into_inner());
             (g.latch, g.last_is_recovering, g.last_heights)
         };
-
-        // Was the recovery override serving a non-zero value just before the flip? Only the flip
-        // tick consults this; it guards case (f) — a zero override has nothing worth holding.
-        let prior_recovery_nonzero = handle
-            .recovery_nets_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_ref()
-            .map(|m| m.values().any(|&v| v > 0))
-            .unwrap_or(false);
-
-        // [#1806] The unmined-outgoing-spend safety gate. The recovery view counts only MINED
-        // reconciled deltas, so holding across a pending outgoing spend would over-show a
-        // stale-high balance. Consulted ONLY when not recovering and the upstream summary is
-        // `None` (the hold's window). Bounded by the same 250 ms timeout as the recovery read; a
-        // failed/contended query is `Unknown` (suspend this tick, never "no spend"). The query is
-        // per-account, but detecting a spend on ANY account ends the hold — stricter than, and
-        // safe relative to, a strictly per-account serve (this flow is single-account in practice).
-        let spend_status = if !is_recovering && !upstream_is_some {
-            match read_unmined_spend_accounts(&db_path) {
-                Ok(set) if set.is_empty() => UnminedSpendStatus::Absent,
-                Ok(_) => UnminedSpendStatus::Present,
-                Err(e) => {
-                    tracing::warn!(error = %e, "unmined-spend gate read failed; suspending hold this tick");
-                    UnminedSpendStatus::Unknown
-                }
-            }
-        } else {
-            UnminedSpendStatus::Absent
-        };
-
+        // Synthesize from this tick's real heights when present, else the last-known ones.
+        let hold_heights = resolved_heights.or(last_heights);
         let now = std::time::Instant::now();
-        let (latch_after, decision) = decide_summary_serving(
+
+        let (latch_after, summary_ptr) = serve_wallet_summary(
             is_recovering,
+            upstream_kind,
+            hold_heights,
             last_is_recovering,
-            upstream_is_some,
-            prior_recovery_nonzero,
-            spend_status,
             latch_before,
             now,
             POST_FLIP_HOLD_CAP,
-        );
+            &db_path,
+            &handle.recovery_nets_cache,
+            || match resolved {
+                Some(s) => ffi::WalletSummary::some(s),
+                None => Ok(ffi::WalletSummary::none()),
+            },
+        )?;
 
         // Persist the latch, the observed recovery flag, and (from a real summary) the heights.
         {
@@ -5913,107 +6111,6 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                 g.last_heights = Some(h);
             }
         }
-
-        // [#1806] The bounded recovery-balance read + last-good fallback, shared by the recovering
-        // override and the post-restore hold. 250 ms busy timeout (NOT the 5 s used elsewhere):
-        // under mid-restore write contention a longer wait would pin the Swift engine actor and
-        // starve close()/snapshot()/drainEvents() polls (the ~20 s stop() starvation class). On
-        // ANY failure we fall back to the last successfully-read nets (or an empty map, which
-        // zeroes every balance — safe, never over-shows), never propagating the error.
-        let resolve_recovery_nets = || -> std::collections::HashMap<[u8; 16], i64> {
-            let read = || -> anyhow::Result<std::collections::HashMap<[u8; 16], i64>> {
-                let conn = rusqlite::Connection::open(&db_path)
-                    .map_err(|e| anyhow!("recovery balance open: {}", e))?;
-                conn.busy_timeout(std::time::Duration::from_millis(250))
-                    .map_err(|e| anyhow!("recovery balance busy_timeout: {}", e))?;
-                let mut nets: std::collections::HashMap<[u8; 16], i64> =
-                    std::collections::HashMap::new();
-                let mut stmt = conn
-                    .prepare("SELECT account_uuid, balance_zat FROM slipstream_v_recovery_balance")
-                    .map_err(|e| anyhow!("recovery balance prepare: {}", e))?;
-                let mut rows = stmt
-                    .query([])
-                    .map_err(|e| anyhow!("recovery balance query: {}", e))?;
-                while let Some(row) = rows
-                    .next()
-                    .map_err(|e| anyhow!("recovery balance row: {}", e))?
-                {
-                    let uuid: Vec<u8> = row
-                        .get(0)
-                        .map_err(|e| anyhow!("recovery balance uuid: {}", e))?;
-                    let net: i64 = row
-                        .get(1)
-                        .map_err(|e| anyhow!("recovery balance net: {}", e))?;
-                    if let Ok(uuid16) = <[u8; 16]>::try_from(uuid.as_slice()) {
-                        nets.insert(uuid16, net);
-                    }
-                }
-                Ok(nets)
-            };
-            match read() {
-                Ok(fresh) => {
-                    *handle
-                        .recovery_nets_cache
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner()) = Some(fresh.clone());
-                    fresh
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "recovery balance read failed; using cached/zero fallback");
-                    handle
-                        .recovery_nets_cache
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .clone()
-                        .unwrap_or_default()
-                }
-            }
-        };
-
-        // Build the summary to serve, per the decision. `is_recovering` carries the engine's
-        // fail-safe latch (terminal Done/Error force 0), so a dead pass falls to `Upstream` here.
-        let summary_ptr = match decision {
-            // Serve the resolved upstream summary unchanged: a real `Some` marshals via `some`; a
-            // walked `None` serves the empty `none()` sentinel (fully_scanned_height = -1). This
-            // is the exact pre-hold behavior.
-            SummaryServe::Upstream => match resolved {
-                Some(s) => ffi::WalletSummary::some(s)?,
-                None => ffi::WalletSummary::none(),
-            },
-            // Recovering: marshal the upstream summary, then REPLACE every account balance with
-            // the recovery-view net (accounts with no reconciled rows read 0 — `?? .zero`). On a
-            // `None` upstream this marshals `none()`, whose empty slice makes the loop a safe
-            // no-op — unchanged from before.
-            SummaryServe::RecoveringOverride => {
-                let ptr = match resolved {
-                    Some(s) => ffi::WalletSummary::some(s)?,
-                    None => ffi::WalletSummary::none(),
-                };
-                let nets = resolve_recovery_nets();
-                let summary_mut = unsafe { &mut *ptr };
-                for balance in summary_mut.account_balances_mut() {
-                    let net = nets.get(balance.uuid_bytes()).copied().unwrap_or(0);
-                    balance.override_with_recovery_net(net);
-                }
-                ptr
-            }
-            // Post-restore hold: upstream is transiently `None`, but the latch is engaged, within
-            // cap, and no unmined outgoing spend is pending. Synthesize a balance-only summary
-            // from the FRESH recovery-view nets so the just-restored funds do not vanish. Needs
-            // real heights (Swift drops `fully_scanned_height < 0`); lacking them, degrade safely
-            // to the empty summary — never fabricate a height.
-            SummaryServe::HoldOverride => match last_heights {
-                Some((chain_tip_h, fully_scanned_h)) => {
-                    let nets = resolve_recovery_nets();
-                    let entries: Vec<ffi::AccountBalance> = nets
-                        .iter()
-                        .map(|(uuid, net)| ffi::AccountBalance::recovery_only(*uuid, *net))
-                        .collect();
-                    ffi::WalletSummary::recovery_hold(entries, chain_tip_h, fully_scanned_h)
-                }
-                None => ffi::WalletSummary::none(),
-            },
-        };
 
         Ok(summary_ptr)
     });
@@ -6090,14 +6187,32 @@ pub unsafe extern "C" fn zcashlc_slipstream_free(handle: *mut SlipstreamHandle) 
 #[cfg(test)]
 mod post_flip_hold_tests {
     use super::{
-        HoldLatch, POST_FLIP_HOLD_CAP, SummaryServe, UnminedSpendStatus, decide_summary_serving,
-        read_unmined_spend_accounts_conn,
+        HoldLatch, POST_FLIP_HOLD_CAP, SummaryServe, UnminedSpendStatus, UpstreamKind,
+        classify_upstream, decide_summary_serving, read_unmined_spend_accounts_conn,
     };
     use std::time::{Duration, Instant};
 
     /// `base + secs` — build a later instant without `Instant` subtraction (panic-free).
     fn at(base: Instant, secs: u64) -> Instant {
         base + Duration::from_secs(secs)
+    }
+
+    // ── classify_upstream ──────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn classify_none_is_none() {
+        assert_eq!(classify_upstream(false, false), UpstreamKind::None);
+        assert_eq!(classify_upstream(false, true), UpstreamKind::None);
+    }
+
+    #[test]
+    fn classify_some_walked_recovering_is_stale() {
+        assert_eq!(classify_upstream(true, true), UpstreamKind::StaleSome);
+    }
+
+    #[test]
+    fn classify_some_walked_not_recovering_is_fresh() {
+        assert_eq!(classify_upstream(true, false), UpstreamKind::FreshSome);
     }
 
     // ── decide_summary_serving: the post-restore hold state machine ────────────────────────
@@ -6108,7 +6223,7 @@ mod post_flip_hold_tests {
         let (latch, serve) = decide_summary_serving(
             true,
             Some(true),
-            true,
+            UpstreamKind::FreshSome,
             true,
             UnminedSpendStatus::Absent,
             HoldLatch::Idle,
@@ -6128,7 +6243,7 @@ mod post_flip_hold_tests {
         let (latch, serve) = decide_summary_serving(
             false,
             Some(true),
-            false,
+            UpstreamKind::None,
             true,
             UnminedSpendStatus::Absent,
             HoldLatch::Idle,
@@ -6142,7 +6257,7 @@ mod post_flip_hold_tests {
         let (latch2, serve2) = decide_summary_serving(
             false,
             Some(false),
-            false,
+            UpstreamKind::None,
             false,
             UnminedSpendStatus::Absent,
             latch,
@@ -6151,6 +6266,63 @@ mod post_flip_hold_tests {
         );
         assert_eq!(serve2, SummaryServe::HoldOverride);
         assert_eq!(latch2, latch);
+    }
+
+    /// C1 (pure): a STALE cached `Some` at the flip tick engages the hold and serves recovery —
+    /// it must NOT be treated as the first post-flip truth (which would release + serve stale).
+    #[test]
+    fn stale_some_at_flip_engages_and_holds() {
+        let base = Instant::now();
+        let (latch, serve) = decide_summary_serving(
+            false,
+            Some(true),
+            UpstreamKind::StaleSome,
+            true,
+            UnminedSpendStatus::Absent,
+            HoldLatch::Idle,
+            base,
+            POST_FLIP_HOLD_CAP,
+        );
+        assert_eq!(serve, SummaryServe::HoldOverride);
+        assert!(matches!(latch, HoldLatch::Engaged { .. }));
+    }
+
+    /// C1 (pure): while engaged, a still-stale cached `Some` keeps holding and never releases.
+    #[test]
+    fn stale_some_while_engaged_keeps_holding() {
+        let base = Instant::now();
+        let engaged = HoldLatch::Engaged { flip_at: base };
+        let (latch, serve) = decide_summary_serving(
+            false,
+            Some(false),
+            UpstreamKind::StaleSome,
+            false,
+            UnminedSpendStatus::Absent,
+            engaged,
+            at(base, 30),
+            POST_FLIP_HOLD_CAP,
+        );
+        assert_eq!(serve, SummaryServe::HoldOverride);
+        assert_eq!(latch, engaged);
+    }
+
+    /// A stale `Some` in a NON-hold latch state (never engaged) serves today's cache unchanged —
+    /// the fix must not disturb non-hold serving paths.
+    #[test]
+    fn stale_some_in_idle_serves_upstream_unchanged() {
+        let now = Instant::now();
+        let (latch, serve) = decide_summary_serving(
+            false,
+            Some(false),
+            UpstreamKind::StaleSome,
+            false,
+            UnminedSpendStatus::Absent,
+            HoldLatch::Idle,
+            now,
+            POST_FLIP_HOLD_CAP,
+        );
+        assert_eq!(serve, SummaryServe::Upstream);
+        assert_eq!(latch, HoldLatch::Idle);
     }
 
     /// (b) None + unmined outgoing spend → empty, and the latch is permanently released (no
@@ -6162,7 +6334,7 @@ mod post_flip_hold_tests {
         let (latch, serve) = decide_summary_serving(
             false,
             Some(false),
-            false,
+            UpstreamKind::None,
             false,
             UnminedSpendStatus::Present,
             engaged,
@@ -6175,7 +6347,7 @@ mod post_flip_hold_tests {
         let (latch2, serve2) = decide_summary_serving(
             false,
             Some(false),
-            false,
+            UpstreamKind::None,
             false,
             UnminedSpendStatus::Absent,
             latch,
@@ -6186,16 +6358,16 @@ mod post_flip_hold_tests {
         assert_eq!(latch2, HoldLatch::Released);
     }
 
-    /// (c) The first upstream `Some` after the flip releases the latch permanently: upstream
-    /// truth wins thereafter, even a subsequent `None` within the cap does not resurrect the hold.
+    /// (c) The first FRESH post-flip `Some` releases the latch permanently: upstream truth wins
+    /// thereafter, even a subsequent `None` within the cap does not resurrect the hold.
     #[test]
-    fn first_upstream_some_releases_latch_permanently() {
+    fn fresh_upstream_some_releases_latch_permanently() {
         let base = Instant::now();
         let engaged = HoldLatch::Engaged { flip_at: base };
         let (latch, serve) = decide_summary_serving(
             false,
             Some(false),
-            true,
+            UpstreamKind::FreshSome,
             false,
             UnminedSpendStatus::Absent,
             engaged,
@@ -6208,7 +6380,7 @@ mod post_flip_hold_tests {
         let (latch2, serve2) = decide_summary_serving(
             false,
             Some(false),
-            false,
+            UpstreamKind::None,
             false,
             UnminedSpendStatus::Absent,
             latch,
@@ -6227,7 +6399,7 @@ mod post_flip_hold_tests {
         let (_latch, serve) = decide_summary_serving(
             false,
             Some(false),
-            false,
+            UpstreamKind::None,
             false,
             UnminedSpendStatus::Absent,
             engaged,
@@ -6245,7 +6417,7 @@ mod post_flip_hold_tests {
         let (latch, serve) = decide_summary_serving(
             false,
             None,
-            false,
+            UpstreamKind::None,
             true,
             UnminedSpendStatus::Absent,
             HoldLatch::Idle,
@@ -6258,7 +6430,7 @@ mod post_flip_hold_tests {
         let (latch2, serve2) = decide_summary_serving(
             false,
             Some(false),
-            false,
+            UpstreamKind::None,
             true,
             UnminedSpendStatus::Absent,
             HoldLatch::Idle,
@@ -6276,7 +6448,7 @@ mod post_flip_hold_tests {
         let (latch, serve) = decide_summary_serving(
             false,
             Some(true),
-            false,
+            UpstreamKind::None,
             false,
             UnminedSpendStatus::Absent,
             HoldLatch::Idle,
@@ -6296,7 +6468,7 @@ mod post_flip_hold_tests {
         let (latch, serve) = decide_summary_serving(
             false,
             Some(false),
-            false,
+            UpstreamKind::None,
             false,
             UnminedSpendStatus::Unknown,
             engaged,
@@ -6309,7 +6481,7 @@ mod post_flip_hold_tests {
         let (latch2, serve2) = decide_summary_serving(
             false,
             Some(false),
-            false,
+            UpstreamKind::None,
             false,
             UnminedSpendStatus::Absent,
             latch,
@@ -6343,7 +6515,7 @@ mod post_flip_hold_tests {
         acct: [u8; 16],
         mined: Option<i64>,
         spent: i64,
-        expired: i64,
+        expired: Option<i64>,
     ) {
         conn.execute(
             "INSERT INTO v_transactions (account_uuid, mined_height, spent_note_count, expired_unmined) \
@@ -6357,7 +6529,7 @@ mod post_flip_hold_tests {
     fn unmined_unexpired_spend_is_detected() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_v_transactions(&conn);
-        insert_tx(&conn, uuid(1), None, 1, 0);
+        insert_tx(&conn, uuid(1), None, 1, Some(0));
         let set = read_unmined_spend_accounts_conn(&conn).unwrap();
         assert_eq!(set, std::collections::HashSet::from([uuid(1)]));
     }
@@ -6366,7 +6538,7 @@ mod post_flip_hold_tests {
     fn mined_spend_is_ignored() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_v_transactions(&conn);
-        insert_tx(&conn, uuid(1), Some(100), 1, 0);
+        insert_tx(&conn, uuid(1), Some(100), 1, Some(0));
         let set = read_unmined_spend_accounts_conn(&conn).unwrap();
         assert!(set.is_empty());
     }
@@ -6375,7 +6547,7 @@ mod post_flip_hold_tests {
     fn unmined_receive_only_is_ignored() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_v_transactions(&conn);
-        insert_tx(&conn, uuid(1), None, 0, 0);
+        insert_tx(&conn, uuid(1), None, 0, Some(0));
         let set = read_unmined_spend_accounts_conn(&conn).unwrap();
         assert!(set.is_empty());
     }
@@ -6384,18 +6556,30 @@ mod post_flip_hold_tests {
     fn expired_unmined_spend_is_ignored() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_v_transactions(&conn);
-        insert_tx(&conn, uuid(1), None, 1, 1);
+        insert_tx(&conn, uuid(1), None, 1, Some(1));
         let set = read_unmined_spend_accounts_conn(&conn).unwrap();
         assert!(set.is_empty());
+    }
+
+    /// M1: a pending unmined spend whose tx has UNKNOWN expiry (`expired_unmined IS NULL`, e.g. an
+    /// un-enhanced tx) is a hazard and must be detected — the `= 0` comparison silently dropped
+    /// NULL rows, letting such a spend slip the gate.
+    #[test]
+    fn null_expiry_unmined_spend_is_detected() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        setup_v_transactions(&conn);
+        insert_tx(&conn, uuid(1), None, 1, None);
+        let set = read_unmined_spend_accounts_conn(&conn).unwrap();
+        assert_eq!(set, std::collections::HashSet::from([uuid(1)]));
     }
 
     #[test]
     fn per_account_only_hazardous_accounts_returned() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         setup_v_transactions(&conn);
-        insert_tx(&conn, uuid(1), None, 1, 0); // acct1: unmined spend, unexpired → hazardous
-        insert_tx(&conn, uuid(2), Some(50), 1, 0); // acct2: mined → safe
-        insert_tx(&conn, uuid(3), None, 0, 0); // acct3: pure receive → safe
+        insert_tx(&conn, uuid(1), None, 1, Some(0)); // acct1: unmined spend, unexpired → hazardous
+        insert_tx(&conn, uuid(2), Some(50), 1, Some(0)); // acct2: mined → safe
+        insert_tx(&conn, uuid(3), None, 0, Some(0)); // acct3: pure receive → safe
         let set = read_unmined_spend_accounts_conn(&conn).unwrap();
         assert_eq!(set, std::collections::HashSet::from([uuid(1)]));
     }
