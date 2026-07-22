@@ -1702,29 +1702,34 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     }
 
     @DBActor
-    func migrationProposeImmediateTransfers(for account: AccountUUID) async throws -> MigrationSchedule {
-        let schedulePtr = zcashlc_migration_propose_immediate_transfers(
+    func proposeSendMaxTransfer(
+        accountUUID: AccountUUID,
+        recipient: String,
+        memo: MemoBytes?,
+        orchardOnly: Bool
+    ) async throws -> FfiProposal {
+        let proposal = zcashlc_propose_send_max_transfer(
             dbData.0,
             dbData.1,
-            account.id,
-            networkType.networkId
+            networkType.networkId,
+            accountUUID.id,
+            [CChar](recipient.utf8CString),
+            memo?.bytes,
+            MaxSpendable,
+            confirmationsPolicy.toBackend(),
+            orchardOnly
         )
 
-        guard let schedulePtr else {
-            throw ZcashError.rustMigrationProposeImmediateTransfers(
-                lastErrorMessage(fallback: "`migrationProposeImmediateTransfers` failed with unknown error")
-            )
+        guard let proposal else {
+            throw ZcashError.rustProposeSendMaxTransfer(lastErrorMessage(fallback: "`proposeSendMaxTransfer` failed with unknown error"))
         }
 
-        defer { zcashlc_free_migration_schedule(schedulePtr) }
+        defer { zcashlc_free_boxed_slice(proposal) }
 
-        guard let schedule = schedulePtr.pointee.unsafeToMigrationSchedule() else {
-            throw ZcashError.rustMigrationProposeImmediateTransfers(
-                lastErrorMessage(fallback: "`migrationProposeImmediateTransfers` returned a malformed schedule")
-            )
-        }
-
-        return schedule
+        return try FfiProposal(serializedBytes: Data(
+            bytes: proposal.pointee.ptr,
+            count: Int(proposal.pointee.len)
+        ))
     }
 
     @DBActor
@@ -1874,6 +1879,33 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         guard success else {
             throw ZcashError.rustMigrationRecordTransferResult(
                 lastErrorMessage(fallback: "`migrationRecordTransferResult` failed with unknown error")
+            )
+        }
+    }
+
+    @DBActor
+    func migrationRecordImmediateRun(txid: Data, for account: AccountUUID) async throws {
+        guard txid.count == 32 else {
+            throw ZcashError.migrationRecordImmediateRunInvalidTxId(txid.count)
+        }
+
+        let success = txid.withUnsafeBytes { buffer -> Bool in
+            guard let bufferPtr = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return false
+            }
+
+            return zcashlc_migration_record_immediate_run(
+                dbData.0,
+                dbData.1,
+                account.id,
+                networkType.networkId,
+                bufferPtr
+            )
+        }
+
+        guard success else {
+            throw ZcashError.rustMigrationRecordImmediateRun(
+                lastErrorMessage(fallback: "`migrationRecordImmediateRun` failed with unknown error")
             )
         }
     }

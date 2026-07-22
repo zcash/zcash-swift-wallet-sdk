@@ -15,6 +15,9 @@ final class MigrationLogicTests: ZcashTestCase {
     private let accountA = AccountUUID(id: [UInt8](repeating: 0x11, count: 16))
     private let referenceDate = Date(timeIntervalSince1970: 1_700_000_000)
     private let buffer: TimeInterval = 600
+    private static let uaString = """
+    u1l9f0l4348negsncgr9pxd9d3qaxagmqv3lnexcplmufpq7muffvfaue6ksevfvd7wrz7xrvn95rc5zjtn7ugkmgh5rnxswmcj30y0pw52pn0zjvy38rn2esfgve64rj5pcmazxgpyuj
+    """
 
     // MARK: - Gate math
 
@@ -738,6 +741,124 @@ final class MigrationLogicTests: ZcashTestCase {
         }
     }
 
+    // MARK: - Immediate migration (send-max lane, MOB-1513)
+
+    /// `proposeImmediateMigration()` derives the account's own current address and proposes an
+    /// Orchard-only send-max transfer to it: the immediate lane is a self-send that lands in the
+    /// account's own Ironwood receiver (the UA's Orchard receiver doubles as the Ironwood receiver
+    /// post-NU6.3), with no memo, and restricted to the Orchard pool (never draws on Sapling funds).
+    func testProposeImmediateMigrationSendsMaxToOwnAddressOrchardOnly() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let ownAddress = UnifiedAddress(validatedEncoding: Self.uaString, networkType: .testnet)
+        welding.getCurrentAddressAccountUUIDReturnValue = ownAddress
+        welding.proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyReturnValue = Self.makeSendMaxProposal(
+            inputValues: [1_000_000],
+            changeValues: [],
+            fee: 10_000
+        )
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        _ = try await migration.proposeImmediateMigration()
+
+        XCTAssertEqual(welding.getCurrentAddressAccountUUIDReceivedAccountUUID, accountA)
+        let received = welding.proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyReceivedArguments
+        XCTAssertEqual(received?.accountUUID, accountA)
+        XCTAssertEqual(received?.recipient, ownAddress.stringEncoded)
+        XCTAssertNil(received?.memo)
+        XCTAssertEqual(received?.orchardOnly, true)
+    }
+
+    /// The core decode: `amount` is the net value that crosses into Ironwood (input total minus the
+    /// fee), and `fee` is `Proposal.totalFeeRequired()` -- matching the documented "value that
+    /// crosses the turnstile" contract the rust half applies on the privacy path, applied here to
+    /// the immediate lane's ordinary proposal. A send-max proposal declares no change, so the net
+    /// amount is just the swept input total minus the fee.
+    func testProposeImmediateMigrationDecodesNetAmountAndFee() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.getCurrentAddressAccountUUIDReturnValue = UnifiedAddress(validatedEncoding: Self.uaString, networkType: .testnet)
+        welding.proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyReturnValue = Self.makeSendMaxProposal(
+            inputValues: [600_000, 400_000],
+            changeValues: [],
+            fee: 15_000
+        )
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        let proposal = try await migration.proposeImmediateMigration()
+
+        XCTAssertEqual(proposal.fee, Zatoshi(15_000))
+        XCTAssertEqual(proposal.amount, Zatoshi(600_000 + 400_000 - 15_000))
+    }
+
+    /// Defensive edge: a send-max proposal should never declare change (there is nothing left to
+    /// return), but the decode subtracts any declared change anyway rather than assuming it is
+    /// always empty, so `amount` always means "what left the wallet toward the payment" even if
+    /// that assumption is ever violated.
+    func testProposeImmediateMigrationSubtractsAnyDeclaredChangeFromTheAmount() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.getCurrentAddressAccountUUIDReturnValue = UnifiedAddress(validatedEncoding: Self.uaString, networkType: .testnet)
+        welding.proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyReturnValue = Self.makeSendMaxProposal(
+            inputValues: [1_000_000],
+            changeValues: [50_000],
+            fee: 10_000
+        )
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        let proposal = try await migration.proposeImmediateMigration()
+
+        XCTAssertEqual(proposal.amount, Zatoshi(1_000_000 - 50_000 - 10_000))
+    }
+
+    func testProposeImmediateMigrationRethrowsWhenAddressDerivationFails() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.getCurrentAddressAccountUUIDThrowableError = ZcashError.rustGetCurrentAddress("boom")
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        do {
+            _ = try await migration.proposeImmediateMigration()
+            XCTFail("Expected proposeImmediateMigration to rethrow the address-derivation error")
+        } catch ZcashError.rustGetCurrentAddress {
+            // expected
+        } catch {
+            XCTFail("Expected rustGetCurrentAddress but got \(error)")
+        }
+    }
+
+    func testProposeImmediateMigrationRethrowsWhenSendMaxProposalFails() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.getCurrentAddressAccountUUIDReturnValue = UnifiedAddress(validatedEncoding: Self.uaString, networkType: .testnet)
+        welding.proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyThrowableError = ZcashError.rustProposeSendMaxTransfer("boom")
+        let migration = makeMigration(welding: welding, account: accountA)
+
+        do {
+            _ = try await migration.proposeImmediateMigration()
+            XCTFail("Expected proposeImmediateMigration to rethrow the send-max proposal error")
+        } catch ZcashError.rustProposeSendMaxTransfer {
+            // expected
+        } catch {
+            XCTFail("Expected rustProposeSendMaxTransfer but got \(error)")
+        }
+    }
+
+    /// `recordImmediateMigration` is a straight forward to the welding record call, bound to this
+    /// actor's own account -- the SDK-store bookkeeping (state-machine derivation) all lives
+    /// rust-side.
+    func testRecordImmediateMigrationForwardsTxidAndAccount() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        var receivedTxid: Data?
+        var receivedAccount: AccountUUID?
+        welding.migrationRecordImmediateRunTxidForClosure = { txid, account in
+            receivedTxid = txid
+            receivedAccount = account
+        }
+        let migration = makeMigration(welding: welding, account: accountA)
+        let txid = Data(repeating: 0xCD, count: 32)
+
+        try await migration.recordImmediateMigration(txid: txid)
+
+        XCTAssertEqual(receivedTxid, txid)
+        XCTAssertEqual(receivedAccount, accountA)
+    }
+
     // MARK: - Broadcast composition (I1 canary)
 
     /// Canary for the privacy-critical composition in `OrchardMigration.broadcastAndRecord`: a
@@ -834,6 +955,40 @@ final class MigrationLogicTests: ZcashTestCase {
             transfers.append(transfer)
         }
         return MigrationSchedule(transfers: transfers, estimatedDurationHours: count * 6)
+    }
+
+    /// Builds a single-step `FfiProposal` fixture shaped like a send-max proposal: one
+    /// `receivedOutput` input per entry of `inputValues`, one `proposedChange` output per entry of
+    /// `changeValues` (empty for a "true" send-max, non-empty to exercise the decode's defensive
+    /// subtraction), and `fee` as the step's `feeRequired`.
+    static func makeSendMaxProposal(inputValues: [UInt64], changeValues: [UInt64], fee: UInt64) -> FfiProposal {
+        var inputs: [FfiProposedInput] = []
+        for value in inputValues {
+            var receivedOutput = FfiReceivedOutput()
+            receivedOutput.value = value
+            var input = FfiProposedInput()
+            input.receivedOutput = receivedOutput
+            inputs.append(input)
+        }
+
+        var changes: [FfiChangeValue] = []
+        for value in changeValues {
+            var change = FfiChangeValue()
+            change.value = value
+            changes.append(change)
+        }
+
+        var balance = FfiTransactionBalance()
+        balance.feeRequired = fee
+        balance.proposedChange = changes
+
+        var step = FfiProposalStep()
+        step.inputs = inputs
+        step.balance = balance
+
+        var proposal = FfiProposal()
+        proposal.steps = [step]
+        return proposal
     }
 }
 
