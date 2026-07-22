@@ -37,18 +37,24 @@ public struct MigrationProgress: Equatable, Sendable {
     public let remainingOrchard: Zatoshi
     /// The height at which the next transfer becomes broadcastable, or `nil` if none is scheduled.
     public let nextTransferReadyAtHeight: BlockHeight?
+    /// Whether this snapshot belongs to the immediate (single-transaction) send-max migration lane
+    /// rather than an engine-tracked schedule. The app uses it to keep the immediate aftermath
+    /// quiet (no per-transfer progress UI). Engine-tracked runs report `false`.
+    public let isImmediate: Bool
 
     /// Creates a `MigrationProgress`.
     public init(
         completedTransfers: Int,
         totalTransfers: Int,
         remainingOrchard: Zatoshi,
-        nextTransferReadyAtHeight: BlockHeight?
+        nextTransferReadyAtHeight: BlockHeight?,
+        isImmediate: Bool = false
     ) {
         self.completedTransfers = completedTransfers
         self.totalTransfers = totalTransfers
         self.remainingOrchard = remainingOrchard
         self.nextTransferReadyAtHeight = nextTransferReadyAtHeight
+        self.isImmediate = isImmediate
     }
 }
 
