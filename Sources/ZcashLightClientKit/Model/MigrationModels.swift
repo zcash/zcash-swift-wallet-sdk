@@ -234,6 +234,30 @@ public struct MigrationRunEstimate: Equatable, Sendable {
     }
 }
 
+/// The proposal for the immediate (single-transaction) Orchard -> Ironwood migration, as returned
+/// by `Synchronizer.proposeImmediateMigration(accountUUID:)`: an ordinary send-max transaction that
+/// sweeps the account's whole spendable Orchard balance to its own address. Unlike
+/// `MigrationSchedule`, this is held entirely by the caller -- there is no engine plan cache behind
+/// it, so nothing about it can go stale beyond the proposal's own validity window.
+public struct ImmediateMigrationProposal: Equatable {
+    /// The underlying proposal: feed to `Synchronizer.createProposedTransactions(proposal:spendingKey:)`
+    /// (software accounts) or `Synchronizer.createPCZTFromProposal(accountUUID:proposal:)` (Keystone
+    /// accounts) exactly like any other ordinary transfer.
+    public let proposal: Proposal
+    /// The net swept amount -- what arrives in the Ironwood pool once mined. The proposal's single
+    /// payment value: the account's spendable Orchard notes, minus `fee`.
+    public let amount: Zatoshi
+    /// The fee this proposal pays, per `Proposal.totalFeeRequired()`.
+    public let fee: Zatoshi
+
+    /// Creates an `ImmediateMigrationProposal`.
+    public init(proposal: Proposal, amount: Zatoshi, fee: Zatoshi) {
+        self.proposal = proposal
+        self.amount = amount
+        self.fee = fee
+    }
+}
+
 /// A fully proven, signed migration transaction persisted by the engine, ready for the platform
 /// to broadcast (see `ZcashRustBackendWelding.migrationExtractBroadcastTx(pczt:for:)`).
 public struct PreparedMigrationTransfer: Equatable, Sendable {

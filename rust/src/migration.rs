@@ -22,6 +22,9 @@
 //!   engine has no failure states).
 //! - `include_residual` is accepted and ignored (documented-inert; the engine plans canonically
 //!   and ZIP 318 expects the residual to remain in Orchard).
+//! - The immediate lane (an ordinary send-max sweep, entirely outside the engine) is tracked in
+//!   its own SDK-owned `sdk_immediate_runs` side table and folded into [`derive_state`] — see that
+//!   function's precedence rule.
 //!
 //! Error channel: failures land in the thread-local last-error message. Two stable prefixes let
 //! the Swift layer surface dedicated errors: `MIGRATION_PLAN_STALE:` (commit without a matching
@@ -44,7 +47,7 @@ use std::slice;
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
 use rand::rngs::OsRng;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use zcash_client_backend::data_api::wallet::TargetHeight;
 use zcash_client_backend::data_api::{InputSource, WalletRead, WalletWrite};
 use zcash_client_backend::wallet::OutputRef;
@@ -168,6 +171,8 @@ unsafe fn open(
         .map_err(|e| anyhow!("Error opening migration store connection: {e}"))?;
     init_invalid_marks(&store_conn)
         .map_err(|e| anyhow!("Error initializing migration marks table: {e}"))?;
+    init_immediate_runs(&store_conn)
+        .map_err(|e| anyhow!("Error initializing immediate-run table: {e}"))?;
     let account = account_uuid_from_bytes(account_uuid_bytes)
         .map_err(|e| anyhow!("account uuid must be 16 bytes: {e}"))?;
     let account_bytes = *account.expose_uuid().as_bytes();
@@ -239,6 +244,106 @@ fn clear_invalid_marks(conn: &Connection, account: &[u8; 16]) -> rusqlite::Resul
     Ok(())
 }
 
+// ----- SDK-owned immediate-migration-run record -----
+//
+// The immediate lane (an ordinary send-max sweep to the account's own unified address, built
+// entirely outside the engine — see `zcashlc_propose_send_max_transfer`) has no engine-tracked
+// plan, preparation, or schedule at all: from the engine's point of view nothing happened. This
+// one-row-per-account table is the SDK's own record that a sweep was broadcast, so `derive_state`
+// can still report its progress the way an engine-tracked transfer would: the stored txid is
+// resolved against the wallet database's own transaction history by `resolve_immediate_run`
+// (mined -> `Complete`, unmined -> `InProgress`) — the same kind of wallet-DB access
+// `reconcile_mined` uses to advance an engine-tracked transaction from `Broadcast` to `Mined`, here
+// extended to also read the expiry height that `WalletRead` does not expose on its own. See the
+// precedence rule documented on `derive_state` for how this interacts with an engine-tracked run.
+
+fn init_immediate_runs(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sdk_immediate_runs (
+            account_uuid BLOB NOT NULL PRIMARY KEY,
+            txid BLOB NOT NULL,
+            recorded_at_height INTEGER NOT NULL
+        )",
+    )
+}
+
+/// One stored immediate-run record: the account's swept txid and the wallet's tip height at
+/// record time (the fallback expiry bound `derive_state` uses when the wallet database does not
+/// know, or no longer knows, the transaction's real expiry height).
+struct ImmediateRunRow {
+    txid: [u8; 32],
+    recorded_at_height: BlockHeight,
+}
+
+/// Persists the account's immediate-run record, replacing any previous one: only the most
+/// recently broadcast immediate sweep is ever tracked (one row per account).
+fn record_immediate_run(
+    conn: &Connection,
+    account: &[u8; 16],
+    txid: [u8; 32],
+    recorded_at_height: BlockHeight,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO sdk_immediate_runs (account_uuid, txid, recorded_at_height)
+         VALUES (?1, ?2, ?3)",
+        rusqlite::params![&account[..], &txid[..], u32::from(recorded_at_height)],
+    )?;
+    Ok(())
+}
+
+/// The account's raw immediate-run row, if any. Cheap (touches only this SDK-owned table), so
+/// callers can check for a row's existence before paying for a wallet-database chain-tip lookup
+/// (which errors on a not-yet-synced wallet — see the callers in `zcashlc_migration_state` /
+/// `zcashlc_migration_progress`).
+fn immediate_run_row(
+    conn: &Connection,
+    account: &[u8; 16],
+) -> rusqlite::Result<Option<ImmediateRunRow>> {
+    conn.query_row(
+        "SELECT txid, recorded_at_height FROM sdk_immediate_runs WHERE account_uuid = ?1",
+        rusqlite::params![&account[..]],
+        |row| {
+            Ok(ImmediateRunRow {
+                txid: row.get(0)?,
+                recorded_at_height: BlockHeight::from(row.get::<_, u32>(1)?),
+            })
+        },
+    )
+    .optional()
+}
+
+/// Resolves an immediate-run row against the wallet database's own `transactions` table: the same
+/// underlying table [`reconcile_mined`] reads (via `WalletRead::get_tx_height`) to advance
+/// engine-tracked transactions from `Broadcast` to `Mined`, queried directly here because
+/// `WalletRead` does not expose the expiry height the immediate-run derivation also needs. A
+/// mined height beyond the current tip is filtered out (a stale/optimistic row), mirroring
+/// `zcash_client_sqlite::wallet::get_tx_height`'s own guard; an `expiry_height` of exactly zero
+/// (the wire convention for "no real expiry") is treated the same as a missing one, so it falls
+/// back to the recorded-height bound below rather than reading as "expired since block zero".
+fn resolve_immediate_run(
+    conn: &Connection,
+    row: ImmediateRunRow,
+    tip: BlockHeight,
+) -> rusqlite::Result<ImmediateRunLookup> {
+    let found = conn
+        .query_row(
+            "SELECT mined_height, expiry_height FROM transactions WHERE txid = ?1",
+            rusqlite::params![&row.txid[..]],
+            |r| {
+                let mined: Option<u32> = r.get(0)?;
+                let expiry: Option<u32> = r.get(1)?;
+                Ok((mined.map(BlockHeight::from), expiry.map(BlockHeight::from)))
+            },
+        )
+        .optional()?;
+    let (mined_height, expiry_height) = found.unwrap_or((None, None));
+    Ok(ImmediateRunLookup {
+        recorded_at_height: row.recorded_at_height,
+        mined_height: mined_height.filter(|h| *h <= tip),
+        expiry_height: expiry_height.filter(|h| u32::from(*h) > 0),
+    })
+}
+
 // ----- reconciliation, planning, committing -----
 
 /// Marks as mined every `Broadcast` transaction whose txid the wallet has since observed on-chain,
@@ -282,23 +387,16 @@ fn reconcile_mined(ctx: &mut CallCtx) -> anyhow::Result<Option<MigrationState>> 
 }
 
 /// Computes a fresh preview plan against the account's live balance and caches it (a later commit
-/// signs exactly this plan, not an independently re-randomized one). `immediate` records that the
-/// preview came through the immediate lane, so the commit rewrites the transfer schedule to "all
-/// due at once".
+/// signs exactly this plan, not an independently re-randomized one).
 ///
 /// Returns `Ok(None)` when there is nothing to migrate (the balance is zero, or entirely below the
 /// dust floor) — the "ask rust whether anything remains" answer after a completed run.
-fn plan_and_cache(ctx: &mut CallCtx, immediate: bool) -> anyhow::Result<Option<MigrationPlan>> {
+fn plan_and_cache(ctx: &mut CallCtx) -> anyhow::Result<Option<MigrationPlan>> {
     let backend = Backend::new(&ctx.wallet, ctx.account, None, &mut ctx.store_conn);
     let mut rng = OsRng;
     match engine::plan_migration(&ctx.network, &backend, &mut rng) {
         Ok(plan) => {
-            migration_plan_cache::set(
-                ctx.db_path.clone(),
-                ctx.account_bytes,
-                plan.clone(),
-                immediate,
-            );
+            migration_plan_cache::set(ctx.db_path.clone(), ctx.account_bytes, plan.clone());
             Ok(Some(plan))
         }
         Err(engine::MigrationError::NothingToMigrate) => Ok(None),
@@ -309,9 +407,13 @@ fn plan_and_cache(ctx: &mut CallCtx, immediate: bool) -> anyhow::Result<Option<M
 /// The row set the platform sees for a plan's transfer schedule: `(engine tx id, amount, broadcast
 /// height, expiry height)`, sorted chronologically by broadcast height.
 ///
-/// - Amounts pair with `funding_notes()` (the post-reconciliation values), NOT the note split's
-///   raw `crossing_values()` — the two differ whenever preparation fees drop the smallest
-///   denominations, and mispairing silently attaches wrong amounts to schedule heights.
+/// - `amount` is the NET value that crosses the turnstile (`funding_notes()[i] - note_fee_buffer`),
+///   not the gross funding-note value the note-split minted. The row is still KEYED off
+///   `funding_notes()` (the post-reconciliation values), NOT the note split's raw
+///   `crossing_values()` — the two differ whenever preparation fees drop the smallest
+///   denominations, and indexing `crossing_values()` directly would silently mispair a
+///   denomination with the wrong schedule height. Subtracting the (constant) fee buffer from the
+///   already-correctly-paired funding note sidesteps that entirely.
 /// - The engine numbers every preparation transaction first, then transfers in `schedule()`
 ///   order, so transfer `i`'s real committed id is `prep_tx_count + i`.
 /// - The sort makes the platform's row order chronological: ZIP 318 SHUFFLE deliberately makes
@@ -320,6 +422,7 @@ fn schedule_rows(
     funding_notes: &[Zatoshis],
     schedule: &[zcash_pool_migration_backend::scheduling::Schedule],
     prep_tx_count: u32,
+    note_fee_buffer: Zatoshis,
 ) -> anyhow::Result<Vec<(MigrationTxId, Zatoshis, BlockHeight, BlockHeight)>> {
     if funding_notes.len() != schedule.len() {
         return Err(anyhow!(
@@ -332,15 +435,22 @@ fn schedule_rows(
         .iter()
         .zip(schedule.iter())
         .enumerate()
-        .map(|(i, (amount, entry))| {
-            (
+        .map(|(i, (funding_note, entry))| {
+            let crossing = (*funding_note - note_fee_buffer).ok_or_else(|| {
+                anyhow!(
+                    "funding note {} zatoshi is smaller than the fee buffer {} zatoshi",
+                    u64::from(*funding_note),
+                    u64::from(note_fee_buffer)
+                )
+            })?;
+            Ok((
                 MigrationTxId::new(prep_tx_count + i as u32),
-                *amount,
+                crossing,
                 entry.broadcast_height(),
                 entry.expiry_height(),
-            )
+            ))
         })
-        .collect();
+        .collect::<anyhow::Result<Vec<_>>>()?;
     rows.sort_by_key(|(_, _, broadcast, _)| *broadcast);
     Ok(rows)
 }
@@ -374,7 +484,12 @@ fn encode_schedule_from_plan(
     plan: &MigrationPlan,
     now_reference: BlockHeight,
 ) -> anyhow::Result<*mut FfiMigrationSchedule> {
-    let rows = schedule_rows(&plan.funding_notes(), plan.schedule(), prep_tx_count(plan))?;
+    let rows = schedule_rows(
+        &plan.funding_notes(),
+        plan.schedule(),
+        prep_tx_count(plan),
+        plan.note_split().note_fee_buffer(),
+    )?;
     let transfers = rows
         .into_iter()
         .map(|(id, amount, broadcast, expiry)| {
@@ -430,10 +545,7 @@ fn validate_amounts_against_plan(plan: &MigrationPlan, amounts: &[i64]) -> anyho
 /// rebuild over pre-signed, possibly broadcast transactions), otherwise commits the plan cached by
 /// the most recent propose/prepare call: `sign` picks the `commit_preparation` /
 /// `build_preparation_unsigned` variant. A terminal stored run (a completed or cancelled previous
-/// migration) is REPLACED — that is the sequential-runs path. When the cached preview came through
-/// the immediate lane, the committed transfers' scheduled heights are rewritten to the commit tip
-/// (everything due at once; preparation mining order still gates transfers via their
-/// dependencies).
+/// migration) is REPLACED — that is the sequential-runs path.
 ///
 /// `validate_amounts`: the platform-echoed transfer amounts to check against the cached plan
 /// (`None` skips validation — the Keystone build path has no echo).
@@ -467,7 +579,7 @@ fn commit_or_resume(
     let target = BlockHeight::from(u32::from(ctx.tip()?) + 1);
     let mut rng = OsRng;
     let mut backend = Backend::new(&ctx.wallet, ctx.account, usk, &mut ctx.store_conn);
-    let (mut state, unsigned) = if unsigned_out {
+    let (state, unsigned) = if unsigned_out {
         let (state, unsigned) = engine::build_preparation_unsigned(
             &ctx.network,
             target,
@@ -486,40 +598,6 @@ fn commit_or_resume(
                 .map_err(map_commit_err)?;
         (state, Vec::new())
     };
-
-    if cached.immediate {
-        // The immediate lane: every transfer becomes due at the commit tip. Preparation mining
-        // order still gates each transfer through its dependency; expiry stays canonical.
-        let tip = ctx.tip()?;
-        let transactions = state
-            .transactions()
-            .iter()
-            .map(|t| {
-                let scheduled = match t.kind() {
-                    MigrationTxKind::Transfer { .. } => tip,
-                    _ => t.scheduled_height(),
-                };
-                MigrationTransaction::from_parts(
-                    t.id(),
-                    t.kind(),
-                    t.pczt().clone(),
-                    t.depends_on().clone(),
-                    scheduled,
-                    t.expiry_height(),
-                    t.anchor_boundary(),
-                    t.state(),
-                )
-            })
-            .collect();
-        state = MigrationState::from_parts(
-            state.status(),
-            state.note_split().clone(),
-            state.preparation().clone(),
-            transactions,
-        );
-        let mut backend = Backend::new(&ctx.wallet, ctx.account, None, &mut ctx.store_conn);
-        backend.replace_migration(&state)?;
-    }
 
     migration_plan_cache::clear(&ctx.db_path, ctx.account_bytes);
     Ok((state, unsigned))
@@ -614,7 +692,56 @@ enum DerivedState {
     Complete,
 }
 
-/// Derive the platform's migration state from the persisted engine state.
+/// The fallback bound (blocks past `recorded_at_height`) an unmined immediate run is treated as
+/// pending until, when the wallet database does not know (or no longer knows) the transaction's
+/// real expiry height: the typical wallet transaction-expiry delta, so a run that the wallet's own
+/// history never corroborates does not linger forever before the banner re-offers.
+const IMMEDIATE_RUN_FALLBACK_EXPIRY_DELTA: u32 = 40;
+
+/// An immediate-run row resolved against the wallet database (see [`resolve_immediate_run`]),
+/// pre-computed by the caller so [`derive_state`] stays pure and unit-testable without a wallet
+/// database.
+struct ImmediateRunLookup {
+    /// The tip height at which the run was recorded — the fallback expiry bound used when the
+    /// wallet database does not know the transaction's real expiry height.
+    recorded_at_height: BlockHeight,
+    /// The txid's mined height, if the wallet has observed it mined.
+    mined_height: Option<BlockHeight>,
+    /// The txid's expiry height, as recorded by the wallet (`None` when the wallet has never
+    /// observed the transaction, or recorded no real expiry for it).
+    expiry_height: Option<BlockHeight>,
+}
+
+impl ImmediateRunLookup {
+    /// The height beyond which this run, if still unmined, is treated as expired: the wallet's own
+    /// recorded expiry when known, otherwise the fallback delta past the record height.
+    fn expiry_bound(&self) -> BlockHeight {
+        self.expiry_height.unwrap_or_else(|| {
+            BlockHeight::from(
+                u32::from(self.recorded_at_height) + IMMEDIATE_RUN_FALLBACK_EXPIRY_DELTA,
+            )
+        })
+    }
+}
+
+/// The immediate-run row's derivation, or `None` when it should be ignored (expired unmined, or
+/// vanished) so the caller falls through to the engine's own terminal/absent verdict.
+fn derive_immediate_run(run: &ImmediateRunLookup, tip: BlockHeight) -> Option<DerivedState> {
+    if run.mined_height.is_some() {
+        return Some(DerivedState::Complete);
+    }
+    if tip <= run.expiry_bound() {
+        return Some(DerivedState::InProgress {
+            completed_transfers: 0,
+            total_transfers: 1,
+            next_transfer_ready_at_height: None,
+        });
+    }
+    None
+}
+
+/// Derive the platform's migration state from the persisted engine state and, when the engine has
+/// nothing active to report, the account's immediate-run row.
 ///
 /// - No stored migration -> `NotStarted`.
 /// - A stored `Failed` run (our cancel) -> `NotStarted` (the platform re-plans).
@@ -623,19 +750,33 @@ enum DerivedState {
 /// - `ReadyToPropose` and `SyncRequiredBeforeNext` are never derived: the engine commits the note
 ///   split and the transfer schedule atomically, so the v1 "split confirmed, schedule pending"
 ///   moment no longer exists.
+///
+/// Precedence: an engine run counts as ACTIVE — and wins outright, exactly as before the immediate
+/// lane existed — whenever one is stored and has not reached a terminal status. A `Failed` or
+/// `Complete` engine run, or no stored engine run at all, instead defers to `immediate_run` (mined
+/// -> `Complete`; unmined and not expired -> `InProgress` of one; expired or vanished -> ignored)
+/// before falling back to the engine's own terminal/absent verdict.
 fn derive_state(
     persisted: Option<&MigrationState>,
     tip: BlockHeight,
     invalid_marks: &[u32],
+    immediate_run: Option<&ImmediateRunLookup>,
 ) -> DerivedState {
-    let Some(state) = persisted else {
-        return DerivedState::NotStarted;
+    let active = persisted.filter(|state| {
+        !matches!(
+            state.status(),
+            MigrationStatus::Complete | MigrationStatus::Failed
+        )
+    });
+    let Some(state) = active else {
+        if let Some(derived) = immediate_run.and_then(|run| derive_immediate_run(run, tip)) {
+            return derived;
+        }
+        return match persisted.map(MigrationState::status) {
+            Some(MigrationStatus::Complete) => DerivedState::Complete,
+            _ => DerivedState::NotStarted,
+        };
     };
-    match state.status() {
-        MigrationStatus::Complete => return DerivedState::Complete,
-        MigrationStatus::Failed => return DerivedState::NotStarted,
-        _ => {}
-    }
 
     if let Some(&id) = invalid_marks.first() {
         return DerivedState::InvalidTransfer(id);
@@ -678,11 +819,16 @@ fn derive_state(
     }
 }
 
-/// The amount a stored transfer crosses, from the run's funding notes (`Transfer { crossing }`
-/// indexes into them).
+/// The NET amount a stored transfer crosses the turnstile: its funding note (`Transfer { crossing
+/// }` indexes into `funding_notes()`) minus the plan's constant fee buffer. `None` when `tx` is not
+/// a transfer, its crossing index is out of range, or (invariantly impossible) the funding note is
+/// smaller than the buffer.
 fn transfer_amount(state: &MigrationState, tx: &MigrationTransaction) -> Option<Zatoshis> {
     match tx.kind() {
-        MigrationTxKind::Transfer { crossing } => state.funding_notes().get(crossing).copied(),
+        MigrationTxKind::Transfer { crossing } => {
+            let funding_note = state.funding_notes().get(crossing).copied()?;
+            funding_note - state.note_split().note_fee_buffer()
+        }
         _ => None,
     }
 }
@@ -1129,13 +1275,22 @@ pub unsafe extern "C" fn zcashlc_migration_state(
 ) -> *mut FfiMigrationState {
     let res = catch_panic(|| {
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
-        let Some(state) = reconcile_mined(&mut ctx)? else {
+        let engine_state = reconcile_mined(&mut ctx)?;
+        let immediate_row = immediate_run_row(&ctx.store_conn, &ctx.account_bytes)
+            .map_err(|e| anyhow!("immediate run read failed: {e}"))?;
+        if engine_state.is_none() && immediate_row.is_none() {
+            // Neither an engine-tracked run nor an immediate-run row: nothing to derive, and
+            // (crucially) no need to touch the chain tip, which a not-yet-synced wallet lacks.
             return marshal_state(DerivedState::NotStarted, Zatoshis::ZERO);
-        };
+        }
         let marks = invalid_marks(&ctx.store_conn, &ctx.account_bytes)
             .map_err(|e| anyhow!("marks read failed: {e}"))?;
         let tip = ctx.tip()?;
-        let derived = derive_state(Some(&state), tip, &marks);
+        let immediate = immediate_row
+            .map(|row| resolve_immediate_run(&ctx.store_conn, row, tip))
+            .transpose()
+            .map_err(|e| anyhow!("wallet transaction lookup failed: {e}"))?;
+        let derived = derive_state(engine_state.as_ref(), tip, &marks, immediate.as_ref());
         let remaining = match derived {
             DerivedState::InProgress { .. } => remaining_orchard(&mut ctx)?,
             _ => Zatoshis::ZERO,
@@ -1160,13 +1315,22 @@ pub unsafe extern "C" fn zcashlc_migration_progress(
 ) -> *mut FfiMigrationProgress {
     let res = catch_panic(|| {
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
-        let Some(state) = reconcile_mined(&mut ctx)? else {
+        let engine_state = reconcile_mined(&mut ctx)?;
+        let immediate_row = immediate_run_row(&ctx.store_conn, &ctx.account_bytes)
+            .map_err(|e| anyhow!("immediate run read failed: {e}"))?;
+        if engine_state.is_none() && immediate_row.is_none() {
+            // Neither an engine-tracked run nor an immediate-run row: nothing to derive, and
+            // (crucially) no need to touch the chain tip, which a not-yet-synced wallet lacks.
             return Ok(Box::into_raw(Box::new(FfiMigrationProgress::absent())));
-        };
+        }
         let marks = invalid_marks(&ctx.store_conn, &ctx.account_bytes)
             .map_err(|e| anyhow!("marks read failed: {e}"))?;
         let tip = ctx.tip()?;
-        let value = match derive_state(Some(&state), tip, &marks) {
+        let immediate = immediate_row
+            .map(|row| resolve_immediate_run(&ctx.store_conn, row, tip))
+            .transpose()
+            .map_err(|e| anyhow!("wallet transaction lookup failed: {e}"))?;
+        let value = match derive_state(engine_state.as_ref(), tip, &marks, immediate.as_ref()) {
             DerivedState::InProgress {
                 completed_transfers,
                 total_transfers,
@@ -1201,7 +1365,7 @@ pub unsafe extern "C" fn zcashlc_migration_is_note_split_needed(
 ) -> bool {
     let res = catch_panic(|| {
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
-        Ok(match plan_and_cache(&mut ctx, false)? {
+        Ok(match plan_and_cache(&mut ctx)? {
             Some(plan) => plan.preparation().transaction_count() > 0,
             None => false,
         })
@@ -1284,7 +1448,7 @@ pub unsafe extern "C" fn zcashlc_migration_prepare_note_split(
 ) -> *mut FfiNoteSplitProposal {
     let res = catch_panic(|| {
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
-        let (values, fee) = match plan_and_cache(&mut ctx, false)? {
+        let (values, fee) = match plan_and_cache(&mut ctx)? {
             Some(plan) => {
                 let split = plan.note_split();
                 let values: Vec<i64> = split
@@ -1414,7 +1578,7 @@ pub unsafe extern "C" fn zcashlc_migration_residual_after_migration(
                 }
             }
         }
-        Ok(match plan_and_cache(&mut ctx, false)? {
+        Ok(match plan_and_cache(&mut ctx)? {
             Some(plan) => plan.note_split().change().map_or(-1, zat_to_i64),
             None => -1,
         })
@@ -1590,55 +1754,8 @@ pub unsafe extern "C" fn zcashlc_migration_propose_transfers(
     let res = catch_panic(|| {
         let _ = include_residual;
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
-        match plan_and_cache(&mut ctx, false)? {
+        match plan_and_cache(&mut ctx)? {
             Some(plan) => encode_schedule_from_plan(&plan, ctx.tip()?),
-            None => Ok(encode_empty_schedule()),
-        }
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// Like `zcashlc_migration_propose_transfers`, but the previewed plan is marked IMMEDIATE: at
-/// commit time every transfer's scheduled height is rewritten to the commit tip, so the whole
-/// migration drains as fast as preparation mining allows instead of over the drawn ZIP 318
-/// spread. The returned preview reflects that (every transfer executable now).
-///
-/// # Safety
-/// See [`open`]. Free the returned pointer with [`zcashlc_free_migration_schedule`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_migration_propose_immediate_transfers(
-    db_data: *const u8,
-    db_data_len: usize,
-    account_uuid_bytes: *const u8,
-    network_id: u32,
-) -> *mut FfiMigrationSchedule {
-    let res = catch_panic(|| {
-        let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
-        let tip = ctx.tip()?;
-        match plan_and_cache(&mut ctx, true)? {
-            Some(plan) => {
-                // Preview mirrors the commit-time rewrite: every transfer due at the tip.
-                let rows =
-                    schedule_rows(&plan.funding_notes(), plan.schedule(), prep_tx_count(&plan))?;
-                let transfers = rows
-                    .into_iter()
-                    .map(|(id, amount, _, expiry)| {
-                        Ok(FfiTransferProposal {
-                            id: cstring_raw(&u32::from(id).to_string(), "transfer proposal id")?,
-                            amount: zat_to_i64(amount),
-                            anchor_height: i64::from(u32::from(tip)),
-                            next_executable_after_height: i64::from(u32::from(tip)),
-                            expiry_height: i64::from(u32::from(expiry)),
-                        })
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-                let (transfers, transfers_len) = ptr_from_vec(transfers);
-                Ok(Box::into_raw(Box::new(FfiMigrationSchedule {
-                    transfers,
-                    transfers_len,
-                    estimated_duration_hours: 0,
-                })))
-            }
             None => Ok(encode_empty_schedule()),
         }
     });
@@ -1752,7 +1869,7 @@ pub unsafe extern "C" fn zcashlc_migration_pending_transfer_proposal(
         match next_transfer {
             Some(tx) => {
                 let amount = transfer_amount(&state, tx)
-                    .ok_or_else(|| anyhow!("stored transfer has no funding-note amount"))?;
+                    .ok_or_else(|| anyhow!("stored transfer has no valid net crossing amount"))?;
                 FfiTransferProposal::boxed(
                     tx.id(),
                     amount,
@@ -1849,6 +1966,39 @@ pub unsafe extern "C" fn zcashlc_migration_record_transfer_result(
     unwrap_exc_or(res, false)
 }
 
+/// Records a broadcast immediate-migration sweep (an ordinary send-max transaction proposed via
+/// `zcashlc_propose_send_max_transfer(orchard_only: true)`, built entirely outside the engine's
+/// plan cache) so the platform's migration state machine reports it: `InProgress` (0 of 1) while
+/// unmined, `Complete` once mined, or a re-offer (`NotStarted`) if it expires unmined — see the
+/// precedence rule on [`derive_state`]. One row per account: a new record supersedes any previous
+/// one (INSERT OR REPLACE).
+///
+/// # Safety
+/// See [`open`]; `txid_bytes` must be valid for reads of 32 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_migration_record_immediate_run(
+    db_data: *const u8,
+    db_data_len: usize,
+    account_uuid_bytes: *const u8,
+    network_id: u32,
+    txid_bytes: *const u8,
+) -> bool {
+    let res = catch_panic(|| {
+        let ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
+        if txid_bytes.is_null() {
+            return Err(anyhow!("txid_bytes is null"));
+        }
+        let txid: [u8; 32] = unsafe { slice::from_raw_parts(txid_bytes, 32) }
+            .try_into()
+            .expect("length 32 by construction");
+        let tip = ctx.tip()?;
+        record_immediate_run(&ctx.store_conn, &ctx.account_bytes, txid, tip)
+            .map_err(|e| anyhow!("immediate run record failed: {e}"))?;
+        Ok(true)
+    });
+    unwrap_exc_or(res, false)
+}
+
 /// Whether a wallet sync is required before the next transfer can broadcast. Always `false`: ZIP
 /// 318's sync/broadcast decoupling MUST is enforced by the SDK's Swift privacy gate and the app's
 /// background-session policy, not by the engine (the engine surfaces no such predicate). Returns
@@ -1904,7 +2054,7 @@ pub unsafe extern "C" fn zcashlc_migration_restart_step(
         }
         clear_invalid_marks(&ctx.store_conn, &ctx.account_bytes)
             .map_err(|e| anyhow!("marks clear failed: {e}"))?;
-        match plan_and_cache(&mut ctx, false)? {
+        match plan_and_cache(&mut ctx)? {
             Some(plan) => encode_schedule_from_plan(&plan, ctx.tip()?),
             None => Ok(encode_empty_schedule()),
         }
@@ -2235,7 +2385,7 @@ mod tests {
     #[test]
     fn derive_no_migration_is_not_started() {
         assert!(matches!(
-            derive_state(None, h(100), &[]),
+            derive_state(None, h(100), &[], None),
             DerivedState::NotStarted
         ));
     }
@@ -2250,7 +2400,7 @@ mod tests {
             10_000,
         );
         assert!(matches!(
-            derive_state(Some(&state), h(100), &[]),
+            derive_state(Some(&state), h(100), &[], None),
             DerivedState::NotStarted
         ));
     }
@@ -2259,7 +2409,7 @@ mod tests {
     fn derive_complete_is_per_run_complete() {
         let state = test_state(MigrationStatus::Complete, &[MINED], &[MINED], 50, 10_000);
         assert!(matches!(
-            derive_state(Some(&state), h(100), &[]),
+            derive_state(Some(&state), h(100), &[], None),
             DerivedState::Complete
         ));
     }
@@ -2274,7 +2424,7 @@ mod tests {
             10_000,
         );
         assert!(matches!(
-            derive_state(Some(&state), h(100), &[]),
+            derive_state(Some(&state), h(100), &[], None),
             DerivedState::SplitPendingConfirmation
         ));
     }
@@ -2288,7 +2438,7 @@ mod tests {
             50,
             10_000,
         );
-        match derive_state(Some(&state), h(100), &[]) {
+        match derive_state(Some(&state), h(100), &[], None) {
             DerivedState::InProgress {
                 completed_transfers,
                 total_transfers,
@@ -2312,7 +2462,7 @@ mod tests {
             10_000,
         );
         assert!(matches!(
-            derive_state(Some(&state), h(100), &[1]),
+            derive_state(Some(&state), h(100), &[1], None),
             DerivedState::InvalidTransfer(1)
         ));
     }
@@ -2327,17 +2477,141 @@ mod tests {
             90,
         );
         assert!(matches!(
-            derive_state(Some(&state), h(100), &[]),
+            derive_state(Some(&state), h(100), &[], None),
             DerivedState::TransferExpired
         ));
+    }
+
+    /// Builds an [`ImmediateRunLookup`] directly (bypassing the wallet-DB lookup), for exercising
+    /// `derive_state`'s immediate-run precedence rule in isolation.
+    fn immediate_lookup(
+        recorded_at: u32,
+        mined: Option<u32>,
+        expiry: Option<u32>,
+    ) -> ImmediateRunLookup {
+        ImmediateRunLookup {
+            recorded_at_height: h(recorded_at),
+            mined_height: mined.map(h),
+            expiry_height: expiry.map(h),
+        }
+    }
+
+    #[test]
+    fn derive_immediate_run_pending_is_in_progress_of_one() {
+        let run = immediate_lookup(100, None, Some(500));
+        match derive_state(None, h(300), &[], Some(&run)) {
+            DerivedState::InProgress {
+                completed_transfers,
+                total_transfers,
+                next_transfer_ready_at_height,
+            } => {
+                assert_eq!(completed_transfers, 0);
+                assert_eq!(total_transfers, 1);
+                assert_eq!(next_transfer_ready_at_height, None);
+            }
+            _ => panic!("expected InProgress"),
+        }
+    }
+
+    #[test]
+    fn derive_immediate_run_mined_is_complete() {
+        let run = immediate_lookup(100, Some(250), Some(500));
+        assert!(matches!(
+            derive_state(None, h(300), &[], Some(&run)),
+            DerivedState::Complete
+        ));
+    }
+
+    #[test]
+    fn derive_immediate_run_expired_unmined_falls_through_to_not_started() {
+        let run = immediate_lookup(100, None, Some(200));
+        assert!(matches!(
+            derive_state(None, h(300), &[], Some(&run)),
+            DerivedState::NotStarted
+        ));
+    }
+
+    #[test]
+    fn derive_immediate_run_unknown_expiry_uses_fallback_bound() {
+        let run = immediate_lookup(100, None, None);
+        // Still within the fallback bound (100 + 40 = 140).
+        assert!(matches!(
+            derive_state(None, h(140), &[], Some(&run)),
+            DerivedState::InProgress { .. }
+        ));
+        // Past the fallback bound: expired, falls through.
+        assert!(matches!(
+            derive_state(None, h(141), &[], Some(&run)),
+            DerivedState::NotStarted
+        ));
+    }
+
+    #[test]
+    fn derive_engine_active_run_wins_over_immediate_run() {
+        // An active (unmined-prep) engine run derives to SplitPendingConfirmation on its own.
+        let state = test_state(
+            MigrationStatus::InProgress,
+            &[MigrationTxState::Signed],
+            &[MigrationTxState::Signed],
+            50,
+            10_000,
+        );
+        // This immediate run would derive to Complete on its own — but must not win.
+        let run = immediate_lookup(100, Some(250), Some(500));
+        assert!(matches!(
+            derive_state(Some(&state), h(300), &[], Some(&run)),
+            DerivedState::SplitPendingConfirmation
+        ));
+    }
+
+    #[test]
+    fn derive_immediate_run_overrides_stale_complete_engine_state() {
+        // A `Complete` engine run is terminal (not "active"), so a separate, later immediate run
+        // still gets a say instead of being masked by the stale Complete verdict.
+        let state = test_state(MigrationStatus::Complete, &[MINED], &[MINED], 50, 10_000);
+        let run = immediate_lookup(1_000, None, Some(1_500));
+        match derive_state(Some(&state), h(1_100), &[], Some(&run)) {
+            DerivedState::InProgress {
+                completed_transfers,
+                total_transfers,
+                ..
+            } => {
+                assert_eq!(completed_transfers, 0);
+                assert_eq!(total_transfers, 1);
+            }
+            _ => panic!(
+                "expected the immediate run's InProgress to win over the stale Complete engine state"
+            ),
+        }
+    }
+
+    #[test]
+    fn transfer_amount_is_net_of_fee_buffer() {
+        let state = test_state(
+            MigrationStatus::InProgress,
+            &[MINED],
+            &[MigrationTxState::Signed],
+            50,
+            10_000,
+        );
+        let tx = state
+            .transactions()
+            .iter()
+            .find(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
+            .unwrap();
+        // test_state's note split stores zat(100_000_000) CROSSING (net) values against a
+        // zat(10_000) fee buffer; `funding_notes()` derives the gross 100_010_000 note and
+        // `transfer_amount` nets the buffer back off, landing on the stored crossing value.
+        assert_eq!(transfer_amount(&state, tx), Some(zat(100_000_000)));
     }
 
     #[test]
     fn schedule_rows_sort_chronologically_with_prep_offset() {
         let mut rng = StdRng::seed_from_u64(7);
         let schedule = scheduling::schedule(h(1_000), 5, &mut rng);
+        let buffer = zat(10_000);
         let amounts: Vec<Zatoshis> = (1..=5).map(|i| zat(i * 100_000_000)).collect();
-        let rows = schedule_rows(&amounts, &schedule, 3).unwrap();
+        let rows = schedule_rows(&amounts, &schedule, 3, buffer).unwrap();
         assert_eq!(rows.len(), 5);
         // Chronological by broadcast height.
         for pair in rows.windows(2) {
@@ -2347,11 +2621,54 @@ mod tests {
         let mut ids: Vec<u32> = rows.iter().map(|(id, _, _, _)| u32::from(*id)).collect();
         ids.sort_unstable();
         assert_eq!(ids, vec![3, 4, 5, 6, 7]);
-        // Amount pairing survives the sort: each id maps back to its crossing's amount.
+        // Amount pairing survives the sort: each id maps back to its funding note's NET crossing
+        // value (the gross funding note minus the constant fee buffer), not the gross value.
         for (id, amount, _, _) in &rows {
             let crossing = u32::from(*id) - 3;
-            assert_eq!(*amount, zat((u64::from(crossing) + 1) * 100_000_000));
+            let gross = (u64::from(crossing) + 1) * 100_000_000;
+            assert_eq!(*amount, zat(gross - 10_000));
         }
+    }
+
+    #[test]
+    fn schedule_rows_net_amounts_are_stable_across_reshuffled_schedules() {
+        // Two different draws (different rng seeds -> different shuffled broadcast order) of the
+        // same funding notes must still report the same total (and the same multiset) of NET
+        // amounts, even though the rows themselves may come back in a different order.
+        let amounts: Vec<Zatoshis> = (1..=5).map(|i| zat(i * 100_000_000)).collect();
+        let buffer = zat(10_000);
+        let expected_total: u64 = amounts.iter().map(|z| u64::from(*z) - 10_000).sum();
+
+        let mut rng_a = StdRng::seed_from_u64(1);
+        let schedule_a = scheduling::schedule(h(1_000), 5, &mut rng_a);
+        let rows_a = schedule_rows(&amounts, &schedule_a, 0, buffer).unwrap();
+
+        let mut rng_b = StdRng::seed_from_u64(99);
+        let schedule_b = scheduling::schedule(h(1_000), 5, &mut rng_b);
+        let rows_b = schedule_rows(&amounts, &schedule_b, 0, buffer).unwrap();
+
+        let total_a: u64 = rows_a
+            .iter()
+            .map(|(_, amount, _, _)| u64::from(*amount))
+            .sum();
+        let total_b: u64 = rows_b
+            .iter()
+            .map(|(_, amount, _, _)| u64::from(*amount))
+            .sum();
+        assert_eq!(total_a, expected_total);
+        assert_eq!(total_b, expected_total);
+
+        let mut sorted_a: Vec<u64> = rows_a
+            .iter()
+            .map(|(_, amount, _, _)| u64::from(*amount))
+            .collect();
+        let mut sorted_b: Vec<u64> = rows_b
+            .iter()
+            .map(|(_, amount, _, _)| u64::from(*amount))
+            .collect();
+        sorted_a.sort_unstable();
+        sorted_b.sort_unstable();
+        assert_eq!(sorted_a, sorted_b);
     }
 
     #[test]
@@ -2359,7 +2676,15 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(7);
         let schedule = scheduling::schedule(h(1_000), 3, &mut rng);
         let amounts = vec![zat(100)];
-        assert!(schedule_rows(&amounts, &schedule, 0).is_err());
+        assert!(schedule_rows(&amounts, &schedule, 0, zat(0)).is_err());
+    }
+
+    #[test]
+    fn schedule_rows_reject_funding_note_below_fee_buffer() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let schedule = scheduling::schedule(h(1_000), 1, &mut rng);
+        let amounts = vec![zat(100)];
+        assert!(schedule_rows(&amounts, &schedule, 0, zat(10_000)).is_err());
     }
 
     #[test]
@@ -2530,6 +2855,169 @@ mod tests {
         };
         assert_eq!(unlocked, -1, "an uninitialized database must error");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn immediate_run_row_round_trip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_immediate_runs(&conn).unwrap();
+        let account = [9u8; 16];
+        assert!(immediate_run_row(&conn, &account).unwrap().is_none());
+        record_immediate_run(&conn, &account, [1u8; 32], h(100)).unwrap();
+        let row = immediate_run_row(&conn, &account).unwrap().unwrap();
+        assert_eq!(row.txid, [1u8; 32]);
+        assert_eq!(row.recorded_at_height, h(100));
+    }
+
+    #[test]
+    fn immediate_run_record_replaces_the_previous_one() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_immediate_runs(&conn).unwrap();
+        let account = [9u8; 16];
+        record_immediate_run(&conn, &account, [1u8; 32], h(100)).unwrap();
+        record_immediate_run(&conn, &account, [2u8; 32], h(150)).unwrap();
+        // One row per account: the second record supersedes the first entirely.
+        let row = immediate_run_row(&conn, &account).unwrap().unwrap();
+        assert_eq!(row.txid, [2u8; 32]);
+        assert_eq!(row.recorded_at_height, h(150));
+    }
+
+    #[test]
+    fn immediate_run_rows_are_isolated_per_account() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_immediate_runs(&conn).unwrap();
+        let account = [9u8; 16];
+        let other = [8u8; 16];
+        record_immediate_run(&conn, &account, [1u8; 32], h(100)).unwrap();
+        record_immediate_run(&conn, &other, [2u8; 32], h(200)).unwrap();
+        assert_eq!(
+            immediate_run_row(&conn, &account).unwrap().unwrap().txid,
+            [1u8; 32]
+        );
+        assert_eq!(
+            immediate_run_row(&conn, &other).unwrap().unwrap().txid,
+            [2u8; 32]
+        );
+        // Replacing one account's row must not disturb the other's.
+        record_immediate_run(&conn, &account, [3u8; 32], h(300)).unwrap();
+        assert_eq!(
+            immediate_run_row(&conn, &account).unwrap().unwrap().txid,
+            [3u8; 32]
+        );
+        assert_eq!(
+            immediate_run_row(&conn, &other).unwrap().unwrap().txid,
+            [2u8; 32]
+        );
+    }
+
+    #[test]
+    fn resolve_immediate_run_reads_mined_and_expiry_from_transactions_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        // A minimal stand-in for zcash_client_sqlite's `transactions` table: just the two columns
+        // `resolve_immediate_run`'s query reads (see `zcash_client_sqlite::wallet::get_tx_height`
+        // for the upstream query this mirrors and extends).
+        conn.execute_batch(
+            "CREATE TABLE transactions (txid BLOB PRIMARY KEY, mined_height INTEGER, expiry_height INTEGER)",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (txid, mined_height, expiry_height) VALUES (?1, ?2, ?3)",
+            rusqlite::params![&[1u8; 32][..], 150u32, 200u32],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (txid, mined_height, expiry_height) VALUES (?1, NULL, ?2)",
+            rusqlite::params![&[2u8; 32][..], 500u32],
+        )
+        .unwrap();
+
+        let mined = resolve_immediate_run(
+            &conn,
+            ImmediateRunRow {
+                txid: [1u8; 32],
+                recorded_at_height: h(100),
+            },
+            h(300),
+        )
+        .unwrap();
+        assert_eq!(mined.mined_height, Some(h(150)));
+        assert_eq!(mined.expiry_height, Some(h(200)));
+
+        let unmined = resolve_immediate_run(
+            &conn,
+            ImmediateRunRow {
+                txid: [2u8; 32],
+                recorded_at_height: h(100),
+            },
+            h(300),
+        )
+        .unwrap();
+        assert_eq!(unmined.mined_height, None);
+        assert_eq!(unmined.expiry_height, Some(h(500)));
+
+        // A txid the wallet has never observed at all: both columns resolve to None.
+        let unknown = resolve_immediate_run(
+            &conn,
+            ImmediateRunRow {
+                txid: [9u8; 32],
+                recorded_at_height: h(100),
+            },
+            h(300),
+        )
+        .unwrap();
+        assert_eq!(unknown.mined_height, None);
+        assert_eq!(unknown.expiry_height, None);
+    }
+
+    #[test]
+    fn resolve_immediate_run_filters_future_mined_height_and_zero_expiry_sentinel() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE transactions (txid BLOB PRIMARY KEY, mined_height INTEGER, expiry_height INTEGER)",
+        )
+        .unwrap();
+        // A mined_height beyond the current tip is a stale/optimistic row (mirrors
+        // `zcash_client_sqlite::wallet::get_tx_height`'s own guard) and must not report Complete.
+        conn.execute(
+            "INSERT INTO transactions (txid, mined_height, expiry_height) VALUES (?1, ?2, ?3)",
+            rusqlite::params![&[1u8; 32][..], 500u32, 600u32],
+        )
+        .unwrap();
+        // expiry_height = 0 is the wire "no real expiry" sentinel; treated the same as missing so
+        // it does not fool the expiry check into firing immediately.
+        conn.execute(
+            "INSERT INTO transactions (txid, mined_height, expiry_height) VALUES (?1, NULL, 0)",
+            rusqlite::params![&[2u8; 32][..]],
+        )
+        .unwrap();
+
+        let future_mined = resolve_immediate_run(
+            &conn,
+            ImmediateRunRow {
+                txid: [1u8; 32],
+                recorded_at_height: h(100),
+            },
+            h(300),
+        )
+        .unwrap();
+        assert_eq!(
+            future_mined.mined_height, None,
+            "a mined height beyond tip must be filtered out"
+        );
+
+        let zero_expiry = resolve_immediate_run(
+            &conn,
+            ImmediateRunRow {
+                txid: [2u8; 32],
+                recorded_at_height: h(100),
+            },
+            h(300),
+        )
+        .unwrap();
+        assert_eq!(
+            zero_expiry.expiry_height, None,
+            "expiry_height=0 must read as missing"
+        );
     }
 
     /// A freshly initialized wallet database has no stored migration, so its state marshals as

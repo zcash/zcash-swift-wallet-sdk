@@ -644,10 +644,35 @@ public protocol Synchronizer: AnyObject {
     ///     canonically, and ZIP 318 expects the residual to remain in Orchard.
     func proposeMigrationTransfers(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule
 
-    /// Proposes the immediate (single-transaction) migration for `accountUUID`: sweeps the whole
-    /// spendable Orchard balance into one Ironwood output, executable now.
+    /// Proposes the immediate (single-transaction) migration: an ordinary send-max that spends ALL
+    /// spendable Orchard notes of `accountUUID` and pays everything minus the ZIP-317 fee to the
+    /// account's own unified address -- post-NU6.3 the payment lands in the Ironwood pool (the UA's
+    /// Orchard receiver doubles as the Ironwood receiver). Deterministic for unchanged wallet state.
+    ///
+    /// Unlike ``proposeMigrationTransfers(accountUUID:includeResidual:)``, this is an ORDINARY
+    /// proposal: it is not held by the migration engine, so there is no plan-cache staleness to
+    /// invalidate it between this call and ``createProposedTransactions(proposal:spendingKey:)`` /
+    /// ``createPCZTFromProposal(accountUUID:proposal:)``. Executing it is the caller's job exactly
+    /// like any other transfer; call ``recordImmediateMigration(accountUUID:txid:)`` after a
+    /// successful broadcast so the platform migration state machine reports it.
     /// - Parameter accountUUID: the account to propose the immediate migration for.
-    func proposeImmediateMigration(accountUUID: AccountUUID) async throws -> MigrationSchedule
+    /// - Throws: the rust layer's `InsufficientFunds` (mapped) when the fee would consume the whole
+    ///   balance.
+    func proposeImmediateMigration(accountUUID: AccountUUID) async throws -> ImmediateMigrationProposal
+
+    /// Records a broadcast immediate-migration sweep in the SDK migration store so the platform
+    /// migration state machine reports it: `InProgress` (0 of 1) while unmined, `Complete` once
+    /// mined, or a re-offer (`NotStarted`) if it expires unmined. One row per account: a new record
+    /// supersedes any previous one.
+    ///
+    /// Not broadcast-sensitive itself: the broadcast rides the already-guarded
+    /// ``createProposedTransactions(proposal:spendingKey:)`` / ``createPCZTFromProposal(accountUUID:proposal:)``
+    /// pipeline, so this call carries no ``ZcashError/migrationBroadcastDuringSync`` guard of its own.
+    /// - Parameters:
+    ///   - accountUUID: the account the immediate migration belongs to.
+    ///   - txid: the broadcast transaction's id, in the SDK's raw/internal byte order (32 bytes;
+    ///     matches `TxId.id`, not the reversed display-hex order produced by `Data.toHexStringTxId()`).
+    func recordImmediateMigration(accountUUID: AccountUUID, txid: Data) async throws
 
     /// The leftover Orchard balance a migration of `accountUUID` would not cross, when large enough
     /// to be worth offering the user a choice about; `nil` when there is no such residual.
@@ -663,8 +688,10 @@ public protocol Synchronizer: AnyObject {
     /// - Parameters:
     ///   - accountUUID: the account the schedule belongs to.
     ///   - schedule: the schedule to sign and store, from
-    ///     ``proposeMigrationTransfers(accountUUID:includeResidual:)`` or
-    ///     ``proposeImmediateMigration(accountUUID:)``.
+    ///     ``proposeMigrationTransfers(accountUUID:includeResidual:)``. Not used by the immediate
+    ///     lane: ``proposeImmediateMigration(accountUUID:)`` returns an ordinary
+    ///     ``ImmediateMigrationProposal``, executed via ``createProposedTransactions(proposal:spendingKey:)``
+    ///     / ``createPCZTFromProposal(accountUUID:proposal:)`` like any other transfer.
     ///   - usk: the account's unified spending key.
     func signAndStoreMigrationSchedule(accountUUID: AccountUUID, _ schedule: MigrationSchedule, usk: UnifiedSpendingKey) async throws
 
@@ -940,7 +967,11 @@ public extension Synchronizer {
         throw MigrationUnimplemented(member: #function)
     }
 
-    func proposeImmediateMigration(accountUUID: AccountUUID) async throws -> MigrationSchedule {
+    func proposeImmediateMigration(accountUUID: AccountUUID) async throws -> ImmediateMigrationProposal {
+        throw MigrationUnimplemented(member: #function)
+    }
+
+    func recordImmediateMigration(accountUUID: AccountUUID, txid: Data) async throws {
         throw MigrationUnimplemented(member: #function)
     }
 

@@ -69,6 +69,12 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
         await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.proposeImmediateMigration(accountUUID: self.accountUUID) }
     }
 
+    func testRecordImmediateMigrationDefaultThrowsUnimplemented() async {
+        await assertThrowsMigrationUnimplemented {
+            try await self.synchronizer.recordImmediateMigration(accountUUID: self.accountUUID, txid: Data(repeating: 0x01, count: 32))
+        }
+    }
+
     func testResidualAfterMigrationDefaultThrowsUnimplemented() async {
         await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.residualAfterMigration(accountUUID: self.accountUUID) }
     }

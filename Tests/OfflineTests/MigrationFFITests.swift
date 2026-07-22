@@ -229,6 +229,45 @@ final class MigrationFFITests: XCTestCase {
         }
     }
 
+    // MARK: - Immediate migration (send-max lane)
+
+    /// MOB-1513: `migrationRecordImmediateRun` validates `txid.count == 32` in Swift before making
+    /// any FFI call (the C side reads it as a fixed 32-byte buffer with no length parameter, so this
+    /// guard is load-bearing, not defensive-only). A short txid must never reach the FFI.
+    func testMigrationRecordImmediateRunRejectsNon32ByteTxid() async throws {
+        do {
+            try await rustBackend.migrationRecordImmediateRun(txid: Data([0x01, 0x02, 0x03]), for: account)
+            XCTFail("Expected a non-32-byte txid to be rejected before any FFI call")
+        } catch ZcashError.migrationRecordImmediateRunInvalidTxId(let length) {
+            XCTAssertEqual(length, 3)
+        } catch {
+            XCTFail("Expected migrationRecordImmediateRunInvalidTxId but got \(error)")
+        }
+    }
+
+    /// This fixture's `createAccount` call installs a checkpoint `treeState` (mirroring every other
+    /// test in this file), which already gives `chain_height()` a height to report -- so unlike the
+    /// balance-bearing paths, recording an immediate run does NOT require a real sync to succeed
+    /// (the documented "no chain tip yet" failure mode applies before any account has been created
+    /// at all, which this offline suite's setup always provides). This exercises the real FFI
+    /// marshaling end-to-end (db/account bytes, the fixed 32-byte txid buffer, the boolean success
+    /// mapping) and the `derive_state` fold reading it straight back: an unmined, unrecognized txid
+    /// falls into the documented fallback-pending bucket (`recorded_at_height + 40`, not yet
+    /// elapsed), so the state machine reports `InProgress(0 of 1)`, not a re-offer.
+    func testMigrationRecordImmediateRunThenMigrationStateReportsInProgress() async throws {
+        let txid = Data(repeating: 0xAB, count: 32)
+
+        try await rustBackend.migrationRecordImmediateRun(txid: txid, for: account)
+
+        let state = try await rustBackend.migrationState(for: account)
+        guard case .inProgress(let progress) = state else {
+            XCTFail("Expected .inProgress after recording an immediate run with an unmined txid, got \(state)")
+            return
+        }
+        XCTAssertEqual(progress.completedTransfers, 0)
+        XCTAssertEqual(progress.totalTransfers, 1)
+    }
+
     // MARK: - Ironwood activation height
 
     /// Verified against the pinned rust source directly: zcash_protocol 0.10.0 @ e0e1277
