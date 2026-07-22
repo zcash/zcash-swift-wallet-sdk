@@ -79,6 +79,18 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
         await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.residualAfterMigration(accountUUID: self.accountUUID) }
     }
 
+    func testLockMigrationResidualDefaultThrowsUnimplemented() async {
+        await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.lockMigrationResidual(accountUUID: self.accountUUID) }
+    }
+
+    func testUnlockMigrationResidualDefaultThrowsUnimplemented() async {
+        await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.unlockMigrationResidual(accountUUID: self.accountUUID) }
+    }
+
+    func testEstimateMigrationRunsDefaultThrowsUnimplemented() async {
+        await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.estimateMigrationRuns(accountUUID: self.accountUUID) }
+    }
+
     func testSignAndStoreMigrationScheduleDefaultThrowsUnimplemented() async {
         let schedule = MigrationSchedule(transfers: [], estimatedDurationHours: 1)
         let usk = TestsData(networkType: .testnet).spendingKey
@@ -203,7 +215,7 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
 }
 
 /// A minimal `Synchronizer` conformer implementing only the protocol's previously-existing
-/// (pre-migration) members. None of its stubs are ever exercised by these tests -- only the 23
+/// (pre-migration) members. None of its stubs are ever exercised by these tests -- only the 27
 /// migration-group members are called, and this type deliberately does not override any of them, so
 /// every call falls through to the protocol-extension default under test.
 private final class NonMigratingSynchronizer: Synchronizer {
