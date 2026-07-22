@@ -489,10 +489,26 @@ protocol ZcashRustBackendWelding {
     /// - Throws: `rustMigrationProposeTransfers` if the rust layer returns an error.
     func migrationProposeTransfers(for account: AccountUUID) async throws -> MigrationSchedule
 
-    /// Proposes the immediate (single-transaction) migration: sweeps the whole spendable Orchard
-    /// balance into one Ironwood output, executable now.
-    /// - Throws: `rustMigrationProposeImmediateTransfers` if the rust layer returns an error.
-    func migrationProposeImmediateTransfers(for account: AccountUUID) async throws -> MigrationSchedule
+    /// Proposes a "send everything" transaction that sweeps the account's whole spendable balance
+    /// (minus the ZIP-317 fee) to a single recipient, restricted to the given shielded-pool scope.
+    /// Used by the Orchard -> Ironwood immediate migration lane (``OrchardMigration/proposeImmediateMigration()``,
+    /// `orchardOnly: true`) to sweep the account's spendable Orchard notes to its own address,
+    /// entirely outside the migration engine -- the returned proposal is an ORDINARY proposal, held
+    /// by the caller like any other transfer.
+    ///
+    /// - Parameter accountUUID: index of the given account.
+    /// - Parameter recipient: recipient address.
+    /// - Parameter memo: the `MemoBytes` for this transaction. Pass `nil` when sending to transparent receivers.
+    /// - Parameter orchardOnly: when `true`, restricts spendable notes to the Orchard pool alone (the
+    ///   immediate migration sweep, which must not draw on Sapling funds); when `false`, spends from
+    ///   both Sapling and Orchard (pre-existing behavior).
+    /// - Throws: `rustProposeSendMaxTransfer` if the rust layer returns an error.
+    func proposeSendMaxTransfer(
+        accountUUID: AccountUUID,
+        recipient: String,
+        memo: MemoBytes?,
+        orchardOnly: Bool
+    ) async throws -> FfiProposal
 
     /// Pre-signs and persists every transfer in `schedule` (a no-op when a matching non-terminal
     /// run is already stored — the normal case, since the note-split submission commits the run).
@@ -537,6 +553,19 @@ protocol ZcashRustBackendWelding {
         result: MigrationTransferResult,
         for account: AccountUUID
     ) async throws
+
+    /// Records a broadcast immediate-migration sweep (an ordinary send-max transaction proposed via
+    /// ``proposeSendMaxTransfer(accountUUID:recipient:memo:orchardOnly:)`` with `orchardOnly: true`,
+    /// built entirely outside the migration engine) so the platform's migration state machine
+    /// reports it: `InProgress` (0 of 1) while unmined, `Complete` once mined, or a re-offer
+    /// (`NotStarted`) if it expires unmined. One row per account: a new record supersedes any
+    /// previous one.
+    /// - Parameter txid: the swept transaction's id, in the SDK's raw/internal byte order (32 bytes).
+    /// - Throws: `migrationRecordImmediateRunInvalidTxId` if `txid` is not exactly 32 bytes (checked
+    ///   before any FFI call, since the C side reads it as a fixed 32-byte buffer). Otherwise
+    ///   `rustMigrationRecordImmediateRun` if the rust layer returns an error (including "no chain
+    ///   tip yet" on a wallet that has never completed a sync).
+    func migrationRecordImmediateRun(txid: Data, for account: AccountUUID) async throws
 
     /// Cancels the stored run (its pre-signed transactions are abandoned; already-broadcast ones
     /// are unaffected on-chain), clears the invalid marks, and previews a fresh schedule against

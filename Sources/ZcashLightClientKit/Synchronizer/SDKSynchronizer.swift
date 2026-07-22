@@ -1235,8 +1235,12 @@ public class SDKSynchronizer: Synchronizer {
         try await migrationHost.migration(for: accountUUID).proposeMigrationTransfers(includeResidual: includeResidual)
     }
 
-    public func proposeImmediateMigration(accountUUID: AccountUUID) async throws -> MigrationSchedule {
+    public func proposeImmediateMigration(accountUUID: AccountUUID) async throws -> ImmediateMigrationProposal {
         try await migrationHost.migration(for: accountUUID).proposeImmediateMigration()
+    }
+
+    public func recordImmediateMigration(accountUUID: AccountUUID, txid: Data) async throws {
+        try await migrationHost.migration(for: accountUUID).recordImmediateMigration(txid: txid)
     }
 
     public func residualAfterMigration(accountUUID: AccountUUID) async throws -> Zatoshi? {

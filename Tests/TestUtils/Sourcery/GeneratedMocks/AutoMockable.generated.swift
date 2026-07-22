@@ -2807,10 +2807,10 @@ class SynchronizerMock: Synchronizer {
         return proposeImmediateMigrationAccountUUIDCallsCount > 0
     }
     var proposeImmediateMigrationAccountUUIDReceivedAccountUUID: AccountUUID?
-    var proposeImmediateMigrationAccountUUIDReturnValue: MigrationSchedule!
-    var proposeImmediateMigrationAccountUUIDClosure: ((AccountUUID) async throws -> MigrationSchedule)?
+    var proposeImmediateMigrationAccountUUIDReturnValue: ImmediateMigrationProposal!
+    var proposeImmediateMigrationAccountUUIDClosure: ((AccountUUID) async throws -> ImmediateMigrationProposal)?
 
-    func proposeImmediateMigration(accountUUID: AccountUUID) async throws -> MigrationSchedule {
+    func proposeImmediateMigration(accountUUID: AccountUUID) async throws -> ImmediateMigrationProposal {
         if let error = proposeImmediateMigrationAccountUUIDThrowableError {
             throw error
         }
@@ -2821,6 +2821,25 @@ class SynchronizerMock: Synchronizer {
         } else {
             return proposeImmediateMigrationAccountUUIDReturnValue
         }
+    }
+
+    // MARK: - recordImmediateMigration
+
+    var recordImmediateMigrationAccountUUIDTxidThrowableError: Error?
+    var recordImmediateMigrationAccountUUIDTxidCallsCount = 0
+    var recordImmediateMigrationAccountUUIDTxidCalled: Bool {
+        return recordImmediateMigrationAccountUUIDTxidCallsCount > 0
+    }
+    var recordImmediateMigrationAccountUUIDTxidReceivedArguments: (accountUUID: AccountUUID, txid: Data)?
+    var recordImmediateMigrationAccountUUIDTxidClosure: ((AccountUUID, Data) async throws -> Void)?
+
+    func recordImmediateMigration(accountUUID: AccountUUID, txid: Data) async throws {
+        if let error = recordImmediateMigrationAccountUUIDTxidThrowableError {
+            throw error
+        }
+        recordImmediateMigrationAccountUUIDTxidCallsCount += 1
+        recordImmediateMigrationAccountUUIDTxidReceivedArguments = (accountUUID: accountUUID, txid: txid)
+        try await recordImmediateMigrationAccountUUIDTxidClosure!(accountUUID, txid)
     }
 
     // MARK: - residualAfterMigration
@@ -4903,27 +4922,27 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
     }
 
-    // MARK: - migrationProposeImmediateTransfers
+    // MARK: - proposeSendMaxTransfer
 
-    var migrationProposeImmediateTransfersForThrowableError: Error?
-    var migrationProposeImmediateTransfersForCallsCount = 0
-    var migrationProposeImmediateTransfersForCalled: Bool {
-        return migrationProposeImmediateTransfersForCallsCount > 0
+    var proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyThrowableError: Error?
+    var proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyCallsCount = 0
+    var proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyCalled: Bool {
+        return proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyCallsCount > 0
     }
-    var migrationProposeImmediateTransfersForReceivedAccount: AccountUUID?
-    var migrationProposeImmediateTransfersForReturnValue: MigrationSchedule!
-    var migrationProposeImmediateTransfersForClosure: ((AccountUUID) async throws -> MigrationSchedule)?
+    var proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyReceivedArguments: (accountUUID: AccountUUID, recipient: String, memo: MemoBytes?, orchardOnly: Bool)?
+    var proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyReturnValue: FfiProposal!
+    var proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyClosure: ((AccountUUID, String, MemoBytes?, Bool) async throws -> FfiProposal)?
 
-    func migrationProposeImmediateTransfers(for account: AccountUUID) async throws -> MigrationSchedule {
-        if let error = migrationProposeImmediateTransfersForThrowableError {
+    func proposeSendMaxTransfer(accountUUID: AccountUUID, recipient: String, memo: MemoBytes?, orchardOnly: Bool) async throws -> FfiProposal {
+        if let error = proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyThrowableError {
             throw error
         }
-        migrationProposeImmediateTransfersForCallsCount += 1
-        migrationProposeImmediateTransfersForReceivedAccount = account
-        if let closure = migrationProposeImmediateTransfersForClosure {
-            return try await closure(account)
+        proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyCallsCount += 1
+        proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyReceivedArguments = (accountUUID: accountUUID, recipient: recipient, memo: memo, orchardOnly: orchardOnly)
+        if let closure = proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyClosure {
+            return try await closure(accountUUID, recipient, memo, orchardOnly)
         } else {
-            return migrationProposeImmediateTransfersForReturnValue
+            return proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyReturnValue
         }
     }
 
@@ -5035,6 +5054,25 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         migrationRecordTransferResultTransferIdResultForCallsCount += 1
         migrationRecordTransferResultTransferIdResultForReceivedArguments = (transferId: transferId, result: result, account: account)
         try await migrationRecordTransferResultTransferIdResultForClosure!(transferId, result, account)
+    }
+
+    // MARK: - migrationRecordImmediateRun
+
+    var migrationRecordImmediateRunTxidForThrowableError: Error?
+    var migrationRecordImmediateRunTxidForCallsCount = 0
+    var migrationRecordImmediateRunTxidForCalled: Bool {
+        return migrationRecordImmediateRunTxidForCallsCount > 0
+    }
+    var migrationRecordImmediateRunTxidForReceivedArguments: (txid: Data, account: AccountUUID)?
+    var migrationRecordImmediateRunTxidForClosure: ((Data, AccountUUID) async throws -> Void)?
+
+    func migrationRecordImmediateRun(txid: Data, for account: AccountUUID) async throws {
+        if let error = migrationRecordImmediateRunTxidForThrowableError {
+            throw error
+        }
+        migrationRecordImmediateRunTxidForCallsCount += 1
+        migrationRecordImmediateRunTxidForReceivedArguments = (txid: txid, account: account)
+        try await migrationRecordImmediateRunTxidForClosure!(txid, account)
     }
 
     // MARK: - migrationRestartStep
