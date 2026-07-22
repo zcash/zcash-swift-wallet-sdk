@@ -681,6 +681,44 @@ public protocol Synchronizer: AnyObject {
     ///   chain tip known) this throws rather than returning `nil`.
     func residualAfterMigration(accountUUID: AccountUUID) async throws -> Zatoshi?
 
+    /// Locks every currently-spendable, not-already-locked legacy-Orchard note of `accountUUID`
+    /// until explicit unlock and returns the total value locked — the "Lock balance" choice at
+    /// migration `Complete`: the sub-threshold residual a migration would not cross stays in
+    /// Orchard, out of spending, until ``unlockMigrationResidual(accountUUID:)`` releases it (the
+    /// lock never expires on its own). Locked value leaves `PoolBalance.spendableValue` but stays
+    /// in `PoolBalance.lockedValue`, and therefore in the account's total balance — locked funds
+    /// never vanish from app-visible sums.
+    /// - Parameter accountUUID: the account whose residual should be locked.
+    /// - Note: `Zatoshi(0)` is a legitimate result (nothing was spendable, or everything spendable
+    ///   was already locked). Idempotent-additive: already-locked notes are excluded from
+    ///   selection, so repeating the call locks (and reports) only notes that became spendable
+    ///   since.
+    /// - Throws: ``ZcashError/rustMigrationLockResidual(_:)`` if the engine reports an error —
+    ///   including a concurrent-lock race, which the caller may retry.
+    func lockMigrationResidual(accountUUID: AccountUUID) async throws -> Zatoshi
+
+    /// Clears ALL of `accountUUID`'s output locks — the release half of
+    /// ``lockMigrationResidual(accountUUID:)`` — and returns the number of outputs unlocked (`0`
+    /// when nothing was locked; the blanket clear is safe because the SDK never creates
+    /// proposal-scoped output locks). "Migrate anyway" over a locked residual composes as this
+    /// call followed by ``proposeImmediateMigration(accountUUID:)``: locked notes are excluded
+    /// from note selection, so the unlock must come first.
+    /// - Parameter accountUUID: the account whose output locks should be cleared.
+    func unlockMigrationResidual(accountUUID: AccountUUID) async throws -> Int
+
+    /// Estimates how `accountUUID` migrates its whole spendable Orchard balance — the rounds
+    /// preview for the multi-round migration UI, answered before anything is planned or
+    /// committed: the number of migration RUNS ("rounds") it takes, per run both what it migrates
+    /// (the pool crossings) and what preparing it costs (the note-preparation layers and
+    /// transactions), and the final residual that never migrates. Signing sessions for a
+    /// capacity-limited external signer (for example a Keystone hardware wallet) are a query on
+    /// the result — ``MigrationRunEstimate/totalSigningSessions(maxTransactionsPerSession:)`` —
+    /// not a parameter, so any signer capacity can be evaluated without re-running the planners.
+    /// - Parameter accountUUID: the account to estimate for.
+    /// - Note: The zero-run estimate (`runCount == 0`, a zero or fully sub-quantum balance) is a
+    ///   legitimate answer, not an error.
+    func estimateMigrationRuns(accountUUID: AccountUUID) async throws -> MigrationRunEstimate
+
     /// Pre-signs and persists every transfer in `schedule` in the migration engine for `accountUUID`.
     ///
     /// The SDK does not retain the proposal list: hosts that need to render the committed schedule
@@ -852,8 +890,8 @@ private struct BroadcasterUnimplemented: LocalizedError {
 /// Error thrown by the default implementations of the throwing members of the migration group (see
 /// `public extension Synchronizer` below) when a conformer doesn't override them. One shared,
 /// member-parameterized type rather than one hoisted struct per member (as
-/// ``GetTreeStateUnimplemented``/``BroadcasterUnimplemented`` do): the migration group has 20
-/// throwing requirements, and duplicating that two-struct precedent 20 times over would be pure
+/// ``GetTreeStateUnimplemented``/``BroadcasterUnimplemented`` do): the migration group has 24
+/// throwing requirements, and duplicating that two-struct precedent 24 times over would be pure
 /// boilerplate for the same LocalizedError-conforming, "override this in your conformer" pattern.
 /// Hoisted to file scope for the same reason as those two — protocol-extension methods carry an
 /// implicit `Self` and so count as generic, and Swift forbids nesting concrete types with
@@ -976,6 +1014,18 @@ public extension Synchronizer {
     }
 
     func residualAfterMigration(accountUUID: AccountUUID) async throws -> Zatoshi? {
+        throw MigrationUnimplemented(member: #function)
+    }
+
+    func lockMigrationResidual(accountUUID: AccountUUID) async throws -> Zatoshi {
+        throw MigrationUnimplemented(member: #function)
+    }
+
+    func unlockMigrationResidual(accountUUID: AccountUUID) async throws -> Int {
+        throw MigrationUnimplemented(member: #function)
+    }
+
+    func estimateMigrationRuns(accountUUID: AccountUUID) async throws -> MigrationRunEstimate {
         throw MigrationUnimplemented(member: #function)
     }
 
