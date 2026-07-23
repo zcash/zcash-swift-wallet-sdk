@@ -1299,7 +1299,7 @@ public class SDKSynchronizer: Synchronizer {
         try await migrationHost.migration(for: accountUUID).restartCurrentMigrationStep()
     }
 
-    public func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> UInt32 {
+    public func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> MigrationSchedule {
         try await migrationHost.migration(for: accountUUID).refreshStaleTransfers(usk: usk)
     }
 

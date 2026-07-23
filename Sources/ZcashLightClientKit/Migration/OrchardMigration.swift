@@ -512,23 +512,28 @@ actor OrchardMigration {
     }
 
     /// Rebuilds every EXPIRED transfer of the stored migration run in place through the engine and
-    /// returns the number rebuilt (`0` when no run is stored, the run is terminal, or nothing has
-    /// expired).
+    /// returns the run's FULL transfer schedule as stored AFTER the refresh (the current stored
+    /// schedule when nothing had expired; empty when no run is stored or the run is terminal).
     ///
     /// Each rebuilt transfer re-spends the SAME funding note (recovered from the expired PCZT by
     /// nullifier identity, never an equal-value substitute) on a fresh schedule — a fresh
     /// memoryless delay from the current tip, a fresh canonical expiry, and a freshly drawn
-    /// boundary anchor. Passing a spending key signs each rebuilt transfer anew in-process; passing
-    /// `nil` (an external-signer account, whose spend authority never exists on this device) leaves
-    /// it awaiting its signature, so the ``createUnsignedTransferPCZTs(for:)`` /
-    /// ``storeSignedSchedulePCZTs(_:)`` ceremony re-serves and completes it.
+    /// boundary anchor. The rebuilt rows' fresh scheduled/expiry heights exist nowhere but in the
+    /// returned schedule — the atomically-persisted post-refresh truth the host must re-display
+    /// and use for every subsequent consent echo (``signAndStoreMigrationSchedule(_:usk:)``,
+    /// ``createUnsignedTransferPCZTs(for:)``); a pre-refresh copy fails the verified echo with
+    /// `ZcashError.migrationPlanStale` from then on. Passing a spending key signs each rebuilt
+    /// transfer anew in-process; passing `nil` (an external-signer account, whose spend authority
+    /// never exists on this device) leaves it awaiting its signature, so the
+    /// ``createUnsignedTransferPCZTs(for:)`` / ``storeSignedSchedulePCZTs(_:)`` ceremony
+    /// re-serves and completes it.
     /// - Throws: notably, a `FundingNoteUnavailable`-class failure when an expired transfer's exact
     ///   funding note was spent outside the migration, where the message names
     ///   ``restartCurrentMigrationStep()`` (cancel and re-plan) as the remedy. Rebuilds are
     ///   persisted ALL-OR-NOTHING: a mid-refresh throw (including this one) persists NONE of the
-    ///   batch's rebuilds, so a non-throwing return's count is exactly what was atomically
+    ///   batch's rebuilds, so a non-throwing return's schedule is exactly what was atomically
     ///   persisted, never a partial batch.
-    func refreshStaleTransfers(usk: UnifiedSpendingKey?) async throws -> UInt32 {
+    func refreshStaleTransfers(usk: UnifiedSpendingKey?) async throws -> MigrationSchedule {
         try await welding.migrationRefreshStaleTransfers(usk: usk, for: accountUUID)
     }
 

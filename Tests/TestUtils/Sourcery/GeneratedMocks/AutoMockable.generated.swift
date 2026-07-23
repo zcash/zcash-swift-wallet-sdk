@@ -3103,10 +3103,10 @@ class SynchronizerMock: Synchronizer {
         return refreshStaleMigrationTransfersAccountUUIDUskCallsCount > 0
     }
     var refreshStaleMigrationTransfersAccountUUIDUskReceivedArguments: (accountUUID: AccountUUID, usk: UnifiedSpendingKey?)?
-    var refreshStaleMigrationTransfersAccountUUIDUskReturnValue: UInt32!
-    var refreshStaleMigrationTransfersAccountUUIDUskClosure: ((AccountUUID, UnifiedSpendingKey?) async throws -> UInt32)?
+    var refreshStaleMigrationTransfersAccountUUIDUskReturnValue: MigrationSchedule!
+    var refreshStaleMigrationTransfersAccountUUIDUskClosure: ((AccountUUID, UnifiedSpendingKey?) async throws -> MigrationSchedule)?
 
-    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> UInt32 {
+    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> MigrationSchedule {
         if let error = refreshStaleMigrationTransfersAccountUUIDUskThrowableError {
             throw error
         }
