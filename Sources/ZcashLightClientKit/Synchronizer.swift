@@ -594,6 +594,22 @@ public protocol Synchronizer: AnyObject {
     /// - Parameter accountUUID: the account whose migration progress is of interest.
     func migrationProgress(accountUUID: AccountUUID) async throws -> MigrationProgress?
 
+    /// The LIVE status of every committed migration transaction for `accountUUID`, keyed by its
+    /// stable id — the per-transaction detail view behind ``migrationProgress(accountUUID:)``'s
+    /// aggregate summary: what a wallet renders progress from and decides what to sign/prove/
+    /// broadcast next.
+    ///
+    /// A verbatim marshal of the engine's own `MigrationState::transaction_statuses`: nothing
+    /// here is derived independently of the engine's view. Each row's `id` is STABLE across reads
+    /// and across a stale-transfer rebuild (a rebuilt transfer keeps its id; only its state and
+    /// heights change), so a wallet may use it as a durable row key. Reconciles mined transactions
+    /// first (the same read-path convention as ``migrationState(accountUUID:)``), so a transaction
+    /// the wallet's own scan has since observed mined is reported `.mined` here even if the stored
+    /// run still marks it broadcast. No stored run, or a stored run with no transactions, returns
+    /// an EMPTY array — not an error.
+    /// - Parameter accountUUID: the account whose migration transactions are of interest.
+    func migrationTransactionStatuses(accountUUID: AccountUUID) async throws -> [MigrationTransactionStatus]
+
     /// Whether `accountUUID`'s Orchard notes must be split before migration.
     /// - Parameter accountUUID: the account to check.
     /// - Note: Requires at least one completed sync. On a wallet that has never completed a sync (no
@@ -917,8 +933,8 @@ private struct BroadcasterUnimplemented: LocalizedError {
 /// Error thrown by the default implementations of the throwing members of the migration group (see
 /// `public extension Synchronizer` below) when a conformer doesn't override them. One shared,
 /// member-parameterized type rather than one hoisted struct per member (as
-/// ``GetTreeStateUnimplemented``/``BroadcasterUnimplemented`` do): the migration group has 23
-/// throwing requirements, and duplicating that two-struct precedent 23 times over would be pure
+/// ``GetTreeStateUnimplemented``/``BroadcasterUnimplemented`` do): the migration group has 24
+/// throwing requirements, and duplicating that two-struct precedent 24 times over would be pure
 /// boilerplate for the same LocalizedError-conforming, "override this in your conformer" pattern.
 /// Hoisted to file scope for the same reason as those two — protocol-extension methods carry an
 /// implicit `Self` and so count as generic, and Swift forbids nesting concrete types with
@@ -1008,6 +1024,10 @@ public extension Synchronizer {
     }
 
     func migrationProgress(accountUUID: AccountUUID) async throws -> MigrationProgress? {
+        throw MigrationUnimplemented(member: #function)
+    }
+
+    func migrationTransactionStatuses(accountUUID: AccountUUID) async throws -> [MigrationTransactionStatus] {
         throw MigrationUnimplemented(member: #function)
     }
 

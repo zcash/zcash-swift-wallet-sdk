@@ -253,6 +253,12 @@ actor OrchardMigration {
         try await welding.migrationProgress(for: accountUUID)
     }
 
+    /// The LIVE status of every committed migration transaction, keyed by its stable id -- the
+    /// per-transaction detail view behind ``migrationProgress()``'s aggregate summary.
+    func transactionStatuses() async throws -> [MigrationTransactionStatus] {
+        try await welding.migrationTransactionStatuses(for: accountUUID)
+    }
+
     // MARK: - Note splitting
 
     /// Whether the account's Orchard notes must be split before migration.

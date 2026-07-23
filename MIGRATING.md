@@ -122,6 +122,24 @@ behavior (`SDKSynchronizer` does):
   (`totalSigningSessions(maxTransactionsPerSession:)`), not a parameter. The zero-run estimate is a
   legitimate answer, not an error.
 
+## The live per-transaction migration status read joins the migration group
+
+The `Synchronizer` migration group gains one account-scoped requirement. Like the rest of the
+group it comes with a protocol-extension default that throws an "unimplemented" `LocalizedError`,
+so a custom `Synchronizer` conformer keeps compiling — but it must override it to offer the real
+behavior (`SDKSynchronizer` does):
+
+- **New: `migrationTransactionStatuses(accountUUID:) async throws -> [MigrationTransactionStatus]`.**
+  The live per-transaction detail view behind `migrationProgress(accountUUID:)`'s aggregate
+  summary: every committed migration transaction's kind (preparation layer/index or transfer
+  crossing), lifecycle state (`broadcast`/`mined` fold the engine's txid/mined-height payload into
+  the matching case, so illegal combinations are unrepresentable — a MINED row's txid is NOT
+  carried by the engine's own state model), scheduled/expiry heights, readiness, and next
+  action/blocker, keyed by a stable id. A verbatim marshal of the engine's own
+  `MigrationState::transaction_statuses`, mined-reconciled at read like every sibling; an empty
+  array means no stored run or no transactions, not an error. New error code
+  `rustMigrationTransactionStatuses` (ZRUST0135).
+
 ## `prepare` now validates the seed against the existing wallet
 
 If the wallet database already contains seed-derived account(s) and the seed passed to `prepare`

@@ -1450,6 +1450,32 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     }
 
     @DBActor
+    func migrationTransactionStatuses(for account: AccountUUID) async throws -> [MigrationTransactionStatus] {
+        let statusesPtr = zcashlc_migration_transaction_statuses(
+            dbData.0,
+            dbData.1,
+            account.id,
+            networkType.networkId
+        )
+
+        guard let statusesPtr else {
+            throw ZcashError.rustMigrationTransactionStatuses(
+                lastErrorMessage(fallback: "`migrationTransactionStatuses` failed with unknown error")
+            )
+        }
+
+        defer { zcashlc_free_migration_transaction_statuses(statusesPtr) }
+
+        guard let statuses = statusesPtr.pointee.unsafeToMigrationTransactionStatuses() else {
+            throw ZcashError.rustMigrationTransactionStatuses(
+                lastErrorMessage(fallback: "`migrationTransactionStatuses` returned malformed data")
+            )
+        }
+
+        return statuses
+    }
+
+    @DBActor
     func migrationIsNoteSplitNeeded(for account: AccountUUID) async throws -> Bool {
         // Clear any stale, unconsumed last-error left by an earlier producer before reading this
         // ambiguous-bool sentinel: thread-local `LAST_ERROR` is never cleared on success, only when
@@ -2417,6 +2443,103 @@ extension FfiMigrationProgress {
             nextTransferReadyAtHeight: next_transfer_ready_at_height >= 0 ? BlockHeight(next_transfer_ready_at_height) : nil,
             isImmediate: is_immediate
         )
+    }
+}
+
+extension FfiMigrationTransactionStatus {
+    /// Converts an [`FfiMigrationTransactionStatus`] into a [`MigrationTransactionStatus`], or
+    /// `nil` for an out-of-range discriminant or an invariant the engine's own contract rules out
+    /// (should not happen; defensive only) -- see `zcashlc_migration_transaction_statuses`'s doc
+    /// for the field-by-field contract this mirrors.
+    func unsafeToMigrationTransactionStatus() -> MigrationTransactionStatus? {
+        let kind: MigrationTransactionStatus.Kind
+        if is_transfer {
+            guard crossing >= 0 else { return nil }
+            kind = .transfer(crossing: Int(crossing))
+        } else {
+            guard prep_layer >= 0, prep_index >= 0 else { return nil }
+            kind = .preparation(layer: Int(prep_layer), index: Int(prep_index))
+        }
+
+        let decodedState: MigrationTransactionStatus.State
+        switch state {
+        case 0:
+            decodedState = .awaitingSignature
+        case 1:
+            decodedState = .signed
+        case 2:
+            decodedState = .proved
+        case 3:
+            guard has_txid else { return nil }
+            decodedState = .broadcast(txid: Data(FfiTxId(tuple: txid).array))
+        case 4:
+            guard mined_height >= 0 else { return nil }
+            decodedState = .mined(height: BlockHeight(mined_height))
+        default:
+            return nil
+        }
+
+        let decodedNextAction: MigrationTransactionStatus.NextAction?
+        switch action {
+        case 0:
+            decodedNextAction = nil
+        case 1:
+            decodedNextAction = .prove
+        case 2:
+            decodedNextAction = .broadcast
+        default:
+            return nil
+        }
+
+        let decodedBlockedOn: MigrationTransactionStatus.Blocker?
+        switch blocked_on {
+        case 0:
+            decodedBlockedOn = nil
+        case 1:
+            decodedBlockedOn = .dependencies
+        case 2:
+            decodedBlockedOn = .schedule
+        case 3:
+            decodedBlockedOn = .anchorBoundary
+        case 4:
+            decodedBlockedOn = .signature
+        case 5:
+            decodedBlockedOn = .expired
+        default:
+            return nil
+        }
+
+        return MigrationTransactionStatus(
+            id: id,
+            kind: kind,
+            state: decodedState,
+            scheduledHeight: BlockHeight(scheduled_height),
+            expiryHeight: expiry_height == 0 ? nil : BlockHeight(expiry_height),
+            isReady: ready,
+            nextAction: decodedNextAction,
+            blockedOn: decodedBlockedOn
+        )
+    }
+}
+
+extension FfiMigrationTransactionStatuses {
+    /// Converts an [`FfiMigrationTransactionStatuses`] container into
+    /// `[MigrationTransactionStatus]`, or `nil` if any row fails to decode (should not happen;
+    /// defensive only). An empty container (`len == 0`) decodes to an empty array -- the
+    /// legitimate "no stored run" / "stored run with no transactions" answer.
+    func unsafeToMigrationTransactionStatuses() -> [MigrationTransactionStatus]? {
+        var decoded: [MigrationTransactionStatus] = []
+        decoded.reserveCapacity(Int(len))
+
+        for index in 0 ..< Int(len) {
+            guard let status = ptr.advanced(by: index).pointee.unsafeToMigrationTransactionStatus() else {
+                return nil
+            }
+
+            decoded.append(status)
+        }
+
+        return decoded
     }
 }
 

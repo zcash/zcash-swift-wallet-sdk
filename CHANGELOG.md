@@ -7,7 +7,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 # Unreleased
 
 ## Added
-- Orchard→Ironwood pool-migration engine, exposed as a 26-member migration group on the
+- Orchard→Ironwood pool-migration engine, exposed as a 27-member migration group on the
   `Synchronizer` protocol, built over the pool-migration FFI/welding layer introduced in the entry
   below: the app talks only to `Synchronizer` — the per-account migration engine, broadcaster, and
   privacy gate behind it are internal. Account-scoped members take an `AccountUUID`, and two
@@ -156,6 +156,21 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   account-scoped thin forward through the per-account migration actor that hands the engine's
   estimate through unchanged, with a throwing "unimplemented" protocol-extension default like the
   rest of the group.
+- Migration transaction statuses. `ZcashRustBackendWelding` gains
+  `migrationTransactionStatuses(accountUUID:)`, returning the new public
+  `[MigrationTransactionStatus]` model: the LIVE per-transaction status read behind
+  `migrationProgress`'s aggregate summary — every committed migration transaction's kind
+  (preparation layer/index or transfer crossing), lifecycle state, scheduled/expiry heights,
+  readiness, and next action/blocker, keyed by a stable id. `broadcast`/`mined` fold the engine's
+  txid/mined-height payload into the matching case so illegal combinations are unrepresentable —
+  a MINED row's txid is NOT carried by the engine's own state model, so it is available only
+  while a transaction is `broadcast` (in flight), not once mined. A verbatim marshal of the
+  engine's own `MigrationState::transaction_statuses`, mined-reconciled at read like every
+  sibling; an empty array means no stored run or no transactions, not an error. New error code
+  `rustMigrationTransactionStatuses` ZRUST0135. Surfaced on the `Synchronizer` protocol under the
+  same name — an account-scoped thin forward through the per-account migration actor that hands
+  the engine's rows through unchanged, with a throwing "unimplemented" protocol-extension default
+  like the rest of the group.
 - Ironwood (NU6.3) receive/sync readiness. The lightwalletd protocol gains the Ironwood fields
   (`CompactTx.ironwoodActions`, `ChainMetadata.ironwoodCommitmentTreeSize`, `TreeState.ironwoodTree`,
   `ShieldedProtocol.ironwood`); `UpdateSubtreeRootsAction` fetches and stores Ironwood subtree roots

@@ -1213,6 +1213,10 @@ public class SDKSynchronizer: Synchronizer {
         try await migrationHost.migration(for: accountUUID).migrationProgress()
     }
 
+    public func migrationTransactionStatuses(accountUUID: AccountUUID) async throws -> [MigrationTransactionStatus] {
+        try await migrationHost.migration(for: accountUUID).transactionStatuses()
+    }
+
     public func isNoteSplitNeeded(accountUUID: AccountUUID) async throws -> Bool {
         try await migrationHost.migration(for: accountUUID).isNoteSplitNeeded()
     }
