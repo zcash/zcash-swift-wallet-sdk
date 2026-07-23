@@ -61,7 +61,7 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
 
     func testProposeMigrationTransfersDefaultThrowsUnimplemented() async {
         await assertThrowsMigrationUnimplemented {
-            _ = try await self.synchronizer.proposeMigrationTransfers(accountUUID: self.accountUUID, includeResidual: false)
+            _ = try await self.synchronizer.proposeMigrationTransfers(accountUUID: self.accountUUID)
         }
     }
 
@@ -99,12 +99,6 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
         }
     }
 
-    func testIsSyncRequiredBeforeNextMigrationTransferDefaultThrowsUnimplemented() async {
-        await assertThrowsMigrationUnimplemented {
-            _ = try await self.synchronizer.isSyncRequiredBeforeNextMigrationTransfer(accountUUID: self.accountUUID)
-        }
-    }
-
     func testExecuteNextPendingMigrationTransferDefaultThrowsUnimplemented() async {
         let options = MigrationNetworkPrivacyOptions(useTor: false, submissionEndpoint: LightWalletEndpoint(address: "submit.example", port: 9067))
         await assertThrowsMigrationUnimplemented {
@@ -126,14 +120,22 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
 
     func testRestartCurrentMigrationStepDefaultThrowsUnimplemented() async {
         await assertThrowsMigrationUnimplemented {
-            _ = try await self.synchronizer.restartCurrentMigrationStep(accountUUID: self.accountUUID, includeResidual: false)
+            _ = try await self.synchronizer.restartCurrentMigrationStep(accountUUID: self.accountUUID)
         }
     }
 
     func testRefreshStaleMigrationTransfersDefaultThrowsUnimplemented() async {
         let usk = TestsData(networkType: .testnet).spendingKey
         await assertThrowsMigrationUnimplemented {
-            _ = try await self.synchronizer.refreshStaleMigrationTransfers(accountUUID: self.accountUUID, usk: usk, includeResidual: false)
+            _ = try await self.synchronizer.refreshStaleMigrationTransfers(accountUUID: self.accountUUID, usk: usk)
+        }
+    }
+
+    /// The nil-usk (external-signer/Keystone) lane must fall through to the same default as the
+    /// real-usk call above -- `usk` being optional must not bypass the "unimplemented" default.
+    func testRefreshStaleMigrationTransfersDefaultThrowsUnimplementedWithNilUsk() async {
+        await assertThrowsMigrationUnimplemented {
+            _ = try await self.synchronizer.refreshStaleMigrationTransfers(accountUUID: self.accountUUID, usk: nil)
         }
     }
 

@@ -20,13 +20,25 @@ the unreleased surface:
   schedule means no), and only then treat the account as done. Sequential runs are first-class — a
   new commit over a completed run starts the next one.
 - **`MigrationState.readyToPropose` and `MigrationAttentionReason.syncRequiredBeforeNext` are
-  never emitted** (the note split and the schedule commit atomically). The cases remain for source
-  compatibility.
-- **`includeResidual` is accepted and ignored** everywhere it appears: the engine plans
-  canonically and the residual stays in Orchard per ZIP 318.
-- **`refreshStaleMigrationTransfers` always throws** (rebuild-on-expiry is an explicit upstream
-  later-slice); cancel and re-plan via `restartCurrentMigrationStep`, which now also cancels the
-  stored run.
+  removed** (not merely unreachable): the note split and the schedule commit atomically, so
+  neither case ever had a real value to carry. This is source-breaking for an exhaustive `switch`
+  over either enum — drop the corresponding `case`.
+- **`includeResidual` is removed** from `proposeMigrationTransfers`, `restartCurrentMigrationStep`,
+  and `refreshStaleMigrationTransfers`: the engine plans canonically and ZIP 318 keeps the residual
+  in Orchard, so the parameter never had a real choice behind it. **`isSyncRequiredBeforeNextMigrationTransfer`
+  is removed entirely** for the same reason: the note split and the schedule commit atomically, so
+  a sync-required gate before the next transfer never had a use.
+- **`refreshStaleMigrationTransfers(accountUUID:usk:)` really rebuilds expired transfers.** It
+  rebuilds every EXPIRED transfer of the stored run in place: each rebuilt transfer re-spends the
+  SAME funding note (recovered by nullifier identity, never an equal-value substitute) on a fresh
+  schedule — a fresh memoryless delay from the current tip, a fresh canonical expiry, and a
+  freshly drawn boundary anchor — and returns the count rebuilt. `usk` is now
+  `UnifiedSpendingKey?`: pass a spending key to sign each rebuilt transfer anew in-process, or
+  `nil` for the external-signer (Keystone) lane, which leaves the rebuilt transfers awaiting their
+  signature so the existing `createUnsignedMigrationTransferPCZTs` / `storeSignedMigrationSchedulePCZTs`
+  ceremony re-serves and completes them. A `FundingNoteUnavailable`-class failure (the expired
+  transfer's exact funding note was spent outside the migration) throws naming
+  `restartCurrentMigrationStep` (cancel and re-plan the remaining balance) as the remedy.
 - **Two new errors:** `migrationPlanStale` (ZRUST0128 — a commit no longer matches the previewed
   plan; propose again) and `migrationProvingUnavailable` (ZRUST0127 — proving failed hard).
 - **`MigrationTransferProposal.anchorHeight` is a reference height** (the proposal-time tip), not

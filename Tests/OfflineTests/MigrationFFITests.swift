@@ -543,6 +543,16 @@ final class MigrationFFITests: XCTestCase {
     /// a real caller, whose `Initializer`/`prepare` runs `initDataDb` before any migration read —
     /// and then verifies `migrationState()` reads `NotStarted` over the custom network the
     /// `OrchardMigration` initializer registered.
+    ///
+    /// `migrationState()` opens the account-scoped migration store, which requires a real `accounts`
+    /// row (mirroring this file's class-wide `setUp()` and its own "representative of real usage"
+    /// rationale). The FIRST `OrchardMigration.init(config:)` below registers the custom network as
+    /// a side effect (the behavior under test; its placeholder `accountUUID` is never queried) --
+    /// only once that registration has happened can any other FFI call on this network id succeed,
+    /// so `initDataDb`/`createAccount` (which discover the REAL `AccountUUID` the wallet assigns)
+    /// must run after it. The SECOND `OrchardMigration.init(config:)`, bound to that real account, is
+    /// the instance the assertion below exercises; re-registering the same activation heights is
+    /// harmlessly idempotent.
     func testOrchardMigrationRegistersCustomActivationHeightsOnInit() async throws {
         let activationHeights = NetworkActivationHeights(
             overwinter: 1,
@@ -558,19 +568,23 @@ final class MigrationFFITests: XCTestCase {
         let storageDirectory = try makeUniqueStorageDirectory()
         defer { try? FileManager.default.removeItem(at: storageDirectory) }
 
-        let migration = OrchardMigration(
-            config: OrchardMigration.Config(
+        func makeConfig(accountUUID: AccountUUID) -> OrchardMigration.Config {
+            OrchardMigration.Config(
                 dataDbURL: storageDirectory.appendingPathComponent("data.db"),
                 fsBlockDbRoot: storageDirectory.appendingPathComponent("fs_cache", isDirectory: true),
                 spendParamsURL: storageDirectory.appendingPathComponent("sapling-spend.params"),
                 outputParamsURL: storageDirectory.appendingPathComponent("sapling-output.params"),
                 network: network,
-                accountUUID: AccountUUID(id: [UInt8](repeating: 9, count: 16)),
+                accountUUID: accountUUID,
                 torDirURL: storageDirectory.appendingPathComponent("tor", isDirectory: true),
                 generalStorageURL: storageDirectory,
                 loggingPolicy: .noLogging
             )
-        )
+        }
+
+        // Registers the custom network as a side effect of `init(config:)` -- this placeholder
+        // account is never used past this point.
+        _ = OrchardMigration(config: makeConfig(accountUUID: AccountUUID(id: [UInt8](repeating: 9, count: 16))))
 
         let initBackend = ZcashRustBackend.makeForTests(
             dbData: storageDirectory.appendingPathComponent("data.db"),
@@ -582,6 +596,20 @@ final class MigrationFFITests: XCTestCase {
             XCTFail("Failed to initDataDb. Expected `.success`, got \(String(describing: dbInit))")
             return
         }
+
+        let checkpointSource = CheckpointSourceFactory.fromBundle(for: .regtest, regtestActivationHeights: activationHeights)
+        let treeState = checkpointSource.latestKnownCheckpoint().treeState()
+        _ = try await initBackend.createAccount(
+            seed: Environment.seedBytes,
+            treeState: treeState,
+            recoverUntil: nil,
+            name: "",
+            keySource: nil
+        )
+        let accounts = try await initBackend.listAccounts()
+        let accountUUID = try XCTUnwrap(accounts.first?.id)
+
+        let migration = OrchardMigration(config: makeConfig(accountUUID: accountUUID))
 
         do {
             let state = try await migration.migrationState()
