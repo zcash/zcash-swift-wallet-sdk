@@ -217,6 +217,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transfers still awaiting broadcast (`AwaitingSignature`/`Signed`/`Proved`)
   instead of merely "not yet mined", matching the field's documented contract
   ("the height at which the next transfer becomes broadcastable").
+- The Slipstream engine now retains migration anchor checkpoints. `zcashlc_slipstream_start`
+  passes the NU6.3 activation height as the engine's anchor-retention floor
+  (`EngineConfig.anchor_retention_height`) — the exact floor upstream's own
+  `WalletDb::put_blocks` caller uses — so checkpoints on the 144-block anchor grid survive
+  the engine's checkpoint downgrade/dooming/pruning. Previously the floor was never set
+  (`None` = retain nothing): a scheduled pool-migration transfer's drawn boundary anchor —
+  typically hours old by proving time, far beyond the ~100-block pruning window — was
+  pruned before `prove_transfer` ran, leaving delivery in a permanent transient
+  `AnchorNotFound` retry ("nothing due") and the migration stalled until the transfer
+  expired. The pinned `slipstream-core` rides along to the 144-block retention grid
+  (matching librustzcash #2729; the crate previously mirrored the retired 288-block
+  interval, which would have missed half the ZIP 318 boundary-draw grid).
 - Serialized overlapping Slipstream sync passes on a handle. `zcashlc_slipstream_start` cancels the previous task with tokio's non-blocking `abort()`, so an `importAccount`-triggered restart-while-running could run two `run_session` passes against the same `data.db` concurrently — a panic (surfaced as `SyncState::Error(2)` → `rustSlipstreamSyncFailed`). `run_session` now holds a per-handle `pass_lock` for the whole pass (acquired as its outermost local), so a restart's new pass cannot open the wallet DB until the aborted old pass has fully unwound and closed its connection. Fixes the "Syncing Error" hit on Keystone (imported / watch-only) wallets after restore.
 - `zcashlc_slipstream_wallet_summary` no longer serves empty balances during the ~30 s gap after a restore completes. At the `is_recovering` 1→0 flip the upstream `get_wallet_summary` transiently returns `None` (scan-progress for the just-finalized range is not yet computable), and the FFI was marshalling that as the empty `none()` sentinel — so `getAccountsBalances()` returned `[:]` and the just-restored funds briefly vanished (MOB-1513 E2-FIX). A bounded post-flip hold now synthesizes a balance-only summary from the engine-owned reconciled recovery view (`slipstream_v_recovery_balance`) across that gap. Strict safety gates: the hold engages only on an observed 1→0 flip whose recovery override was non-zero; it is capped at 120 s; the first upstream `Some` after the flip releases it permanently (upstream truth wins, even if lower); and it is suppressed/released whenever an account has a pending unmined, unexpired outgoing spend (derived from `v_transactions`), which the mined-only recovery view would otherwise over-show. A process restart inside the window observes no flip and falls back to the prior behavior. The durable fix belongs in slipstream-core's restore handoff.
 
