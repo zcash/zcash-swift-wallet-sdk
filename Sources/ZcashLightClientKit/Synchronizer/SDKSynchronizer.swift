@@ -1231,8 +1231,8 @@ public class SDKSynchronizer: Synchronizer {
         return try await migrationHost.migration(for: accountUUID).submitNoteSplit(proposal: proposal, usk: usk, options: options)
     }
 
-    public func proposeMigrationTransfers(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule {
-        try await migrationHost.migration(for: accountUUID).proposeMigrationTransfers(includeResidual: includeResidual)
+    public func proposeMigrationTransfers(accountUUID: AccountUUID) async throws -> MigrationSchedule {
+        try await migrationHost.migration(for: accountUUID).proposeMigrationTransfers()
     }
 
     public func proposeImmediateMigration(accountUUID: AccountUUID) async throws -> ImmediateMigrationProposal {
@@ -1261,10 +1261,6 @@ public class SDKSynchronizer: Synchronizer {
 
     public func signAndStoreMigrationSchedule(accountUUID: AccountUUID, _ schedule: MigrationSchedule, usk: UnifiedSpendingKey) async throws {
         try await migrationHost.migration(for: accountUUID).signAndStoreMigrationSchedule(schedule, usk: usk)
-    }
-
-    public func isSyncRequiredBeforeNextMigrationTransfer(accountUUID: AccountUUID) async throws -> Bool {
-        try await migrationHost.migration(for: accountUUID).isSyncRequiredBeforeNextTransfer()
     }
 
     public func executeNextPendingMigrationTransfer(
@@ -1299,12 +1295,12 @@ public class SDKSynchronizer: Synchronizer {
         try await migrationHost.migration(for: accountUUID).rescheduleOverdueTransfer()
     }
 
-    public func restartCurrentMigrationStep(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule {
-        try await migrationHost.migration(for: accountUUID).restartCurrentMigrationStep(includeResidual: includeResidual)
+    public func restartCurrentMigrationStep(accountUUID: AccountUUID) async throws -> MigrationSchedule {
+        try await migrationHost.migration(for: accountUUID).restartCurrentMigrationStep()
     }
 
-    public func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey, includeResidual: Bool) async throws -> UInt32 {
-        try await migrationHost.migration(for: accountUUID).refreshStaleTransfers(usk: usk, includeResidual: includeResidual)
+    public func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> UInt32 {
+        try await migrationHost.migration(for: accountUUID).refreshStaleTransfers(usk: usk)
     }
 
     public func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {

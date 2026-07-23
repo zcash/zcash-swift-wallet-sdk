@@ -299,10 +299,9 @@ actor OrchardMigration {
 
     // MARK: - Migration proposal
 
-    /// The full migration schedule for the spendable Orchard balance. When `includeResidual` is
-    /// `true` and a worthwhile residual exists, one extra transfer for it is appended.
-    func proposeMigrationTransfers(includeResidual: Bool = false) async throws -> MigrationSchedule {
-        try await welding.migrationProposeTransfers(includeResidual: includeResidual, for: accountUUID)
+    /// The full migration schedule for the spendable Orchard balance.
+    func proposeMigrationTransfers() async throws -> MigrationSchedule {
+        try await welding.migrationProposeTransfers(for: accountUUID)
     }
 
     /// Proposes the immediate (single-transaction) migration: an ordinary send-max that spends ALL
@@ -310,7 +309,7 @@ actor OrchardMigration {
     /// unified address -- post-NU6.3 the payment lands in the Ironwood pool (the UA's Orchard
     /// receiver doubles as the Ironwood receiver). Entirely outside the migration engine: the
     /// returned proposal is an ORDINARY proposal held by the caller, so no engine plan-cache
-    /// staleness applies to it (unlike ``proposeMigrationTransfers(includeResidual:)``).
+    /// staleness applies to it (unlike ``proposeMigrationTransfers()``).
     func proposeImmediateMigration() async throws -> ImmediateMigrationProposal {
         let ownAddress = try await welding.getCurrentAddress(accountUUID: accountUUID)
         let ffiProposal = try await welding.proposeSendMaxTransfer(
@@ -394,11 +393,6 @@ actor OrchardMigration {
     }
 
     // MARK: - Background execution
-
-    /// Whether a sync is required before the next transfer can proceed.
-    func isSyncRequiredBeforeNextTransfer() async throws -> Bool {
-        try await welding.migrationIsSyncRequired(for: accountUUID)
-    }
 
     /// Broadcasts the next height-due transfer, or returns `nil` when nothing is currently due.
     ///
@@ -512,17 +506,27 @@ actor OrchardMigration {
     /// already-broadcast ones are unaffected on-chain), the invalid marks are cleared, and a fresh
     /// plan is previewed for the re-confirm lane — the follow-up
     /// ``signAndStoreMigrationSchedule(_:usk:)`` / ``submitNoteSplit(proposal:usk:options:)`` (or
-    /// PCZT store) then commits it. `includeResidual` is accepted and ignored (documented-inert —
-    /// the engine plans canonically).
-    func restartCurrentMigrationStep(includeResidual: Bool = false) async throws -> MigrationSchedule {
-        try await welding.migrationRestartStep(includeResidual: includeResidual, for: accountUUID)
+    /// PCZT store) then commits it.
+    func restartCurrentMigrationStep() async throws -> MigrationSchedule {
+        try await welding.migrationRestartStep(for: accountUUID)
     }
 
-    /// Unsupported by the final migration engine (rebuild-on-expiry is an explicit upstream
-    /// later-slice): always throws. Cancel and re-plan via
-    /// ``restartCurrentMigrationStep(includeResidual:)`` instead.
-    func refreshStaleTransfers(usk: UnifiedSpendingKey, includeResidual: Bool = false) async throws -> UInt32 {
-        try await welding.migrationRefreshStaleTransfers(usk: usk, includeResidual: includeResidual, for: accountUUID)
+    /// Rebuilds every EXPIRED transfer of the stored migration run in place through the engine and
+    /// returns the number rebuilt (`0` when no run is stored, the run is terminal, or nothing has
+    /// expired).
+    ///
+    /// Each rebuilt transfer re-spends the SAME funding note (recovered from the expired PCZT by
+    /// nullifier identity, never an equal-value substitute) on a fresh schedule — a fresh
+    /// memoryless delay from the current tip, a fresh canonical expiry, and a freshly drawn
+    /// boundary anchor. Passing a spending key signs each rebuilt transfer anew in-process; passing
+    /// `nil` (an external-signer account, whose spend authority never exists on this device) leaves
+    /// it awaiting its signature, so the ``createUnsignedTransferPCZTs(for:)`` /
+    /// ``storeSignedSchedulePCZTs(_:)`` ceremony re-serves and completes it.
+    /// - Throws: notably, a `FundingNoteUnavailable`-class failure when an expired transfer's exact
+    ///   funding note was spent outside the migration, where the message names
+    ///   ``restartCurrentMigrationStep()`` (cancel and re-plan) as the remedy.
+    func refreshStaleTransfers(usk: UnifiedSpendingKey?) async throws -> UInt32 {
+        try await welding.migrationRefreshStaleTransfers(usk: usk, for: accountUUID)
     }
 
     // MARK: - External signing (PCZT)

@@ -2777,25 +2777,25 @@ class SynchronizerMock: Synchronizer {
 
     // MARK: - proposeMigrationTransfers
 
-    var proposeMigrationTransfersAccountUUIDIncludeResidualThrowableError: Error?
-    var proposeMigrationTransfersAccountUUIDIncludeResidualCallsCount = 0
-    var proposeMigrationTransfersAccountUUIDIncludeResidualCalled: Bool {
-        return proposeMigrationTransfersAccountUUIDIncludeResidualCallsCount > 0
+    var proposeMigrationTransfersAccountUUIDThrowableError: Error?
+    var proposeMigrationTransfersAccountUUIDCallsCount = 0
+    var proposeMigrationTransfersAccountUUIDCalled: Bool {
+        return proposeMigrationTransfersAccountUUIDCallsCount > 0
     }
-    var proposeMigrationTransfersAccountUUIDIncludeResidualReceivedArguments: (accountUUID: AccountUUID, includeResidual: Bool)?
-    var proposeMigrationTransfersAccountUUIDIncludeResidualReturnValue: MigrationSchedule!
-    var proposeMigrationTransfersAccountUUIDIncludeResidualClosure: ((AccountUUID, Bool) async throws -> MigrationSchedule)?
+    var proposeMigrationTransfersAccountUUIDReceivedAccountUUID: AccountUUID?
+    var proposeMigrationTransfersAccountUUIDReturnValue: MigrationSchedule!
+    var proposeMigrationTransfersAccountUUIDClosure: ((AccountUUID) async throws -> MigrationSchedule)?
 
-    func proposeMigrationTransfers(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule {
-        if let error = proposeMigrationTransfersAccountUUIDIncludeResidualThrowableError {
+    func proposeMigrationTransfers(accountUUID: AccountUUID) async throws -> MigrationSchedule {
+        if let error = proposeMigrationTransfersAccountUUIDThrowableError {
             throw error
         }
-        proposeMigrationTransfersAccountUUIDIncludeResidualCallsCount += 1
-        proposeMigrationTransfersAccountUUIDIncludeResidualReceivedArguments = (accountUUID: accountUUID, includeResidual: includeResidual)
-        if let closure = proposeMigrationTransfersAccountUUIDIncludeResidualClosure {
-            return try await closure(accountUUID, includeResidual)
+        proposeMigrationTransfersAccountUUIDCallsCount += 1
+        proposeMigrationTransfersAccountUUIDReceivedAccountUUID = accountUUID
+        if let closure = proposeMigrationTransfersAccountUUIDClosure {
+            return try await closure(accountUUID)
         } else {
-            return proposeMigrationTransfersAccountUUIDIncludeResidualReturnValue
+            return proposeMigrationTransfersAccountUUIDReturnValue
         }
     }
 
@@ -2957,30 +2957,6 @@ class SynchronizerMock: Synchronizer {
         try await signAndStoreMigrationScheduleAccountUUIDUskClosure!(accountUUID, schedule, usk)
     }
 
-    // MARK: - isSyncRequiredBeforeNextMigrationTransfer
-
-    var isSyncRequiredBeforeNextMigrationTransferAccountUUIDThrowableError: Error?
-    var isSyncRequiredBeforeNextMigrationTransferAccountUUIDCallsCount = 0
-    var isSyncRequiredBeforeNextMigrationTransferAccountUUIDCalled: Bool {
-        return isSyncRequiredBeforeNextMigrationTransferAccountUUIDCallsCount > 0
-    }
-    var isSyncRequiredBeforeNextMigrationTransferAccountUUIDReceivedAccountUUID: AccountUUID?
-    var isSyncRequiredBeforeNextMigrationTransferAccountUUIDReturnValue: Bool!
-    var isSyncRequiredBeforeNextMigrationTransferAccountUUIDClosure: ((AccountUUID) async throws -> Bool)?
-
-    func isSyncRequiredBeforeNextMigrationTransfer(accountUUID: AccountUUID) async throws -> Bool {
-        if let error = isSyncRequiredBeforeNextMigrationTransferAccountUUIDThrowableError {
-            throw error
-        }
-        isSyncRequiredBeforeNextMigrationTransferAccountUUIDCallsCount += 1
-        isSyncRequiredBeforeNextMigrationTransferAccountUUIDReceivedAccountUUID = accountUUID
-        if let closure = isSyncRequiredBeforeNextMigrationTransferAccountUUIDClosure {
-            return try await closure(accountUUID)
-        } else {
-            return isSyncRequiredBeforeNextMigrationTransferAccountUUIDReturnValue
-        }
-    }
-
     // MARK: - executeNextPendingMigrationTransfer
 
     var executeNextPendingMigrationTransferAccountUUIDOptionsThrowableError: Error?
@@ -3097,49 +3073,49 @@ class SynchronizerMock: Synchronizer {
 
     // MARK: - restartCurrentMigrationStep
 
-    var restartCurrentMigrationStepAccountUUIDIncludeResidualThrowableError: Error?
-    var restartCurrentMigrationStepAccountUUIDIncludeResidualCallsCount = 0
-    var restartCurrentMigrationStepAccountUUIDIncludeResidualCalled: Bool {
-        return restartCurrentMigrationStepAccountUUIDIncludeResidualCallsCount > 0
+    var restartCurrentMigrationStepAccountUUIDThrowableError: Error?
+    var restartCurrentMigrationStepAccountUUIDCallsCount = 0
+    var restartCurrentMigrationStepAccountUUIDCalled: Bool {
+        return restartCurrentMigrationStepAccountUUIDCallsCount > 0
     }
-    var restartCurrentMigrationStepAccountUUIDIncludeResidualReceivedArguments: (accountUUID: AccountUUID, includeResidual: Bool)?
-    var restartCurrentMigrationStepAccountUUIDIncludeResidualReturnValue: MigrationSchedule!
-    var restartCurrentMigrationStepAccountUUIDIncludeResidualClosure: ((AccountUUID, Bool) async throws -> MigrationSchedule)?
+    var restartCurrentMigrationStepAccountUUIDReceivedAccountUUID: AccountUUID?
+    var restartCurrentMigrationStepAccountUUIDReturnValue: MigrationSchedule!
+    var restartCurrentMigrationStepAccountUUIDClosure: ((AccountUUID) async throws -> MigrationSchedule)?
 
-    func restartCurrentMigrationStep(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule {
-        if let error = restartCurrentMigrationStepAccountUUIDIncludeResidualThrowableError {
+    func restartCurrentMigrationStep(accountUUID: AccountUUID) async throws -> MigrationSchedule {
+        if let error = restartCurrentMigrationStepAccountUUIDThrowableError {
             throw error
         }
-        restartCurrentMigrationStepAccountUUIDIncludeResidualCallsCount += 1
-        restartCurrentMigrationStepAccountUUIDIncludeResidualReceivedArguments = (accountUUID: accountUUID, includeResidual: includeResidual)
-        if let closure = restartCurrentMigrationStepAccountUUIDIncludeResidualClosure {
-            return try await closure(accountUUID, includeResidual)
+        restartCurrentMigrationStepAccountUUIDCallsCount += 1
+        restartCurrentMigrationStepAccountUUIDReceivedAccountUUID = accountUUID
+        if let closure = restartCurrentMigrationStepAccountUUIDClosure {
+            return try await closure(accountUUID)
         } else {
-            return restartCurrentMigrationStepAccountUUIDIncludeResidualReturnValue
+            return restartCurrentMigrationStepAccountUUIDReturnValue
         }
     }
 
     // MARK: - refreshStaleMigrationTransfers
 
-    var refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualThrowableError: Error?
-    var refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualCallsCount = 0
-    var refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualCalled: Bool {
-        return refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualCallsCount > 0
+    var refreshStaleMigrationTransfersAccountUUIDUskThrowableError: Error?
+    var refreshStaleMigrationTransfersAccountUUIDUskCallsCount = 0
+    var refreshStaleMigrationTransfersAccountUUIDUskCalled: Bool {
+        return refreshStaleMigrationTransfersAccountUUIDUskCallsCount > 0
     }
-    var refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualReceivedArguments: (accountUUID: AccountUUID, usk: UnifiedSpendingKey, includeResidual: Bool)?
-    var refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualReturnValue: UInt32!
-    var refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualClosure: ((AccountUUID, UnifiedSpendingKey, Bool) async throws -> UInt32)?
+    var refreshStaleMigrationTransfersAccountUUIDUskReceivedArguments: (accountUUID: AccountUUID, usk: UnifiedSpendingKey?)?
+    var refreshStaleMigrationTransfersAccountUUIDUskReturnValue: UInt32!
+    var refreshStaleMigrationTransfersAccountUUIDUskClosure: ((AccountUUID, UnifiedSpendingKey?) async throws -> UInt32)?
 
-    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey, includeResidual: Bool) async throws -> UInt32 {
-        if let error = refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualThrowableError {
+    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> UInt32 {
+        if let error = refreshStaleMigrationTransfersAccountUUIDUskThrowableError {
             throw error
         }
-        refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualCallsCount += 1
-        refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualReceivedArguments = (accountUUID: accountUUID, usk: usk, includeResidual: includeResidual)
-        if let closure = refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualClosure {
-            return try await closure(accountUUID, usk, includeResidual)
+        refreshStaleMigrationTransfersAccountUUIDUskCallsCount += 1
+        refreshStaleMigrationTransfersAccountUUIDUskReceivedArguments = (accountUUID: accountUUID, usk: usk)
+        if let closure = refreshStaleMigrationTransfersAccountUUIDUskClosure {
+            return try await closure(accountUUID, usk)
         } else {
-            return refreshStaleMigrationTransfersAccountUUIDUskIncludeResidualReturnValue
+            return refreshStaleMigrationTransfersAccountUUIDUskReturnValue
         }
     }
 

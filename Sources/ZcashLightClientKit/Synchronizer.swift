@@ -585,8 +585,8 @@ public protocol Synchronizer: AnyObject {
     /// `MigrationState.complete` is PER-RUN — "the stored run is fully mined", never "nothing left
     /// to migrate". A large balance can need several successive runs and later-received funds
     /// re-create a migratable balance, so hosts must NOT latch "never migrate again" off this
-    /// state: after completion, ask `proposeMigrationTransfers(accountUUID:includeResidual:)`
-    /// whether anything remains (an empty schedule means no).
+    /// state: after completion, ask `proposeMigrationTransfers(accountUUID:)` whether anything
+    /// remains (an empty schedule means no).
     /// - Parameter accountUUID: the account whose migration state is of interest.
     func migrationState(accountUUID: AccountUUID) async throws -> MigrationState
 
@@ -638,18 +638,15 @@ public protocol Synchronizer: AnyObject {
     /// caches the preview — a later commit signs exactly this plan, so always confirm the schedule
     /// the user actually saw. An EMPTY schedule means there is nothing to migrate; after a
     /// completed run this is the "does anything remain" answer of the sequential-runs contract.
-    /// - Parameters:
-    ///   - accountUUID: the account to propose a migration schedule for.
-    ///   - includeResidual: accepted and IGNORED (documented-inert): the final engine plans
-    ///     canonically, and ZIP 318 expects the residual to remain in Orchard.
-    func proposeMigrationTransfers(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule
+    /// - Parameter accountUUID: the account to propose a migration schedule for.
+    func proposeMigrationTransfers(accountUUID: AccountUUID) async throws -> MigrationSchedule
 
     /// Proposes the immediate (single-transaction) migration: an ordinary send-max that spends ALL
     /// spendable Orchard notes of `accountUUID` and pays everything minus the ZIP-317 fee to the
     /// account's own unified address -- post-NU6.3 the payment lands in the Ironwood pool (the UA's
     /// Orchard receiver doubles as the Ironwood receiver). Deterministic for unchanged wallet state.
     ///
-    /// Unlike ``proposeMigrationTransfers(accountUUID:includeResidual:)``, this is an ORDINARY
+    /// Unlike ``proposeMigrationTransfers(accountUUID:)``, this is an ORDINARY
     /// proposal: it is not held by the migration engine, so there is no plan-cache staleness to
     /// invalidate it between this call and ``createProposedTransactions(proposal:spendingKey:)`` /
     /// ``createPCZTFromProposal(accountUUID:proposal:)``. Executing it is the caller's job exactly
@@ -726,16 +723,12 @@ public protocol Synchronizer: AnyObject {
     /// - Parameters:
     ///   - accountUUID: the account the schedule belongs to.
     ///   - schedule: the schedule to sign and store, from
-    ///     ``proposeMigrationTransfers(accountUUID:includeResidual:)``. Not used by the immediate
+    ///     ``proposeMigrationTransfers(accountUUID:)``. Not used by the immediate
     ///     lane: ``proposeImmediateMigration(accountUUID:)`` returns an ordinary
     ///     ``ImmediateMigrationProposal``, executed via ``createProposedTransactions(proposal:spendingKey:)``
     ///     / ``createPCZTFromProposal(accountUUID:proposal:)`` like any other transfer.
     ///   - usk: the account's unified spending key.
     func signAndStoreMigrationSchedule(accountUUID: AccountUUID, _ schedule: MigrationSchedule, usk: UnifiedSpendingKey) async throws
-
-    /// Whether a sync is required before `accountUUID`'s next migration transfer can proceed.
-    /// - Parameter accountUUID: the account to check.
-    func isSyncRequiredBeforeNextMigrationTransfer(accountUUID: AccountUUID) async throws -> Bool
 
     /// Broadcasts the next height-due migration transfer for `accountUUID`, or returns `nil` when
     /// nothing is currently due.
@@ -807,25 +800,33 @@ public protocol Synchronizer: AnyObject {
     /// The old plan is no longer valid: the engine discards it and derives a new one, which a
     /// follow-up ``signAndStoreMigrationSchedule(accountUUID:_:usk:)`` (or PCZT store) then signs and
     /// persists.
-    /// - Parameters:
-    ///   - accountUUID: the account to restart.
-    ///   - includeResidual: should match the choice made when the schedule being restarted was first
-    ///     proposed.
-    func restartCurrentMigrationStep(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule
+    /// - Parameter accountUUID: the account to restart.
+    func restartCurrentMigrationStep(accountUUID: AccountUUID) async throws -> MigrationSchedule
 
-    /// Re-proposes at a fresh anchor and re-signs `accountUUID`'s active run's scheduled transfers;
-    /// returns the number refreshed.
+    /// Rebuilds every EXPIRED transfer of `accountUUID`'s stored migration run in place through the
+    /// engine and returns the number of transfers rebuilt (`0` when no run is stored, the run is
+    /// terminal, or nothing has expired).
     ///
-    /// Unlike ``restartCurrentMigrationStep(accountUUID:includeResidual:)``, this re-signs the *same*
-    /// logical plan (only the anchor moves) and returns a count rather than a schedule. The transfer
-    /// ids are unchanged but their anchors have moved, so a host that persisted the committed
-    /// schedule for display should re-fetch the current heights (e.g. via
+    /// Each rebuilt transfer re-spends the SAME funding note (recovered from the expired transfer by
+    /// nullifier identity, never an equal-value substitute) on a fresh schedule — a fresh
+    /// memoryless delay from the current tip, a fresh canonical expiry, and a freshly drawn
+    /// boundary anchor. The transfer ids are unchanged but their anchors have moved, so a host that
+    /// persisted the committed schedule for display should re-fetch the current heights (e.g. via
     /// ``rescheduleOverdueMigrationTransfer(accountUUID:)``) rather than trust its stored copy.
     /// - Parameters:
     ///   - accountUUID: the account to refresh.
-    ///   - usk: the account's unified spending key.
-    ///   - includeResidual: should match the schedule's original choice.
-    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey, includeResidual: Bool) async throws -> UInt32
+    ///   - usk: the account's unified spending key, or `nil` for the external-signer (Keystone)
+    ///     lane. Passing a key signs each rebuilt transfer anew in-process; passing `nil` (an
+    ///     account whose spend authority never exists on this device) leaves the rebuilt transfers
+    ///     awaiting their signature, so the existing
+    ///     ``createUnsignedMigrationTransferPCZTs(accountUUID:for:)`` /
+    ///     ``storeSignedMigrationSchedulePCZTs(accountUUID:_:)`` ceremony re-serves and completes
+    ///     them.
+    /// - Throws: notably, a `FundingNoteUnavailable`-class failure when an expired transfer's exact
+    ///   funding note was spent outside the migration — the underlying message names
+    ///   ``restartCurrentMigrationStep(accountUUID:)`` (cancel and re-plan the remaining balance) as
+    ///   the remedy.
+    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> UInt32
 
     /// Builds `accountUUID`'s whole previewed migration UNSIGNED — the run is created by this
     /// call, with every transaction persisted awaiting its signature — and returns the preparation
@@ -890,8 +891,8 @@ private struct BroadcasterUnimplemented: LocalizedError {
 /// Error thrown by the default implementations of the throwing members of the migration group (see
 /// `public extension Synchronizer` below) when a conformer doesn't override them. One shared,
 /// member-parameterized type rather than one hoisted struct per member (as
-/// ``GetTreeStateUnimplemented``/``BroadcasterUnimplemented`` do): the migration group has 24
-/// throwing requirements, and duplicating that two-struct precedent 24 times over would be pure
+/// ``GetTreeStateUnimplemented``/``BroadcasterUnimplemented`` do): the migration group has 23
+/// throwing requirements, and duplicating that two-struct precedent 23 times over would be pure
 /// boilerplate for the same LocalizedError-conforming, "override this in your conformer" pattern.
 /// Hoisted to file scope for the same reason as those two — protocol-extension methods carry an
 /// implicit `Self` and so count as generic, and Swift forbids nesting concrete types with
@@ -1001,7 +1002,7 @@ public extension Synchronizer {
         throw MigrationUnimplemented(member: #function)
     }
 
-    func proposeMigrationTransfers(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule {
+    func proposeMigrationTransfers(accountUUID: AccountUUID) async throws -> MigrationSchedule {
         throw MigrationUnimplemented(member: #function)
     }
 
@@ -1030,10 +1031,6 @@ public extension Synchronizer {
     }
 
     func signAndStoreMigrationSchedule(accountUUID: AccountUUID, _ schedule: MigrationSchedule, usk: UnifiedSpendingKey) async throws {
-        throw MigrationUnimplemented(member: #function)
-    }
-
-    func isSyncRequiredBeforeNextMigrationTransfer(accountUUID: AccountUUID) async throws -> Bool {
         throw MigrationUnimplemented(member: #function)
     }
 
@@ -1069,11 +1066,11 @@ public extension Synchronizer {
         throw MigrationUnimplemented(member: #function)
     }
 
-    func restartCurrentMigrationStep(accountUUID: AccountUUID, includeResidual: Bool) async throws -> MigrationSchedule {
+    func restartCurrentMigrationStep(accountUUID: AccountUUID) async throws -> MigrationSchedule {
         throw MigrationUnimplemented(member: #function)
     }
 
-    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey, includeResidual: Bool) async throws -> UInt32 {
+    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> UInt32 {
         throw MigrationUnimplemented(member: #function)
     }
 
