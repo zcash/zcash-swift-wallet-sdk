@@ -753,11 +753,15 @@ public protocol Synchronizer: AnyObject {
     ///   - accountUUID: the account the schedule belongs to.
     ///   - schedule: the schedule to sign and store, from
     ///     ``proposeMigrationTransfers(accountUUID:)``. This is a VERIFIED consent echo, not an
-    ///     inert display value: the engine pins its ids, amounts, expiry heights, and estimated
-    ///     duration against the previewed plan (or, once a run is committed, against the stored
-    ///     run itself; next-executable heights are not compared post-commit, and anchor heights
-    ///     never are), so a stale or tampered display can never sign different values than the
-    ///     ones the user approved. Not used by the immediate
+    ///     inert display value: the engine pins its ids, amounts, and expiry heights against the
+    ///     previewed plan (or, once a run is committed, against the stored run itself). The
+    ///     estimated duration and next-executable height are additionally checked against the
+    ///     preview before commit but never post-commit: a refresh rebuilds an expired transfer
+    ///     with a fresh scheduled height, and the duration is measured from serve time — so an
+    ///     honest echo of an earlier serve can legitimately disagree with a later re-derivation,
+    ///     with no way to converge by re-proposing. The anchor height is display-only, never
+    ///     compared. A stale or tampered display can never sign different values than the ones
+    ///     the user approved. Not used by the immediate
     ///     lane: ``proposeImmediateMigration(accountUUID:)`` returns an ordinary
     ///     ``ImmediateMigrationProposal``, executed via ``createProposedTransactions(proposal:spendingKey:)``
     ///     / ``createPCZTFromProposal(accountUUID:proposal:)`` like any other transfer.
@@ -896,11 +900,14 @@ public protocol Synchronizer: AnyObject {
     /// - Parameters:
     ///   - accountUUID: the account the schedule belongs to.
     ///   - schedule: the schedule to build PCZTs for. This is a VERIFIED consent echo, not an
-    ///     inert display value: the engine pins its ids, amounts, expiry heights, and estimated
-    ///     duration against the stored committed run it serves from (next-executable heights are
-    ///     not compared post-commit, and anchor heights never are), so a stale or tampered
-    ///     display cannot route different values than the ones the user approved into the
-    ///     signing ceremony.
+    ///     inert display value: the engine pins its ids, amounts, and expiry heights against the
+    ///     stored committed run it serves from, so a stale or tampered display cannot route
+    ///     different values than the ones the user approved into the signing ceremony. The
+    ///     estimated duration and next-executable height are accepted but not compared
+    ///     post-commit (a refresh rebuilds expired transfers with fresh scheduled heights, and
+    ///     the duration is measured from serve time — an honest echo of an earlier serve can
+    ///     legitimately disagree with a later re-derivation, with no way to converge by
+    ///     re-proposing); the anchor height is display-only, never compared.
     /// - Throws: `ZcashError.migrationPlanStale` when the echoed schedule mismatches the stored
     ///   run — re-read the current stored schedule
     ///   (``refreshStaleMigrationTransfers(accountUUID:usk:)`` returns exactly that) and
