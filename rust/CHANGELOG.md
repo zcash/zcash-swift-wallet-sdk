@@ -195,6 +195,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. The hand-rolled checks are replaced by the engine's own
   `expired_transactions(target)`; transfers now become due and expire exactly one
   block earlier, consistently across every read.
+- Transfer amounts are now read from the engine's authoritative
+  `NoteSplitPlan::crossing_values()` (on both the previewed plan and the stored
+  state) instead of re-deriving them as `funding_notes()[i] − note_fee_buffer` at
+  three marshal sites. The values are identical by construction at the pinned
+  engine (`funding_notes()` is exactly `crossing_values()[i] + buffer`, 1:1 —
+  the old comment's "post-reconciliation divergence" described a retired
+  pre-finalization engine and no longer exists), so this removes the duplicated
+  formula rather than changing any displayed number; a test pins the identity
+  both ways.
+- `FfiMigrationProgress.next_transfer_ready_at_height` no longer reports the
+  height of a transfer that is already in the mempool: the minimum is taken over
+  transfers still awaiting broadcast (`AwaitingSignature`/`Signed`/`Proved`)
+  instead of merely "not yet mined", matching the field's documented contract
+  ("the height at which the next transfer becomes broadcastable").
 
 ### Fixed
 - Updated `zcash_client_sqlite` to 0.21.1, fixing an `InvalidParameterName` error in `delete_account` when the account being deleted is referenced by a `sent_notes` row via its `to_account_id` column (i.e. an account involved in a cross-account transfer) ([librustzcash#2426](https://github.com/zcash/librustzcash/pull/2426)).
