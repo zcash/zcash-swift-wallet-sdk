@@ -32,17 +32,28 @@ the unreleased surface:
   rebuilds every EXPIRED transfer of the stored run in place: each rebuilt transfer re-spends the
   SAME funding note (recovered by nullifier identity, never an equal-value substitute) on a fresh
   schedule — a fresh memoryless delay from the current tip, a fresh canonical expiry, and a
-  freshly drawn boundary anchor — and returns the count rebuilt, persisted ALL-OR-NOTHING: a
-  mid-refresh failure persists NONE of the batch's rebuilds, so a successful return's count is
-  exactly what was atomically committed, never a partial batch. `usk` is now
+  freshly drawn boundary anchor — and returns the run's full `MigrationSchedule` as stored AFTER
+  the refresh (the current stored schedule when nothing had expired; empty when no run is stored
+  or the run is terminal), persisted ALL-OR-NOTHING: a mid-refresh failure persists NONE of the
+  batch's rebuilds, so a successful return's schedule is exactly what was atomically committed,
+  never a partial batch. The rebuilt rows' fresh scheduled/expiry heights exist nowhere but in
+  that returned schedule — re-display it and use it for every later consent echo; a pre-refresh
+  copy fails the verified echo with `migrationPlanStale` from then on. `usk` is now
   `UnifiedSpendingKey?`: pass a spending key to sign each rebuilt transfer anew in-process, or
   `nil` for the external-signer (Keystone) lane, which leaves the rebuilt transfers awaiting their
   signature so the existing `createUnsignedMigrationTransferPCZTs` / `storeSignedMigrationSchedulePCZTs`
   ceremony re-serves and completes them. A `FundingNoteUnavailable`-class failure (the expired
   transfer's exact funding note was spent outside the migration) throws naming
   `restartCurrentMigrationStep` (cancel and re-plan the remaining balance) as the remedy.
-- **Two new errors:** `migrationPlanStale` (ZRUST0128 — a commit no longer matches the previewed
-  plan; propose again) and `migrationProvingUnavailable` (ZRUST0127 — proving failed hard).
+- **Two new errors:** `migrationPlanStale` (ZRUST0128 — the schedule/note-split consent echo no
+  longer matches what is about to be signed; the echo is VERIFIED, never inert display data.
+  Recovery depends on when it fires: BEFORE a run is committed, the mismatch is against the
+  previewed plan — propose again and re-display. AFTER a run is committed, the mismatch is
+  against the stored run itself, and re-proposing cannot converge (proposals re-randomize and
+  never touch the committed run) — instead re-read the current stored schedule, which
+  `refreshStaleMigrationTransfers(accountUUID:usk:)` returns and the unsigned-transfer PCZT
+  serve path works from, and re-display that) and `migrationProvingUnavailable` (ZRUST0127 —
+  proving failed hard).
 - **`MigrationTransferProposal.anchorHeight` is a reference height** (the proposal-time tip), not
   a commitment-tree anchor: ZIP 374 defers real anchors to proving time.
 

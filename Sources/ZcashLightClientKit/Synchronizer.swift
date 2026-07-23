@@ -723,11 +723,20 @@ public protocol Synchronizer: AnyObject {
     /// - Parameters:
     ///   - accountUUID: the account the schedule belongs to.
     ///   - schedule: the schedule to sign and store, from
-    ///     ``proposeMigrationTransfers(accountUUID:)``. Not used by the immediate
+    ///     ``proposeMigrationTransfers(accountUUID:)``. This is a VERIFIED consent echo, not an
+    ///     inert display value: the engine pins its ids, amounts, expiry heights, and estimated
+    ///     duration against the previewed plan (or, once a run is committed, against the stored
+    ///     run itself; next-executable heights are not compared post-commit, and anchor heights
+    ///     never are), so a stale or tampered display can never sign different values than the
+    ///     ones the user approved. Not used by the immediate
     ///     lane: ``proposeImmediateMigration(accountUUID:)`` returns an ordinary
     ///     ``ImmediateMigrationProposal``, executed via ``createProposedTransactions(proposal:spendingKey:)``
     ///     / ``createPCZTFromProposal(accountUUID:proposal:)`` like any other transfer.
     ///   - usk: the account's unified spending key.
+    /// - Throws: `ZcashError.migrationPlanStale` when the echoed schedule mismatches what is about
+    ///   to be signed — re-propose and re-display (pre-commit), or re-read the current stored
+    ///   schedule (post-commit; see ``refreshStaleMigrationTransfers(accountUUID:usk:)``'s return
+    ///   value) — and rust-layer errors otherwise.
     func signAndStoreMigrationSchedule(accountUUID: AccountUUID, _ schedule: MigrationSchedule, usk: UnifiedSpendingKey) async throws
 
     /// Broadcasts the next height-due migration transfer for `accountUUID`, or returns `nil` when
@@ -857,7 +866,17 @@ public protocol Synchronizer: AnyObject {
     /// signer.
     /// - Parameters:
     ///   - accountUUID: the account the schedule belongs to.
-    ///   - schedule: the schedule to build PCZTs for.
+    ///   - schedule: the schedule to build PCZTs for. This is a VERIFIED consent echo, not an
+    ///     inert display value: the engine pins its ids, amounts, expiry heights, and estimated
+    ///     duration against the stored committed run it serves from (next-executable heights are
+    ///     not compared post-commit, and anchor heights never are), so a stale or tampered
+    ///     display cannot route different values than the ones the user approved into the
+    ///     signing ceremony.
+    /// - Throws: `ZcashError.migrationPlanStale` when the echoed schedule mismatches the stored
+    ///   run — re-read the current stored schedule
+    ///   (``refreshStaleMigrationTransfers(accountUUID:usk:)`` returns exactly that) and
+    ///   re-display it; re-proposing cannot converge on a committed run — and rust-layer errors
+    ///   otherwise.
     func createUnsignedMigrationTransferPCZTs(accountUUID: AccountUUID, for schedule: MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt]
 
     /// Accepts the full set of `accountUUID`'s externally signed transfer PCZTs (all-or-nothing),
