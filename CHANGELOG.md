@@ -7,7 +7,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 # Unreleased
 
 ## Added
-- Orchard→Ironwood pool-migration engine, exposed as a 27-member migration group on the
+- Orchard→Ironwood pool-migration engine, exposed as a 26-member migration group on the
   `Synchronizer` protocol, built over the pool-migration FFI/welding layer introduced in the entry
   below: the app talks only to `Synchronizer` — the per-account migration engine, broadcaster, and
   privacy gate behind it are internal. Account-scoped members take an `AccountUUID`, and two
@@ -20,8 +20,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`executeNextPendingMigrationTransfer` — migration members work without `prepare()`, so a
   background session can broadcast without starting sync; the delivery lane serves preparation
   transactions and transfers alike, proving each at broadcast time per ZIP 374), overdue/invalid
-  detection with the stored-run reschedule accessor and cancel-and-replan restart recovery
-  (`refreshStaleMigrationTransfers` always throws: rebuild-on-expiry is an upstream later-slice),
+  detection with the stored-run reschedule accessor, cancel-and-replan restart recovery
+  (`restartCurrentMigrationStep`), and rebuild-on-expiry recovery
+  (`refreshStaleMigrationTransfers(accountUUID:usk:)` rebuilds every EXPIRED transfer of the stored
+  run in place — the same funding note on a fresh schedule/expiry/boundary — with an optional `usk`
+  selecting the in-process-sign or external-signer (Keystone) lane; a funding note spent outside the
+  migration surfaces an error naming `restartCurrentMigrationStep` as the remedy),
   the per-run `complete` + fresh-propose sequential-runs contract, and an external-signer (PCZT)
   path for hardware wallets (`createUnsignedNoteSplitPCZTs` / `storeSignedNoteSplitPCZTs` — plural:
   the engine builds N preparation transactions, and one ceremony signs them together with

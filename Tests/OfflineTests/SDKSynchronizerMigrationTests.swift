@@ -2,7 +2,7 @@
 //  SDKSynchronizerMigrationTests.swift
 //  OfflineTests
 //
-//  Tests `SDKSynchronizer`'s migration group (R4-B): the 27 protocol requirements as thin forwards
+//  Tests `SDKSynchronizer`'s migration group (R4-B): the 26 protocol requirements as thin forwards
 //  to a seamed `OrchardMigrationHost`, and the two SDK-enforced session-separation behaviors --
 //  the start() privacy gate and the submitNoteSplit/executeNextPendingMigrationTransfer broadcast
 //  guard. Driven through the host's injecting initializer + a scripted actor factory, mirroring
@@ -63,29 +63,16 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
         XCTAssertEqual(welding.migrationPrepareNoteSplitForReceivedAccount, accountUUID)
     }
 
-    func testProposeMigrationTransfersForwardsIncludeResidual() async throws {
+    func testProposeMigrationTransfersForwardsToTheAccountsActor() async throws {
         let welding = ZcashRustBackendWeldingMock()
         let expected = MigrationSchedule(transfers: [], estimatedDurationHours: 3)
-        welding.migrationProposeTransfersIncludeResidualForReturnValue = expected
+        welding.migrationProposeTransfersForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
 
-        let schedule = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID, includeResidual: true)
+        let schedule = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID)
 
         XCTAssertEqual(schedule, expected)
-        let received = welding.migrationProposeTransfersIncludeResidualForReceivedArguments
-        XCTAssertEqual(received?.account, accountUUID)
-        XCTAssertEqual(received?.includeResidual, true)
-    }
-
-    func testIsSyncRequiredBeforeNextMigrationTransferForwards() async throws {
-        let welding = ZcashRustBackendWeldingMock()
-        welding.migrationIsSyncRequiredForReturnValue = true
-        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
-
-        let required = try await synchronizer.isSyncRequiredBeforeNextMigrationTransfer(accountUUID: accountUUID)
-
-        XCTAssertTrue(required)
-        XCTAssertEqual(welding.migrationIsSyncRequiredForReceivedAccount, accountUUID)
+        XCTAssertEqual(welding.migrationProposeTransfersForReceivedAccount, accountUUID)
     }
 
     func testHasOverdueMigrationTransfersForwards() async throws {
@@ -99,6 +86,39 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
         XCTAssertEqual(welding.migrationHasOverdueTransfersForReceivedAccount, accountUUID)
     }
 
+    /// `refreshStaleMigrationTransfers`'s external-signer (Keystone) lane: a `nil` usk must reach
+    /// the welding call as `nil`, not be coerced into some non-optional stand-in -- the engine
+    /// itself branches on nilness to select the unsigned-rebuild path (see
+    /// `OrchardMigration.refreshStaleTransfers(usk:)`).
+    func testRefreshStaleMigrationTransfersForwardsNilUskForTheExternalSignerLane() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.migrationRefreshStaleTransfersUskForReturnValue = 2
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let refreshed = try await synchronizer.refreshStaleMigrationTransfers(accountUUID: accountUUID, usk: nil)
+
+        XCTAssertEqual(refreshed, 2)
+        let received = welding.migrationRefreshStaleTransfersUskForReceivedArguments
+        XCTAssertEqual(received?.account, accountUUID)
+        XCTAssertNil(received?.usk, "a nil usk must forward as nil, selecting the external-signer lane")
+    }
+
+    /// The sibling of the nil-usk test above: a real spending key must forward untouched, selecting
+    /// the in-process sign-anew lane.
+    func testRefreshStaleMigrationTransfersForwardsARealUskForTheInProcessLane() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.migrationRefreshStaleTransfersUskForReturnValue = 1
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+        let usk = TestsData(networkType: .testnet).spendingKey
+
+        let refreshed = try await synchronizer.refreshStaleMigrationTransfers(accountUUID: accountUUID, usk: usk)
+
+        XCTAssertEqual(refreshed, 1)
+        let received = welding.migrationRefreshStaleTransfersUskForReceivedArguments
+        XCTAssertEqual(received?.account, accountUUID)
+        XCTAssertEqual(received?.usk, usk)
+    }
+
     /// The sequential-runs contract at the API level: `.complete` is per-run, and the authority
     /// for "does anything remain to migrate" is a fresh propose — an empty schedule means no, a
     /// non-empty one is the next run's proposal. Hosts must not latch "never migrate again" off
@@ -106,7 +126,7 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
     func testAfterCompleteProposeMigrationTransfersAnswersWhetherAnythingRemains() async throws {
         let welding = ZcashRustBackendWeldingMock()
         welding.migrationStateForReturnValue = .complete
-        welding.migrationProposeTransfersIncludeResidualForReturnValue = MigrationSchedule(
+        welding.migrationProposeTransfersForReturnValue = MigrationSchedule(
             transfers: [],
             estimatedDurationHours: 0
         )
@@ -115,7 +135,7 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
         let state = try await synchronizer.migrationState(accountUUID: accountUUID)
         XCTAssertEqual(state, .complete)
 
-        let remains = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID, includeResidual: false)
+        let remains = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID)
         XCTAssertTrue(remains.transfers.isEmpty, "an empty schedule is the 'nothing remains' answer")
 
         // Funds arrive later (or a large balance needed another round): the same call now answers
@@ -132,8 +152,8 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
             ],
             estimatedDurationHours: 1
         )
-        welding.migrationProposeTransfersIncludeResidualForReturnValue = nextRun
-        let proposed = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID, includeResidual: false)
+        welding.migrationProposeTransfersForReturnValue = nextRun
+        let proposed = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID)
         XCTAssertEqual(proposed, nextRun, "a non-empty schedule is the next run's proposal")
     }
 
