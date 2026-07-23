@@ -2,7 +2,7 @@
 //  SlipstreamSynchronizerMigrationTests.swift
 //  OfflineTests
 //
-//  Tests `SlipstreamSynchronizer`'s migration group (R4-C): the same 23 `Synchronizer` protocol
+//  Tests `SlipstreamSynchronizer`'s migration group (R4-C): the same 26 `Synchronizer` protocol
 //  requirements `SDKSynchronizer` implements (see `SDKSynchronizerMigrationTests`), as thin forwards
 //  to a seamed `OrchardMigrationHost`, plus the two SDK-enforced session-separation behaviors -- the
 //  `start()` privacy gate and the `submitNoteSplit`/`executeNextPendingMigrationTransfer` broadcast
@@ -81,29 +81,16 @@ final class SlipstreamSynchronizerMigrationTests: ZcashTestCase {
         XCTAssertEqual(welding.migrationPrepareNoteSplitForReceivedAccount, accountUUID)
     }
 
-    func testProposeMigrationTransfersForwardsIncludeResidual() async throws {
+    func testProposeMigrationTransfersForwardsToTheAccountsActor() async throws {
         let welding = ZcashRustBackendWeldingMock()
         let expected = MigrationSchedule(transfers: [], estimatedDurationHours: 3)
-        welding.migrationProposeTransfersIncludeResidualForReturnValue = expected
+        welding.migrationProposeTransfersForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
 
-        let schedule = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID, includeResidual: true)
+        let schedule = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID)
 
         XCTAssertEqual(schedule, expected)
-        let received = welding.migrationProposeTransfersIncludeResidualForReceivedArguments
-        XCTAssertEqual(received?.account, accountUUID)
-        XCTAssertEqual(received?.includeResidual, true)
-    }
-
-    func testIsSyncRequiredBeforeNextMigrationTransferForwards() async throws {
-        let welding = ZcashRustBackendWeldingMock()
-        welding.migrationIsSyncRequiredForReturnValue = true
-        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
-
-        let required = try await synchronizer.isSyncRequiredBeforeNextMigrationTransfer(accountUUID: accountUUID)
-
-        XCTAssertTrue(required)
-        XCTAssertEqual(welding.migrationIsSyncRequiredForReceivedAccount, accountUUID)
+        XCTAssertEqual(welding.migrationProposeTransfersForReceivedAccount, accountUUID)
     }
 
     func testHasOverdueMigrationTransfersForwards() async throws {
@@ -115,6 +102,54 @@ final class SlipstreamSynchronizerMigrationTests: ZcashTestCase {
 
         XCTAssertTrue(overdue)
         XCTAssertEqual(welding.migrationHasOverdueTransfersForReceivedAccount, accountUUID)
+    }
+
+    /// `refreshStaleMigrationTransfers`'s external-signer (Keystone) lane: a `nil` usk must reach
+    /// the welding call as `nil`, not be coerced into some non-optional stand-in -- the engine
+    /// itself branches on nilness to select the unsigned-rebuild path (see
+    /// `OrchardMigration.refreshStaleTransfers(usk:)`) -- and the welding's post-refresh stored
+    /// schedule must flow back to the caller unmodified (it is the truth the host re-displays and
+    /// echoes on the consent-verified calls).
+    func testRefreshStaleMigrationTransfersForwardsNilUskForTheExternalSignerLane() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let expected = MigrationSchedule(
+            transfers: [
+                MigrationTransferProposal(
+                    id: "3",
+                    amount: Zatoshi(100_000_000),
+                    anchorHeight: 3_600_000,
+                    nextExecutableAfterHeight: 3_600_100,
+                    expiryHeight: 3_640_000
+                )
+            ],
+            estimatedDurationHours: 2
+        )
+        welding.migrationRefreshStaleTransfersUskForReturnValue = expected
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let refreshed = try await synchronizer.refreshStaleMigrationTransfers(accountUUID: accountUUID, usk: nil)
+
+        XCTAssertEqual(refreshed, expected)
+        let received = welding.migrationRefreshStaleTransfersUskForReceivedArguments
+        XCTAssertEqual(received?.account, accountUUID)
+        XCTAssertNil(received?.usk, "a nil usk must forward as nil, selecting the external-signer lane")
+    }
+
+    /// The sibling of the nil-usk test above: a real spending key must forward untouched, selecting
+    /// the in-process sign-anew lane, with the returned schedule again round-tripping unmodified.
+    func testRefreshStaleMigrationTransfersForwardsARealUskForTheInProcessLane() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let expected = MigrationSchedule(transfers: [], estimatedDurationHours: 0)
+        welding.migrationRefreshStaleTransfersUskForReturnValue = expected
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+        let usk = TestsData(networkType: .testnet).spendingKey
+
+        let refreshed = try await synchronizer.refreshStaleMigrationTransfers(accountUUID: accountUUID, usk: usk)
+
+        XCTAssertEqual(refreshed, expected)
+        let received = welding.migrationRefreshStaleTransfersUskForReceivedArguments
+        XCTAssertEqual(received?.account, accountUUID)
+        XCTAssertEqual(received?.usk, usk)
     }
 
     func testCreateUnsignedNoteSplitPCZTsForwards() async throws {
