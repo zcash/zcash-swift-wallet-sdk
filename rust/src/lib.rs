@@ -4974,6 +4974,26 @@ pub unsafe extern "C" fn zcashlc_slipstream_set_alternate_servers(
     unwrap_exc_or(res, false)
 }
 
+/// [B6] The anchor-retention floor for the slipstream engine: the NU6.3 activation
+/// height, exactly the floor upstream's own `WalletDb::put_blocks` caller passes
+/// (`zcash_client_sqlite`), so checkpoints on the 144-block anchor grid from
+/// activation onward survive the engine's checkpoint downgrade/dooming/pruning.
+/// The pool-migration engine pre-signs every transfer against a drawn boundary
+/// anchor on that grid and proves it hours later — without this floor the
+/// engine's persist path retains nothing (`EngineConfig.anchor_retention_height`
+/// defaults to `None`) and the boundary checkpoint is pruned ~100 blocks behind
+/// the tip, leaving `prove_transfer` in a permanent transient `AnchorNotFound`
+/// retry and the scheduled migration stalled until expiry.
+///
+/// `None` (a network without NU6.3, e.g. a custom regtest without the upgrade)
+/// keeps retention off — there are no boundary anchors to retain for. Generic
+/// over [`Parameters`] (the slipstream handle stores the plain [`Network`]).
+fn slipstream_anchor_retention_floor<P: Parameters>(network: &P) -> Option<u32> {
+    network
+        .activation_height(NetworkUpgrade::Nu6_3)
+        .map(u32::from)
+}
+
 /// Starts a Slipstream sync pass.
 ///
 /// - `handle`: non-null pointer returned by [`zcashlc_slipstream_open`].
@@ -5085,6 +5105,11 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         // T8.4: derate fetch/split budgets on <3 GiB devices from the open-time
         // physical-memory hint (0 = unknown → defaults). Explicit field overrides win.
         .scaled_for_device_memory(h.total_memory_bytes);
+
+        // [B6] Anchor-retention floor — see `slipstream_anchor_retention_floor`:
+        // without it the engine retains no anchor checkpoints and every scheduled
+        // migration transfer's drawn boundary is pruned before proving time.
+        cfg.anchor_retention_height = slipstream_anchor_retention_floor(&h.network);
 
         // v0.3 : GPU Orchard subtree offload. Compiled only with `--features gpu`;
         // opt in at runtime via the ZCASH_GPU_SUBTREE env var (the dev A/B for the device
@@ -6582,5 +6607,51 @@ mod post_flip_hold_tests {
         insert_tx(&conn, uuid(3), None, 0, Some(0)); // acct3: pure receive → safe
         let set = read_unmined_spend_accounts_conn(&conn).unwrap();
         assert_eq!(set, std::collections::HashSet::from([uuid(1)]));
+    }
+}
+
+#[cfg(test)]
+mod slipstream_anchor_retention_tests {
+    use super::slipstream_anchor_retention_floor;
+    use zcash_protocol::consensus::{Network, NetworkUpgrade, Parameters};
+    use zcash_protocol::local_consensus::LocalNetwork;
+
+    /// [B6] The slipstream engine's anchor-retention floor is the NU6.3 activation
+    /// height — the exact floor upstream's own `put_blocks` caller passes — so every
+    /// drawn boundary anchor a migration pre-signed against stays witnessable. The
+    /// handle stores the plain [`Network`], so the floor is exercised on it directly.
+    #[test]
+    fn floor_is_nu63_activation_on_standard_networks() {
+        for network in [Network::MainNetwork, Network::TestNetwork] {
+            let expected = network
+                .activation_height(NetworkUpgrade::Nu6_3)
+                .map(u32::from);
+            assert_eq!(slipstream_anchor_retention_floor(&network), expected);
+            // The pin must define NU6.3 on both standard networks — a `None` here
+            // would silently disable anchor retention and stall scheduled transfers.
+            assert!(
+                slipstream_anchor_retention_floor(&network).is_some(),
+                "NU6.3 activation must be defined for {network:?}"
+            );
+        }
+    }
+
+    /// A network without NU6.3 has nothing to retain for: floor off (`None`),
+    /// matching the engine's documented pre-B6 default behavior.
+    #[test]
+    fn floor_is_none_without_nu63() {
+        let no_nu63 = LocalNetwork {
+            overwinter: None,
+            sapling: None,
+            blossom: None,
+            heartwood: None,
+            canopy: None,
+            nu5: None,
+            nu6: None,
+            nu6_1: None,
+            nu6_2: None,
+            nu6_3: None,
+        };
+        assert_eq!(slipstream_anchor_retention_floor(&no_nu63), None);
     }
 }
