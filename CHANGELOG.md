@@ -69,8 +69,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zcash_client_sqlite::pool_migration` — both on librustzcash main since PR #2712 merged — so
   several accounts of one wallet database — a software account next to an imported
   hardware-wallet account — migrate independently, concurrently or one after another; the
-  family pin targets the standing aggregation branch carrying the still-unmerged note locking
-  #2716 and boundary-anchor proving #2710). The
+  family pin targets a plain librustzcash main rev, with note locking #2716 and boundary-anchor
+  proving #2710 both merged). The
   engine is bound through 24 `zcashlc_migration_*` FFI functions plus the
   `zcashlc_ironwood_activation_height` helper (house conventions throughout: catch_panic,
   thread-local last-error channel, paired free functions), welded as `@DBActor` methods on the
