@@ -180,7 +180,21 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   excluding locked notes, and `zcashlc_migration_unlock_residual` still clears
   the account's locks wholesale.
 
-## 2.6.0-alpha.6 - 2026-06-26
+### Fixed
+- Migration due-ness and expiry are now evaluated on the engine's target-height
+  contract (`chain tip + 1`, the height of the next block) everywhere, matching
+  `zcash_pool_migration_backend`'s `MigrationState` queries. The read paths
+  (`zcashlc_migration_state`/`_progress` state derivation,
+  `zcashlc_migration_has_overdue_transfers`, `zcashlc_migration_has_invalid_transfers`,
+  `zcashlc_migration_next_due_transfer`, `zcashlc_migration_pending_transfer_proposal`)
+  previously passed the raw tip and two sites hand-rolled the expiry predicate as
+  `tip > expiry_height` with no "never expires" (`expiry_height == 0`) guard — so at
+  `tip == expiry_height` the SDK still reported a transfer in progress (and could
+  serve its doomed broadcast, recording a spurious terminal `expired` mark) while
+  the refresh lane, already on engine semantics, considered it expired and rebuilt
+  it. The hand-rolled checks are replaced by the engine's own
+  `expired_transactions(target)`; transfers now become due and expire exactly one
+  block earlier, consistently across every read.
 
 ### Fixed
 - Updated `zcash_client_sqlite` to 0.21.1, fixing an `InvalidParameterName` error in `delete_account` when the account being deleted is referenced by a `sent_notes` row via its `to_account_id` column (i.e. an account involved in a cross-account transfer) ([librustzcash#2426](https://github.com/zcash/librustzcash/pull/2426)).
