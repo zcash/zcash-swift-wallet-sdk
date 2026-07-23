@@ -810,9 +810,10 @@ public protocol Synchronizer: AnyObject {
     /// Each rebuilt transfer re-spends the SAME funding note (recovered from the expired transfer by
     /// nullifier identity, never an equal-value substitute) on a fresh schedule — a fresh
     /// memoryless delay from the current tip, a fresh canonical expiry, and a freshly drawn
-    /// boundary anchor. The transfer ids are unchanged but their anchors have moved, so a host that
-    /// persisted the committed schedule for display should re-fetch the current heights (e.g. via
-    /// ``rescheduleOverdueMigrationTransfer(accountUUID:)``) rather than trust its stored copy.
+    /// boundary anchor. The transfer ids are unchanged, but their schedule, expiry, and anchors are
+    /// all fresh, so a host that persisted the committed schedule for display should re-fetch the
+    /// current heights (e.g. via ``rescheduleOverdueMigrationTransfer(accountUUID:)``) rather than
+    /// trust its stored copy.
     /// - Parameters:
     ///   - accountUUID: the account to refresh.
     ///   - usk: the account's unified spending key, or `nil` for the external-signer (Keystone)
@@ -825,7 +826,9 @@ public protocol Synchronizer: AnyObject {
     /// - Throws: notably, a `FundingNoteUnavailable`-class failure when an expired transfer's exact
     ///   funding note was spent outside the migration — the underlying message names
     ///   ``restartCurrentMigrationStep(accountUUID:)`` (cancel and re-plan the remaining balance) as
-    ///   the remedy.
+    ///   the remedy. Rebuilds are persisted ALL-OR-NOTHING: a mid-refresh throw (including this one)
+    ///   persists NONE of the batch's rebuilds, so a non-throwing return's count is exactly what was
+    ///   atomically persisted, never a partial batch.
     func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> UInt32
 
     /// Builds `accountUUID`'s whole previewed migration UNSIGNED — the run is created by this

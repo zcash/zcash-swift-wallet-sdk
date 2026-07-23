@@ -32,7 +32,9 @@ the unreleased surface:
   rebuilds every EXPIRED transfer of the stored run in place: each rebuilt transfer re-spends the
   SAME funding note (recovered by nullifier identity, never an equal-value substitute) on a fresh
   schedule — a fresh memoryless delay from the current tip, a fresh canonical expiry, and a
-  freshly drawn boundary anchor — and returns the count rebuilt. `usk` is now
+  freshly drawn boundary anchor — and returns the count rebuilt, persisted ALL-OR-NOTHING: a
+  mid-refresh failure persists NONE of the batch's rebuilds, so a successful return's count is
+  exactly what was atomically committed, never a partial batch. `usk` is now
   `UnifiedSpendingKey?`: pass a spending key to sign each rebuilt transfer anew in-process, or
   `nil` for the external-signer (Keystone) lane, which leaves the rebuilt transfers awaiting their
   signature so the existing `createUnsignedMigrationTransferPCZTs` / `storeSignedMigrationSchedulePCZTs`

@@ -24,8 +24,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`restartCurrentMigrationStep`), and rebuild-on-expiry recovery
   (`refreshStaleMigrationTransfers(accountUUID:usk:)` rebuilds every EXPIRED transfer of the stored
   run in place — the same funding note on a fresh schedule/expiry/boundary — with an optional `usk`
-  selecting the in-process-sign or external-signer (Keystone) lane; a funding note spent outside the
-  migration surfaces an error naming `restartCurrentMigrationStep` as the remedy),
+  selecting the in-process-sign or external-signer (Keystone) lane, persisted ALL-OR-NOTHING (a
+  mid-refresh failure persists none of the batch); a funding note spent outside the migration
+  surfaces an error naming `restartCurrentMigrationStep` as the remedy),
   the per-run `complete` + fresh-propose sequential-runs contract, and an external-signer (PCZT)
   path for hardware wallets (`createUnsignedNoteSplitPCZTs` / `storeSignedNoteSplitPCZTs` — plural:
   the engine builds N preparation transactions, and one ceremony signs them together with
