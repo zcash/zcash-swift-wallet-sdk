@@ -524,7 +524,10 @@ actor OrchardMigration {
     /// ``storeSignedSchedulePCZTs(_:)`` ceremony re-serves and completes it.
     /// - Throws: notably, a `FundingNoteUnavailable`-class failure when an expired transfer's exact
     ///   funding note was spent outside the migration, where the message names
-    ///   ``restartCurrentMigrationStep()`` (cancel and re-plan) as the remedy.
+    ///   ``restartCurrentMigrationStep()`` (cancel and re-plan) as the remedy. Rebuilds are
+    ///   persisted ALL-OR-NOTHING: a mid-refresh throw (including this one) persists NONE of the
+    ///   batch's rebuilds, so a non-throwing return's count is exactly what was atomically
+    ///   persisted, never a partial batch.
     func refreshStaleTransfers(usk: UnifiedSpendingKey?) async throws -> UInt32 {
         try await welding.migrationRefreshStaleTransfers(usk: usk, for: accountUUID)
     }
