@@ -415,17 +415,6 @@ protocol ZcashRustBackendWelding {
     /// - Throws: `rustMigrationProgress` if the rust layer returns an error.
     func migrationProgress(for account: AccountUUID) async throws -> MigrationProgress?
 
-    /// The LIVE status of every committed migration transaction for `account`, keyed by its
-    /// stable id. A verbatim marshal of the engine's own `MigrationState::transaction_statuses`:
-    /// nothing here is derived independently of the engine's view, and each row's `id` is STABLE
-    /// across reads and across a stale-transfer rebuild (a rebuilt transfer keeps its id; only
-    /// its state and heights change). Reconciles mined transactions first (the same read-path
-    /// convention as `migrationState(for:)`), so a transaction the wallet's own scan has since
-    /// observed mined is reported `.mined` here even if the stored run still marks it broadcast.
-    /// No stored run, or a stored run with no transactions, returns an EMPTY array — not an error.
-    /// - Throws: `rustMigrationTransactionStatuses` if the rust layer returns an error.
-    func migrationTransactionStatuses(for account: AccountUUID) async throws -> [MigrationTransactionStatus]
-
     /// Whether the Orchard notes must be split before migration.
     ///
     /// - Throws: `rustMigrationIsNoteSplitNeeded` if the rust layer returns an error. In particular,
@@ -453,7 +442,6 @@ protocol ZcashRustBackendWelding {
     /// user approved.
     /// - Throws: `migrationPlanStale` when the echo mismatches the previewed plan, or when no
     ///   previewed plan is cached and no resumable run is stored — re-propose and re-display;
-    ///   `migrationProvingUnavailable` when proving the returned transfer fails hard;
     ///   `rustMigrationSignNoteSplit` for other rust-layer errors.
     func migrationSignNoteSplit(
         proposal: NoteSplitProposal,
@@ -525,20 +513,17 @@ protocol ZcashRustBackendWelding {
     /// Pre-signs and persists every transfer in `schedule` (a no-op when a matching non-terminal
     /// run is already stored — the normal case, since the note-split submission commits the run).
     /// `schedule` is a VERIFIED consent echo of what the user approved, not an inert display
-    /// value: ids, amounts, and expiry heights are checked against the previewed plan (or, once a
-    /// run is committed, against the stored run itself). `nextExecutableAfterHeight` is
-    /// additionally checked against the preview before commit but never post-commit (the
-    /// immediate lane's commit-time reschedule can legitimately move it away from an honest
-    /// echo), and the estimated duration is likewise checked pre-commit only: a refresh rebuilds
-    /// an expired transfer with a fresh scheduled height, and the duration is measured from serve
-    /// time, so an honest echo of an earlier serve can legitimately disagree with a later
-    /// re-derivation, with no way to converge by re-proposing. `anchorHeight` is display-only,
-    /// never compared.
+    /// value: ids, amounts, and expiry heights are checked against the previewed plan (or, once
+    /// a run is committed, against the stored run itself). The estimated duration and
+    /// `nextExecutableAfterHeight` are additionally checked against the preview before commit
+    /// but never post-commit: a refresh rebuilds an expired transfer with a fresh scheduled
+    /// height, and the duration is measured from serve time — so an honest echo of an earlier
+    /// serve can legitimately disagree with a later re-derivation, with no way to converge by
+    /// re-proposing. `anchorHeight` is display-only, never compared.
     /// - Throws: `migrationPlanStale` when the echo mismatches, or when nothing is committed and
     ///   no previewed plan is cached — recover by re-proposing and re-displaying (pre-commit) or
     ///   re-reading the stored schedule (post-commit); `rustMigrationSignAndStoreSchedule` for
-    ///   other rust-layer errors (also thrown Swift-side if the echoed duration exceeds
-    ///   UInt32.max, without reaching the rust layer).
+    ///   other rust-layer errors.
     func migrationSignAndStoreSchedule(
         _ schedule: MigrationSchedule,
         usk: UnifiedSpendingKey,
@@ -546,9 +531,7 @@ protocol ZcashRustBackendWelding {
     ) async throws
 
     /// The next height-due pre-signed transfer, or `nil` when nothing is currently due.
-    /// - Throws: `migrationProvingUnavailable` when proving the due transfer fails hard (the
-    ///   transient not-scanned-yet case surfaces as `nil` above, not an error);
-    ///   `rustMigrationNextDueTransfer` for other rust-layer errors.
+    /// - Throws: `rustMigrationNextDueTransfer` if the rust layer returns an error.
     func migrationNextDueTransfer(for account: AccountUUID) async throws -> PreparedMigrationTransfer?
 
     /// The next height-due scheduled transfer's full proposal (amount, anchor, timing) for the
@@ -644,19 +627,16 @@ protocol ZcashRustBackendWelding {
     /// inert display value: its ids, amounts, and expiry heights are checked against the STORED
     /// committed run this call serves from, so a stale or tampered display cannot route
     /// different values than the ones the user approved into the ceremony.
-    /// `nextExecutableAfterHeight` is accepted but not compared post-commit (the immediate
-    /// lane's commit-time reschedule can legitimately move it away from an honest echo, with no
-    /// way to converge by re-proposing), and the estimated duration is likewise accepted but not
-    /// compared post-commit (a refresh rebuilds expired transfers with fresh scheduled heights,
-    /// and the duration is measured from serve time — an honest echo of an earlier serve can
+    /// `nextExecutableAfterHeight` and the estimated duration are accepted but not compared
+    /// post-commit (a refresh rebuilds expired transfers with fresh scheduled heights, and the
+    /// duration is measured from serve time — an honest echo of an earlier serve can
     /// legitimately disagree with a later re-derivation, with no way to converge by
-    /// re-proposing); `anchorHeight` is display-only, never compared.
+    /// re-proposing), and `anchorHeight` is display-only, never compared.
     /// - Throws: `migrationPlanStale` when the echoed schedule does not match the stored run —
     ///   recover by re-reading the run's stored schedule (`migrationRefreshStaleTransfers`
     ///   returns exactly that) and re-displaying it — or when nothing is committed and no
     ///   previewed plan is cached; `rustMigrationCreateUnsignedTransferPczts` for other
-    ///   rust-layer errors (also thrown Swift-side if the echoed duration exceeds UInt32.max,
-    ///   without reaching the rust layer).
+    ///   rust-layer errors.
     func migrationCreateUnsignedTransferPczts(
         for schedule: MigrationSchedule,
         for account: AccountUUID

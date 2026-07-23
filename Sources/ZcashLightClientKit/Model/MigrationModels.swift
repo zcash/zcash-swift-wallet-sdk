@@ -222,7 +222,9 @@ public struct MigrationTransferProposal: Identifiable, Equatable, Sendable, Coda
 public struct MigrationSchedule: Equatable, Sendable, Codable {
     /// The scheduled transfers, in execution order.
     public let transfers: [MigrationTransferProposal]
-    /// A rough estimate of how long the schedule takes to fully execute, in hours.
+    /// A rough estimate of how long the schedule takes to fully execute, in hours — measured
+    /// from the proposal's (or re-serve's) own "now" to the last scheduled transfer, so a
+    /// re-served schedule's value naturally shrinks as time passes.
     public let estimatedDurationHours: Int
 
     /// Creates a `MigrationSchedule`.
