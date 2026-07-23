@@ -123,7 +123,10 @@ public struct MigrationTransactionStatus: Equatable, Sendable {
 
     /// This transaction's stable id (the engine's own raw ordinal). Stable across reads and
     /// across a stale-transfer rebuild (a rebuilt transfer keeps its id; only its state and
-    /// heights change), so a wallet may use it as a durable row key.
+    /// heights change), so a wallet may use it as a durable row key. It is the same ordinal the
+    /// schedule surfaces carry as their opaque string id — `String(status.id)` equals
+    /// ``MigrationTransferProposal/id`` / ``PreparedMigrationTransfer/id`` for the same
+    /// transaction — so status rows (which carry no amount) join to their schedule row by id.
     public let id: UInt32
     /// This transaction's kind and per-kind payload.
     public let kind: Kind
