@@ -89,31 +89,46 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
     /// `refreshStaleMigrationTransfers`'s external-signer (Keystone) lane: a `nil` usk must reach
     /// the welding call as `nil`, not be coerced into some non-optional stand-in -- the engine
     /// itself branches on nilness to select the unsigned-rebuild path (see
-    /// `OrchardMigration.refreshStaleTransfers(usk:)`).
+    /// `OrchardMigration.refreshStaleTransfers(usk:)`) -- and the welding's post-refresh stored
+    /// schedule must flow back to the caller unmodified (it is the truth the host re-displays and
+    /// echoes on the consent-verified calls).
     func testRefreshStaleMigrationTransfersForwardsNilUskForTheExternalSignerLane() async throws {
         let welding = ZcashRustBackendWeldingMock()
-        welding.migrationRefreshStaleTransfersUskForReturnValue = 2
+        let expected = MigrationSchedule(
+            transfers: [
+                MigrationTransferProposal(
+                    id: "3",
+                    amount: Zatoshi(100_000_000),
+                    anchorHeight: 3_600_000,
+                    nextExecutableAfterHeight: 3_600_100,
+                    expiryHeight: 3_640_000
+                )
+            ],
+            estimatedDurationHours: 2
+        )
+        welding.migrationRefreshStaleTransfersUskForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
 
         let refreshed = try await synchronizer.refreshStaleMigrationTransfers(accountUUID: accountUUID, usk: nil)
 
-        XCTAssertEqual(refreshed, 2)
+        XCTAssertEqual(refreshed, expected)
         let received = welding.migrationRefreshStaleTransfersUskForReceivedArguments
         XCTAssertEqual(received?.account, accountUUID)
         XCTAssertNil(received?.usk, "a nil usk must forward as nil, selecting the external-signer lane")
     }
 
     /// The sibling of the nil-usk test above: a real spending key must forward untouched, selecting
-    /// the in-process sign-anew lane.
+    /// the in-process sign-anew lane, with the returned schedule again round-tripping unmodified.
     func testRefreshStaleMigrationTransfersForwardsARealUskForTheInProcessLane() async throws {
         let welding = ZcashRustBackendWeldingMock()
-        welding.migrationRefreshStaleTransfersUskForReturnValue = 1
+        let expected = MigrationSchedule(transfers: [], estimatedDurationHours: 0)
+        welding.migrationRefreshStaleTransfersUskForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
         let usk = TestsData(networkType: .testnet).spendingKey
 
         let refreshed = try await synchronizer.refreshStaleMigrationTransfers(accountUUID: accountUUID, usk: usk)
 
-        XCTAssertEqual(refreshed, 1)
+        XCTAssertEqual(refreshed, expected)
         let received = welding.migrationRefreshStaleTransfersUskForReceivedArguments
         XCTAssertEqual(received?.account, accountUUID)
         XCTAssertEqual(received?.usk, usk)

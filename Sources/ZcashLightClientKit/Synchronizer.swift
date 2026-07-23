@@ -804,16 +804,20 @@ public protocol Synchronizer: AnyObject {
     func restartCurrentMigrationStep(accountUUID: AccountUUID) async throws -> MigrationSchedule
 
     /// Rebuilds every EXPIRED transfer of `accountUUID`'s stored migration run in place through the
-    /// engine and returns the number of transfers rebuilt (`0` when no run is stored, the run is
-    /// terminal, or nothing has expired).
+    /// engine and returns the run's FULL transfer schedule as stored AFTER the refresh.
     ///
     /// Each rebuilt transfer re-spends the SAME funding note (recovered from the expired transfer by
     /// nullifier identity, never an equal-value substitute) on a fresh schedule — a fresh
     /// memoryless delay from the current tip, a fresh canonical expiry, and a freshly drawn
     /// boundary anchor. The transfer ids are unchanged, but their schedule, expiry, and anchors are
-    /// all fresh, so a host that persisted the committed schedule for display should re-fetch the
-    /// current heights (e.g. via ``rescheduleOverdueMigrationTransfer(accountUUID:)``) rather than
-    /// trust its stored copy.
+    /// all fresh, and those fresh values exist nowhere but in the returned schedule: it is the
+    /// atomically-persisted post-refresh truth, and the host MUST re-display it and use it for
+    /// every subsequent consent echo (``signAndStoreMigrationSchedule(accountUUID:_:usk:)``,
+    /// ``createUnsignedMigrationTransferPCZTs(accountUUID:for:)``) — echoing a pre-refresh copy
+    /// fails the verified echo with `ZcashError.migrationPlanStale` from then on, which is what
+    /// makes the external-signer ceremony converge after a refresh. With nothing expired the
+    /// current stored schedule comes back unchanged; with no stored run, or a terminal (completed
+    /// or cancelled) one, the schedule is empty.
     /// - Parameters:
     ///   - accountUUID: the account to refresh.
     ///   - usk: the account's unified spending key, or `nil` for the external-signer (Keystone)
@@ -827,9 +831,9 @@ public protocol Synchronizer: AnyObject {
     ///   funding note was spent outside the migration — the underlying message names
     ///   ``restartCurrentMigrationStep(accountUUID:)`` (cancel and re-plan the remaining balance) as
     ///   the remedy. Rebuilds are persisted ALL-OR-NOTHING: a mid-refresh throw (including this one)
-    ///   persists NONE of the batch's rebuilds, so a non-throwing return's count is exactly what was
-    ///   atomically persisted, never a partial batch.
-    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> UInt32
+    ///   persists NONE of the batch's rebuilds, so a non-throwing return's schedule is exactly what
+    ///   was atomically persisted, never a partial batch.
+    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> MigrationSchedule
 
     /// Builds `accountUUID`'s whole previewed migration UNSIGNED — the run is created by this
     /// call, with every transaction persisted awaiting its signature — and returns the preparation
@@ -1073,7 +1077,7 @@ public extension Synchronizer {
         throw MigrationUnimplemented(member: #function)
     }
 
-    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> UInt32 {
+    func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> MigrationSchedule {
         throw MigrationUnimplemented(member: #function)
     }
 
