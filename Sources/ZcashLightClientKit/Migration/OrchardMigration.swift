@@ -126,14 +126,15 @@ actor OrchardMigration {
 
     /// The NU6.3 (Ironwood) activation height for `networkType`, or `nil` when NU6.3 is unset for
     /// that network. Stateless — no database access, and safe to call before constructing an
-    /// ``OrchardMigration`` (e.g. to gate migration availability/UI on whether the chain has reached
-    /// activation).
+    /// ``OrchardMigration``.
+    ///
+    /// SDK-internal: `OrchardMigration` is not `public`, so apps cannot reach this helper. The
+    /// app-facing surface for the same value is the public ``ZcashNetwork/ironwoodActivationHeight``
+    /// (`Model/ZcashNetwork+IronwoodActivation.swift`), which this delegates to so the SDK has a
+    /// single path to the underlying backend rather than two independent forwarders.
     ///
     /// - Note: Also returns `nil` for a network id outside `{testnet, mainnet}` (e.g. `.regtest`),
     ///   which has no fixed NU6.3 height; callers are expected to pass `.testnet`/`.mainnet`.
-    ///
-    /// Delegates to the canonical ``ZcashNetwork/ironwoodActivationHeight`` so the SDK has a single
-    /// path to the underlying backend rather than two independent forwarders.
     static func ironwoodActivationHeight(for networkType: NetworkType) -> BlockHeight? {
         ZcashNetworkBuilder.network(for: networkType).ironwoodActivationHeight
     }
