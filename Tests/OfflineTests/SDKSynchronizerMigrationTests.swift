@@ -2,7 +2,7 @@
 //  SDKSynchronizerMigrationTests.swift
 //  OfflineTests
 //
-//  Tests `SDKSynchronizer`'s migration group (R4-B): the 26 protocol requirements as thin forwards
+//  Tests `SDKSynchronizer`'s migration group (R4-B): the 27 protocol requirements as thin forwards
 //  to a seamed `OrchardMigrationHost`, and the two SDK-enforced session-separation behaviors --
 //  the start() privacy gate and the submitNoteSplit/executeNextPendingMigrationTransfer broadcast
 //  guard. Driven through the host's injecting initializer + a scripted actor factory, mirroring
@@ -84,6 +84,31 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
 
         XCTAssertTrue(overdue)
         XCTAssertEqual(welding.migrationHasOverdueTransfersForReceivedAccount, accountUUID)
+    }
+
+    /// The live per-transaction status read behind `migrationProgress`'s aggregate summary --
+    /// forwards to the per-account actor and returns the engine's rows untouched.
+    func testMigrationTransactionStatusesForwardsToTheAccountsActor() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let expected = [
+            MigrationTransactionStatus(
+                id: 3,
+                kind: .transfer(crossing: 0),
+                state: .awaitingSignature,
+                scheduledHeight: 3_000_000,
+                expiryHeight: 3_000_100,
+                isReady: true,
+                nextAction: .prove,
+                blockedOn: nil
+            )
+        ]
+        welding.migrationTransactionStatusesForReturnValue = expected
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let statuses = try await synchronizer.migrationTransactionStatuses(accountUUID: accountUUID)
+
+        XCTAssertEqual(statuses, expected)
+        XCTAssertEqual(welding.migrationTransactionStatusesForReceivedAccount, accountUUID)
     }
 
     /// `refreshStaleMigrationTransfers`'s external-signer (Keystone) lane: a `nil` usk must reach

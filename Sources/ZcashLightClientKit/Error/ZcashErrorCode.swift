@@ -331,6 +331,8 @@ public enum ZcashErrorCode: String {
     case rustMigrationUnlockResidual = "ZRUST0133"
     /// Error from rust layer when calling ZcashRustBackend.estimateMigrationRuns
     case rustMigrationEstimateRuns = "ZRUST0134"
+    /// Error from rust layer when calling ZcashRustBackend.migrationTransactionStatuses
+    case rustMigrationTransactionStatuses = "ZRUST0135"
     /// SQLite query failed when fetching all accounts from the database.
     case accountDAOGetAll = "ZADAO0001"
     /// Fetched accounts from SQLite but can't decode them.

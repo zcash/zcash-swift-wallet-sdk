@@ -97,6 +97,13 @@ final class MigrationFFITests: XCTestCase {
         XCTAssertFalse(hasInvalid)
     }
 
+    /// No stored run marshals as an EMPTY container (`len == 0`), not an error -- see
+    /// `zcashlc_migration_transaction_statuses`'s doc.
+    func testFreshWalletHasNoTransactionStatuses() async throws {
+        let statuses = try await rustBackend.migrationTransactionStatuses(for: account)
+        XCTAssertTrue(statuses.isEmpty)
+    }
+
     func testFreshWalletHasNoNextDueTransfer() async throws {
         let nextDue = try await rustBackend.migrationNextDueTransfer(for: account)
         XCTAssertNil(nextDue)
@@ -393,6 +400,13 @@ final class MigrationFFITests: XCTestCase {
         XCTAssertEqual(first, second)
     }
 
+    func testMigrationTransactionStatusesEmptyIsStableAcrossRepeatedCalls() async throws {
+        let first = try await rustBackend.migrationTransactionStatuses(for: account)
+        let second = try await rustBackend.migrationTransactionStatuses(for: account)
+        XCTAssertTrue(first.isEmpty)
+        XCTAssertEqual(first, second)
+    }
+
     func testMigrationNextDueTransferNilIsStableAcrossRepeatedCalls() async throws {
         let first = try await rustBackend.migrationNextDueTransfer(for: account)
         let second = try await rustBackend.migrationNextDueTransfer(for: account)
@@ -476,6 +490,169 @@ final class MigrationFFITests: XCTestCase {
 
         let hasOverdue = try await rustBackend.migrationHasOverdueTransfers(for: account)
         XCTAssertFalse(hasOverdue)
+    }
+
+    // MARK: - Transaction status decode mapping
+    //
+    // `FfiMigrationTransactionStatus`'s raw C fields fold into `MigrationTransactionStatus`'s
+    // enums; these tests construct the `#[repr(C)]` struct directly (mirroring
+    // `testMigrationProgressMappingCarriesIsImmediateBothWays` above) and exercise the internal
+    // `unsafeToMigrationTransactionStatus()` decode function itself. The balance-bearing engine
+    // state a real committed run needs is out of reach for this offline suite (see the file
+    // header), so the field-by-field mapping -- including the malformed-discriminant fallback --
+    // is exercised here instead of over the real FFI.
+
+    func testDecodeMapsPreparationKind() throws {
+        let ffi = makeStatus(isTransfer: false, prepLayer: 2, prepIndex: 1, crossing: -1)
+        let decoded = try XCTUnwrap(ffi.unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(decoded.kind, .preparation(layer: 2, index: 1))
+    }
+
+    func testDecodeMapsTransferKind() throws {
+        let ffi = makeStatus(isTransfer: true, prepLayer: -1, prepIndex: -1, crossing: 5)
+        let decoded = try XCTUnwrap(ffi.unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(decoded.kind, .transfer(crossing: 5))
+    }
+
+    func testDecodeMapsAwaitingSignatureSignedAndProvedStates() throws {
+        let awaitingSignature = try XCTUnwrap(makeStatus(state: 0).unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(awaitingSignature.state, .awaitingSignature)
+
+        let signed = try XCTUnwrap(makeStatus(state: 1).unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(signed.state, .signed)
+
+        let proved = try XCTUnwrap(makeStatus(state: 2).unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(proved.state, .proved)
+    }
+
+    /// `has_txid` is engine-verbatim -- true only while `state == 3` (Broadcast) -- so the folded
+    /// `.broadcast` case carries the txid straight through.
+    func testDecodeMapsBroadcastStateWithItsTxid() throws {
+        let bytes = (0 ..< 32).map { UInt8($0) }
+        let ffi = makeStatus(state: 3, txid: Self.tuple32(bytes), hasTxid: true)
+        let decoded = try XCTUnwrap(ffi.unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(decoded.state, .broadcast(txid: Data(bytes)))
+    }
+
+    /// A mined row's txid is NOT carried by the engine's state model (`has_txid` drops back to
+    /// `false` once mined) -- `.mined` carries only the height, matching the model's own doc.
+    func testDecodeMapsMinedStateWithItsHeight() throws {
+        let ffi = makeStatus(state: 4, minedHeight: 3_500_000)
+        let decoded = try XCTUnwrap(ffi.unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(decoded.state, .mined(height: 3_500_000))
+    }
+
+    func testDecodeMapsExpiryHeightZeroSentinelToNil() throws {
+        let ffi = makeStatus(expiryHeight: 0)
+        let decoded = try XCTUnwrap(ffi.unsafeToMigrationTransactionStatus())
+        XCTAssertNil(decoded.expiryHeight, "the engine's 0 sentinel means 'never expires'")
+    }
+
+    func testDecodeMapsANonzeroExpiryHeightThrough() throws {
+        let ffi = makeStatus(expiryHeight: 3_100_000)
+        let decoded = try XCTUnwrap(ffi.unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(decoded.expiryHeight, 3_100_000)
+    }
+
+    func testDecodeMapsIdScheduledHeightAndReadyStraightThrough() throws {
+        let ffi = makeStatus(id: 42, scheduledHeight: 3_050_000, ready: false)
+        let decoded = try XCTUnwrap(ffi.unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(decoded.id, 42)
+        XCTAssertEqual(decoded.scheduledHeight, 3_050_000)
+        XCTAssertFalse(decoded.isReady)
+    }
+
+    func testDecodeMapsEachNextActionCase() throws {
+        let none = try XCTUnwrap(makeStatus(action: 0).unsafeToMigrationTransactionStatus())
+        XCTAssertNil(none.nextAction)
+
+        let prove = try XCTUnwrap(makeStatus(action: 1).unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(prove.nextAction, .prove)
+
+        let broadcast = try XCTUnwrap(makeStatus(action: 2).unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(broadcast.nextAction, .broadcast)
+    }
+
+    func testDecodeMapsEachBlockedOnCase() throws {
+        let none = try XCTUnwrap(makeStatus(blockedOn: 0).unsafeToMigrationTransactionStatus())
+        XCTAssertNil(none.blockedOn)
+
+        let dependencies = try XCTUnwrap(makeStatus(blockedOn: 1).unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(dependencies.blockedOn, .dependencies)
+
+        let schedule = try XCTUnwrap(makeStatus(blockedOn: 2).unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(schedule.blockedOn, .schedule)
+
+        let anchorBoundary = try XCTUnwrap(makeStatus(blockedOn: 3).unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(anchorBoundary.blockedOn, .anchorBoundary)
+
+        let signature = try XCTUnwrap(makeStatus(blockedOn: 4).unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(signature.blockedOn, .signature)
+
+        let expired = try XCTUnwrap(makeStatus(blockedOn: 5).unsafeToMigrationTransactionStatus())
+        XCTAssertEqual(expired.blockedOn, .expired)
+    }
+
+    func testDecodeReturnsNilForAnOutOfRangeState() {
+        XCTAssertNil(makeStatus(state: 99).unsafeToMigrationTransactionStatus())
+    }
+
+    func testDecodeReturnsNilForAnOutOfRangeNextAction() {
+        XCTAssertNil(makeStatus(action: 99).unsafeToMigrationTransactionStatus())
+    }
+
+    func testDecodeReturnsNilForAnOutOfRangeBlockedOn() {
+        XCTAssertNil(makeStatus(blockedOn: 99).unsafeToMigrationTransactionStatus())
+    }
+
+    /// The engine's contract ties `has_txid` to `state == 3` (Broadcast) -- see
+    /// `FfiMigrationTransactionStatus`'s doc. A broadcast row without a txid violates that
+    /// contract, so decode treats it as malformed rather than silently folding in a fake empty
+    /// txid.
+    func testDecodeReturnsNilForABroadcastStateWithoutATxid() {
+        XCTAssertNil(makeStatus(state: 3, hasTxid: false).unsafeToMigrationTransactionStatus())
+    }
+
+    func testDecodeReturnsNilForAMinedStateWithNoMinedHeight() {
+        XCTAssertNil(makeStatus(state: 4, minedHeight: -1).unsafeToMigrationTransactionStatus())
+    }
+
+    func testDecodeReturnsNilForAPreparationRowWithANegativeLayerOrIndex() {
+        XCTAssertNil(makeStatus(isTransfer: false, prepLayer: -1, prepIndex: 0).unsafeToMigrationTransactionStatus())
+        XCTAssertNil(makeStatus(isTransfer: false, prepLayer: 0, prepIndex: -1).unsafeToMigrationTransactionStatus())
+    }
+
+    func testDecodeReturnsNilForATransferRowWithANegativeCrossing() {
+        XCTAssertNil(makeStatus(isTransfer: true, crossing: -1).unsafeToMigrationTransactionStatus())
+    }
+
+    /// Exercises `FfiMigrationTransactionStatuses.unsafeToMigrationTransactionStatuses()` (the
+    /// container decode) directly: the engine's own `transaction_statuses` order (dependency
+    /// order: preparation layers first, then transfers) must survive the marshal untouched.
+    func testDecodeContainerMapsMultipleRowsInEngineOrder() throws {
+        var rows = [
+            makeStatus(id: 1, isTransfer: false, prepLayer: 0, prepIndex: 0, crossing: -1),
+            makeStatus(id: 2, isTransfer: true, prepLayer: -1, prepIndex: -1, crossing: 0)
+        ]
+        let decoded = try rows.withUnsafeMutableBufferPointer { buffer -> [MigrationTransactionStatus] in
+            let container = FfiMigrationTransactionStatuses(ptr: buffer.baseAddress, len: UInt(buffer.count))
+            return try XCTUnwrap(container.unsafeToMigrationTransactionStatuses())
+        }
+        XCTAssertEqual(decoded.map(\.id), [1, 2])
+    }
+
+    /// A single malformed row anywhere in the container must fail the WHOLE decode -- a partially
+    /// decoded array would silently drop the malformed transaction rather than surfacing the
+    /// "returned malformed data" error `ZcashRustBackend.migrationTransactionStatuses` maps it to.
+    func testDecodeContainerReturnsNilWhenAnyRowIsMalformed() {
+        var rows = [
+            makeStatus(id: 1),
+            makeStatus(id: 2, state: 99)
+        ]
+        let decoded = rows.withUnsafeMutableBufferPointer { buffer -> [MigrationTransactionStatus]? in
+            FfiMigrationTransactionStatuses(ptr: buffer.baseAddress, len: UInt(buffer.count)).unsafeToMigrationTransactionStatuses()
+        }
+        XCTAssertNil(decoded, "a malformed row anywhere in the array must fail the whole decode")
     }
 
     // MARK: - Actor integration over real FFI (nil paths)
@@ -628,5 +805,58 @@ final class MigrationFFITests: XCTestCase {
         )
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    /// The imported shape of `FfiMigrationTransactionStatus.txid` (`uint8_t[32]`): an unlabeled
+    /// 32-`UInt8` tuple, structurally identical to (and freely interchangeable with) that field's
+    /// own C-imported type, matching how `FfiTxId.tuple` is used elsewhere in the SDK.
+    private typealias Bytes32 = (
+        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8
+    )
+
+    private static func tuple32(_ bytes: [UInt8]) -> Bytes32 {
+        precondition(bytes.count == 32, "a txid is exactly 32 bytes")
+        return bytes.withUnsafeBytes { $0.load(as: Bytes32.self) }
+    }
+
+    /// Builds a valid row -- transfer 0, awaiting signature, ready, no next action, not blocked,
+    /// no txid -- with every field defaulted; override only the field(s) under test. Mirrors
+    /// `FfiMigrationTransactionStatus`'s field-by-field contract (see `rust/src/migration.rs`'s
+    /// doc comments).
+    private func makeStatus(
+        id: UInt32 = 7,
+        isTransfer: Bool = true,
+        prepLayer: Int64 = -1,
+        prepIndex: Int64 = -1,
+        crossing: Int64 = 0,
+        state: UInt8 = 0,
+        scheduledHeight: Int64 = 3_000_000,
+        expiryHeight: Int64 = 3_000_100,
+        minedHeight: Int64 = -1,
+        txid: Bytes32 = MigrationFFITests.tuple32([UInt8](repeating: 0, count: 32)),
+        hasTxid: Bool = false,
+        ready: Bool = true,
+        action: UInt8 = 0,
+        blockedOn: UInt8 = 0
+    ) -> FfiMigrationTransactionStatus {
+        FfiMigrationTransactionStatus(
+            id: id,
+            is_transfer: isTransfer,
+            prep_layer: prepLayer,
+            prep_index: prepIndex,
+            crossing: crossing,
+            state: state,
+            scheduled_height: scheduledHeight,
+            expiry_height: expiryHeight,
+            mined_height: minedHeight,
+            txid: txid,
+            has_txid: hasTxid,
+            ready: ready,
+            action: action,
+            blocked_on: blockedOn
+        )
     }
 }

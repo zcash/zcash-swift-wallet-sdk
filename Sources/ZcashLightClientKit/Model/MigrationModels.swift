@@ -58,6 +58,112 @@ public struct MigrationProgress: Equatable, Sendable {
     }
 }
 
+/// One migration transaction's LIVE status, as the engine computes it — an element of the array
+/// returned by `ZcashRustBackendWelding.migrationTransactionStatuses(for:)` /
+/// `Synchronizer.migrationTransactionStatuses(accountUUID:)`. A verbatim marshal of the engine's
+/// own `MigrationState::transaction_statuses`: nothing here is derived independently of the
+/// engine's view, and it is reconciled against mined transactions at every read (the same
+/// read-path convention as `MigrationState`), so a transaction the wallet's own scan has since
+/// observed mined is reported `.mined` here even if the stored run still marks it broadcast.
+public struct MigrationTransactionStatus: Equatable, Sendable {
+    /// This transaction's kind: a note-PREPARATION at a given dependency-layer/index, or a
+    /// phase-2 pool-crossing TRANSFER at a given funding-note crossing index.
+    public enum Kind: Equatable, Sendable {
+        /// A note-preparation transaction: `layer` is its dependency-layer index, `index` its
+        /// position within that layer.
+        case preparation(layer: Int, index: Int)
+        /// A pool-crossing transfer: `crossing` is its funding-note crossing index.
+        case transfer(crossing: Int)
+    }
+
+    /// This transaction's lifecycle state. `broadcast`/`mined` fold the engine's `txid`/
+    /// `mined_height` payloads into the matching case, so illegal combinations (a mined row still
+    /// carrying a broadcast txid, or a broadcast row with none) are unrepresentable.
+    ///
+    /// - Note: A MINED row's txid is NOT carried by this state model: the engine's own `Mined`
+    ///   state carries only the height, so the txid is available only while a transaction is
+    ///   in flight (`.broadcast`), not once it is mined. A caller that needs a mined
+    ///   transaction's id should look it up through transaction history instead.
+    public enum State: Equatable, Sendable {
+        /// Built but not yet signed.
+        case awaitingSignature
+        /// Signed but not yet proven.
+        case signed
+        /// Proven and ready to broadcast.
+        case proved
+        /// Broadcast to the network as `txid` (the SDK's raw/internal byte order), not yet
+        /// observed mined.
+        case broadcast(txid: Data)
+        /// Mined at `height`.
+        case mined(height: BlockHeight)
+    }
+
+    /// The action available now, when `isReady` is `true`.
+    public enum NextAction: Equatable, Sendable {
+        /// Signed and ready to be proven.
+        case prove
+        /// Proven and ready to be broadcast.
+        case broadcast
+    }
+
+    /// Why this transaction is not yet actionable, when it is waiting (and not already broadcast
+    /// or mined).
+    public enum Blocker: Equatable, Sendable {
+        /// Waiting on another transaction of the same run it depends on.
+        case dependencies
+        /// Waiting for its scheduled height.
+        case schedule
+        /// Waiting for a boundary anchor it can prove against.
+        case anchorBoundary
+        /// Waiting for its signature.
+        case signature
+        /// Its expiry height has elapsed.
+        case expired
+    }
+
+    /// This transaction's stable id (the engine's own raw ordinal). Stable across reads and
+    /// across a stale-transfer rebuild (a rebuilt transfer keeps its id; only its state and
+    /// heights change), so a wallet may use it as a durable row key.
+    public let id: UInt32
+    /// This transaction's kind and per-kind payload.
+    public let kind: Kind
+    /// This transaction's lifecycle state.
+    public let state: State
+    /// The height at or after which this transaction is due to broadcast.
+    public let scheduledHeight: BlockHeight
+    /// The height after which this transaction can no longer be mined (ZIP 203); `nil` when it
+    /// never expires (the engine's own `0` sentinel).
+    public let expiryHeight: BlockHeight?
+    /// Whether the wallet can act on this transaction right now.
+    public let isReady: Bool
+    /// The action available now, when `isReady` is `true`; `nil` otherwise.
+    public let nextAction: NextAction?
+    /// Why this transaction is not yet actionable, when waiting (and not already broadcast or
+    /// mined); `nil` otherwise.
+    public let blockedOn: Blocker?
+
+    /// Creates a `MigrationTransactionStatus`.
+    public init(
+        id: UInt32,
+        kind: Kind,
+        state: State,
+        scheduledHeight: BlockHeight,
+        expiryHeight: BlockHeight?,
+        isReady: Bool,
+        nextAction: NextAction?,
+        blockedOn: Blocker?
+    ) {
+        self.id = id
+        self.kind = kind
+        self.state = state
+        self.scheduledHeight = scheduledHeight
+        self.expiryHeight = expiryHeight
+        self.isReady = isReady
+        self.nextAction = nextAction
+        self.blockedOn = blockedOn
+    }
+}
+
 /// The optimal note split proposed for the spendable Orchard balance, as returned by
 /// `ZcashRustBackendWelding.migrationPrepareNoteSplit(for:)`.
 public struct NoteSplitProposal: Equatable, Sendable {
