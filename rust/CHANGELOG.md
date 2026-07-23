@@ -156,6 +156,17 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     after `commit_or_resume` so both a freshly built AND a resumed (already-committed) run get
     annotated.
 
+- Live per-transaction migration status read: `zcashlc_migration_transaction_statuses`
+  marshals the engine's own `MigrationState::transaction_statuses(target)` verbatim —
+  one row per committed migration transaction, keyed by its stable id (durable across
+  reads and stale-transfer rebuilds), carrying kind, lifecycle state, scheduled/expiry
+  heights, mined height, the broadcast txid while in-mempool, readiness, the next
+  action, and the blocking reason. Mined-transaction reconciliation runs first, per the
+  read-path convention, and a wallet with no stored run gets an empty container. Freed
+  with `zcashlc_free_migration_transaction_statuses`. This is the engine-delegated
+  equivalent of the platform-side "refresh a cached transfer's display state after a
+  reschedule" reads other SDKs hand-roll over the store's SQL.
+
 ### Changed
 - Immediate-migration state derivation (`zcashlc_migration_state` /
   `zcashlc_migration_progress`): a MINED immediate (send-max) run is now CONSUMED —
