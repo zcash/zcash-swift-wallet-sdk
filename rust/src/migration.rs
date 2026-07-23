@@ -55,7 +55,7 @@ use std::collections::HashSet;
 use std::ffi::{CStr, CString, OsStr};
 use std::os::raw::c_char;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::slice;
 
@@ -178,6 +178,20 @@ struct CallCtx {
     account_bytes: [u8; 16],
 }
 
+/// Open the migration store connection: a second, independent connection into the same wallet
+/// database file as the wallet handle (`crate::wallet_db`), which the account-keyed migration
+/// tables live inside. Set to the same [`crate::WALLET_DB_BUSY_TIMEOUT`] the wallet handle uses --
+/// the slipstream engine's writer (write-behind commits, `deleteAccount`/`importAccount` mid-pass)
+/// can hold the file lock for seconds, and a migration call racing it must wait as long as the
+/// wallet handle would rather than failing fast on rusqlite's 5 s default.
+fn open_store_conn(db_path: &Path) -> anyhow::Result<Connection> {
+    let conn = Connection::open(db_path)
+        .map_err(|e| anyhow!("Error opening migration store connection: {e}"))?;
+    conn.busy_timeout(crate::WALLET_DB_BUSY_TIMEOUT)
+        .map_err(|e| anyhow!("Error setting migration store busy_timeout: {e}"))?;
+    Ok(conn)
+}
+
 /// Open the per-call context from the common FFI arguments. Every entry point calls this fresh and
 /// drops it at the end (no persistent handle). All tables are created by the wallet schema
 /// migrations during `init_data_db`: the engine's store tables by `zcash_client_sqlite`'s own
@@ -198,8 +212,7 @@ unsafe fn open(
         slice::from_raw_parts(db_data, db_data_len)
     }));
     let wallet = unsafe { crate::wallet_db(db_data, db_data_len, network.clone())? };
-    let store_conn = Connection::open(&db_path)
-        .map_err(|e| anyhow!("Error opening migration store connection: {e}"))?;
+    let store_conn = open_store_conn(&db_path)?;
     init_immediate_runs(&store_conn)
         .map_err(|e| anyhow!("Error initializing immediate-run table: {e}"))?;
     let account = account_uuid_from_bytes(account_uuid_bytes)
@@ -4297,6 +4310,37 @@ mod tests {
         clear_invalid_marks(&mut wallet, &account).unwrap();
         assert!(invalid_marks(&mut wallet, &account).unwrap().is_empty());
         assert_eq!(invalid_marks(&mut wallet, &other).unwrap(), vec![7]);
+    }
+
+    /// Regression pin: the migration store connection (a second, independent connection into the
+    /// same wallet database file the slipstream engine writes from) must wait for a held sqlite
+    /// lock exactly as long as the wallet handle does -- `crate::wallet_db` (lib.rs) sets
+    /// `crate::WALLET_DB_BUSY_TIMEOUT` (15 s, currently) because the engine's write-behind commits
+    /// can hold the file lock for seconds; upstream sets none. Before the fix, [`open`]'s store
+    /// connection was a bare `Connection::open` with no explicit timeout, silently falling back to
+    /// rusqlite's 5 s default -- a migration call racing a long engine write could hit
+    /// `database is locked` a full 10 s earlier than the wallet handle would have given up.
+    #[test]
+    fn store_conn_matches_wallet_db_busy_timeout() {
+        let path = std::env::temp_dir().join(format!(
+            "zcashlc_migration_store_conn_busy_timeout_{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let conn = open_store_conn(&path).expect("the store connection must open");
+        let busy_timeout: u32 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("PRAGMA busy_timeout must be readable");
+        // The literal (rather than comparing against `crate::WALLET_DB_BUSY_TIMEOUT` itself) is
+        // deliberate: this pins the actual wait time a caller experiences, so a future edit that
+        // changes the constant's value without meaning to still fails this test instead of
+        // silently redefining "correct".
+        assert_eq!(
+            busy_timeout, 15_000,
+            "the migration store connection must wait as long as the wallet handle \
+             (crate::WALLET_DB_BUSY_TIMEOUT in lib.rs, currently 15 s) before giving up on a held lock"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     /// On a freshly initialized wallet database with a chain tip but no spendable notes, locking

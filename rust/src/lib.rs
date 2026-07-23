@@ -154,6 +154,15 @@ pub(crate) fn anchor_retention_interval(network: NetworkParams) -> AnchorRetenti
     }
 }
 
+/// The busy_timeout every connection onto the wallet database file must use while the slipstream
+/// engine is a potential concurrent writer. Upstream sets none; a host write (or a migration-store
+/// call, see `migration::open_store_conn`) landing while the engine's writer holds the lock
+/// (`deleteAccount`/`importAccount` mid-pass, or a write-behind commit) would otherwise die with an
+/// instant SQLITE_BUSY instead of waiting. 15 s matches the engine's main-connection posture
+/// (wallet_session.rs). Behavior-neutral for the legacy engine: it has no concurrent writer to wait
+/// on, so the timeout never engages.
+pub(crate) const WALLET_DB_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Helper method for construcing a WalletDb value from path data provided over the FFI.
 ///
 /// The returned handle retains its durable anchor checkpoints on the interval
@@ -178,14 +187,10 @@ unsafe fn wallet_db(
         slice::from_raw_parts(db_data, db_data_len)
     }));
     // Mirror `WalletDb::for_path` (open + array vtab + wrap) but give the connection
-    // a busy_timeout first — upstream sets NONE, so a host write landing while the slipstream
-    // engine's writer holds the lock (`deleteAccount`/`importAccount` mid-pass) died with an
-    // instant SQLITE_BUSY instead of waiting. 15 s matches the engine's main-connection
-    // posture (wallet_session.rs). Behavior-neutral for the legacy engine: it has no
-    // concurrent writer to wait on, so the timeout never engages.
+    // a busy_timeout first — see `WALLET_DB_BUSY_TIMEOUT` above for the rationale.
     let conn = rusqlite::Connection::open(db_data)
         .map_err(|e| anyhow!("Error opening wallet database connection: {}", e))?;
-    conn.busy_timeout(std::time::Duration::from_secs(15))
+    conn.busy_timeout(WALLET_DB_BUSY_TIMEOUT)
         .map_err(|e| anyhow!("Error setting wallet database busy_timeout: {}", e))?;
     rusqlite::vtab::array::load_module(&conn)
         .map_err(|e| anyhow!("Error loading wallet database array module: {}", e))?;
