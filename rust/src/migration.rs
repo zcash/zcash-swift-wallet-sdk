@@ -3613,9 +3613,10 @@ mod tests {
             .to_str()
             .expect("the row id is UTF-8");
         assert_eq!(row_id, "0", "the stored transfer's engine id");
-        // The state-side amount is the FUNDING NOTE (crossing + fee buffer), exactly what the
-        // consent echo compares (`expected_rows_from_state` uses the same `transfer_amount`).
-        assert_eq!(row.amount, 100_010_000);
+        // The state-side amount is the NET crossing (funding note minus the fee buffer), exactly
+        // what the consent echo compares (`expected_rows_from_state` uses the same
+        // `transfer_amount`, which nets the buffer on this branch).
+        assert_eq!(row.amount, 100_000_000);
         assert_eq!(
             row.next_executable_after_height, 3_499_000,
             "the stored scheduled height is served unchanged"
