@@ -12,8 +12,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zcash_client_sqlite::pool_migration`, both on librustzcash main; the family pin
   targets a plain main rev — boundary-anchor proving (#2710) and owner-keyed
   note locking (#2716) are both merged, nothing unmerged remains):
-  22 entry points plus their `#[repr(C)]` return types and
-  `zcashlc_free_migration_*` destructors. Each call opens the wallet database and
+  21 of the 24 `zcashlc_migration_*` entry points (the residual-locking pair
+  and the run-count estimate ride their own entries below) plus the
+  `zcashlc_ironwood_activation_height` helper, with their `#[repr(C)]` return
+  types and `zcashlc_free_migration_*` destructors. Each call opens the wallet database and
   the account-keyed migration store (a second connection into the same file) from
   the wallet-db path, 16-byte account uuid, and network id, and reports failures
   through the thread-local last-error channel (`NULL` / `false` / `-1` sentinels),
@@ -59,11 +61,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `zcashlc_migration_sign_note_split`.
   - Proposal/commit: `zcashlc_migration_residual_after_migration`,
     `zcashlc_migration_propose_transfers`,
-    `zcashlc_migration_propose_immediate_transfers`,
     `zcashlc_migration_sign_and_store_schedule`.
   - Delivery: `zcashlc_migration_next_due_transfer`,
     `zcashlc_migration_extract_broadcast_tx`,
-    `zcashlc_migration_record_transfer_result`.
+    `zcashlc_migration_record_transfer_result`,
+    `zcashlc_migration_record_immediate_run` (records a broadcast
+    immediate-migration sweep — an ordinary send-max transaction built
+    outside the engine — so the migration state machine reports it).
   - Recovery: `zcashlc_migration_restart_step` (cancel and re-plan), and
     `zcashlc_migration_refresh_stale_transfers` — rebuilds every expired
     transfer of the stored run in place through the engine's

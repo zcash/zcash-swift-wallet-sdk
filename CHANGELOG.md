@@ -71,7 +71,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hardware-wallet account — migrate independently, concurrently or one after another; the
   family pin targets the standing aggregation branch carrying the still-unmerged note locking
   #2716 and boundary-anchor proving #2710). The
-  engine is bound through 23 `zcashlc_migration_*` FFI functions plus the
+  engine is bound through 24 `zcashlc_migration_*` FFI functions plus the
   `zcashlc_ironwood_activation_height` helper (house conventions throughout: catch_panic,
   thread-local last-error channel, paired free functions), welded as `@DBActor` methods on the
   internal `ZcashRustBackendWelding` surface. The public migration model types ship here
