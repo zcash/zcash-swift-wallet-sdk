@@ -2703,6 +2703,30 @@ class SynchronizerMock: Synchronizer {
         }
     }
 
+    // MARK: - migrationTransactionStatuses
+
+    var migrationTransactionStatusesAccountUUIDThrowableError: Error?
+    var migrationTransactionStatusesAccountUUIDCallsCount = 0
+    var migrationTransactionStatusesAccountUUIDCalled: Bool {
+        return migrationTransactionStatusesAccountUUIDCallsCount > 0
+    }
+    var migrationTransactionStatusesAccountUUIDReceivedAccountUUID: AccountUUID?
+    var migrationTransactionStatusesAccountUUIDReturnValue: [MigrationTransactionStatus]!
+    var migrationTransactionStatusesAccountUUIDClosure: ((AccountUUID) async throws -> [MigrationTransactionStatus])?
+
+    func migrationTransactionStatuses(accountUUID: AccountUUID) async throws -> [MigrationTransactionStatus] {
+        if let error = migrationTransactionStatusesAccountUUIDThrowableError {
+            throw error
+        }
+        migrationTransactionStatusesAccountUUIDCallsCount += 1
+        migrationTransactionStatusesAccountUUIDReceivedAccountUUID = accountUUID
+        if let closure = migrationTransactionStatusesAccountUUIDClosure {
+            return try await closure(accountUUID)
+        } else {
+            return migrationTransactionStatusesAccountUUIDReturnValue
+        }
+    }
+
     // MARK: - isNoteSplitNeeded
 
     var isNoteSplitNeededAccountUUIDThrowableError: Error?
@@ -4727,6 +4751,30 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
             return try await closure(account)
         } else {
             return migrationProgressForReturnValue
+        }
+    }
+
+    // MARK: - migrationTransactionStatuses
+
+    var migrationTransactionStatusesForThrowableError: Error?
+    var migrationTransactionStatusesForCallsCount = 0
+    var migrationTransactionStatusesForCalled: Bool {
+        return migrationTransactionStatusesForCallsCount > 0
+    }
+    var migrationTransactionStatusesForReceivedAccount: AccountUUID?
+    var migrationTransactionStatusesForReturnValue: [MigrationTransactionStatus]!
+    var migrationTransactionStatusesForClosure: ((AccountUUID) async throws -> [MigrationTransactionStatus])?
+
+    func migrationTransactionStatuses(for account: AccountUUID) async throws -> [MigrationTransactionStatus] {
+        if let error = migrationTransactionStatusesForThrowableError {
+            throw error
+        }
+        migrationTransactionStatusesForCallsCount += 1
+        migrationTransactionStatusesForReceivedAccount = account
+        if let closure = migrationTransactionStatusesForClosure {
+            return try await closure(account)
+        } else {
+            return migrationTransactionStatusesForReturnValue
         }
     }
 

@@ -415,6 +415,17 @@ protocol ZcashRustBackendWelding {
     /// - Throws: `rustMigrationProgress` if the rust layer returns an error.
     func migrationProgress(for account: AccountUUID) async throws -> MigrationProgress?
 
+    /// The LIVE status of every committed migration transaction for `account`, keyed by its
+    /// stable id. A verbatim marshal of the engine's own `MigrationState::transaction_statuses`:
+    /// nothing here is derived independently of the engine's view, and each row's `id` is STABLE
+    /// across reads and across a stale-transfer rebuild (a rebuilt transfer keeps its id; only
+    /// its state and heights change). Reconciles mined transactions first (the same read-path
+    /// convention as `migrationState(for:)`), so a transaction the wallet's own scan has since
+    /// observed mined is reported `.mined` here even if the stored run still marks it broadcast.
+    /// No stored run, or a stored run with no transactions, returns an EMPTY array — not an error.
+    /// - Throws: `rustMigrationTransactionStatuses` if the rust layer returns an error.
+    func migrationTransactionStatuses(for account: AccountUUID) async throws -> [MigrationTransactionStatus]
+
     /// Whether the Orchard notes must be split before migration.
     ///
     /// - Throws: `rustMigrationIsNoteSplitNeeded` if the rust layer returns an error. In particular,

@@ -42,6 +42,10 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
         await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.migrationProgress(accountUUID: self.accountUUID) }
     }
 
+    func testMigrationTransactionStatusesDefaultThrowsUnimplemented() async {
+        await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.migrationTransactionStatuses(accountUUID: self.accountUUID) }
+    }
+
     func testIsNoteSplitNeededDefaultThrowsUnimplemented() async {
         await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.isNoteSplitNeeded(accountUUID: self.accountUUID) }
     }
@@ -217,7 +221,7 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
 }
 
 /// A minimal `Synchronizer` conformer implementing only the protocol's previously-existing
-/// (pre-migration) members. None of its stubs are ever exercised by these tests -- only the 27
+/// (pre-migration) members. None of its stubs are ever exercised by these tests -- only the 28
 /// migration-group members are called, and this type deliberately does not override any of them, so
 /// every call falls through to the protocol-extension default under test.
 private final class NonMigratingSynchronizer: Synchronizer {
