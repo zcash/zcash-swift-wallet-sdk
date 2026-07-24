@@ -343,11 +343,11 @@ public class Initializer {
                 activationHeights
             )
             if !cleanRegistration {
-                // A different custom network was already registered in this process. The new values
-                // are applied (last writer wins), but per-instance state of any earlier Initializer
-                // (e.g. its checkpoint source) no longer matches the process-global parameters —
-                // a host configuration bug worth failing fast on during development.
-                assertionFailure(
+                // A different custom network was already registered in this process. Rust preserves
+                // that configuration so existing wallets remain safe, but this Initializer cannot
+                // operate with the requested parameters. Initializers cannot throw, so fail this
+                // process-level configuration error consistently in release and debug builds.
+                preconditionFailure(
                     "Conflicting custom-network registration: a different custom network was already registered in this process."
                 )
             }

@@ -123,9 +123,9 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     /// A `nil` height means "not activated on this network".
     ///
     /// Returns `true` on a fresh registration or an identical re-registration. Returns `false` when
-    /// the call replaced a **different** existing configuration (the replacement is still applied,
-    /// last writer wins) — a host configuration bug, since the parameters are process-global and two
-    /// live instances with different custom networks cannot both be honored.
+    /// a **different** configuration is already registered; the existing configuration is preserved.
+    /// This is a host configuration bug, since the parameters are process-global and two live
+    /// instances with different custom networks cannot both be honored.
     @discardableResult
     static func setCustomNetwork(base: NetworkType, _ heights: NetworkActivationHeights) -> Bool {
         func height(_ value: BlockHeight?) -> Int64 {

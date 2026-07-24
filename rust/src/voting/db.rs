@@ -170,6 +170,10 @@ mod tests {
             1, 347_500, 419_200, 653_600, 903_000, 1_046_400, 1_687_104, 2_726_400, 3_146_400,
             3_364_600, 3_428_143,
         ));
+        assert!(
+            !crate::zcashlc_set_custom_network(0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
+            "a conflicting custom-network registration must be rejected"
+        );
 
         let db = unsafe {
             zcashlc_voting_db_open(
@@ -183,7 +187,7 @@ mod tests {
         assert_eq!(
             network,
             voting::types::Network::Mainnet,
-            "base-mainnet custom network must map to the mainnet voting identity"
+            "a rejected registration must not replace the mainnet base identity"
         );
         unsafe { zcashlc_voting_db_free(db) };
         let _ = std::fs::remove_file(&path);

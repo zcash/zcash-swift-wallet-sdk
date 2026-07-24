@@ -4333,11 +4333,9 @@ fn network_type_for_id(network_id: u32) -> Option<NetworkType> {
 /// `lightwalletd` being connected to. Idempotent; intended to be called once at init.
 ///
 /// Returns `true` on a fresh registration or an identical re-registration. Returns `false` on an
-/// invalid `base_network_id`, a poisoned lock, or when the call **replaced a different existing
-/// configuration** — the replacement is still applied (last writer wins, since per-instance state
-/// such as checkpoint sources follows the newest `Initializer`), but the caller should treat a
-/// conflicting re-registration as a host configuration bug: the parameters are process-global, so
-/// two live instances with different custom networks cannot both be honored.
+/// invalid `base_network_id`, a poisoned lock, or when a different configuration was already
+/// registered. A conflicting registration does not replace the existing parameters: doing so would
+/// silently change the consensus rules used by live wallets that share this process-global slot.
 #[unsafe(no_mangle)]
 pub extern "C" fn zcashlc_set_custom_network(
     base_network_id: u32,
@@ -4374,11 +4372,13 @@ pub extern "C" fn zcashlc_set_custom_network(
     };
 
     match CUSTOM_PARAMS.write() {
-        Ok(mut guard) => {
-            let replaced_different = matches!(*guard, Some(existing) if existing != (base, local));
-            *guard = Some((base, local));
-            !replaced_different
-        }
+        Ok(mut guard) => match *guard {
+            Some(existing) => existing == (base, local),
+            None => {
+                *guard = Some((base, local));
+                true
+            }
+        },
         Err(_) => false,
     }
 }
