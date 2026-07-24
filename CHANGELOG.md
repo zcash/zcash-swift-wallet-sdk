@@ -7,7 +7,7 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 # Unreleased
 
 ## Added
-- Orchard→Ironwood pool-migration engine, exposed as a 27-member migration group on the
+- Orchard→Ironwood pool-migration engine, exposed as a 31-member migration group on the
   `Synchronizer` protocol, built over the pool-migration FFI/welding layer introduced in the entry
   below: the app talks only to `Synchronizer` — the per-account migration engine, broadcaster, and
   privacy gate behind it are internal. Account-scoped members take an `AccountUUID`, and two
@@ -171,6 +171,32 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same name — an account-scoped thin forward through the per-account migration actor that hands
   the engine's rows through unchanged, with a throwing "unimplemented" protocol-extension default
   like the rest of the group.
+- Keystone batch-signing bridge for the external-signer migration ceremony. `ZcashRustBackendWelding`
+  gains four DB-free, account-free members bridging the migration ceremony's PCZTs to a Keystone
+  hardware signer over an animated multi-part QR UR: `migrationKeystoneBuildSignBatchQrParts(requestId:pczts:maxFragmentLen:)`
+  redacts every PCZT for the batch-Signer role and returns the animated QR frame strings (callers
+  must retain their own unredacted PCZTs — those are what applying signatures signs, and must be
+  passed back in the SAME order); `migrationKeystoneResetSignBatchDecoder()` discards any in-flight
+  scan session (infallible — call on scan-screen entry/retry/exit, since only one session exists at
+  a time); `migrationKeystoneDecodeSignBatchPart(_:expectedRequestId:)` feeds one scanned QR frame
+  to the decode session and returns the new public `KeystoneBatchDecodeResult` model
+  (`complete`/`progress` while multi-part decoding is in flight; once complete, the signatures-only
+  response bytes and — the ONLY way to learn it in this flow — the signing device's
+  `KeystoneFirmwareVersion`, sourced from the response envelope, not any PCZT field; a request-id
+  mismatch at completion throws, rejecting a stale/unrelated scan); and
+  `migrationKeystoneApplyBatchSignatures(pczts:batchSignResponse:)` applies the device's positional
+  signatures back onto the caller-held unredacted PCZTs (the SAME array, SAME order passed to
+  `migrationKeystoneBuildSignBatchQrParts`), returning `[MigrationSignedTransferPczt]` ready for the
+  existing `storeSignedNoteSplitPCZTs`/`storeSignedMigrationSchedulePCZTs` calls. New error codes
+  `rustMigrationKeystoneBuildSignBatchQrParts` ZRUST0136, `rustMigrationKeystoneDecodeSignBatchPart`
+  ZRUST0137, and `rustMigrationKeystoneApplyBatchSignatures` ZRUST0138. Surfaced on the
+  `Synchronizer` protocol as `buildKeystoneSignBatchQRParts(requestId:pczts:maxFragmentLen:)`,
+  `resetKeystoneSignBatchDecoder()`, `decodeKeystoneSignBatchPart(_:expectedRequestId:)`, and
+  `applyKeystoneBatchSignatures(pczts:batchSignResponse:)` — thin forwards straight to the rust
+  backend (no per-account migration actor, since the bridge is DB-free), with throwing
+  "unimplemented" protocol-extension defaults for the three throwing members like the rest of the
+  group (`resetKeystoneSignBatchDecoder()` gets the group's fourth inert default instead, since it
+  is itself infallible).
 - Ironwood (NU6.3) receive/sync readiness. The lightwalletd protocol gains the Ironwood fields
   (`CompactTx.ironwoodActions`, `ChainMetadata.ironwoodCommitmentTreeSize`, `TreeState.ironwoodTree`,
   `ShieldedProtocol.ironwood`); `UpdateSubtreeRootsAction` fetches and stores Ironwood subtree roots
