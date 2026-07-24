@@ -415,6 +415,17 @@ protocol ZcashRustBackendWelding {
     /// - Throws: `rustMigrationProgress` if the rust layer returns an error.
     func migrationProgress(for account: AccountUUID) async throws -> MigrationProgress?
 
+    /// The LIVE status of every committed migration transaction for `account`, keyed by its
+    /// stable id. A verbatim marshal of the engine's own `MigrationState::transaction_statuses`:
+    /// nothing here is derived independently of the engine's view, and each row's `id` is STABLE
+    /// across reads and across a stale-transfer rebuild (a rebuilt transfer keeps its id; only
+    /// its state and heights change). Reconciles mined transactions first (the same read-path
+    /// convention as `migrationState(for:)`), so a transaction the wallet's own scan has since
+    /// observed mined is reported `.mined` here even if the stored run still marks it broadcast.
+    /// No stored run, or a stored run with no transactions, returns an EMPTY array — not an error.
+    /// - Throws: `rustMigrationTransactionStatuses` if the rust layer returns an error.
+    func migrationTransactionStatuses(for account: AccountUUID) async throws -> [MigrationTransactionStatus]
+
     /// Whether the Orchard notes must be split before migration.
     ///
     /// - Throws: `rustMigrationIsNoteSplitNeeded` if the rust layer returns an error. In particular,
@@ -442,6 +453,7 @@ protocol ZcashRustBackendWelding {
     /// user approved.
     /// - Throws: `migrationPlanStale` when the echo mismatches the previewed plan, or when no
     ///   previewed plan is cached and no resumable run is stored — re-propose and re-display;
+    ///   `migrationProvingUnavailable` when proving the returned transfer fails hard;
     ///   `rustMigrationSignNoteSplit` for other rust-layer errors.
     func migrationSignNoteSplit(
         proposal: NoteSplitProposal,
@@ -523,7 +535,8 @@ protocol ZcashRustBackendWelding {
     /// - Throws: `migrationPlanStale` when the echo mismatches, or when nothing is committed and
     ///   no previewed plan is cached — recover by re-proposing and re-displaying (pre-commit) or
     ///   re-reading the stored schedule (post-commit); `rustMigrationSignAndStoreSchedule` for
-    ///   other rust-layer errors.
+    ///   other rust-layer errors (also thrown Swift-side if the echoed duration exceeds
+    ///   UInt32.max, without reaching the rust layer).
     func migrationSignAndStoreSchedule(
         _ schedule: MigrationSchedule,
         usk: UnifiedSpendingKey,
@@ -531,7 +544,9 @@ protocol ZcashRustBackendWelding {
     ) async throws
 
     /// The next height-due pre-signed transfer, or `nil` when nothing is currently due.
-    /// - Throws: `rustMigrationNextDueTransfer` if the rust layer returns an error.
+    /// - Throws: `migrationProvingUnavailable` when proving the due transfer fails hard (the
+    ///   transient not-scanned-yet case surfaces as `nil` above, not an error);
+    ///   `rustMigrationNextDueTransfer` for other rust-layer errors.
     func migrationNextDueTransfer(for account: AccountUUID) async throws -> PreparedMigrationTransfer?
 
     /// The next height-due scheduled transfer's full proposal (amount, anchor, timing) for the
@@ -636,7 +651,8 @@ protocol ZcashRustBackendWelding {
     ///   recover by re-reading the run's stored schedule (`migrationRefreshStaleTransfers`
     ///   returns exactly that) and re-displaying it — or when nothing is committed and no
     ///   previewed plan is cached; `rustMigrationCreateUnsignedTransferPczts` for other
-    ///   rust-layer errors.
+    ///   rust-layer errors (also thrown Swift-side if the echoed duration exceeds UInt32.max,
+    ///   without reaching the rust layer).
     func migrationCreateUnsignedTransferPczts(
         for schedule: MigrationSchedule,
         for account: AccountUUID
