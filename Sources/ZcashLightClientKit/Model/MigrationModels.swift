@@ -450,3 +450,67 @@ public struct MigrationSignedTransferPczt: Equatable, Sendable {
         self.pczt = pczt
     }
 }
+
+/// A signing device's firmware version, as reported in a Keystone batch-signing response envelope
+/// (see `KeystoneBatchDecodeResult.firmwareVersion`).
+///
+/// `Comparable` lexicographically (major, then minor, then build) so a host can gate a feature on
+/// a minimum device firmware version.
+public struct KeystoneFirmwareVersion: Equatable, Sendable, Comparable {
+    public let major: UInt8
+    public let minor: UInt8
+    public let build: UInt8
+
+    /// Creates a `KeystoneFirmwareVersion`.
+    public init(major: UInt8, minor: UInt8, build: UInt8) {
+        self.major = major
+        self.minor = minor
+        self.build = build
+    }
+
+    public static func < (lhs: KeystoneFirmwareVersion, rhs: KeystoneFirmwareVersion) -> Bool {
+        if lhs.major != rhs.major {
+            return lhs.major < rhs.major
+        }
+        if lhs.minor != rhs.minor {
+            return lhs.minor < rhs.minor
+        }
+        return lhs.build < rhs.build
+    }
+}
+
+/// The result of feeding one scanned QR frame to
+/// `Synchronizer.decodeKeystoneSignBatchPart(_:expectedRequestId:)`.
+///
+/// `complete == false` means more frames are needed: `progress` is the 0-100 completion
+/// percentage so far, and `data`/`firmwareVersion` are `nil`. `complete == true` means `data`
+/// holds the serialized batch-signature response to pass to
+/// `Synchronizer.applyKeystoneBatchSignatures(pczts:batchSignResponse:)` -- the response is
+/// signatures-only, no PCZT is echoed back by the device.
+///
+/// - Note: `firmwareVersion` comes from the response envelope itself (the signing device's own
+///   reported firmware version), not from any field recovered from a signed PCZT. It is set only
+///   once `complete`, and only when the envelope carried it; it is the ONLY way to learn the
+///   signing device's firmware version in the batch flow -- `applyKeystoneBatchSignatures`
+///   reconstructs each "signed" PCZT from the caller's own retained unsigned bytes plus the
+///   response's signatures, never from device-returned PCZT bytes, so there is no PCZT-embedded
+///   firmware stamp to fall back on here (unlike the single-transaction Keystone sign flow).
+public struct KeystoneBatchDecodeResult: Equatable, Sendable {
+    /// Whether the full multi-part response has been decoded. `false` means feed more frames.
+    public let complete: Bool
+    /// The 0-100 decode completion percentage. Meaningful while `!complete`; `100` once complete.
+    public let progress: Int
+    /// The serialized batch-signature response, once `complete`; `nil` otherwise.
+    public let data: Data?
+    /// The signing device's reported firmware version, once `complete` and when the response
+    /// envelope carried it; `nil` otherwise. See this type's provenance note above.
+    public let firmwareVersion: KeystoneFirmwareVersion?
+
+    /// Creates a `KeystoneBatchDecodeResult`.
+    public init(complete: Bool, progress: Int, data: Data?, firmwareVersion: KeystoneFirmwareVersion?) {
+        self.complete = complete
+        self.progress = progress
+        self.data = data
+        self.firmwareVersion = firmwareVersion
+    }
+}

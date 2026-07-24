@@ -2211,6 +2211,151 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         }
     }
 
+    // DB-free: pure PCZT/UR operations over caller-held bytes, so unlike every migration method
+    // above these are not `@DBActor` (mirrors `redactPCZTForSigner`/`PCZTRequiresSaplingProofs`).
+    func migrationKeystoneBuildSignBatchQrParts(
+        requestId: Data,
+        pczts: [MigrationUnsignedTransferPczt],
+        maxFragmentLen: Int
+    ) async throws -> [String] {
+        // One owned buffer per pczt (see `migrationStoreSignedSchedulePczts` for the rationale).
+        let pcztBuffers: [UnsafeMutablePointer<UInt8>] = pczts.map { unsigned in
+            let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: unsigned.pczt.count)
+            unsigned.pczt.copyBytes(to: buffer, count: unsigned.pczt.count)
+            return buffer
+        }
+        defer { pcztBuffers.forEach { $0.deallocate() } }
+
+        let pcztPointers: [UnsafePointer<UInt8>?] = pcztBuffers.map { UnsafePointer($0) }
+        let pcztLens: [UInt] = pczts.map { UInt($0.pczt.count) }
+        let requestIdBytes = requestId.bytes
+
+        let qrPartsPtr = pcztPointers.withUnsafeBufferPointer { pcztsPtr in
+            pcztLens.withUnsafeBufferPointer { lensPtr in
+                zcashlc_migration_keystone_build_sign_batch_qr_parts(
+                    requestIdBytes,
+                    UInt(requestIdBytes.count),
+                    pcztsPtr.baseAddress,
+                    lensPtr.baseAddress,
+                    UInt(pcztsPtr.count),
+                    UInt(maxFragmentLen)
+                )
+            }
+        }
+
+        guard let qrPartsPtr else {
+            throw ZcashError.rustMigrationKeystoneBuildSignBatchQrParts(
+                lastErrorMessage(fallback: "`migrationKeystoneBuildSignBatchQrParts` failed with unknown error")
+            )
+        }
+
+        defer { zcashlc_free_migration_keystone_qr_parts(qrPartsPtr) }
+
+        var parts: [String] = []
+        parts.reserveCapacity(Int(qrPartsPtr.pointee.len))
+
+        for index in 0 ..< Int(qrPartsPtr.pointee.len) {
+            guard
+                let partCString = qrPartsPtr.pointee.ptr.advanced(by: index).pointee,
+                let part = String(validatingUTF8: partCString)
+            else {
+                throw ZcashError.rustMigrationKeystoneBuildSignBatchQrParts(
+                    lastErrorMessage(fallback: "`migrationKeystoneBuildSignBatchQrParts` returned a malformed QR part")
+                )
+            }
+
+            parts.append(part)
+        }
+
+        return parts
+    }
+
+    func migrationKeystoneResetSignBatchDecoder() async {
+        zcashlc_migration_keystone_reset_sign_batch_decoder()
+    }
+
+    func migrationKeystoneDecodeSignBatchPart(
+        _ part: String,
+        expectedRequestId: Data
+    ) async throws -> KeystoneBatchDecodeResult {
+        let expectedRequestIdBytes = expectedRequestId.bytes
+
+        let resultPtr = zcashlc_migration_keystone_decode_sign_batch_part(
+            [CChar](part.utf8CString),
+            expectedRequestIdBytes,
+            UInt(expectedRequestIdBytes.count)
+        )
+
+        guard let resultPtr else {
+            throw ZcashError.rustMigrationKeystoneDecodeSignBatchPart(
+                lastErrorMessage(fallback: "`migrationKeystoneDecodeSignBatchPart` failed with unknown error")
+            )
+        }
+
+        defer { zcashlc_free_migration_keystone_batch_decode_result(resultPtr) }
+
+        return resultPtr.pointee.toKeystoneBatchDecodeResult()
+    }
+
+    func migrationKeystoneApplyBatchSignatures(
+        pczts: [MigrationUnsignedTransferPczt],
+        batchSignResponse: Data
+    ) async throws -> [MigrationSignedTransferPczt] {
+        let idsCStrings = makeCStrings(pczts.map { $0.id })
+        defer { freeCStrings(idsCStrings) }
+        let idsConstPointers = constPointers(idsCStrings)
+
+        // One owned buffer per pczt (see `migrationStoreSignedSchedulePczts` for the rationale).
+        let pcztBuffers: [UnsafeMutablePointer<UInt8>] = pczts.map { unsigned in
+            let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: unsigned.pczt.count)
+            unsigned.pczt.copyBytes(to: buffer, count: unsigned.pczt.count)
+            return buffer
+        }
+        defer { pcztBuffers.forEach { $0.deallocate() } }
+
+        let pcztPointers: [UnsafePointer<UInt8>?] = pcztBuffers.map { UnsafePointer($0) }
+        let pcztLens: [UInt] = pczts.map { UInt($0.pczt.count) }
+        let responseBytes = batchSignResponse.bytes
+
+        let signedPtr = idsConstPointers.withUnsafeBufferPointer { idsPtr in
+            pcztPointers.withUnsafeBufferPointer { pcztsPtr in
+                pcztLens.withUnsafeBufferPointer { lensPtr in
+                    zcashlc_migration_keystone_apply_batch_signatures(
+                        idsPtr.baseAddress,
+                        UInt(idsPtr.count),
+                        pcztsPtr.baseAddress,
+                        lensPtr.baseAddress,
+                        responseBytes,
+                        UInt(responseBytes.count)
+                    )
+                }
+            }
+        }
+
+        guard let signedPtr else {
+            throw ZcashError.rustMigrationKeystoneApplyBatchSignatures(
+                lastErrorMessage(fallback: "`migrationKeystoneApplyBatchSignatures` failed with unknown error")
+            )
+        }
+
+        defer { zcashlc_free_migration_unsigned_transfer_pczts(signedPtr) }
+
+        var signedPczts: [MigrationSignedTransferPczt] = []
+        signedPczts.reserveCapacity(Int(signedPtr.pointee.len))
+
+        for index in 0 ..< Int(signedPtr.pointee.len) {
+            guard let signedPczt = signedPtr.pointee.ptr.advanced(by: index).pointee.unsafeToMigrationSignedTransferPczt() else {
+                throw ZcashError.rustMigrationKeystoneApplyBatchSignatures(
+                    lastErrorMessage(fallback: "`migrationKeystoneApplyBatchSignatures` returned a malformed pczt")
+                )
+            }
+
+            signedPczts.append(signedPczt)
+        }
+
+        return signedPczts
+    }
+
     /// The NU6.3 (Ironwood) activation height for `networkType`, or `nil` when NU6.3 is unset for
     /// that network. Stateless (no db access).
     ///
@@ -2726,6 +2871,42 @@ extension FfiUnsignedTransferPczt {
         return MigrationUnsignedTransferPczt(
             id: transferId,
             pczt: Data(bytes: pcztPtr, count: Int(pczt_len))
+        )
+    }
+
+    /// Converts an [`FfiUnsignedTransferPczt`] into a [`MigrationSignedTransferPczt`] -- the same
+    /// FFI struct doubles as the batch-SIGNED pczt pair set returned by
+    /// `zcashlc_migration_keystone_apply_batch_signatures` (see its doc), so this mirrors
+    /// `unsafeToMigrationUnsignedTransferPczt()` field-for-field into the signed model instead.
+    /// `nil` for a missing `id`/`pczt` (should not happen; defensive only).
+    func unsafeToMigrationSignedTransferPczt() -> MigrationSignedTransferPczt? {
+        guard
+            let idPtr = id,
+            let pcztPtr = pczt,
+            let transferId = String(validatingUTF8: idPtr)
+        else {
+            return nil
+        }
+
+        return MigrationSignedTransferPczt(
+            id: transferId,
+            pczt: Data(bytes: pcztPtr, count: Int(pczt_len))
+        )
+    }
+}
+
+extension FfiKeystoneBatchDecodeResult {
+    /// Converts an [`FfiKeystoneBatchDecodeResult`] into a [`KeystoneBatchDecodeResult`]. Total,
+    /// not failable: `data`/`firmwareVersion` are legitimately `nil` while `!complete` (or when
+    /// the response envelope carried no firmware version), not an error state.
+    func toKeystoneBatchDecodeResult() -> KeystoneBatchDecodeResult {
+        KeystoneBatchDecodeResult(
+            complete: complete,
+            progress: Int(progress),
+            data: data.map { Data(bytes: $0, count: Int(data_len)) },
+            firmwareVersion: has_firmware_version
+                ? KeystoneFirmwareVersion(major: firmware_major, minor: firmware_minor, build: firmware_build)
+                : nil
         )
     }
 }
