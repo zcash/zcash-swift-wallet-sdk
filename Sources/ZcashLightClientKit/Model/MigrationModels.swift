@@ -448,7 +448,15 @@ public enum MigrationAttentionReason: Equatable, Sendable {
 /// An unsigned-but-proven PCZT for one scheduled transfer, awaiting an external signer (see
 /// `ZcashRustBackendWelding.migrationCreateUnsignedTransferPczts(for:for:)`).
 public struct MigrationUnsignedTransferPczt: Equatable, Sendable {
-    /// The transfer's opaque, engine-issued id.
+    /// The transfer's id.
+    ///
+    /// Engine-produced PCZTs carry the engine's numeric id, and the two signed-PCZT STORE calls
+    /// (`storeSignedNoteSplitPCZTs` / `storeSignedMigrationSchedulePCZTs`) require exactly that —
+    /// they look the transaction up by it. The Keystone batch-signing bridge, by contrast, treats
+    /// this as an OPAQUE caller-side correlation label: `applyKeystoneBatchSignatures` never
+    /// parses or looks it up, it only echoes it back onto the returned signed pairs positionally,
+    /// so callers may carry any string through the signing ceremony (e.g. a sentinel-prefixed
+    /// id) as long as what ultimately reaches a store call is the bare engine id.
     public let id: String
     /// The serialized, proven-but-unsigned PCZT.
     public let pczt: Data
@@ -463,8 +471,10 @@ public struct MigrationUnsignedTransferPczt: Equatable, Sendable {
 /// An externally signed PCZT for one scheduled transfer, to be handed back to the engine via
 /// `ZcashRustBackendWelding.migrationStoreSignedSchedulePczts(_:for:)`.
 public struct MigrationSignedTransferPczt: Equatable, Sendable {
-    /// The transfer's opaque, engine-issued id (must match the corresponding
-    /// `MigrationUnsignedTransferPczt.id`).
+    /// The transfer's id (must match the corresponding `MigrationUnsignedTransferPczt.id` — see
+    /// that property's doc for the engine-numeric-vs-opaque split: the STORE calls consuming this
+    /// type require the bare engine-numeric id, while `applyKeystoneBatchSignatures` produces
+    /// these pairs with whatever ids it was given, echoed back verbatim).
     public let id: String
     /// The serialized, signed PCZT.
     public let pczt: Data
