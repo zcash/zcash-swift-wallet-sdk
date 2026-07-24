@@ -1370,6 +1370,25 @@ impl FfiUnsignedTransferPczts {
             len,
         })))
     }
+
+    /// [`Self::from_pairs`] for OPAQUE string ids — the Keystone batch-apply extern's output
+    /// marshaling, where ids are caller-side correlation labels echoed back verbatim (never
+    /// engine [`MigrationTxId`]s; see [`decode_opaque_signed_pairs`]).
+    fn from_opaque_pairs(pairs: Vec<(String, Vec<u8>)>) -> anyhow::Result<*mut Self> {
+        let items = pairs
+            .into_iter()
+            .map(|(id, bytes)| {
+                let id = cstring_raw(&id, "unsigned transfer pczt id")?;
+                let (pczt, pczt_len) = ptr_from_vec(bytes);
+                Ok(FfiUnsignedTransferPczt { id, pczt, pczt_len })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let (ptr, len) = ptr_from_vec(items);
+        Ok(Box::into_raw(Box::new(FfiUnsignedTransferPczts {
+            ptr,
+            len,
+        })))
+    }
 }
 
 /// One migration transaction's LIVE status, as the engine computes it — an element of
@@ -3019,7 +3038,16 @@ pub unsafe extern "C" fn zcashlc_migration_store_signed_schedule_pczts(
     unwrap_exc_or(res, false)
 }
 
-/// Decode the platform's parallel `(id, pczt)` arrays into owned pairs.
+/// Decode the platform's parallel `(id, pczt)` arrays into owned pairs, parsing every id as an
+/// engine [`MigrationTxId`].
+///
+/// This is the ENGINE-side variant: its two callers
+/// ([`zcashlc_migration_store_signed_note_split_pczts`] and
+/// [`zcashlc_migration_store_signed_schedule_pczts`]) genuinely look transactions up by their
+/// engine-issued numeric id, so a non-numeric id is a caller bug there. The Keystone batch-apply
+/// extern deliberately does NOT use this — its ids are opaque caller-side correlation labels
+/// (the app's `note-split#`-prefixed sentinels are legal there); see
+/// [`decode_opaque_signed_pairs`].
 ///
 /// # Safety
 /// `ids`/`pczts`/`pczt_lens` must be valid for reads of `len` elements; every `ids[i]` must be a
@@ -3036,6 +3064,50 @@ unsafe fn decode_signed_pairs(
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
         let id = transfer_id_from_c(id_ptrs[i])?;
+        if pczt_ptrs[i].is_null() {
+            return Err(anyhow!("signed pczt at index {i} is null"));
+        }
+        let bytes = unsafe { slice::from_raw_parts(pczt_ptrs[i], lens[i]) }.to_vec();
+        out.push((id, bytes));
+    }
+    Ok(out)
+}
+
+/// Decode a caller-side OPAQUE id from a C string — no numeric parse, returned verbatim.
+///
+/// The Keystone batch-apply counterpart of [`transfer_id_from_c`]: apply never looks an id up in
+/// the engine, it only echoes ids back onto the returned pairs positionally, so any UTF-8 string
+/// is legal — including zodl's `note-split#<engine id>` preparation sentinels, which the numeric
+/// parse used to reject and thereby fail every scheduled Keystone ceremony that carried a
+/// preparation transaction (MOB-1513 R8 finding 1).
+fn opaque_id_from_c(id: *const c_char) -> anyhow::Result<String> {
+    if id.is_null() {
+        return Err(anyhow!("transfer_id is null"));
+    }
+    let raw = unsafe { CStr::from_ptr(id) }
+        .to_str()
+        .map_err(|e| anyhow!("transfer id is not valid UTF-8: {e}"))?;
+    Ok(raw.to_owned())
+}
+
+/// Decode the platform's parallel `(id, pczt)` arrays into owned pairs, treating ids as OPAQUE
+/// strings ([`opaque_id_from_c`]) — the Keystone batch-apply pass-through variant of
+/// [`decode_signed_pairs`]; see that function's doc for the split.
+///
+/// # Safety
+/// Same contract as [`decode_signed_pairs`].
+unsafe fn decode_opaque_signed_pairs(
+    ids: *const *const c_char,
+    len: usize,
+    pczts: *const *const u8,
+    pczt_lens: *const usize,
+) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    let id_ptrs = unsafe { slice_or_empty(ids, len) };
+    let pczt_ptrs = unsafe { slice_or_empty(pczts, len) };
+    let lens = unsafe { slice_or_empty(pczt_lens, len) };
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let id = opaque_id_from_c(id_ptrs[i])?;
         if pczt_ptrs[i].is_null() {
             return Err(anyhow!("signed pczt at index {i} is null"));
         }
@@ -3147,14 +3219,18 @@ pub unsafe extern "C" fn zcashlc_migration_keystone_decode_sign_batch_part(
 /// Applies the ceremony's Keystone batch signatures to the caller-held unsigned PCZTs,
 /// positionally (see [`crate::migration_keystone::apply_batch_signatures`]) — `ids`/`pczts` must
 /// be the SAME PCZTs, in the SAME order, passed to
-/// [`zcashlc_migration_keystone_build_sign_batch_qr_parts`]. `ids` pass through positionally onto
-/// the returned signed PCZTs, reusing [`FfiUnsignedTransferPczts`] as a generic `(id, PCZT
-/// bytes)` pair set (see its doc) and [`decode_signed_pairs`] to decode the parallel input
-/// arrays.
+/// [`zcashlc_migration_keystone_build_sign_batch_qr_parts`]. `ids` are OPAQUE caller-side
+/// correlation labels: they are never parsed or looked up here — they pass through positionally
+/// onto the returned signed PCZTs verbatim ([`decode_opaque_signed_pairs`] /
+/// [`FfiUnsignedTransferPczts::from_opaque_pairs`]), so non-numeric ids (e.g. zodl's
+/// `note-split#<engine id>` preparation sentinels) are legal. This is deliberately looser than
+/// the two store externs, whose ids must be engine-numeric ([`decode_signed_pairs`]) — the
+/// previous shared numeric decode here rejected sentinel-prefixed ids and failed every ceremony
+/// carrying a preparation transaction (MOB-1513 R8 finding 1).
 ///
 /// # Safety
-/// See [`decode_signed_pairs`]. `response` must be valid for reads of `response_len` bytes. Free
-/// the returned pointer with [`zcashlc_free_migration_unsigned_transfer_pczts`].
+/// See [`decode_opaque_signed_pairs`]. `response` must be valid for reads of `response_len`
+/// bytes. Free the returned pointer with [`zcashlc_free_migration_unsigned_transfer_pczts`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_migration_keystone_apply_batch_signatures(
     ids: *const *const c_char,
@@ -3165,12 +3241,12 @@ pub unsafe extern "C" fn zcashlc_migration_keystone_apply_batch_signatures(
     response_len: usize,
 ) -> *mut FfiUnsignedTransferPczts {
     let res = catch_panic(|| {
-        let unsigned = unsafe { decode_signed_pairs(ids, ids_len, pczts, pczt_lens)? };
-        let (ids, pczts): (Vec<MigrationTxId>, Vec<Vec<u8>>) = unsigned.into_iter().unzip();
+        let unsigned = unsafe { decode_opaque_signed_pairs(ids, ids_len, pczts, pczt_lens)? };
+        let (ids, pczts): (Vec<String>, Vec<Vec<u8>>) = unsigned.into_iter().unzip();
         let response = unsafe { slice_or_empty(response, response_len) };
         let signed = crate::migration_keystone::apply_batch_signatures(&pczts, response)
             .map_err(|e| anyhow!("Error applying Keystone batch signatures: {e}"))?;
-        FfiUnsignedTransferPczts::from_pairs(ids.into_iter().zip(signed).collect())
+        FfiUnsignedTransferPczts::from_opaque_pairs(ids.into_iter().zip(signed).collect())
     });
     unwrap_exc_or_null(res)
 }
@@ -3211,6 +3287,114 @@ mod tests {
 
     fn h(v: u32) -> BlockHeight {
         BlockHeight::from_u32(v)
+    }
+
+    // ----- Keystone batch-apply id contract (MOB-1513 R8 finding 1) -----
+
+    /// The apply lane's ids are opaque pass-through: zodl's `note-split#<engine id>` preparation
+    /// sentinels (and any other non-numeric label) must decode verbatim, in order, alongside
+    /// plain numeric engine ids.
+    #[test]
+    fn decode_opaque_signed_pairs_accepts_sentinel_ids_verbatim() {
+        let ids = [
+            CString::new("note-split#7").unwrap(),
+            CString::new("12").unwrap(),
+        ];
+        let id_ptrs: Vec<*const c_char> = ids.iter().map(|id| id.as_ptr()).collect();
+        let pczts = [vec![0xAAu8, 0xBB], vec![0xCCu8]];
+        let pczt_ptrs: Vec<*const u8> = pczts.iter().map(|bytes| bytes.as_ptr()).collect();
+        let pczt_lens: Vec<usize> = pczts.iter().map(Vec::len).collect();
+
+        let decoded = unsafe {
+            decode_opaque_signed_pairs(
+                id_ptrs.as_ptr(),
+                ids.len(),
+                pczt_ptrs.as_ptr(),
+                pczt_lens.as_ptr(),
+            )
+        }
+        .expect("opaque decode must accept sentinel-prefixed ids");
+
+        assert_eq!(
+            decoded,
+            vec![
+                ("note-split#7".to_string(), vec![0xAA, 0xBB]),
+                ("12".to_string(), vec![0xCC]),
+            ]
+        );
+    }
+
+    /// Pins the ENGINE-side contract the stores rely on: `decode_signed_pairs` (used by the two
+    /// store externs, which genuinely look transactions up by engine id) must keep REJECTING
+    /// non-numeric ids — the apply lane's looseness is deliberately not shared.
+    #[test]
+    fn decode_signed_pairs_rejects_non_numeric_ids() {
+        let ids = [CString::new("note-split#7").unwrap()];
+        let id_ptrs: Vec<*const c_char> = ids.iter().map(|id| id.as_ptr()).collect();
+        let pczts = [vec![0xAAu8]];
+        let pczt_ptrs: Vec<*const u8> = pczts.iter().map(|bytes| bytes.as_ptr()).collect();
+        let pczt_lens: Vec<usize> = pczts.iter().map(Vec::len).collect();
+
+        let err = unsafe {
+            decode_signed_pairs(
+                id_ptrs.as_ptr(),
+                ids.len(),
+                pczt_ptrs.as_ptr(),
+                pczt_lens.as_ptr(),
+            )
+        }
+        .expect_err("engine-id decode must reject a sentinel-prefixed id");
+        assert!(
+            err.to_string().contains("invalid transfer id"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The extern-level regression for the QA-blocking defect: a sentinel-prefixed id must get
+    /// PAST id decoding and reach the apply step. With an empty (zero-signature-set) response the
+    /// apply step then fails its own count check — proving the failure is no longer
+    /// `invalid transfer id`, which is exactly what aborted every scheduled Keystone ceremony
+    /// that carried a preparation transaction. (The PCZT bytes are never parsed on this path:
+    /// `apply_batch_signatures` checks the response's set count before touching any PCZT.)
+    #[test]
+    fn keystone_apply_extern_accepts_sentinel_ids_past_id_decoding() {
+        use pczt::roles::signer::batch::BatchSignResponse;
+
+        let ids = [CString::new("note-split#3").unwrap()];
+        let id_ptrs: Vec<*const c_char> = ids.iter().map(|id| id.as_ptr()).collect();
+        let pczts = [vec![0xDEu8, 0xAD]];
+        let pczt_ptrs: Vec<*const u8> = pczts.iter().map(|bytes| bytes.as_ptr()).collect();
+        let pczt_lens: Vec<usize> = pczts.iter().map(Vec::len).collect();
+        let response = BatchSignResponse::new(Vec::new())
+            .serialize()
+            .expect("serialize empty batch sign response");
+
+        let result = unsafe {
+            zcashlc_migration_keystone_apply_batch_signatures(
+                id_ptrs.as_ptr(),
+                ids.len(),
+                pczt_ptrs.as_ptr(),
+                pczt_lens.as_ptr(),
+                response.as_ptr(),
+                response.len(),
+            )
+        };
+
+        assert!(
+            result.is_null(),
+            "an empty response must still fail the apply step"
+        );
+        let err = ffi_helpers::error_handling::take_last_error()
+            .expect("the failed extern must record a last-error");
+        let message = err.to_string();
+        assert!(
+            !message.contains("invalid transfer id"),
+            "sentinel id must not be rejected at id decoding anymore: {message}"
+        );
+        assert!(
+            message.contains("expected 1"),
+            "the failure must come from the apply step's signature-set count check: {message}"
+        );
     }
 
     /// Creates a real account in the initialized wallet database at `path` and returns its uuid

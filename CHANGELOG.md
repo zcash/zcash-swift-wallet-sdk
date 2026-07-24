@@ -291,6 +291,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Generated protobuf Swift stubs are regenerated with a pinned `swift-protobuf` 1.35.1.
 
 ## Fixed
+- The Keystone batch-signing apply (`Synchronizer.applyKeystoneBatchSignatures`) no longer
+  rejects non-numeric PCZT ids: its FFI treated every id as an engine-numeric `MigrationTxId`
+  even though the apply step never looks ids up — it only echoes them back positionally — so a
+  batch carrying a caller-side sentinel id (e.g. zodl's `note-split#`-prefixed preparation
+  entries) failed after every successful device scan. Ids on this call are now opaque
+  pass-through; the two signed-PCZT store calls still require bare engine-numeric ids, and the
+  `MigrationUnsignedTransferPczt.id`/`MigrationSignedTransferPczt.id` documentation now spells
+  out that split.
 - `ValidateServerAction` no longer fails custom-network sync when the server reports an unrecognized
   chain name: the chain-name recognition guard now runs only for standard networks, matching the
   documented "skips the chain-name and consensus-branch-ID checks for custom networks" contract.
