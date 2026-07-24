@@ -82,46 +82,46 @@ extension UpdateSubtreeRootsAction: Action {
                 logger.debug("putOrchardSubtreeRoots failed with error \(error.localizedDescription)")
                 throw ZcashError.compactBlockProcessorPutOrchardSubtreeRoots(error)
             }
+        }
 
-            // Ironwood (NU6.3) is Orchard note-version V3 and rides a separate subtree-root stream.
-            // It is dormant until a lightwalletd serves it: a server that does not support the Ironwood
-            // shielded protocol will error or return nothing here, which must NOT break sync. So the
-            // fetch is best-effort — a failed/empty Ironwood fetch is logged and skipped. A genuine
-            // store failure on roots we did receive is still surfaced.
-            logger.debug("Fetching Ironwood subtree roots (best-effort; Ironwood is dormant pre-NU6.3)")
+        // Ironwood (NU6.3) is Orchard note-version V3 and rides a separate subtree-root stream.
+        // Fetch it independently of Sapling: a custom network can complete Ironwood subtrees without
+        // ever completing a Sapling subtree. It is dormant until a lightwalletd serves it, so a server
+        // that does not support the protocol will error or return nothing and must NOT break sync.
+        // A genuine store failure on roots we did receive is still surfaced.
+        logger.debug("Fetching Ironwood subtree roots (best-effort; Ironwood is dormant pre-NU6.3)")
 
-            var ironwoodRequest = GetSubtreeRootsArg()
-            ironwoodRequest.shieldedProtocol = .ironwood
+        var ironwoodRequest = GetSubtreeRootsArg()
+        ironwoodRequest.shieldedProtocol = .ironwood
 
-            var ironwoodRoots: [SubtreeRoot] = []
-            do {
-                let ironwoodStream = try service.getSubtreeRoots(ironwoodRequest, mode: .direct)
-                for try await subtreeRoot in ironwoodStream {
-                    ironwoodRoots.append(subtreeRoot)
-                }
-            } catch ZcashError.serviceSubtreeRootsStreamFailed(LightWalletServiceError.timeOut) {
-                // A stream timeout is a transport problem, not an "Ironwood not
-                // supported" signal: rethrow it into the retry machinery like the
-                // Sapling/Orchard streams do, so a server that black-holes this
-                // stream doesn't silently add the full streaming deadline to
-                // every sync pass. Genuine "unsupported protocol" errors still
-                // fall through to the best-effort skip below.
-                throw ZcashError.serviceSubtreeRootsStreamFailed(LightWalletServiceError.timeOut)
-            } catch {
-                logger.debug("Ironwood subtree roots unavailable (\(error.localizedDescription)); skipping")
-                ironwoodRoots = []
+        var ironwoodRoots: [SubtreeRoot] = []
+        do {
+            let ironwoodStream = try service.getSubtreeRoots(ironwoodRequest, mode: .direct)
+            for try await subtreeRoot in ironwoodStream {
+                ironwoodRoots.append(subtreeRoot)
             }
+        } catch ZcashError.serviceSubtreeRootsStreamFailed(LightWalletServiceError.timeOut) {
+            // A stream timeout is a transport problem, not an "Ironwood not
+            // supported" signal: rethrow it into the retry machinery like the
+            // Sapling/Orchard streams do, so a server that black-holes this
+            // stream doesn't silently add the full streaming deadline to
+            // every sync pass. Genuine "unsupported protocol" errors still
+            // fall through to the best-effort skip below.
+            throw ZcashError.serviceSubtreeRootsStreamFailed(LightWalletServiceError.timeOut)
+        } catch {
+            logger.debug("Ironwood subtree roots unavailable (\(error.localizedDescription)); skipping")
+            ironwoodRoots = []
+        }
 
-            if !ironwoodRoots.isEmpty {
-                logger.debug("Ironwood tree has \(ironwoodRoots.count) subtrees")
-                do {
-                    try await rustBackend.putIronwoodSubtreeRoots(startIndex: UInt64(ironwoodRequest.startIndex), roots: ironwoodRoots)
+        if !ironwoodRoots.isEmpty {
+            logger.debug("Ironwood tree has \(ironwoodRoots.count) subtrees")
+            do {
+                try await rustBackend.putIronwoodSubtreeRoots(startIndex: UInt64(ironwoodRequest.startIndex), roots: ironwoodRoots)
 
-                    await context.update(state: .updateChainTip)
-                } catch {
-                    logger.debug("putIronwoodSubtreeRoots failed with error \(error.localizedDescription)")
-                    throw ZcashError.compactBlockProcessorPutIronwoodSubtreeRoots(error)
-                }
+                await context.update(state: .updateChainTip)
+            } catch {
+                logger.debug("putIronwoodSubtreeRoots failed with error \(error.localizedDescription)")
+                throw ZcashError.compactBlockProcessorPutIronwoodSubtreeRoots(error)
             }
         }
 

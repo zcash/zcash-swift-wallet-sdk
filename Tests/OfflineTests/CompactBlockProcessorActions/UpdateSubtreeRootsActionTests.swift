@@ -131,6 +131,41 @@ final class UpdateSubtreeRootsActionTests: ZcashTestCase {
         }
     }
 
+    func testUpdateSubtreeRootsAction_FetchesIronwoodWhenSaplingHasNoCompletedSubtrees() async throws {
+        let loggerMock = LoggerMock()
+        loggerMock.debugFileFunctionLineClosure = { _, _, _, _ in }
+
+        let tupple = setupAction(loggerMock)
+        var orchardRequested = false
+        var ironwoodRequested = false
+        tupple.serviceMock.getSubtreeRootsModeClosure = { request, _ in
+            switch request.shieldedProtocol {
+            case .sapling:
+                return AsyncThrowingStream { $0.finish() }
+            case .orchard:
+                orchardRequested = true
+                return AsyncThrowingStream { $0.finish() }
+            case .ironwood:
+                ironwoodRequested = true
+                return AsyncThrowingStream { continuation in
+                    continuation.yield(SubtreeRoot())
+                    continuation.finish()
+                }
+            case .UNRECOGNIZED(_):
+                return AsyncThrowingStream { $0.finish() }
+            }
+        }
+        tupple.rustBackendMock.putSaplingSubtreeRootsStartIndexRootsClosure = { _, _ in }
+        tupple.rustBackendMock.putIronwoodSubtreeRootsStartIndexRootsClosure = { _, _ in }
+
+        let context = ActionContextMock.default()
+        _ = try await tupple.action.run(with: context) { _ in }
+
+        XCTAssertFalse(orchardRequested, "the legacy Orchard probe remains gated on Sapling support")
+        XCTAssertTrue(ironwoodRequested, "Ironwood must be queried independently of Sapling roots")
+        XCTAssertTrue(tupple.rustBackendMock.putIronwoodSubtreeRootsStartIndexRootsCalled)
+    }
+
     func testUpdateSubtreeRootsAction_RootsAvailablePutIronwoodRootsFailure() async throws {
         let loggerMock = LoggerMock()
 
