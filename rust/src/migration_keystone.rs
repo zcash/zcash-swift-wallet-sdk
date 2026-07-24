@@ -559,4 +559,95 @@ mod tests {
             "error should report the expected PCZT count: {message}"
         );
     }
+
+    /// Feeds `parts` to [`decode_sign_batch_part`] in order, cycling back to the start if more
+    /// are needed, until a call reports completion or errors. Mirrors a real scan loop, which
+    /// keeps feeding scanned camera frames — the same single frame repeatedly, for a
+    /// single-fragment response — until the decoder reports done, rather than assuming a fixed
+    /// call count.
+    fn feed_parts_until_complete(
+        parts: &[String],
+        expected_request_id: &[u8],
+    ) -> anyhow::Result<DecodePartResult> {
+        // Comfortably more than enough attempts for any fragment count exercised here.
+        let attempts = parts.len().max(1) * 4;
+        for i in 0..attempts {
+            let result = decode_sign_batch_part(&parts[i % parts.len()], expected_request_id)?;
+            if result.complete {
+                return Ok(result);
+            }
+        }
+        panic!("decode_sign_batch_part did not complete after {attempts} attempts");
+    }
+
+    /// New vs. the Android original: `decode_sign_batch_part` is this SDK's own addition, so it
+    /// has no upstream test to mirror. Pins its two device-independent guarantees without a real
+    /// Keystone: the `expected_request_id` mismatch check, and the firmware/data passthrough on
+    /// success. Constructs a `ZcashBatchSigResult` directly (its `new` is public — see
+    /// keystone-sdk-rust's `zcash_batch_sig_result.rs`), CBOR- and UR-encodes it exactly the way
+    /// a real device response arrives on the wire (the encode-side mirror of
+    /// [`build_sign_batch_qr_parts_strips_preexisting_orchard_spend_auth_sig`]'s decode step),
+    /// then feeds the resulting frame(s) through the production decode path twice — once under
+    /// the wrong `expected_request_id`, once under the right one.
+    #[test]
+    fn decode_sign_batch_part_checks_request_id_and_returns_data_and_firmware() {
+        let request_id = b"test-request-id".to_vec();
+        let data = b"pretend-serialized-batch-sign-response".to_vec();
+        let firmware_version = [4u8, 5, 6];
+
+        let result = ZcashBatchSigResult::new(request_id.clone(), data.clone(), firmware_version);
+        let cbor: Vec<u8> = result
+            .try_into()
+            .expect("cbor-encode zcash-batch-sig-result");
+
+        // `ur::Encoder` always emits the indexed multi-part wire format, even for a single
+        // fragment (see `build_sign_batch_qr_parts_strips_preexisting_orchard_spend_auth_sig`'s
+        // comment) — `decode_sign_batch_part` is exercised exactly as a real scan would, whatever
+        // the fragment count.
+        let mut encoder = ur::Encoder::new(
+            &cbor,
+            // Large enough that the whole result fits in a single UR frame.
+            1_000_000,
+            ZcashBatchSigResult::get_registry_type().get_type(),
+        )
+        .expect("ur encoder");
+        let count = encoder.fragment_count();
+        let mut parts = Vec::with_capacity(count);
+        for _ in 0..count {
+            parts.push(encoder.next_part().expect("ur next_part").to_uppercase());
+        }
+
+        // A scan of the full response under the WRONG expected request id must be rejected, not
+        // silently accepted.
+        reset_sign_batch_decoder();
+        let mismatch = feed_parts_until_complete(&parts, b"some-other-request-id");
+        let err = match mismatch {
+            Ok(_) => panic!("wrong expected_request_id must error"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string()
+                .contains("does not match the outstanding sign request"),
+            "unexpected error message: {err}"
+        );
+
+        // The decode session is a global static (see `DECODE_SESSION`'s doc comment) — a fresh
+        // scan must not see any state left over from the mismatched-id scan above.
+        reset_sign_batch_decoder();
+        let decoded = feed_parts_until_complete(&parts, &request_id)
+            .expect("decode_sign_batch_part with the right request id must succeed");
+        assert!(decoded.complete, "final part must report completion");
+        assert_eq!(
+            decoded.data.expect("data present on completion"),
+            data,
+            "decoded data must round-trip exactly"
+        );
+        assert_eq!(
+            decoded
+                .firmware_version
+                .expect("firmware version present on completion"),
+            firmware_version,
+            "firmware version must pass through exactly"
+        );
+    }
 }

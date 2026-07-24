@@ -3518,6 +3518,77 @@ mod tests {
         create_fixture_account_with_usk(path).0
     }
 
+    /// A view-only account imported by UFVK (no seed) — the negative-path counterpart to
+    /// [`create_fixture_account_with_usk`], which only ever produces seed-derived accounts.
+    /// Returns the wallet handle itself (not just the uuid bytes), since the caller exercises
+    /// [`account_zip32_derivation`] directly, off the FFI boundary.
+    fn create_fixture_view_only_account(path: &std::path::Path) -> (MigrationWallet, AccountUuid) {
+        use zcash_client_backend::data_api::{Account, AccountBirthday, AccountPurpose};
+        use zcash_client_backend::proto::service::TreeState;
+        use zcash_keys::keys::UnifiedSpendingKey;
+        use zcash_protocol::consensus::MAIN_NETWORK;
+
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let mut wallet = unsafe {
+            crate::wallet_db(
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                parse_network(NETWORK_ID_MAINNET).expect("mainnet parses"),
+            )
+        }
+        .expect("the wallet database must open");
+
+        // A throwaway seed, only to derive SOME validly-shaped UFVK to import — the wallet is
+        // never given this seed (that is the entire point of `import_account_ufvk`), so it has
+        // no ZIP 32 path to recover from it later.
+        let usk = UnifiedSpendingKey::from_seed(&MAIN_NETWORK, &[9u8; 32], zip32::AccountId::ZERO)
+            .expect("valid ZIP 32 seed derivation");
+        let ufvk = usk.to_unified_full_viewing_key();
+        let treestate = TreeState {
+            hash: "00".repeat(32),
+            ..TreeState::default()
+        };
+        let birthday = match AccountBirthday::from_treestate(treestate, None) {
+            Ok(birthday) => birthday,
+            Err(_) => panic!("the fixture treestate must convert to a birthday"),
+        };
+        let account = wallet
+            .import_account_ufvk(
+                "fixture-view-only",
+                &ufvk,
+                &birthday,
+                AccountPurpose::ViewOnly,
+                None,
+            )
+            .expect("ufvk import must succeed");
+        let account_id = account.id();
+        (wallet, account_id)
+    }
+
+    /// `account_zip32_derivation` is this SDK's own addition (annotating Keystone migration
+    /// PCZTs with the spend derivation path — see its doc comment), so it has no Android
+    /// original to mirror. A UFVK-imported (view-only) account is exactly the case its error
+    /// branch guards: the wallet was never given a seed for it, so there is no ZIP 32 path to
+    /// annotate with, and Keystone has no way to recognize which of its accounts a spend belongs
+    /// to.
+    #[test]
+    fn account_zip32_derivation_errors_for_a_view_only_account() {
+        let path = init_fixture_db("zcashlc_migration_account_zip32_derivation_view_only");
+        let (wallet, account) = create_fixture_view_only_account(&path);
+
+        let result = account_zip32_derivation(&wallet, account);
+        let err = match result {
+            Ok(_) => panic!("a view-only account must have no known ZIP 32 derivation"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string()
+                .contains("Account has no known ZIP 32 seed fingerprint/account index"),
+            "unexpected error message: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// A minimal stored migration: `n_preps` preparation transactions then `n_transfers`
     /// transfers, all ids engine-ordered (preps first), with the given lifecycle states.
     fn test_state(
