@@ -904,6 +904,75 @@ public protocol Synchronizer: AnyObject {
     ///   - accountUUID: the account the PCZTs belong to.
     ///   - signed: the full set of externally signed transfer PCZTs.
     func storeSignedMigrationSchedulePCZTs(accountUUID: AccountUUID, _ signed: [MigrationSignedTransferPczt]) async throws
+
+    // MARK: - Migration Keystone batch-signing (external signer ceremony)
+    //
+    // A DB-free, account-free bridge for driving a Keystone hardware signer through the migration
+    // ceremony's PCZTs over an animated multi-part QR UR: none of these four calls take an
+    // `accountUUID`, since they operate purely on caller-held PCZT bytes (from
+    // `createUnsignedNoteSplitPCZTs(accountUUID:)` / `createUnsignedMigrationTransferPCZTs(accountUUID:for:)`)
+    // and a scanned device response, never touching the wallet database or the migration engine.
+
+    /// Builds the animated multi-part QR frames for a Keystone batch-signing request covering
+    /// every PCZT in `pczts`, in the given order.
+    ///
+    /// `pczts` MUST be preparation (note-split) PCZTs first, then transfer PCZTs, in schedule
+    /// order -- and the caller MUST pass this SAME array, in this SAME order, to
+    /// ``applyKeystoneBatchSignatures(pczts:batchSignResponse:)`` once the device responds; the
+    /// response's signatures are aligned by position, not by any id embedded in the wire format.
+    ///
+    /// Every PCZT is redacted for the batch-Signer role INSIDE this call before it reaches the
+    /// wire (the signing firmware rejects a batch request carrying a pre-existing spend
+    /// authorization signature). Callers must NOT pre-redact, and must retain their own
+    /// unredacted `pczts` -- those unredacted bytes are what
+    /// ``applyKeystoneBatchSignatures(pczts:batchSignResponse:)`` applies the device's signatures
+    /// onto.
+    /// - Parameters:
+    ///   - requestId: an opaque correlation token (e.g. a UUID's bytes), round-tripped by the
+    ///     device and checked in ``decodeKeystoneSignBatchPart(_:expectedRequestId:)`` to reject a
+    ///     scan of an unrelated/stale response.
+    ///   - pczts: the unsigned PCZTs to include, preparation-then-transfer, schedule order.
+    ///   - maxFragmentLen: the maximum byte length of each animated QR frame's payload.
+    /// - Returns: the QR frame strings, in wire fragment order -- display/scan them in that order.
+    func buildKeystoneSignBatchQRParts(requestId: Data, pczts: [MigrationUnsignedTransferPczt], maxFragmentLen: Int) async throws -> [String]
+
+    /// Discards any in-flight multi-part Keystone sign-batch-response scan session.
+    ///
+    /// Only one decode session exists at a time. Call this on scan-screen entry, on retry, and on
+    /// exit, so a new attempt always starts from a clean slate regardless of how a previous
+    /// attempt ended (cancel, back button, mid-stream error). Non-throwing and infallible.
+    func resetKeystoneSignBatchDecoder() async
+
+    /// Feeds one scanned QR frame into the active (or a freshly started) Keystone
+    /// sign-batch-response decode session.
+    ///
+    /// `expectedRequestId` must match the decoded response's own request id once complete, or
+    /// this throws (a scan of an unrelated/stale response) instead of silently accepting it.
+    /// - Parameters:
+    ///   - part: the scanned QR frame's raw string payload.
+    ///   - expectedRequestId: the request id passed to
+    ///     ``buildKeystoneSignBatchQRParts(requestId:pczts:maxFragmentLen:)`` for this ceremony.
+    /// - Returns: a ``KeystoneBatchDecodeResult`` -- `complete == false` while more frames are
+    ///   needed (`progress` reports 0-100 so far, `data`/`firmwareVersion` are `nil`);
+    ///   `complete == true` once the full response has been decoded, with `data` holding the
+    ///   batch-signature response and, when the device's response envelope carried it,
+    ///   `firmwareVersion` set. The response is signatures-only -- no PCZT is echoed back by the
+    ///   device -- and `firmwareVersion` is the ONLY way to learn the signing device's firmware
+    ///   version in this batch flow.
+    func decodeKeystoneSignBatchPart(_ part: String, expectedRequestId: Data) async throws -> KeystoneBatchDecodeResult
+
+    /// Applies the ceremony's Keystone batch signatures to `pczts`, positionally.
+    ///
+    /// `pczts` MUST be the SAME array, in the SAME order, passed to
+    /// ``buildKeystoneSignBatchQRParts(requestId:pczts:maxFragmentLen:)`` -- including the SAME
+    /// unredacted bytes retained from that call, never the redacted wire copy.
+    /// `batchSignResponse` is the `KeystoneBatchDecodeResult.data` a completed
+    /// ``decodeKeystoneSignBatchPart(_:expectedRequestId:)`` returned.
+    /// - Returns: one signed PCZT per element of `pczts`, in the same order, ready for the
+    ///   existing note-split / schedule storage calls
+    ///   (``storeSignedNoteSplitPCZTs(accountUUID:_:)`` /
+    ///   ``storeSignedMigrationSchedulePCZTs(accountUUID:_:)``).
+    func applyKeystoneBatchSignatures(pczts: [MigrationUnsignedTransferPczt], batchSignResponse: Data) async throws -> [MigrationSignedTransferPczt]
 }
 
 /// Error thrown by the default `Synchronizer.getTreeState(height:)` implementation
@@ -933,8 +1002,8 @@ private struct BroadcasterUnimplemented: LocalizedError {
 /// Error thrown by the default implementations of the throwing members of the migration group (see
 /// `public extension Synchronizer` below) when a conformer doesn't override them. One shared,
 /// member-parameterized type rather than one hoisted struct per member (as
-/// ``GetTreeStateUnimplemented``/``BroadcasterUnimplemented`` do): the migration group has 24
-/// throwing requirements, and duplicating that two-struct precedent 24 times over would be pure
+/// ``GetTreeStateUnimplemented``/``BroadcasterUnimplemented`` do): the migration group has 27
+/// throwing requirements, and duplicating that two-struct precedent 27 times over would be pure
 /// boilerplate for the same LocalizedError-conforming, "override this in your conformer" pattern.
 /// Hoisted to file scope for the same reason as those two — protocol-extension methods carry an
 /// implicit `Self` and so count as generic, and Swift forbids nesting concrete types with
@@ -1133,6 +1202,24 @@ public extension Synchronizer {
     }
 
     func storeSignedMigrationSchedulePCZTs(accountUUID: AccountUUID, _ signed: [MigrationSignedTransferPczt]) async throws {
+        throw MigrationUnimplemented(member: #function)
+    }
+
+    func buildKeystoneSignBatchQRParts(requestId: Data, pczts: [MigrationUnsignedTransferPczt], maxFragmentLen: Int) async throws -> [String] {
+        throw MigrationUnimplemented(member: #function)
+    }
+
+    /// Inert default: conformers must override to provide real Keystone batch-signing decode
+    /// session support. Mirrors `isMigrationSyncBlocked()`'s non-throwing inert-default
+    /// treatment: this member is infallible by contract (see the protocol doc), so it cannot
+    /// throw `MigrationUnimplemented` the way its throwing siblings do.
+    func resetKeystoneSignBatchDecoder() async { }
+
+    func decodeKeystoneSignBatchPart(_ part: String, expectedRequestId: Data) async throws -> KeystoneBatchDecodeResult {
+        throw MigrationUnimplemented(member: #function)
+    }
+
+    func applyKeystoneBatchSignatures(pczts: [MigrationUnsignedTransferPczt], batchSignResponse: Data) async throws -> [MigrationSignedTransferPczt] {
         throw MigrationUnimplemented(member: #function)
     }
 }

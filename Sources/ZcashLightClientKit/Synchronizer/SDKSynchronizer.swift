@@ -1326,6 +1326,39 @@ public class SDKSynchronizer: Synchronizer {
         try await migrationHost.migration(for: accountUUID).storeSignedSchedulePCZTs(signed)
     }
 
+    // MARK: Migration Keystone batch-signing (external signer ceremony)
+    //
+    // DB-free, account-free: unlike the migration group above, these four forward straight to
+    // `initializer.rustBackend` (no `migrationHost.migration(for:)` per-account actor), the same
+    // way the ordinary PCZT operations do (`createPCZTFromProposal`, `redactPCZTForSigner`, ...).
+
+    public func buildKeystoneSignBatchQRParts(
+        requestId: Data,
+        pczts: [MigrationUnsignedTransferPczt],
+        maxFragmentLen: Int
+    ) async throws -> [String] {
+        try await initializer.rustBackend.migrationKeystoneBuildSignBatchQrParts(
+            requestId: requestId,
+            pczts: pczts,
+            maxFragmentLen: maxFragmentLen
+        )
+    }
+
+    public func resetKeystoneSignBatchDecoder() async {
+        await initializer.rustBackend.migrationKeystoneResetSignBatchDecoder()
+    }
+
+    public func decodeKeystoneSignBatchPart(_ part: String, expectedRequestId: Data) async throws -> KeystoneBatchDecodeResult {
+        try await initializer.rustBackend.migrationKeystoneDecodeSignBatchPart(part, expectedRequestId: expectedRequestId)
+    }
+
+    public func applyKeystoneBatchSignatures(
+        pczts: [MigrationUnsignedTransferPczt],
+        batchSignResponse: Data
+    ) async throws -> [MigrationSignedTransferPczt] {
+        try await initializer.rustBackend.migrationKeystoneApplyBatchSignatures(pczts: pczts, batchSignResponse: batchSignResponse)
+    }
+
     /// Throws ``ZcashError/migrationBroadcastDuringSync`` when the synchronizer is actively syncing.
     ///
     /// Guards the two migration entry points that broadcast (``submitNoteSplit(accountUUID:proposal:usk:options:)``
