@@ -5,7 +5,7 @@
 //  Tests `SlipstreamSynchronizer`'s migration group (R4-C): the same 31 `Synchronizer` protocol
 //  requirements `SDKSynchronizer` implements (see `SDKSynchronizerMigrationTests`), as thin forwards
 //  to a seamed `OrchardMigrationHost` -- except the DB-free, account-free Keystone batch-signing
-//  bridge (4 members, MOB-1806), which forwards straight to `initializer.rustBackend` instead,
+//  bridge (4 members, #1806), which forwards straight to `initializer.rustBackend` instead,
 //  bypassing the host entirely -- plus the two SDK-enforced session-separation behaviors -- the
 //  `start()` privacy gate and the `submitNoteSplit`/`executeNextPendingMigrationTransfer` broadcast
 //  guard -- mirrored onto the actor.
@@ -328,7 +328,7 @@ final class SlipstreamSynchronizerMigrationTests: ZcashTestCase {
 
     // MARK: - Forwarding: Keystone batch-signing bridge (DB-free, no host)
     //
-    // MOB-1806: unlike the rest of this group, these four bypass `migrationHost.migration(for:)`
+    // #1806: unlike the rest of this group, these four bypass `migrationHost.migration(for:)`
     // entirely -- DB-free and account-free, they forward straight to `initializer.rustBackend`,
     // mirroring `SDKSynchronizer`'s own override of the same four (and this file's PCZT-section
     // precedent in `SlipstreamSynchronizer.swift`: `createPCZTFromProposal`, `redactPCZTForSigner`,
