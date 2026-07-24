@@ -170,6 +170,26 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
         }
     }
 
+    func testBuildKeystoneSignBatchQRPartsDefaultThrowsUnimplemented() async {
+        let pczts = [MigrationUnsignedTransferPczt(id: "0", pczt: Data([0x01, 0x02]))]
+        await assertThrowsMigrationUnimplemented {
+            _ = try await self.synchronizer.buildKeystoneSignBatchQRParts(requestId: Data([0xAB]), pczts: pczts, maxFragmentLen: 200)
+        }
+    }
+
+    func testDecodeKeystoneSignBatchPartDefaultThrowsUnimplemented() async {
+        await assertThrowsMigrationUnimplemented {
+            _ = try await self.synchronizer.decodeKeystoneSignBatchPart("ur:test", expectedRequestId: Data([0xAB]))
+        }
+    }
+
+    func testApplyKeystoneBatchSignaturesDefaultThrowsUnimplemented() async {
+        let pczts = [MigrationUnsignedTransferPczt(id: "0", pczt: Data([0x01, 0x02]))]
+        await assertThrowsMigrationUnimplemented {
+            _ = try await self.synchronizer.applyKeystoneBatchSignatures(pczts: pczts, batchSignResponse: Data([0x03, 0x04]))
+        }
+    }
+
     // MARK: - Inert defaults
 
     func testIsMigrationSyncBlockedDefaultReturnsFalse() async {
@@ -191,6 +211,13 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
             OrchardMigration.privacySyncBufferDuration,
             "the constant default must forward OrchardMigration's real privacy-buffer duration, not a placeholder"
         )
+    }
+
+    /// Infallible by protocol contract (see `Synchronizer.resetKeystoneSignBatchDecoder()`'s doc):
+    /// the inert default simply returns, unlike its three throwing Keystone-batch-signing siblings
+    /// above.
+    func testResetKeystoneSignBatchDecoderDefaultIsANoOp() async {
+        await synchronizer.resetKeystoneSignBatchDecoder()
     }
 
     // MARK: - Helpers
@@ -221,7 +248,7 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
 }
 
 /// A minimal `Synchronizer` conformer implementing only the protocol's previously-existing
-/// (pre-migration) members. None of its stubs are ever exercised by these tests -- only the 28
+/// (pre-migration) members. None of its stubs are ever exercised by these tests -- only the 31
 /// migration-group members are called, and this type deliberately does not override any of them, so
 /// every call falls through to the protocol-extension default under test.
 private final class NonMigratingSynchronizer: Synchronizer {

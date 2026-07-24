@@ -3234,6 +3234,91 @@ class SynchronizerMock: Synchronizer {
         try await storeSignedMigrationSchedulePCZTsAccountUUIDClosure!(accountUUID, signed)
     }
 
+    // MARK: - buildKeystoneSignBatchQRParts
+
+    var buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenThrowableError: Error?
+    var buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenCallsCount = 0
+    var buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenCalled: Bool {
+        return buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenCallsCount > 0
+    }
+    var buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenReceivedArguments: (requestId: Data, pczts: [MigrationUnsignedTransferPczt], maxFragmentLen: Int)?
+    var buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenReturnValue: [String]!
+    var buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenClosure: ((Data, [MigrationUnsignedTransferPczt], Int) async throws -> [String])?
+
+    func buildKeystoneSignBatchQRParts(requestId: Data, pczts: [MigrationUnsignedTransferPczt], maxFragmentLen: Int) async throws -> [String] {
+        if let error = buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenThrowableError {
+            throw error
+        }
+        buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenCallsCount += 1
+        buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenReceivedArguments = (requestId: requestId, pczts: pczts, maxFragmentLen: maxFragmentLen)
+        if let closure = buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenClosure {
+            return try await closure(requestId, pczts, maxFragmentLen)
+        } else {
+            return buildKeystoneSignBatchQRPartsRequestIdPcztsMaxFragmentLenReturnValue
+        }
+    }
+
+    // MARK: - resetKeystoneSignBatchDecoder
+
+    var resetKeystoneSignBatchDecoderCallsCount = 0
+    var resetKeystoneSignBatchDecoderCalled: Bool {
+        return resetKeystoneSignBatchDecoderCallsCount > 0
+    }
+    var resetKeystoneSignBatchDecoderClosure: (() async -> Void)?
+
+    func resetKeystoneSignBatchDecoder() async {
+        resetKeystoneSignBatchDecoderCallsCount += 1
+        await resetKeystoneSignBatchDecoderClosure!()
+    }
+
+    // MARK: - decodeKeystoneSignBatchPart
+
+    var decodeKeystoneSignBatchPartExpectedRequestIdThrowableError: Error?
+    var decodeKeystoneSignBatchPartExpectedRequestIdCallsCount = 0
+    var decodeKeystoneSignBatchPartExpectedRequestIdCalled: Bool {
+        return decodeKeystoneSignBatchPartExpectedRequestIdCallsCount > 0
+    }
+    var decodeKeystoneSignBatchPartExpectedRequestIdReceivedArguments: (part: String, expectedRequestId: Data)?
+    var decodeKeystoneSignBatchPartExpectedRequestIdReturnValue: KeystoneBatchDecodeResult!
+    var decodeKeystoneSignBatchPartExpectedRequestIdClosure: ((String, Data) async throws -> KeystoneBatchDecodeResult)?
+
+    func decodeKeystoneSignBatchPart(_ part: String, expectedRequestId: Data) async throws -> KeystoneBatchDecodeResult {
+        if let error = decodeKeystoneSignBatchPartExpectedRequestIdThrowableError {
+            throw error
+        }
+        decodeKeystoneSignBatchPartExpectedRequestIdCallsCount += 1
+        decodeKeystoneSignBatchPartExpectedRequestIdReceivedArguments = (part: part, expectedRequestId: expectedRequestId)
+        if let closure = decodeKeystoneSignBatchPartExpectedRequestIdClosure {
+            return try await closure(part, expectedRequestId)
+        } else {
+            return decodeKeystoneSignBatchPartExpectedRequestIdReturnValue
+        }
+    }
+
+    // MARK: - applyKeystoneBatchSignatures
+
+    var applyKeystoneBatchSignaturesPcztsBatchSignResponseThrowableError: Error?
+    var applyKeystoneBatchSignaturesPcztsBatchSignResponseCallsCount = 0
+    var applyKeystoneBatchSignaturesPcztsBatchSignResponseCalled: Bool {
+        return applyKeystoneBatchSignaturesPcztsBatchSignResponseCallsCount > 0
+    }
+    var applyKeystoneBatchSignaturesPcztsBatchSignResponseReceivedArguments: (pczts: [MigrationUnsignedTransferPczt], batchSignResponse: Data)?
+    var applyKeystoneBatchSignaturesPcztsBatchSignResponseReturnValue: [MigrationSignedTransferPczt]!
+    var applyKeystoneBatchSignaturesPcztsBatchSignResponseClosure: (([MigrationUnsignedTransferPczt], Data) async throws -> [MigrationSignedTransferPczt])?
+
+    func applyKeystoneBatchSignatures(pczts: [MigrationUnsignedTransferPczt], batchSignResponse: Data) async throws -> [MigrationSignedTransferPczt] {
+        if let error = applyKeystoneBatchSignaturesPcztsBatchSignResponseThrowableError {
+            throw error
+        }
+        applyKeystoneBatchSignaturesPcztsBatchSignResponseCallsCount += 1
+        applyKeystoneBatchSignaturesPcztsBatchSignResponseReceivedArguments = (pczts: pczts, batchSignResponse: batchSignResponse)
+        if let closure = applyKeystoneBatchSignaturesPcztsBatchSignResponseClosure {
+            return try await closure(pczts, batchSignResponse)
+        } else {
+            return applyKeystoneBatchSignaturesPcztsBatchSignResponseReturnValue
+        }
+    }
+
 }
 class TransactionRepositoryMock: TransactionRepository {
 
@@ -5308,6 +5393,91 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         migrationStoreSignedSchedulePcztsForCallsCount += 1
         migrationStoreSignedSchedulePcztsForReceivedArguments = (signed: signed, account: account)
         try await migrationStoreSignedSchedulePcztsForClosure!(signed, account)
+    }
+
+    // MARK: - migrationKeystoneBuildSignBatchQrParts
+
+    var migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenThrowableError: Error?
+    var migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenCallsCount = 0
+    var migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenCalled: Bool {
+        return migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenCallsCount > 0
+    }
+    var migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenReceivedArguments: (requestId: Data, pczts: [MigrationUnsignedTransferPczt], maxFragmentLen: Int)?
+    var migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenReturnValue: [String]!
+    var migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenClosure: ((Data, [MigrationUnsignedTransferPczt], Int) async throws -> [String])?
+
+    func migrationKeystoneBuildSignBatchQrParts(requestId: Data, pczts: [MigrationUnsignedTransferPczt], maxFragmentLen: Int) async throws -> [String] {
+        if let error = migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenThrowableError {
+            throw error
+        }
+        migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenCallsCount += 1
+        migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenReceivedArguments = (requestId: requestId, pczts: pczts, maxFragmentLen: maxFragmentLen)
+        if let closure = migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenClosure {
+            return try await closure(requestId, pczts, maxFragmentLen)
+        } else {
+            return migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenReturnValue
+        }
+    }
+
+    // MARK: - migrationKeystoneResetSignBatchDecoder
+
+    var migrationKeystoneResetSignBatchDecoderCallsCount = 0
+    var migrationKeystoneResetSignBatchDecoderCalled: Bool {
+        return migrationKeystoneResetSignBatchDecoderCallsCount > 0
+    }
+    var migrationKeystoneResetSignBatchDecoderClosure: (() async -> Void)?
+
+    func migrationKeystoneResetSignBatchDecoder() async {
+        migrationKeystoneResetSignBatchDecoderCallsCount += 1
+        await migrationKeystoneResetSignBatchDecoderClosure!()
+    }
+
+    // MARK: - migrationKeystoneDecodeSignBatchPart
+
+    var migrationKeystoneDecodeSignBatchPartExpectedRequestIdThrowableError: Error?
+    var migrationKeystoneDecodeSignBatchPartExpectedRequestIdCallsCount = 0
+    var migrationKeystoneDecodeSignBatchPartExpectedRequestIdCalled: Bool {
+        return migrationKeystoneDecodeSignBatchPartExpectedRequestIdCallsCount > 0
+    }
+    var migrationKeystoneDecodeSignBatchPartExpectedRequestIdReceivedArguments: (part: String, expectedRequestId: Data)?
+    var migrationKeystoneDecodeSignBatchPartExpectedRequestIdReturnValue: KeystoneBatchDecodeResult!
+    var migrationKeystoneDecodeSignBatchPartExpectedRequestIdClosure: ((String, Data) async throws -> KeystoneBatchDecodeResult)?
+
+    func migrationKeystoneDecodeSignBatchPart(_ part: String, expectedRequestId: Data) async throws -> KeystoneBatchDecodeResult {
+        if let error = migrationKeystoneDecodeSignBatchPartExpectedRequestIdThrowableError {
+            throw error
+        }
+        migrationKeystoneDecodeSignBatchPartExpectedRequestIdCallsCount += 1
+        migrationKeystoneDecodeSignBatchPartExpectedRequestIdReceivedArguments = (part: part, expectedRequestId: expectedRequestId)
+        if let closure = migrationKeystoneDecodeSignBatchPartExpectedRequestIdClosure {
+            return try await closure(part, expectedRequestId)
+        } else {
+            return migrationKeystoneDecodeSignBatchPartExpectedRequestIdReturnValue
+        }
+    }
+
+    // MARK: - migrationKeystoneApplyBatchSignatures
+
+    var migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseThrowableError: Error?
+    var migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseCallsCount = 0
+    var migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseCalled: Bool {
+        return migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseCallsCount > 0
+    }
+    var migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseReceivedArguments: (pczts: [MigrationUnsignedTransferPczt], batchSignResponse: Data)?
+    var migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseReturnValue: [MigrationSignedTransferPczt]!
+    var migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseClosure: (([MigrationUnsignedTransferPczt], Data) async throws -> [MigrationSignedTransferPczt])?
+
+    func migrationKeystoneApplyBatchSignatures(pczts: [MigrationUnsignedTransferPczt], batchSignResponse: Data) async throws -> [MigrationSignedTransferPczt] {
+        if let error = migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseThrowableError {
+            throw error
+        }
+        migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseCallsCount += 1
+        migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseReceivedArguments = (pczts: pczts, batchSignResponse: batchSignResponse)
+        if let closure = migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseClosure {
+            return try await closure(pczts, batchSignResponse)
+        } else {
+            return migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseReturnValue
+        }
     }
 
 }

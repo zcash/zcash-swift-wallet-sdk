@@ -140,6 +140,47 @@ behavior (`SDKSynchronizer` does):
   array means no stored run or no transactions, not an error. New error code
   `rustMigrationTransactionStatuses` (ZRUST0135).
 
+## The Keystone batch-signing bridge joins the migration group
+
+The `Synchronizer` migration group gains four DB-free, account-free requirements — no
+`accountUUID` parameter, since all four operate purely on caller-held PCZT bytes and a scanned
+device response, never the wallet database or the migration engine. Like the rest of the group,
+the three throwing members come with a protocol-extension default that throws an "unimplemented"
+`LocalizedError`, so a custom `Synchronizer` conformer keeps compiling; the fourth
+(`resetKeystoneSignBatchDecoder()`) is non-throwing and gets an inert no-op default instead
+(mirroring `isMigrationSyncBlocked()`'s treatment). `SDKSynchronizer` overrides all four with real
+behavior, forwarding straight to the rust backend rather than through the per-account migration
+actor:
+
+- **New: `buildKeystoneSignBatchQRParts(requestId:pczts:maxFragmentLen:) async throws -> [String]`.**
+  Builds the animated multi-part QR frames for a Keystone batch-signing request covering `pczts`
+  (preparation PCZTs first, then transfer PCZTs, in schedule order). Every PCZT is redacted for
+  the batch-Signer role INSIDE this call before it reaches the wire — callers must NOT pre-redact,
+  and must retain their own unredacted `pczts`: those bytes, in the SAME order, are what
+  `applyKeystoneBatchSignatures(pczts:batchSignResponse:)` applies the device's signatures onto.
+- **New: `resetKeystoneSignBatchDecoder() async`.** Discards any in-flight multi-part scan
+  session. Only one decode session exists at a time; call this on scan-screen entry, retry, and
+  exit. Non-throwing and infallible.
+- **New: `decodeKeystoneSignBatchPart(_:expectedRequestId:) async throws -> KeystoneBatchDecodeResult`.**
+  Feeds one scanned QR frame to the active (or freshly started) decode session. Returns the new
+  public `KeystoneBatchDecodeResult` model: `complete`/`progress` while more frames are needed;
+  once complete, the signatures-only response bytes (no PCZT is echoed by the device) and, when
+  the response envelope carried it, the new public `KeystoneFirmwareVersion` — the ONLY way to
+  learn the signing device's firmware version in this batch flow, since the "signed" PCZTs are
+  reconstructed from caller-held bytes plus signatures, never from device-returned PCZT bytes. A
+  request-id mismatch at completion throws (a stale/unrelated scan).
+- **New: `applyKeystoneBatchSignatures(pczts:batchSignResponse:) async throws -> [MigrationSignedTransferPczt]`.**
+  Applies the ceremony's Keystone batch signatures to `pczts`, positionally — `pczts` MUST be the
+  SAME array, in the SAME order (including the SAME unredacted bytes), passed to
+  `buildKeystoneSignBatchQRParts(requestId:pczts:maxFragmentLen:)`. Returns one signed PCZT per
+  element, ready for the existing `storeSignedNoteSplitPCZTs(accountUUID:_:)` /
+  `storeSignedMigrationSchedulePCZTs(accountUUID:_:)` calls.
+
+New error codes `rustMigrationKeystoneBuildSignBatchQrParts` (ZRUST0136),
+`rustMigrationKeystoneDecodeSignBatchPart` (ZRUST0137), and
+`rustMigrationKeystoneApplyBatchSignatures` (ZRUST0138). Like the rest of the migration group, the
+Closure/Combine wrapper synchronizers do not mirror these four members.
+
 ## `prepare` now validates the seed against the existing wallet
 
 If the wallet database already contains seed-derived account(s) and the seed passed to `prepare`
