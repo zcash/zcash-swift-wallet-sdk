@@ -2811,6 +2811,11 @@ pub unsafe extern "C" fn zcashlc_create_pczt_from_proposal(
 
 /// Redacts information from the given PCZT that is unnecessary for the Signer role.
 ///
+/// Applies the canonical Signer-role policy from
+/// [`zcash_client_backend::data_api::wallet::redact_pczt_for_signer`], and additionally
+/// omits Sapling spend witnesses. The caller must retain the unredacted PCZT and combine
+/// the Signer output into it via [`zcashlc_extract_and_store_from_pczt`].
+///
 /// Returns the updated PCZT in its serialized format.
 ///
 /// # Parameters
@@ -2837,24 +2842,11 @@ pub unsafe extern "C" fn zcashlc_redact_pczt_for_signer(
         let pczt_bytes = unsafe { slice::from_raw_parts(pczt_ptr, pczt_len) };
         let pczt = Pczt::parse(pczt_bytes).map_err(|e| anyhow!("Invalid PCZT: {:?}", e))?;
 
-        let redacted_pczt = Redactor::new(pczt)
-            .redact_global_with(|mut r| r.redact_proprietary("zcash_client_backend:proposal_info"))
-            .redact_orchard_with(|mut r| {
-                r.redact_actions(|mut ar| {
-                    ar.clear_spend_witness();
-                    ar.redact_output_proprietary("zcash_client_backend:output_info");
-                })
-            })
+        // The upstream policy retains Sapling spend witnesses for Signers that verify
+        // nullifiers; the Signers this SDK targets do not, so keep omitting them.
+        let redacted_pczt = Redactor::new(wallet::redact_pczt_for_signer(&pczt))
             .redact_sapling_with(|mut r| {
                 r.redact_spends(|mut sr| sr.clear_witness());
-                r.redact_outputs(|mut or| {
-                    or.redact_proprietary("zcash_client_backend:output_info")
-                });
-            })
-            .redact_transparent_with(|mut r| {
-                r.redact_outputs(|mut or| {
-                    or.redact_proprietary("zcash_client_backend:output_info")
-                });
             })
             .finish();
 

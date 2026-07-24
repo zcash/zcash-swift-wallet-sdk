@@ -6,6 +6,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- `zcashlc_redact_pczt_for_signer` now applies the canonical Signer-role redaction policy from `zcash_client_backend::data_api::wallet::redact_pczt_for_signer`: in addition to the previously redacted wallet metadata and spend witnesses, it clears zero-knowledge proofs, binding signing keys, and dummy-spend signing keys (`dummy_sk` / `dummy_ask`), redacts the Ironwood bundle identically to Orchard, compacts resolvable Orchard/Ironwood fields (restored automatically when the returned PCZT is parsed), and removes shielded anchors from v6 transactions (v5 anchors are retained because signatures commit to them). Sapling spend witnesses remain omitted (this SDK's existing behavior; the upstream policy retains them). This substantially reduces the size of the redacted PCZT sent to hardware signers. Callers must (as before) retain the unredacted PCZT and combine it with the Signer output via `zcashlc_extract_and_store_from_pczt`.
+
 ### Added
 - Pool-migration (Orchard→Ironwood) FFI surface over the final engine
   (`zcash_pool_migration_backend` + the account-keyed store inside
