@@ -1056,7 +1056,7 @@ final class MigrationLogicTests: ZcashTestCase {
             )
             transfers.append(transfer)
         }
-        return MigrationSchedule(transfers: transfers, estimatedDurationHours: count * 6)
+        return MigrationSchedule(transfers: transfers, estimatedDurationHours: count * 6, proposalHandle: 1)
     }
 
     /// Builds a deliberately non-trivial `MigrationRunEstimate` fixture: two runs whose fields are

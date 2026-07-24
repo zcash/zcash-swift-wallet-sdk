@@ -3145,25 +3145,25 @@ class SynchronizerMock: Synchronizer {
 
     // MARK: - createUnsignedNoteSplitPCZTs
 
-    var createUnsignedNoteSplitPCZTsAccountUUIDThrowableError: Error?
-    var createUnsignedNoteSplitPCZTsAccountUUIDCallsCount = 0
-    var createUnsignedNoteSplitPCZTsAccountUUIDCalled: Bool {
-        return createUnsignedNoteSplitPCZTsAccountUUIDCallsCount > 0
+    var createUnsignedNoteSplitPCZTsAccountUUIDForThrowableError: Error?
+    var createUnsignedNoteSplitPCZTsAccountUUIDForCallsCount = 0
+    var createUnsignedNoteSplitPCZTsAccountUUIDForCalled: Bool {
+        return createUnsignedNoteSplitPCZTsAccountUUIDForCallsCount > 0
     }
-    var createUnsignedNoteSplitPCZTsAccountUUIDReceivedAccountUUID: AccountUUID?
-    var createUnsignedNoteSplitPCZTsAccountUUIDReturnValue: [MigrationUnsignedTransferPczt]!
-    var createUnsignedNoteSplitPCZTsAccountUUIDClosure: ((AccountUUID) async throws -> [MigrationUnsignedTransferPczt])?
+    var createUnsignedNoteSplitPCZTsAccountUUIDForReceivedArguments: (accountUUID: AccountUUID, schedule: MigrationSchedule)?
+    var createUnsignedNoteSplitPCZTsAccountUUIDForReturnValue: [MigrationUnsignedTransferPczt]!
+    var createUnsignedNoteSplitPCZTsAccountUUIDForClosure: ((AccountUUID, MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt])?
 
-    func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {
-        if let error = createUnsignedNoteSplitPCZTsAccountUUIDThrowableError {
+    func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID, for schedule: MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt] {
+        if let error = createUnsignedNoteSplitPCZTsAccountUUIDForThrowableError {
             throw error
         }
-        createUnsignedNoteSplitPCZTsAccountUUIDCallsCount += 1
-        createUnsignedNoteSplitPCZTsAccountUUIDReceivedAccountUUID = accountUUID
-        if let closure = createUnsignedNoteSplitPCZTsAccountUUIDClosure {
-            return try await closure(accountUUID)
+        createUnsignedNoteSplitPCZTsAccountUUIDForCallsCount += 1
+        createUnsignedNoteSplitPCZTsAccountUUIDForReceivedArguments = (accountUUID: accountUUID, schedule: schedule)
+        if let closure = createUnsignedNoteSplitPCZTsAccountUUIDForClosure {
+            return try await closure(accountUUID, schedule)
         } else {
-            return createUnsignedNoteSplitPCZTsAccountUUIDReturnValue
+            return createUnsignedNoteSplitPCZTsAccountUUIDForReturnValue
         }
     }
 
@@ -5306,25 +5306,25 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
 
     // MARK: - migrationCreateUnsignedNoteSplitPczts
 
-    var migrationCreateUnsignedNoteSplitPcztsForThrowableError: Error?
-    var migrationCreateUnsignedNoteSplitPcztsForCallsCount = 0
-    var migrationCreateUnsignedNoteSplitPcztsForCalled: Bool {
-        return migrationCreateUnsignedNoteSplitPcztsForCallsCount > 0
+    var migrationCreateUnsignedNoteSplitPcztsForForThrowableError: Error?
+    var migrationCreateUnsignedNoteSplitPcztsForForCallsCount = 0
+    var migrationCreateUnsignedNoteSplitPcztsForForCalled: Bool {
+        return migrationCreateUnsignedNoteSplitPcztsForForCallsCount > 0
     }
-    var migrationCreateUnsignedNoteSplitPcztsForReceivedAccount: AccountUUID?
-    var migrationCreateUnsignedNoteSplitPcztsForReturnValue: [MigrationUnsignedTransferPczt]!
-    var migrationCreateUnsignedNoteSplitPcztsForClosure: ((AccountUUID) async throws -> [MigrationUnsignedTransferPczt])?
+    var migrationCreateUnsignedNoteSplitPcztsForForReceivedArguments: (schedule: MigrationSchedule, account: AccountUUID)?
+    var migrationCreateUnsignedNoteSplitPcztsForForReturnValue: [MigrationUnsignedTransferPczt]!
+    var migrationCreateUnsignedNoteSplitPcztsForForClosure: ((MigrationSchedule, AccountUUID) async throws -> [MigrationUnsignedTransferPczt])?
 
-    func migrationCreateUnsignedNoteSplitPczts(for account: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {
-        if let error = migrationCreateUnsignedNoteSplitPcztsForThrowableError {
+    func migrationCreateUnsignedNoteSplitPczts(for schedule: MigrationSchedule, for account: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {
+        if let error = migrationCreateUnsignedNoteSplitPcztsForForThrowableError {
             throw error
         }
-        migrationCreateUnsignedNoteSplitPcztsForCallsCount += 1
-        migrationCreateUnsignedNoteSplitPcztsForReceivedAccount = account
-        if let closure = migrationCreateUnsignedNoteSplitPcztsForClosure {
-            return try await closure(account)
+        migrationCreateUnsignedNoteSplitPcztsForForCallsCount += 1
+        migrationCreateUnsignedNoteSplitPcztsForForReceivedArguments = (schedule: schedule, account: account)
+        if let closure = migrationCreateUnsignedNoteSplitPcztsForForClosure {
+            return try await closure(schedule, account)
         } else {
-            return migrationCreateUnsignedNoteSplitPcztsForReturnValue
+            return migrationCreateUnsignedNoteSplitPcztsForForReturnValue
         }
     }
 
