@@ -171,6 +171,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same name — an account-scoped thin forward through the per-account migration actor that hands
   the engine's rows through unchanged, with a throwing "unimplemented" protocol-extension default
   like the rest of the group.
+- `SlipstreamSynchronizer` — an alternative, engine-driven implementation of `Synchronizer` backed
+  by the `slipstream-core` sync engine (consumed as a remote crate): non-linear Spend-before-Sync
+  scheduling, concurrent density-adaptive fetch, sparse commitment-tree persistence (byte-identical
+  to the upstream path, oracle-gated), an autonomous session with per-call Tor policy and server
+  failover, poll-model snapshots (`SynchronizerState.isRecovering`), and a stall watchdog. FFI
+  surface `zcashlc_slipstream_*` with error codes `ZRUST0093–0097`. Hosts opt in by constructing
+  it; `SDKSynchronizer` remains the default engine. It also implements the `Synchronizer` protocol's
+  migration group (above) against its own `OrchardMigrationHost`, with the same SDK-enforced
+  start-gate/broadcast-guard session separation as `SDKSynchronizer`, and forwards the Keystone
+  batch-signing bridge (below) the same way `SDKSynchronizer` does — straight to the same rust
+  backend instance, bypassing `OrchardMigrationHost` since the bridge is DB-free.
+- `Synchronizer.allTransactions()` is a formal protocol requirement, and
+  `TransactionRepository.unreconciledTxids()` exposes the read-side reconciliation view (defaults
+  to empty when the engine's view is absent).
 - Keystone batch-signing bridge for the external-signer migration ceremony. `ZcashRustBackendWelding`
   gains four DB-free, account-free members bridging the migration ceremony's PCZTs to a Keystone
   hardware signer over an animated multi-part QR UR: `migrationKeystoneBuildSignBatchQrParts(requestId:pczts:maxFragmentLen:)`

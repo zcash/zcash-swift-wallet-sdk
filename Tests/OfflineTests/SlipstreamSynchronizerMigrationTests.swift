@@ -2,9 +2,11 @@
 //  SlipstreamSynchronizerMigrationTests.swift
 //  OfflineTests
 //
-//  Tests `SlipstreamSynchronizer`'s migration group (R4-C): the same 27 `Synchronizer` protocol
+//  Tests `SlipstreamSynchronizer`'s migration group (R4-C): the same 31 `Synchronizer` protocol
 //  requirements `SDKSynchronizer` implements (see `SDKSynchronizerMigrationTests`), as thin forwards
-//  to a seamed `OrchardMigrationHost`, plus the two SDK-enforced session-separation behaviors -- the
+//  to a seamed `OrchardMigrationHost` -- except the DB-free, account-free Keystone batch-signing
+//  bridge (4 members, MOB-1806), which forwards straight to `initializer.rustBackend` instead,
+//  bypassing the host entirely -- plus the two SDK-enforced session-separation behaviors -- the
 //  `start()` privacy gate and the `submitNoteSplit`/`executeNextPendingMigrationTransfer` broadcast
 //  guard -- mirrored onto the actor.
 //
@@ -322,6 +324,105 @@ final class SlipstreamSynchronizerMigrationTests: ZcashTestCase {
             estimate.totalSigningSessions(maxTransactionsPerSession: 8),
             "the derived signing-session math must answer over the forwarded runs"
         )
+    }
+
+    // MARK: - Forwarding: Keystone batch-signing bridge (DB-free, no host)
+    //
+    // MOB-1806: unlike the rest of this group, these four bypass `migrationHost.migration(for:)`
+    // entirely -- DB-free and account-free, they forward straight to `initializer.rustBackend`,
+    // mirroring `SDKSynchronizer`'s own override of the same four (and this file's PCZT-section
+    // precedent in `SlipstreamSynchronizer.swift`: `createPCZTFromProposal`, `redactPCZTForSigner`,
+    // et al.). `ZcashRustBackendWelding` is substituted into the SAME container
+    // `SlipstreamSynchronizer.init` resolves `initializer.rustBackend` from (mirrors
+    // `SynchronizerOfflineTests.testPreparePropagatesSeedNotRelevantFromRustBackend`'s seam), so
+    // `welding` backs both the (here, unused) `OrchardMigrationHost` and the direct rust-backend
+    // forward under test.
+
+    func testBuildKeystoneSignBatchQRPartsForwardsToTheRustBackend() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let expectedParts = [
+            "ur:zcash-migration-keystone-batch-sign-req/1-2/abcdefgh",
+            "ur:zcash-migration-keystone-batch-sign-req/2-2/ijklmnop"
+        ]
+        welding.migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenReturnValue = expectedParts
+        mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in welding }
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+        let requestId = Data(repeating: 0x11, count: 16)
+        let pczts = [
+            MigrationUnsignedTransferPczt(id: "0", pczt: Data([0xAA, 0xBB])),
+            MigrationUnsignedTransferPczt(id: "1", pczt: Data([0xCC, 0xDD, 0xEE]))
+        ]
+
+        let parts = try await synchronizer.buildKeystoneSignBatchQRParts(requestId: requestId, pczts: pczts, maxFragmentLen: 200)
+
+        XCTAssertEqual(parts, expectedParts)
+        XCTAssertEqual(welding.migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenCallsCount, 1)
+        let received = welding.migrationKeystoneBuildSignBatchQrPartsRequestIdPcztsMaxFragmentLenReceivedArguments
+        XCTAssertEqual(received?.requestId, requestId)
+        XCTAssertEqual(received?.pczts, pczts)
+        XCTAssertEqual(received?.maxFragmentLen, 200)
+    }
+
+    /// Infallible and DB-free: pinned by call count alone, since there is no return value to
+    /// round-trip.
+    func testResetKeystoneSignBatchDecoderForwardsToTheRustBackend() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.migrationKeystoneResetSignBatchDecoderClosure = { }
+        mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in welding }
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        await synchronizer.resetKeystoneSignBatchDecoder()
+
+        XCTAssertEqual(welding.migrationKeystoneResetSignBatchDecoderCallsCount, 1)
+    }
+
+    /// Pinned with a COMPLETE result carrying a firmware version, so any field cross-wiring in the
+    /// pass-through would break equality.
+    func testDecodeKeystoneSignBatchPartForwardsToTheRustBackend() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let expected = KeystoneBatchDecodeResult(
+            complete: true,
+            progress: 100,
+            data: Data([0x01, 0x02, 0x03]),
+            firmwareVersion: KeystoneFirmwareVersion(major: 1, minor: 2, build: 3)
+        )
+        welding.migrationKeystoneDecodeSignBatchPartExpectedRequestIdReturnValue = expected
+        mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in welding }
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+        let expectedRequestId = Data(repeating: 0x22, count: 16)
+        let part = "ur:zcash-migration-keystone-batch-sign-res/1-1/qrpayload"
+
+        let result = try await synchronizer.decodeKeystoneSignBatchPart(part, expectedRequestId: expectedRequestId)
+
+        XCTAssertEqual(result, expected)
+        XCTAssertEqual(welding.migrationKeystoneDecodeSignBatchPartExpectedRequestIdCallsCount, 1)
+        let received = welding.migrationKeystoneDecodeSignBatchPartExpectedRequestIdReceivedArguments
+        XCTAssertEqual(received?.part, part)
+        XCTAssertEqual(received?.expectedRequestId, expectedRequestId)
+    }
+
+    func testApplyKeystoneBatchSignaturesForwardsToTheRustBackend() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let expected = [
+            MigrationSignedTransferPczt(id: "0", pczt: Data([0xAA, 0xBB, 0x01])),
+            MigrationSignedTransferPczt(id: "1", pczt: Data([0xCC, 0xDD, 0x02]))
+        ]
+        welding.migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseReturnValue = expected
+        mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in welding }
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+        let pczts = [
+            MigrationUnsignedTransferPczt(id: "0", pczt: Data([0xAA, 0xBB])),
+            MigrationUnsignedTransferPczt(id: "1", pczt: Data([0xCC, 0xDD]))
+        ]
+        let batchSignResponse = Data(repeating: 0x33, count: 8)
+
+        let signed = try await synchronizer.applyKeystoneBatchSignatures(pczts: pczts, batchSignResponse: batchSignResponse)
+
+        XCTAssertEqual(signed, expected)
+        XCTAssertEqual(welding.migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseCallsCount, 1)
+        let received = welding.migrationKeystoneApplyBatchSignaturesPcztsBatchSignResponseReceivedArguments
+        XCTAssertEqual(received?.pczts, pczts)
+        XCTAssertEqual(received?.batchSignResponse, batchSignResponse)
     }
 
     // MARK: - Forwarding: wallet-scope gate members
