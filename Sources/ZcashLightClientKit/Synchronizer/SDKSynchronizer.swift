@@ -1307,8 +1307,11 @@ public class SDKSynchronizer: Synchronizer {
         try await migrationHost.migration(for: accountUUID).refreshStaleTransfers(usk: usk)
     }
 
-    public func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {
-        try await migrationHost.migration(for: accountUUID).createUnsignedNoteSplitPCZTs()
+    public func createUnsignedNoteSplitPCZTs(
+        accountUUID: AccountUUID,
+        for schedule: MigrationSchedule
+    ) async throws -> [MigrationUnsignedTransferPczt] {
+        try await migrationHost.migration(for: accountUUID).createUnsignedNoteSplitPCZTs(for: schedule)
     }
 
     public func storeSignedNoteSplitPCZTs(accountUUID: AccountUUID, _ signed: [MigrationSignedTransferPczt]) async throws -> PreparedMigrationTransfer {
