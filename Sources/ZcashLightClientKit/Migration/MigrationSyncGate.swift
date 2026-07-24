@@ -58,10 +58,11 @@ final class MigrationSyncGate: @unchecked Sendable {
     private var lastPublishedGeneration: UInt64 = 0
 
     /// The in-memory cache of the persisted privacy-buffer expiry, guarded by `emissionLock`. Loaded
-    /// once from the gate file at init; `markBroadcast()` is the only writer thereafter (updates this
-    /// cache first, then persists to the file for durability only -- see `markBroadcast()`). Every
-    /// read in this process (`currentResumeAt()`, hence `currentlyBlocked(hasOverdue:)` and
-    /// `recompute()`) serves this cache rather than re-reading the file.
+    /// once from the gate file at init; `markBroadcast()` is the only writer thereafter (persists to
+    /// the file first, then updates this cache -- see `markBroadcast()` for why the file must win
+    /// that race). Every read in this process (`currentResumeAt()`, hence
+    /// `currentlyBlocked(hasOverdue:)` and `recompute()`) serves this cache rather than re-reading
+    /// the file.
     ///
     /// A plain lock-guarded value suffices here, unlike `publish(_:generation:)`'s generation
     /// ordering: `markBroadcast()` is this gate's only writer, under the standing single-writer
@@ -187,17 +188,32 @@ final class MigrationSyncGate: @unchecked Sendable {
         return now < resumeAt
     }
 
-    /// Starts (or restarts) the privacy buffer: updates the in-memory `resumeAt` cache immediately,
-    /// persists `resumeAt = now + bufferDuration` to the gate file for durability, and pushes a fresh
-    /// value to the reactive stream. Call after every successful migration broadcast.
+    /// Starts (or restarts) the privacy buffer: persists `resumeAt = now + bufferDuration` to the
+    /// gate file FIRST, then updates the in-memory `resumeAt` cache, then pushes a fresh value to
+    /// the reactive stream. Call after every successful migration broadcast.
+    ///
+    /// The file write must land before the cache update, not after. `OrchardMigrationHost`'s
+    /// wallet-scope predicate reads the FILE (`persistedResumeAt`), while the gate's own recomputes
+    /// (and therefore `blockedStream`) read the in-memory cache. If the cache updated first, a
+    /// recompute could observe the fresh cache and publish `true` before the file write lands; that
+    /// emission can trigger a wallet-scope recompute that reads the still-stale file, computes
+    /// `false`, and publishes it with a later generation -- the later, correct `true` (once the file
+    /// does land) then collapses into that stale `false` as a consecutive duplicate under
+    /// `removeDuplicates()`, leaving the wallet-scope stream stuck at `false` until the next
+    /// periodic tick. Persisting first closes that window: the file is never observably behind the
+    /// cache.
+    ///
+    /// A failed write (`write(resumeAt:)` only logs, never throws) still updates the cache
+    /// afterward, so in-process gating never depends on the write having actually landed on disk.
     func markBroadcast() {
         let resumeAt = now().addingTimeInterval(bufferDuration)
+
+        write(resumeAt: resumeAt)
 
         emissionLock.lock()
         cachedResumeAt = resumeAt
         emissionLock.unlock()
 
-        write(resumeAt: resumeAt)
         recomputeAsync()
     }
 
