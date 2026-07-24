@@ -3285,6 +3285,133 @@ pub extern "C" fn zcashlc_ironwood_activation_height(network_id: u32) -> i64 {
     unwrap_exc_or(res, -1)
 }
 
+/// DEBUG ONLY: overrides this account's persisted migration schedule so its transfers become due
+/// in quick succession, for manually testing real broadcast execution without waiting out ZIP
+/// 318's privacy-motivated delay (mean ~3h between transfers — see `zcash_pool_migration_backend::
+/// scheduling`'s module doc: this is a deliberate anti-correlation choice, not a technical
+/// requirement). Not exposed to production users. Mirrors the Android SDK's
+/// `debugRescheduleTransfersNative` exactly (same table names, same query, same rewrite rule).
+///
+/// Both `scheduled_height` (which gates BROADCAST — see `next_broadcastable`) AND `anchor_boundary`
+/// (which gates PROVING — see `is_prove_ready`) are rewritten; dependency-mining is not touched or
+/// bypassed:
+/// - A transfer's `anchor_boundary`, as originally drawn at commit time
+///   (`scheduling::draw_anchor_boundary`), is a boundary in the past relative to the chain tip
+///   *at commit time* — normally already passed by the time the transfer's (much later,
+///   ZIP-318-delayed) `scheduled_height` arrives. This override exists precisely because this
+///   function moves `scheduled_height` to now, while the original `anchor_boundary` stays
+///   wherever it was drawn: the original boundary can still be far ahead of the current synced
+///   tip, since it was never meant to be reached this soon. Left alone, `is_prove_ready`
+///   (`boundary + 1 < target_height`) would keep failing regardless of how close
+///   `scheduled_height` is. So every rescheduled transfer's `anchor_boundary` is also rewritten,
+///   to `natural_anchor_height` — the SAME anchor ordinary non-migration sends use (guaranteed
+///   checkpointed/witnessed). NOT a full `BOUNDARY_MODULUS` bucket back like `draw_anchor_boundary`
+///   draws in production (that bucketing is a privacy measure, irrelevant here, and can land
+///   outside the checkpoint retention window), and NOT a hand-picked "tip minus N" guess either
+///   (also not guaranteed checkpointed — see `natural_anchor_height`'s own doc comment) — so
+///   proving can proceed as soon as the delivery lane next drives it.
+/// - Transfers do NOT depend on each other (`MigrationTransaction::depends_on` for a `Transfer`
+///   never lists another transfer's id, only the single preparation transaction that minted its
+///   own funding note, if any) — so every transfer can be staggered independently; there is no
+///   need to wait for transfer N to broadcast before N+1 becomes due.
+/// - A transfer whose funding note comes from an actual note-split (preparation) transaction still
+///   genuinely cannot broadcast until that preparation transaction is MINED (`deps_mined`) — this
+///   function does not and cannot bypass that; it only affects how soon a transfer becomes due and
+///   provable once its real dependencies are satisfied.
+///
+/// Every not-yet-broadcast/mined TRANSFER (preparation transactions are left alone) is
+/// rescheduled to `target + FIRST_DELAY_BLOCKS + i * STRIDE_BLOCKS`, in `i` = the transfers'
+/// existing relative order (by their current `scheduled_height`, so the engine's own ZIP 318
+/// shuffle order is preserved even though the absolute heights are now compressed) — the first
+/// becomes due in about `FIRST_DELAY_BLOCKS * 75s`, each subsequent one `STRIDE_BLOCKS * 75s`
+/// after that.
+///
+/// Returns the number of transfers rescheduled (`0` when the account has no stored migration),
+/// or a negative value on error (see `zcashlc_last_error_message`).
+///
+/// # Safety
+/// See [`open`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_migration_debug_reschedule_transfers(
+    db_data: *const u8,
+    db_data_len: usize,
+    account_uuid_bytes: *const u8,
+    network_id: u32,
+) -> i64 {
+    // ~2.5 min to the first transfer, ~5 min between each subsequent one, at the ~75s/block
+    // testnet/mainnet target spacing.
+    const FIRST_DELAY_BLOCKS: u32 = 2;
+    const STRIDE_BLOCKS: u32 = 4;
+
+    let res = catch_panic(|| {
+        let ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
+        let target = ctx.target()?;
+        // The wallet's real, currently-witnessable anchor — NOT a hand-picked "tip minus N"
+        // guess (see `natural_anchor_height`'s own doc comment for why that would be wrong).
+        let debug_anchor_boundary =
+            u32::from(migration_finalize::natural_anchor_height(&ctx.wallet)?);
+
+        let migration_id: Option<i64> = ctx
+            .store_conn
+            .query_row(
+                "SELECT m.id FROM orchard_ironwood_migrations m \
+                 JOIN accounts a ON a.id = m.account_id \
+                 WHERE a.uuid = ?1",
+                rusqlite::params![&ctx.account_bytes[..]],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| anyhow!("Error reading migration row: {e}"))?;
+        let Some(migration_id) = migration_id else {
+            return Ok(0i64);
+        };
+
+        let tx_ids: Vec<i64> = {
+            let mut stmt = ctx
+                .store_conn
+                .prepare(
+                    "SELECT tx_id FROM orchard_ironwood_migration_transactions \
+                     WHERE migration_id = ?1 AND kind = 'transfer' \
+                       AND state NOT IN ('broadcast', 'mined') \
+                     ORDER BY scheduled_height ASC",
+                )
+                .map_err(|e| anyhow!("Error preparing transfer query: {e}"))?;
+            stmt.query_map(rusqlite::params![migration_id], |row| row.get(0))
+                .map_err(|e| anyhow!("Error reading pending transfers: {e}"))?
+                .collect::<Result<_, _>>()
+                .map_err(|e| anyhow!("Error reading pending transfers: {e}"))?
+        };
+
+        for (i, tx_id) in tx_ids.iter().enumerate() {
+            let new_height = u32::from(target) + FIRST_DELAY_BLOCKS + (i as u32) * STRIDE_BLOCKS;
+            // `is_prove_ready` gates purely on `anchor_boundary`, NOT on `scheduled_height` — so
+            // rewriting every transfer's anchor here would make ALL of them prove-ready in the
+            // same pass (an unrealistic proving batch this debug tool itself would have
+            // created). Only the earliest-due transfer (i==0, this loop's existing
+            // scheduled_height-ascending order) gets a valid anchor; the rest keep their
+            // original, still-in-the-future one, matching production's natural
+            // one-becomes-ready-at-a-time shape. Re-invoke this debug action once this transfer
+            // broadcasts to unlock the next one.
+            let anchor_boundary = if i == 0 {
+                Some(debug_anchor_boundary)
+            } else {
+                None
+            };
+            ctx.store_conn
+                .execute(
+                    "UPDATE orchard_ironwood_migration_transactions \
+                     SET scheduled_height = ?1, \
+                         anchor_boundary = COALESCE(?2, anchor_boundary) \
+                     WHERE migration_id = ?3 AND tx_id = ?4",
+                    rusqlite::params![new_height, anchor_boundary, migration_id, tx_id],
+                )
+                .map_err(|e| anyhow!("Error rescheduling transfer {tx_id}: {e}"))?;
+        }
+        Ok(tx_ids.len() as i64)
+    });
+    unwrap_exc_or(res, -1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4665,6 +4792,271 @@ mod tests {
             unsigned.len(),
             1,
             "resume surfaces the stored AwaitingSignature transaction's (id, pczt) pair"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ----- debug fast-reschedule FFI (#1806 / MOB-1513): `zcashlc_migration_debug_reschedule_
+    // transfers`, mirroring the Android SDK's `debugRescheduleTransfersNative` -----
+
+    /// Scans one EMPTY synthetic compact block at height 1 (no transactions) into the fixture
+    /// wallet — just enough to give it a real chain tip (height 1, so `CallCtx::target()` is a
+    /// small, deterministic `2`) AND a real note-commitment-tree checkpoint at that height, which
+    /// `WalletRead::get_target_and_anchor_heights` (via
+    /// [`migration_finalize::natural_anchor_height`], what the debug-reschedule FFI resolves its
+    /// override anchor from) needs to answer at all — confirmed empirically: on a freshly
+    /// initialized wallet with no scanned blocks it errors ("no anchor height yet"). Lighter than
+    /// [`fund_fixture_account_with_orchard_note`]: the debug-reschedule path never touches note
+    /// selection, so the block need not carry a real decryptable action, only a checkpoint.
+    fn scan_one_empty_fixture_block(path: &std::path::Path) {
+        use zcash_client_backend::data_api::chain::scan_cached_blocks;
+        use zcash_client_backend::proto::compact_formats::{ChainMetadata, CompactBlock};
+        use zcash_client_backend::proto::service::TreeState;
+        use zcash_client_sqlite::WalletDb;
+        use zcash_client_sqlite::util::SystemClock;
+        use zcash_protocol::consensus::MAIN_NETWORK;
+
+        let block = CompactBlock {
+            height: 1,
+            hash: vec![0x22u8; 32],
+            prev_hash: vec![0x00u8; 32],
+            chain_metadata: Some(ChainMetadata {
+                sapling_commitment_tree_size: 0,
+                orchard_commitment_tree_size: 0,
+                ironwood_commitment_tree_size: 0,
+            }),
+            ..Default::default()
+        };
+        let mut wallet = WalletDb::for_path(path, MAIN_NETWORK, SystemClock, OsRng)
+            .expect("the fixture wallet database must reopen");
+        let from_state = TreeState {
+            hash: "00".repeat(32),
+            ..TreeState::default()
+        }
+        .to_chain_state()
+        .expect("the empty birthday treestate converts to a chain state");
+        let block_source = FixtureBlockSource(vec![block]);
+        scan_cached_blocks(
+            &MAIN_NETWORK,
+            &block_source,
+            &mut wallet,
+            h(1),
+            &from_state,
+            10,
+        )
+        .expect("scanning the one empty fixture block must succeed");
+    }
+
+    /// A stored migration with ONE preparation transaction and FIVE transfers spanning every
+    /// pre-broadcast state plus `Broadcast` and `Mined`, at scrambled `scheduled_height`s (NOT in
+    /// id or storage order) and distinct, individually identifiable `anchor_boundary`/
+    /// `expiry_height` values — the fixture `zcashlc_migration_debug_reschedule_transfers`'s
+    /// tests share, proving: only PENDING transfers (not broadcast/mined, not preparations) are
+    /// touched; the NEW order follows the transfers' EXISTING `scheduled_height` order, not their
+    /// id or storage order; only the earliest-due transfer's `anchor_boundary` is rewritten; and
+    /// `expiry_height` is never touched.
+    fn debug_reschedule_fixture_state() -> MigrationState {
+        let transactions = vec![
+            // A preparation: excluded by `kind = 'transfer'` alone, even though its state
+            // (Signed) would otherwise qualify as "pending".
+            MigrationTransaction::from_parts(
+                MigrationTxId::new(0),
+                MigrationTxKind::Preparation { layer: 0, index: 0 },
+                vec![9u8],
+                Vec::new(),
+                h(500),
+                h(999_990),
+                None,
+                MigrationTxState::Signed,
+                None,
+            ),
+            // Pending transfers, stored latest-first (7000, 3000, 5000) -- the rescheduled order
+            // must come out ascending by the OLD scheduled_height (3000 < 5000 < 7000, i.e. ids
+            // 1, 2, 3 in that order), never storage order.
+            MigrationTransaction::from_parts(
+                MigrationTxId::new(3),
+                MigrationTxKind::Transfer { crossing: 2 },
+                vec![3u8],
+                Vec::new(),
+                h(7000),
+                h(999_003),
+                Some(h(333)),
+                MigrationTxState::AwaitingSignature,
+                None,
+            ),
+            MigrationTransaction::from_parts(
+                MigrationTxId::new(1),
+                MigrationTxKind::Transfer { crossing: 0 },
+                vec![1u8],
+                Vec::new(),
+                h(3000),
+                h(999_001),
+                Some(h(222)),
+                MigrationTxState::Signed,
+                None,
+            ),
+            MigrationTransaction::from_parts(
+                MigrationTxId::new(2),
+                MigrationTxKind::Transfer { crossing: 1 },
+                vec![2u8],
+                Vec::new(),
+                h(5000),
+                h(999_002),
+                Some(h(111)),
+                MigrationTxState::Proved,
+                None,
+            ),
+            // Already broadcast: excluded by `state NOT IN ('broadcast', 'mined')`.
+            MigrationTransaction::from_parts(
+                MigrationTxId::new(4),
+                MigrationTxKind::Transfer { crossing: 3 },
+                vec![4u8],
+                Vec::new(),
+                h(4000),
+                h(999_004),
+                Some(h(444)),
+                MigrationTxState::Broadcast {
+                    txid: TxId::from_bytes([4u8; 32]),
+                },
+                None,
+            ),
+            // Already mined: same exclusion.
+            MigrationTransaction::from_parts(
+                MigrationTxId::new(5),
+                MigrationTxKind::Transfer { crossing: 4 },
+                vec![5u8],
+                Vec::new(),
+                h(2000),
+                h(999_005),
+                Some(h(555)),
+                MigrationTxState::Mined { height: h(50) },
+                None,
+            ),
+        ];
+        let funding: Vec<Zatoshis> = (0..5).map(|_| zat(100_000_000)).collect();
+        MigrationState::from_parts(
+            MigrationStatus::InProgress,
+            NoteSplitPlan::from_stored_parts(
+                funding,
+                zat(10_000),
+                None,
+                zat(20_000),
+                zat(1_000_000_000),
+                zat(999_000_000),
+            )
+            .unwrap(),
+            PreparationPlan::from_parts(Vec::new(), Vec::new()),
+            transactions,
+            AnchorBucketInterval::ZIP_318,
+        )
+    }
+
+    /// Items (a)-(f): pending transfers are rescheduled to `target + FIRST_DELAY_BLOCKS + i *
+    /// STRIDE_BLOCKS` in their EXISTING `scheduled_height` order (a); a broadcast and a mined
+    /// transfer are left completely untouched (b); the preparation row is left untouched (c);
+    /// only the earliest-due (`i == 0`) transfer's `anchor_boundary` is rewritten to the wallet's
+    /// natural anchor, the others keep their original, distinct values (d); `expiry_height` is
+    /// never touched on any row (e); the function returns the count of transfers it rescheduled,
+    /// 3 here (f).
+    #[test]
+    fn debug_reschedule_transfers_reschedules_pending_transfers_in_scheduled_height_order() {
+        let path = init_fixture_db("zcashlc_migration_debug_reschedule_pending");
+        let account = create_fixture_account(&path);
+        scan_one_empty_fixture_block(&path);
+        store_fixture_state(&path, &account, &debug_reschedule_fixture_state());
+
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        // Tip = 1 (the one scanned block), so target = 2: new heights are 2+2=4, 2+6=8, 2+10=12.
+        // The wallet's natural anchor at this same fixture state is BlockHeight(0) (see
+        // `scan_one_empty_fixture_block`'s doc).
+        let rescheduled = unsafe {
+            zcashlc_migration_debug_reschedule_transfers(
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                account.as_ptr(),
+                NETWORK_ID_MAINNET,
+            )
+        };
+        assert_eq!(rescheduled, 3, "(f) exactly the 3 pending transfers count");
+
+        let mut ctx = unsafe {
+            open(
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                account.as_ptr(),
+                NETWORK_ID_MAINNET,
+            )
+        }
+        .expect("the fixture context opens");
+        let backend = Backend::new(&ctx.wallet, ctx.account, None, &mut ctx.store_conn)
+            .expect("the fixture backend opens");
+        let state = backend
+            .get_migration()
+            .expect("reading the migration back must succeed")
+            .expect("the stored migration is still present");
+        let tx = |id: u32| {
+            state
+                .transactions()
+                .iter()
+                .find(|t| t.id() == MigrationTxId::new(id))
+                .unwrap_or_else(|| panic!("transaction {id} must still be present"))
+        };
+
+        // (a) + (d): earliest-due (id 1, was 3000) -> target+2, anchor rewritten to the natural
+        // anchor.
+        assert_eq!(tx(1).scheduled_height(), h(4));
+        assert_eq!(tx(1).anchor_boundary(), Some(h(0)));
+        // (a) + (d): middle (id 2, was 5000) -> target+6, anchor UNCHANGED.
+        assert_eq!(tx(2).scheduled_height(), h(8));
+        assert_eq!(tx(2).anchor_boundary(), Some(h(111)));
+        // (a) + (d): latest (id 3, was 7000) -> target+10, anchor UNCHANGED.
+        assert_eq!(tx(3).scheduled_height(), h(12));
+        assert_eq!(tx(3).anchor_boundary(), Some(h(333)));
+        // (e): expiry untouched on all three rescheduled rows.
+        assert_eq!(tx(1).expiry_height(), h(999_001));
+        assert_eq!(tx(2).expiry_height(), h(999_002));
+        assert_eq!(tx(3).expiry_height(), h(999_003));
+
+        // (b): broadcast and mined transfers are completely untouched.
+        assert_eq!(tx(4).scheduled_height(), h(4000));
+        assert_eq!(tx(4).anchor_boundary(), Some(h(444)));
+        assert_eq!(tx(4).expiry_height(), h(999_004));
+        assert!(matches!(tx(4).state(), MigrationTxState::Broadcast { .. }));
+        assert_eq!(tx(5).scheduled_height(), h(2000));
+        assert_eq!(tx(5).anchor_boundary(), Some(h(555)));
+        assert_eq!(tx(5).expiry_height(), h(999_005));
+        assert!(matches!(tx(5).state(), MigrationTxState::Mined { .. }));
+
+        // (c): the preparation is completely untouched.
+        assert_eq!(tx(0).scheduled_height(), h(500));
+        assert_eq!(tx(0).anchor_boundary(), None);
+        assert_eq!(tx(0).expiry_height(), h(999_990));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Item (g): no stored migration row for the account -- returns `0`, not an error (the tip
+    /// and natural-anchor lookups above the migration-row check must not themselves fail just
+    /// because there is nothing to reschedule).
+    #[test]
+    fn debug_reschedule_transfers_with_no_stored_migration_returns_zero() {
+        let path = init_fixture_db("zcashlc_migration_debug_reschedule_no_migration");
+        let account = create_fixture_account(&path);
+        scan_one_empty_fixture_block(&path);
+
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let rescheduled = unsafe {
+            zcashlc_migration_debug_reschedule_transfers(
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                account.as_ptr(),
+                NETWORK_ID_MAINNET,
+            )
+        };
+        assert_eq!(
+            rescheduled, 0,
+            "no migration row means nothing to reschedule"
         );
 
         let _ = std::fs::remove_file(&path);
