@@ -732,27 +732,27 @@ public protocol Synchronizer: AnyObject {
     ///   legitimate answer, not an error.
     func estimateMigrationRuns(accountUUID: AccountUUID) async throws -> MigrationRunEstimate
 
-    /// Pre-signs and persists every transfer in `schedule` in the migration engine for `accountUUID`.
+    /// Pre-signs and persists every transfer in `schedule` in the migration engine for `accountUUID`
+    /// (a no-op when a matching non-terminal run is already stored for the account — the normal
+    /// case, since the note-split submission commits the run).
     ///
     /// The SDK does not retain the proposal list: hosts that need to render the committed schedule
     /// later must persist it themselves at confirmation time.
     /// - Parameters:
     ///   - accountUUID: the account the schedule belongs to.
     ///   - schedule: the schedule to sign and store, from
-    ///     ``proposeMigrationTransfers(accountUUID:)``. This is a VERIFIED consent echo, not an
-    ///     inert display value: the engine pins its ids, amounts, expiry heights, and estimated
-    ///     duration against the previewed plan (or, once a run is committed, against the stored
-    ///     run itself; next-executable heights are not compared post-commit, and anchor heights
-    ///     never are), so a stale or tampered display can never sign different values than the
-    ///     ones the user approved. Not used by the immediate
+    ///     ``proposeMigrationTransfers(accountUUID:)``. Only its `proposalHandle` crosses to the
+    ///     native side -- the display fields (transfers, estimated duration) are never echoed back.
+    ///     A fresh commit signs exactly the cached plan the handle identifies, so a stale or
+    ///     tampered display can never sign different values than the ones the user approved; the
+    ///     resume/no-op case above does not consult the handle at all. Not used by the immediate
     ///     lane: ``proposeImmediateMigration(accountUUID:)`` returns an ordinary
     ///     ``ImmediateMigrationProposal``, executed via ``createProposedTransactions(proposal:spendingKey:)``
     ///     / ``createPCZTFromProposal(accountUUID:proposal:)`` like any other transfer.
     ///   - usk: the account's unified spending key.
-    /// - Throws: `ZcashError.migrationPlanStale` when the echoed schedule mismatches what is about
-    ///   to be signed — re-propose and re-display (pre-commit), or re-read the current stored
-    ///   schedule (post-commit; see ``refreshStaleMigrationTransfers(accountUUID:usk:)``'s return
-    ///   value) — and rust-layer errors otherwise.
+    /// - Throws: `ZcashError.migrationPlanStale` when nothing is committed and the identified plan
+    ///   is missing (process restart between propose and confirm) or superseded by a later
+    ///   propose/prepare call — re-propose and re-display; rust-layer errors otherwise.
     func signAndStoreMigrationSchedule(accountUUID: AccountUUID, _ schedule: MigrationSchedule, usk: UnifiedSpendingKey) async throws
 
     /// Broadcasts the next height-due migration transfer for `accountUUID`, or returns `nil` when
@@ -836,13 +836,16 @@ public protocol Synchronizer: AnyObject {
     /// memoryless delay from the current tip, a fresh canonical expiry, and a freshly drawn
     /// boundary anchor. The transfer ids are unchanged, but their schedule, expiry, and anchors are
     /// all fresh, and those fresh values exist nowhere but in the returned schedule: it is the
-    /// atomically-persisted post-refresh truth, and the host MUST re-display it and use it for
-    /// every subsequent consent echo (``signAndStoreMigrationSchedule(accountUUID:_:usk:)``,
-    /// ``createUnsignedMigrationTransferPCZTs(accountUUID:for:)``) — echoing a pre-refresh copy
-    /// fails the verified echo with `ZcashError.migrationPlanStale` from then on, which is what
-    /// makes the external-signer ceremony converge after a refresh. With nothing expired the
-    /// current stored schedule comes back unchanged; with no stored run, or a terminal (completed
-    /// or cancelled) one, the schedule is empty.
+    /// atomically-persisted post-refresh truth, and the host MUST re-display it to the user. Once a
+    /// run is stored (as it must be, to have anything to refresh), every subsequent commit-shaped
+    /// call (``signAndStoreMigrationSchedule(accountUUID:_:usk:)``,
+    /// ``createUnsignedNoteSplitPCZTs(accountUUID:for:)``,
+    /// ``createUnsignedMigrationTransferPCZTs(accountUUID:for:)``) resumes it handle-free — the
+    /// `schedule` argument identifies nothing at that point, so it is the stored run itself
+    /// (already refreshed) that the external-signer ceremony converges on, not a comparison against
+    /// whatever copy the host happens to pass. With nothing expired the current stored schedule
+    /// comes back unchanged; with no stored run, or a terminal (completed or cancelled) one, the
+    /// schedule is empty.
     /// - Parameters:
     ///   - accountUUID: the account to refresh.
     ///   - usk: the account's unified spending key, or `nil` for the external-signer (Keystone)
@@ -865,9 +868,18 @@ public protocol Synchronizer: AnyObject {
     /// (note-split) subset of the PCZTs for the signing ceremony. The transfer subset of the same
     /// build is served by `createUnsignedMigrationTransferPCZTs(accountUUID:for:)`, so one
     /// ceremony signs everything (the final engine builds N preparation transactions, not one
-    /// split transaction).
-    /// - Parameter accountUUID: the account to build the PCZTs for.
-    func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID) async throws -> [MigrationUnsignedTransferPczt]
+    /// split transaction). Resumes a stored non-terminal run handle-free; replaces a terminal one.
+    /// - Parameters:
+    ///   - accountUUID: the account to build the PCZTs for.
+    ///   - schedule: the schedule to build the run from, from
+    ///     ``proposeMigrationTransfers(accountUUID:)``. Only its `proposalHandle` crosses to the
+    ///     native side, and only when this call is the one creating the run (no stored run, or a
+    ///     terminal one) — the display fields are never echoed back, and the ordinary resume case
+    ///     does not consult the handle at all.
+    /// - Throws: `ZcashError.migrationPlanStale` when this call is creating the run and the
+    ///   identified plan is missing (process restart between propose and confirm) or superseded by
+    ///   a later propose/prepare call — re-propose and re-display before retrying.
+    func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID, for schedule: MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt]
 
     /// Applies the ceremony's signatures to `accountUUID`'s preparation (note-split) transactions,
     /// all-or-nothing: every element must match a stored transaction awaiting its signature or
@@ -879,20 +891,20 @@ public protocol Synchronizer: AnyObject {
     func storeSignedNoteSplitPCZTs(accountUUID: AccountUUID, _ signed: [MigrationSignedTransferPczt]) async throws -> PreparedMigrationTransfer
 
     /// Builds one unsigned, proven PCZT per transfer of `schedule` for `accountUUID`, for an external
-    /// signer.
+    /// signer. Serves the TRANSFER subset of the same unsigned build
+    /// ``createUnsignedNoteSplitPCZTs(accountUUID:for:)`` serves the preparation subset of — the
+    /// run and every unsigned transaction it needs normally already exist by the time this is
+    /// called, so the usual path here is the handle-free resume of the stored run.
     /// - Parameters:
     ///   - accountUUID: the account the schedule belongs to.
-    ///   - schedule: the schedule to build PCZTs for. This is a VERIFIED consent echo, not an
-    ///     inert display value: the engine pins its ids, amounts, expiry heights, and estimated
-    ///     duration against the stored committed run it serves from (next-executable heights are
-    ///     not compared post-commit, and anchor heights never are), so a stale or tampered
-    ///     display cannot route different values than the ones the user approved into the
-    ///     signing ceremony.
-    /// - Throws: `ZcashError.migrationPlanStale` when the echoed schedule mismatches the stored
-    ///   run — re-read the current stored schedule
-    ///   (``refreshStaleMigrationTransfers(accountUUID:usk:)`` returns exactly that) and
-    ///   re-display it; re-proposing cannot converge on a committed run — and rust-layer errors
-    ///   otherwise.
+    ///   - schedule: the schedule to build PCZTs for, from ``proposeMigrationTransfers(accountUUID:)``.
+    ///     Only its `proposalHandle` crosses to the native side, and it only gates the fresh-build
+    ///     case where this call is the one creating the run (no stored run, or a terminal one) —
+    ///     the display fields are never echoed back, and the ordinary resume case does not consult
+    ///     the handle at all.
+    /// - Throws: `ZcashError.migrationPlanStale` when this call is creating the run and the
+    ///   identified plan is missing (process restart) or superseded by a later propose/prepare
+    ///   call — re-propose and re-display; rust-layer errors otherwise.
     func createUnsignedMigrationTransferPCZTs(accountUUID: AccountUUID, for schedule: MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt]
 
     /// Accepts the full set of `accountUUID`'s externally signed transfer PCZTs (all-or-nothing),
@@ -910,7 +922,7 @@ public protocol Synchronizer: AnyObject {
     // A DB-free, account-free bridge for driving a Keystone hardware signer through the migration
     // ceremony's PCZTs over an animated multi-part QR UR: none of these four calls take an
     // `accountUUID`, since they operate purely on caller-held PCZT bytes (from
-    // `createUnsignedNoteSplitPCZTs(accountUUID:)` / `createUnsignedMigrationTransferPCZTs(accountUUID:for:)`)
+    // `createUnsignedNoteSplitPCZTs(accountUUID:for:)` / `createUnsignedMigrationTransferPCZTs(accountUUID:for:)`)
     // and a scanned device response, never touching the wallet database or the migration engine.
 
     /// Builds the animated multi-part QR frames for a Keystone batch-signing request covering
@@ -1189,7 +1201,7 @@ public extension Synchronizer {
         throw MigrationUnimplemented(member: #function)
     }
 
-    func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID) async throws -> [MigrationUnsignedTransferPczt] {
+    func createUnsignedNoteSplitPCZTs(accountUUID: AccountUUID, for schedule: MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt] {
         throw MigrationUnimplemented(member: #function)
     }
 

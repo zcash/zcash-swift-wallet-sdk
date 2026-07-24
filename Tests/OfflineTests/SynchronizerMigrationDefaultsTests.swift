@@ -55,7 +55,7 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
     }
 
     func testSubmitNoteSplitDefaultThrowsUnimplemented() async {
-        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(10_000)], fee: Zatoshi(1_000))
+        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(10_000)], fee: Zatoshi(1_000), proposalHandle: 0)
         let usk = TestsData(networkType: .testnet).spendingKey
         let options = MigrationNetworkPrivacyOptions(useTor: false, submissionEndpoint: LightWalletEndpoint(address: "submit.example", port: 9067))
         await assertThrowsMigrationUnimplemented {
@@ -96,7 +96,7 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
     }
 
     func testSignAndStoreMigrationScheduleDefaultThrowsUnimplemented() async {
-        let schedule = MigrationSchedule(transfers: [], estimatedDurationHours: 1)
+        let schedule = MigrationSchedule(transfers: [], estimatedDurationHours: 1, proposalHandle: 0)
         let usk = TestsData(networkType: .testnet).spendingKey
         await assertThrowsMigrationUnimplemented {
             try await self.synchronizer.signAndStoreMigrationSchedule(accountUUID: self.accountUUID, schedule, usk: usk)
@@ -144,7 +144,10 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
     }
 
     func testCreateUnsignedNoteSplitPCZTsDefaultThrowsUnimplemented() async {
-        await assertThrowsMigrationUnimplemented { _ = try await self.synchronizer.createUnsignedNoteSplitPCZTs(accountUUID: self.accountUUID) }
+        let schedule = MigrationSchedule(transfers: [], estimatedDurationHours: 1, proposalHandle: 0)
+        await assertThrowsMigrationUnimplemented {
+            _ = try await self.synchronizer.createUnsignedNoteSplitPCZTs(accountUUID: self.accountUUID, for: schedule)
+        }
     }
 
     func testStoreSignedNoteSplitPCZTsDefaultThrowsUnimplemented() async {
@@ -157,7 +160,7 @@ final class SynchronizerMigrationDefaultsTests: XCTestCase {
     }
 
     func testCreateUnsignedMigrationTransferPCZTsDefaultThrowsUnimplemented() async {
-        let schedule = MigrationSchedule(transfers: [], estimatedDurationHours: 1)
+        let schedule = MigrationSchedule(transfers: [], estimatedDurationHours: 1, proposalHandle: 0)
         await assertThrowsMigrationUnimplemented {
             _ = try await self.synchronizer.createUnsignedMigrationTransferPCZTs(accountUUID: self.accountUUID, for: schedule)
         }

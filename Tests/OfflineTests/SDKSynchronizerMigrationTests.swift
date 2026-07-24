@@ -55,7 +55,7 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
 
     func testPrepareNoteSplitForwardsToTheAccountsActor() async throws {
         let welding = ZcashRustBackendWeldingMock()
-        let expected = NoteSplitProposal(outputNotes: [Zatoshi(500), Zatoshi(500)], fee: Zatoshi(100))
+        let expected = NoteSplitProposal(outputNotes: [Zatoshi(500), Zatoshi(500)], fee: Zatoshi(100), proposalHandle: 1)
         welding.migrationPrepareNoteSplitForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
 
@@ -67,7 +67,7 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
 
     func testProposeMigrationTransfersForwardsToTheAccountsActor() async throws {
         let welding = ZcashRustBackendWeldingMock()
-        let expected = MigrationSchedule(transfers: [], estimatedDurationHours: 3)
+        let expected = MigrationSchedule(transfers: [], estimatedDurationHours: 3, proposalHandle: 0)
         welding.migrationProposeTransfersForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
 
@@ -131,7 +131,11 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
                     expiryHeight: 3_640_000
                 )
             ],
-            estimatedDurationHours: 2
+            estimatedDurationHours: 2,
+            // A refresh reads the stored run, which always carries handle 0 (see
+            // `MigrationSchedule.proposalHandle`'s doc) -- commit-shaped calls resume it
+            // handle-free, never by re-identifying a cached plan.
+            proposalHandle: 0
         )
         welding.migrationRefreshStaleTransfersUskForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
@@ -148,7 +152,9 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
     /// the in-process sign-anew lane, with the returned schedule again round-tripping unmodified.
     func testRefreshStaleMigrationTransfersForwardsARealUskForTheInProcessLane() async throws {
         let welding = ZcashRustBackendWeldingMock()
-        let expected = MigrationSchedule(transfers: [], estimatedDurationHours: 0)
+        // A refresh reads the stored run, which always carries handle 0 -- see the sibling
+        // nil-usk test above.
+        let expected = MigrationSchedule(transfers: [], estimatedDurationHours: 0, proposalHandle: 0)
         welding.migrationRefreshStaleTransfersUskForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
         let usk = TestsData(networkType: .testnet).spendingKey
@@ -170,7 +176,9 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
         welding.migrationStateForReturnValue = .complete
         welding.migrationProposeTransfersForReturnValue = MigrationSchedule(
             transfers: [],
-            estimatedDurationHours: 0
+            estimatedDurationHours: 0,
+            // The empty "nothing to migrate" answer carries handle 0 (no cached plan).
+            proposalHandle: 0
         )
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
 
@@ -192,23 +200,32 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
                     expiryHeight: BlockHeight(70_000)
                 )
             ],
-            estimatedDurationHours: 1
+            estimatedDurationHours: 1,
+            // A freshly proposed, not-yet-committed plan: a live nonzero handle.
+            proposalHandle: 1
         )
         welding.migrationProposeTransfersForReturnValue = nextRun
         let proposed = try await synchronizer.proposeMigrationTransfers(accountUUID: accountUUID)
         XCTAssertEqual(proposed, nextRun, "a non-empty schedule is the next run's proposal")
     }
 
+    /// #1806: `createUnsignedNoteSplitPCZTs` gained a required `schedule` parameter with the
+    /// opaque-handle reshape (the welding call now needs it to identify which cached plan a
+    /// fresh-build should be built from -- see `MigrationSchedule.proposalHandle`). Both the
+    /// account AND the schedule -- handle included -- must reach the welding call untouched.
     func testCreateUnsignedNoteSplitPCZTsForwards() async throws {
         let welding = ZcashRustBackendWeldingMock()
         let expected = [MigrationUnsignedTransferPczt(id: "0", pczt: Data([0xAA, 0xBB]))]
-        welding.migrationCreateUnsignedNoteSplitPcztsForReturnValue = expected
+        welding.migrationCreateUnsignedNoteSplitPcztsForForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+        let schedule = MigrationSchedule(transfers: [], estimatedDurationHours: 0, proposalHandle: 77)
 
-        let pczts = try await synchronizer.createUnsignedNoteSplitPCZTs(accountUUID: accountUUID)
+        let pczts = try await synchronizer.createUnsignedNoteSplitPCZTs(accountUUID: accountUUID, for: schedule)
 
         XCTAssertEqual(pczts, expected)
-        XCTAssertEqual(welding.migrationCreateUnsignedNoteSplitPcztsForReceivedAccount, accountUUID)
+        let received = welding.migrationCreateUnsignedNoteSplitPcztsForForReceivedArguments
+        XCTAssertEqual(received?.account, accountUUID)
+        XCTAssertEqual(received?.schedule, schedule, "the schedule -- and its proposalHandle -- must forward untouched")
     }
 
     /// MOB-1513: the immediate lane's `proposeImmediateMigration` forwards to the per-account actor
@@ -542,7 +559,7 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding, factoryRecorder: recorder))
         await synchronizer.updateStatus(.syncing(0.5, false))
 
-        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(1_000)], fee: Zatoshi(100))
+        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(1_000)], fee: Zatoshi(100), proposalHandle: 1)
         let usk = TestsData(networkType: .testnet).spendingKey
         let options = MigrationNetworkPrivacyOptions(useTor: false, submissionEndpoint: submissionEndpoint)
 
@@ -601,7 +618,7 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding, factoryRecorder: recorder))
         await synchronizer.updateStatus(.stopped)
 
-        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(1_000)], fee: Zatoshi(100))
+        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(1_000)], fee: Zatoshi(100), proposalHandle: 1)
         let usk = TestsData(networkType: .testnet).spendingKey
         let options = MigrationNetworkPrivacyOptions(useTor: false, submissionEndpoint: submissionEndpoint)
 

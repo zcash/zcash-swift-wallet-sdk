@@ -9,8 +9,11 @@ the unreleased surface:
 - **The external-signer note-split pair went plural.** The engine builds N preparation
   transactions, not one split transaction, so
   `createUnsignedNoteSplitPCZT(accountUUID:) -> Data` is now
-  `createUnsignedNoteSplitPCZTs(accountUUID:) -> [MigrationUnsignedTransferPczt]` (it also creates
-  the run, persisted unsigned), and `storeSignedNoteSplitPCZT(accountUUID:_: Data)` is now
+  `createUnsignedNoteSplitPCZTs(accountUUID:for:) -> [MigrationUnsignedTransferPczt]` (it also
+  creates the run, persisted unsigned -- `schedule`, from `proposeMigrationTransfers`, identifies
+  the cached plan to build from by its opaque `proposalHandle` when this call is the one creating
+  the run; a stored non-terminal run resumes handle-free), and
+  `storeSignedNoteSplitPCZT(accountUUID:_: Data)` is now
   `storeSignedNoteSplitPCZTs(accountUUID:_: [MigrationSignedTransferPczt])` (all-or-nothing; the
   returned `PreparedMigrationTransfer` is a storage receipt with a zeroed `txid` — the
   broadcastable value is served by the delivery lane). One signing ceremony still covers the whole

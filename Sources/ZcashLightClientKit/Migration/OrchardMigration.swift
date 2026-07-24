@@ -526,12 +526,15 @@ actor OrchardMigration {
     /// nullifier identity, never an equal-value substitute) on a fresh schedule — a fresh
     /// memoryless delay from the current tip, a fresh canonical expiry, and a freshly drawn
     /// boundary anchor. The rebuilt rows' fresh scheduled/expiry heights exist nowhere but in the
-    /// returned schedule — the atomically-persisted post-refresh truth the host must re-display
-    /// and use for every subsequent consent echo (``signAndStoreMigrationSchedule(_:usk:)``,
-    /// ``createUnsignedTransferPCZTs(for:)``); a pre-refresh copy fails the verified echo with
-    /// `ZcashError.migrationPlanStale` from then on. Passing a spending key signs each rebuilt
-    /// transfer anew in-process; passing `nil` (an external-signer account, whose spend authority
-    /// never exists on this device) leaves it awaiting its signature, so the
+    /// returned schedule — the atomically-persisted post-refresh truth the host must re-display.
+    /// Once a run is stored (as it must be, to have anything to refresh), every subsequent
+    /// commit-shaped call (``signAndStoreMigrationSchedule(_:usk:)``,
+    /// ``createUnsignedNoteSplitPCZTs(for:)``, ``createUnsignedTransferPCZTs(for:)``) resumes it
+    /// handle-free — the `schedule` argument identifies nothing at that point, so it is the stored
+    /// run itself (already refreshed) that the external-signer ceremony converges on, not a
+    /// comparison against whatever copy the host happens to pass. Passing a spending key signs each
+    /// rebuilt transfer anew in-process; passing `nil` (an external-signer account, whose spend
+    /// authority never exists on this device) leaves it awaiting its signature, so the
     /// ``createUnsignedTransferPCZTs(for:)`` / ``storeSignedSchedulePCZTs(_:)`` ceremony
     /// re-serves and completes it.
     /// - Throws: notably, a `FundingNoteUnavailable`-class failure when an expired transfer's exact
@@ -549,9 +552,11 @@ actor OrchardMigration {
     /// Builds the whole previewed migration UNSIGNED — the run is created by this call — and
     /// returns the preparation (note-split) subset of its PCZTs for the signing ceremony. The
     /// transfer subset of the same build is served by ``createUnsignedTransferPCZTs(for:)``, so one
-    /// ceremony signs everything.
-    func createUnsignedNoteSplitPCZTs() async throws -> [MigrationUnsignedTransferPczt] {
-        try await welding.migrationCreateUnsignedNoteSplitPczts(for: accountUUID)
+    /// ceremony signs everything. Resumes a stored non-terminal run handle-free; replaces a
+    /// terminal one. Only `schedule.proposalHandle` crosses to the native side, and only when this
+    /// call is the one creating the run — the display fields are never echoed back.
+    func createUnsignedNoteSplitPCZTs(for schedule: MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt] {
+        try await welding.migrationCreateUnsignedNoteSplitPczts(for: schedule, for: accountUUID)
     }
 
     /// Applies the ceremony's signatures to the run's preparation (note-split) transactions,

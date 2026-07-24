@@ -49,7 +49,7 @@ final class OrchardMigrationCompositionTests: ZcashTestCase {
     /// record bookkeeping subsequently fails.
     func testSubmitNoteSplitOrdersSignExtractBroadcastMarksGateThenRecordsOnSuccess() async throws {
         let recorder = CompositionOrderRecorder()
-        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(100_000)], fee: Zatoshi(5_000))
+        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(100_000)], fee: Zatoshi(5_000), proposalHandle: 1)
         let prepared = makePreparedTransfer(id: "split-0")
         let rawTransaction = Data([0x02, 0x03])
 
@@ -93,7 +93,7 @@ final class OrchardMigrationCompositionTests: ZcashTestCase {
     /// Transport failure is *returned*, not thrown: recorded as a retryable network error, and the
     /// privacy-buffer gate is left untouched (only a `.success` marks it).
     func testSubmitNoteSplitOnTransportFailureRecordsNetworkErrorAndLeavesGateUntouched() async throws {
-        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(100_000)], fee: Zatoshi(5_000))
+        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(100_000)], fee: Zatoshi(5_000), proposalHandle: 1)
         let prepared = makePreparedTransfer(id: "split-0")
         welding.migrationSignNoteSplitProposalUskForReturnValue = prepared
         welding.migrationExtractBroadcastTxPcztForReturnValue = Data([0x02, 0x03])
@@ -122,7 +122,7 @@ final class OrchardMigrationCompositionTests: ZcashTestCase {
     /// entry points share the same private `broadcastAndRecord` composition, so the fail-closed Tor
     /// guarantee must hold from this call site too.
     func testSubmitNoteSplitFailsClosedOnTorUnavailableWithoutRecordingOrGating() async throws {
-        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(100_000)], fee: Zatoshi(5_000))
+        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(100_000)], fee: Zatoshi(5_000), proposalHandle: 1)
         let prepared = makePreparedTransfer(id: "split-0")
         welding.migrationSignNoteSplitProposalUskForReturnValue = prepared
         welding.migrationExtractBroadcastTxPcztForReturnValue = Data([0x02, 0x03])
@@ -302,7 +302,7 @@ final class OrchardMigrationCompositionTests: ZcashTestCase {
 
     /// The sibling of the test above for the other public broadcast flow.
     func testSubmitNoteSplitRecordThrowAfterSuccessfulBroadcastMarksGateAndThrowsWrapped() async throws {
-        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(100_000)], fee: Zatoshi(5_000))
+        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(100_000)], fee: Zatoshi(5_000), proposalHandle: 1)
         welding.migrationSignNoteSplitProposalUskForReturnValue = makePreparedTransfer(id: "split-0")
         welding.migrationExtractBroadcastTxPcztForReturnValue = Data([0x02, 0x03])
         welding.migrationRecordTransferResultTransferIdResultForThrowableError = StubEngineError()
@@ -403,7 +403,7 @@ final class OrchardMigrationCompositionTests: ZcashTestCase {
         let recorder = CompositionOrderRecorder()
         let dueTransfer = makePreparedTransfer(id: "transfer-1")
         let splitTransfer = makePreparedTransfer(id: "split-0")
-        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(100_000)], fee: Zatoshi(5_000))
+        let proposal = NoteSplitProposal(outputNotes: [Zatoshi(100_000)], fee: Zatoshi(5_000), proposalHandle: 1)
         welding.migrationNextDueTransferForClosure = { [welding] _ in
             welding?.migrationRecordTransferResultTransferIdResultForCalled == true ? nil : dueTransfer
         }
