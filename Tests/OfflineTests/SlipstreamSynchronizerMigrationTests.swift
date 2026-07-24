@@ -83,13 +83,13 @@ final class SlipstreamSynchronizerMigrationTests: ZcashTestCase {
                 blockedOn: MigrationTransactionStatus.Blocker.schedule
             )
         ]
-        welding.migrationTransactionStatusesAccountUUIDReturnValue = expected
+        welding.migrationTransactionStatusesForReturnValue = expected
         let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
 
         let statuses = try await synchronizer.migrationTransactionStatuses(accountUUID: accountUUID)
 
         XCTAssertEqual(statuses, expected)
-        XCTAssertEqual(welding.migrationTransactionStatusesAccountUUIDReceivedAccountUUID, accountUUID)
+        XCTAssertEqual(welding.migrationTransactionStatusesForReceivedAccount, accountUUID)
     }
 
     func testPrepareNoteSplitForwardsToTheAccountsActor() async throws {
