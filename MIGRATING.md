@@ -202,6 +202,21 @@ New error codes `rustMigrationKeystoneBuildSignBatchQrParts` (ZRUST0136),
 `rustMigrationKeystoneApplyBatchSignatures` (ZRUST0138). Like the rest of the migration group, the
 Closure/Combine wrapper synchronizers do not mirror these four members.
 
+## The debug fast-reschedule joins the migration group
+
+The `Synchronizer` migration group gains one account-scoped, DEBUG/QA-only requirement. Like the
+rest of the group it comes with a protocol-extension default that throws an "unimplemented"
+`LocalizedError`, so a custom `Synchronizer` conformer keeps compiling — but it must override it to
+offer the real behavior (`SDKSynchronizer` does):
+
+- **New: `debugRescheduleMigrationTransfers(accountUUID:) async throws -> Int`.** DEBUG/QA ONLY:
+  rewrites the committed migration schedule's transfer heights (first due in ~2 blocks, then
+  4-block strides) and the earliest transfer's anchor boundary so real broadcast delivery can be
+  exercised without waiting out ZIP 318's privacy delay — not for production flows. Returns the
+  number of transfers rescheduled (`0` when the account has no stored migration);
+  already-broadcast/mined transfers and preparations are left untouched. New error code
+  `rustMigrationDebugRescheduleTransfers` (ZRUST0139).
+
 ## `prepare` now validates the seed against the existing wallet
 
 If the wallet database already contains seed-derived account(s) and the seed passed to `prepare`
