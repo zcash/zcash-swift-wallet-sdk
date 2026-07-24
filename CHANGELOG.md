@@ -348,7 +348,6 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   released the instant the upstream summary returns real balances (whose value then wins
   unconditionally), and suppressed whenever a pending unmined outgoing spend could otherwise make the
   held value over-show. A process restart inside the window falls back to the prior behavior.
-- `MigrationSchedule.estimatedDurationHours` now measures from proposal (or re-serve) time to the last scheduled transfer, matching its documented "how long the schedule takes to fully execute" contract. Previously it measured only the first-to-last scheduled-transfer span, which excluded the wait until the first transfer fires and could read shorter than the per-transfer ETAs computed from the same schedule. Correspondingly, the post-commit consent-echo validation no longer exact-matches the echoed duration (it is serve-time-relative display metadata now); the pre-commit validation still checks it byte-for-byte.
 
 # 2.6.0-alpha.6
 
