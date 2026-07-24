@@ -111,14 +111,15 @@ zcash_keys = { version = "0.15.0", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
 
 # Slipstream engine — the alternative sync engine the SlipstreamSynchronizer
-# drives. Consumed as a remote crate. Tracks the slipstream PR #6 branch
-# (0.6.4 + the note-locking-family compile adaptations: the WalletWrite
-# locking trait items on the persistence facades, the Tor onion-services
-# parameter, and the widened proposal-fn call sites); Cargo.lock pins the
-# exact commit. Return to a release tag once PR #6 merges and a tag is cut
-# with these aboard. The engine rides the same librustzcash rev as this
-# package, so the graph stays a single family instance.
-slipstream-core = { git = "https://github.com/LukasKorba/slipstream.git", branch = "michal/MOB-1455/MOB-1495-update-librustzcash-deps" }
+# drives. Consumed as a remote crate from zodl-inc/slipstream, the engine's
+# home since the personal-fork era (the old PR #6 adaptations are merged
+# there). Tracks the anchor-retention branch (upstream-aligned 144-block
+# anchor retention, typed multi-account sync_once, EngineConfig-owned
+# endpoint probe-then-commit, report.rs presentation split); Cargo.lock pins
+# the exact commit. Return to a release tag once one is cut with these
+# aboard. The engine rides the same librustzcash rev as this package, so the
+# graph stays a single family instance.
+slipstream-core = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [features]
@@ -151,6 +152,7 @@ lto = true
 # network in `rust/src/lib.rs`. Bump it deliberately (build + OfflineTests
 # green), and delete the whole block at the 0.24-era crates.io release.
 [patch.crates-io]
+slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "b9811a12020f2547fbedf1cf57bf3c25e8c89705" }
 zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting.git", rev = "e5d885c2128f59ba39f44631dee537a0ade2f3fd" }
 
 # Pin the whole librustzcash stack to a single git rev, pending a crates.io release.

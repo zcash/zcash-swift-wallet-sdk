@@ -218,7 +218,9 @@ fn block_db(fsblock_db: *const u8, fsblock_db_len: usize) -> anyhow::Result<FsBl
         .map_err(|e| anyhow!("Error opening block source database connection: {}", e))
 }
 
-pub(crate) fn account_uuid_from_bytes(uuid_bytes: *const u8) -> Result<AccountUuid, TryFromSliceError> {
+pub(crate) fn account_uuid_from_bytes(
+    uuid_bytes: *const u8,
+) -> Result<AccountUuid, TryFromSliceError> {
     let uuid_bytes = unsafe { slice::from_raw_parts(uuid_bytes, 16) };
     Ok(AccountUuid::from_uuid(Uuid::from_bytes(
         <[u8; 16]>::try_from(uuid_bytes)?,
@@ -806,7 +808,10 @@ pub unsafe extern "C" fn zcashlc_delete_account(
 /// - The memory referenced by `usk_ptr` must not be mutated for the duration of the function call.
 /// - The total size `usk_len` must be no larger than `isize::MAX`. See the safety documentation
 ///   of pointer::offset.
-pub(crate) unsafe fn decode_usk(usk_ptr: *const u8, usk_len: usize) -> anyhow::Result<UnifiedSpendingKey> {
+pub(crate) unsafe fn decode_usk(
+    usk_ptr: *const u8,
+    usk_len: usize,
+) -> anyhow::Result<UnifiedSpendingKey> {
     let usk_bytes = unsafe { slice::from_raw_parts(usk_ptr, usk_len) };
 
     // The remainder of the function is safe.
@@ -4858,7 +4863,11 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
         let host =
             std::str::from_utf8(unsafe { slice::from_raw_parts(server_host, server_host_len) })
                 .map_err(|e| anyhow!("server_host UTF-8: {e}"))?;
-        let network = if network_id == 1 { MainNetwork } else { TestNetwork };
+        let network = if network_id == 1 {
+            MainNetwork
+        } else {
+            TestNetwork
+        };
 
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
@@ -4909,7 +4918,9 @@ pub unsafe extern "C" fn zcashlc_slipstream_open(
         Ok(Box::into_raw(Box::new(SlipstreamHandle {
             inner,
             summary_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            summary_refresh_inflight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            summary_refresh_inflight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
             // [#1806] Empty until the first successful recovery-balance read fills it.
             recovery_nets_cache: std::sync::Mutex::new(None),
             // Freshness baseline = the refresh COUNTER (0 on a fresh handle; the E-3 seed
@@ -5126,7 +5137,10 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
             cfg.gpu_subtree = std::env::var("ZCASH_GPU_SUBTREE")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
-            tracing::info!(gpu_subtree = cfg.gpu_subtree, "v0.3 GPU offload config (feature=gpu)");
+            tracing::info!(
+                gpu_subtree = cfg.gpu_subtree,
+                "v0.3 GPU offload config (feature=gpu)"
+            );
         }
 
         // v0.4 : Plan A graft + Plan B batch — DEFAULT ON since 2026-07-05
@@ -5138,27 +5152,20 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         cfg.batch_combine = std::env::var("ZCASH_BATCH_COMBINE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(cfg.batch_combine);
-        // v0.5 C1 : batched same-scalar trial-decrypt DH (forked orchard
-        // lockstep kernel). Default OFF until the C3 device gates.
-        cfg.batch_decrypt = std::env::var("ZCASH_BATCH_DECRYPT")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(cfg.batch_decrypt);
+        // [#1806] ZCASH_BATCH_DECRYPT / ZCASH_ENDO_MUL removed: the zodl-inc/slipstream
+        // repoint dropped `EngineConfig::batch_decrypt`/`endo_mul` — upstream adopted
+        // batched-trial-decryption GLV unconditionally and retired the vendored orchard
+        // fork these knobs configured. No replacement field exists; the env vars are now
+        // inert (left unhandled intentionally rather than silently repurposed).
         // v0.5 scan-pacer lever : local chunk-boundary treestates
         // (one seed fetch per range instead of one RPC per boundary).
         // Default OFF until the A/B + audit gates.
         cfg.local_treestate = std::env::var("ZCASH_LOCAL_TREESTATE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(cfg.local_treestate);
-        // v0.5 C2 : GLV endomorphism per-item DH. Default ON
-        // (fleet-gated 2026-07-06); ZCASH_ENDO_MUL=0 is the kill switch.
-        cfg.endo_mul = std::env::var("ZCASH_ENDO_MUL")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(cfg.endo_mul);
         tracing::info!(
             graft_subtree = cfg.graft_subtree,
             batch_combine = cfg.batch_combine,
-            batch_decrypt = cfg.batch_decrypt,
-            endo_mul = cfg.endo_mul,
             local_treestate = cfg.local_treestate,
             "v0.4/v0.5 lever config"
         );
@@ -5175,8 +5182,10 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone();
-            cfg.alternate_endpoints =
-                alternates.into_iter().filter(|e| *e != cfg.endpoint).collect();
+            cfg.alternate_endpoints = alternates
+                .into_iter()
+                .filter(|e| *e != cfg.endpoint)
+                .collect();
             tracing::info!(
                 alternates = cfg.alternate_endpoints.len(),
                 wire_failover = cfg.wire_failover,
@@ -5189,7 +5198,26 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         // now lives in slipstream_core::session::run_session. This FFI only marshals C args,
         // builds the config + the reporting sink (the handle's existing progress/state/event
         // Arcs), and spawns the engine's session on the handle runtime.
-        let account: Option<(String, u64)> = ufvk_str.map(|s| (s, birthday_height));
+        // [#1806] `SessionConfig.account` was retyped to `accounts: Vec<(UnifiedFullViewingKey,
+        // BlockHeight)>` (typed multi-account sync_once) by the zodl-inc/slipstream repoint.
+        // This FFI still exposes single-account semantics: parse the raw ufvk/birthday into
+        // the typed pair and wrap it in a one-element Vec (empty = keyless follow-up call,
+        // ufvk was null) — no multi-account surface added upward.
+        let accounts: Vec<(UnifiedFullViewingKey, BlockHeight)> = match ufvk_str {
+            Some(ufvk_str) => {
+                let ufvk = UnifiedFullViewingKey::decode(&h.network, &ufvk_str).map_err(|e| {
+                    anyhow!(
+                        "Value \"{}\" did not decode as a valid UFVK: {}",
+                        ufvk_str,
+                        e
+                    )
+                })?;
+                let birthday = BlockHeight::try_from(birthday_height)
+                    .map_err(|e| anyhow!("invalid birthday_height {}: {}", birthday_height, e))?;
+                vec![(ufvk, birthday)]
+            }
+            None => Vec::new(),
+        };
         // iOS sandboxes the app dir so fs-mistrust can trust it (mirrors the old SDK's
         // zcashlc_create_tor_runtime); elsewhere let Tor manage permissions. The engine stays
         // host-agnostic — a future Android FFI sets this field too.
@@ -5197,8 +5225,11 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
             dir,
             dangerously_trust_everyone: cfg!(target_os = "ios"),
         });
-        let session_config =
-            slipstream_core::session::SessionConfig { engine: cfg, account, tor };
+        let session_config = slipstream_core::session::SessionConfig {
+            engine: cfg,
+            accounts,
+            tor,
+        };
         let reporter = slipstream_core::session::SessionReporter {
             progress: std::sync::Arc::clone(&h.progress),
             state: std::sync::Arc::clone(&h.state),
@@ -5387,7 +5418,9 @@ impl SlipstreamHandle {
 ///   has not previously been freed.
 /// - `handle` must not be passed to two FFI calls at the same time.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_slipstream_notify_tx_change(handle: *mut SlipstreamHandle) -> bool {
+pub unsafe extern "C" fn zcashlc_slipstream_notify_tx_change(
+    handle: *mut SlipstreamHandle,
+) -> bool {
     let handle = AssertUnwindSafe(handle);
     let res = catch_panic(|| {
         let handle = unsafe { handle.as_ref() }.ok_or_else(|| anyhow!("null handle"))?;
@@ -5447,7 +5480,11 @@ pub unsafe extern "C" fn zcashlc_slipstream_restore_anchor(
         let host =
             std::str::from_utf8(unsafe { slice::from_raw_parts(server_host, server_host_len) })
                 .map_err(|e| anyhow!("server_host UTF-8: {e}"))?;
-        let network = if network_id == 1 { MainNetwork } else { TestNetwork };
+        let network = if network_id == 1 {
+            MainNetwork
+        } else {
+            TestNetwork
+        };
         let endpoint = slipstream_core::config::Endpoint {
             host: host.to_string(),
             port: server_port,
@@ -6032,8 +6069,8 @@ pub unsafe extern "C" fn zcashlc_slipstream_wallet_summary(
                 (walked, recovering_at)
             }
             Some(entry) => {
-                let boundary_crossed = snap.ranges_completed != entry.ranges_completed
-                    || snap.state != entry.state;
+                let boundary_crossed =
+                    snap.ranges_completed != entry.ranges_completed || snap.state != entry.state;
                 let idle_ttl_due =
                     snap.state != 1 && entry.captured_at.elapsed() >= SUMMARY_IDLE_TTL;
                 if (boundary_crossed || idle_ttl_due)
@@ -6175,13 +6212,20 @@ pub unsafe extern "C" fn zcashlc_slipstream_drain_events(
     let buf = AssertUnwindSafe(buf);
     let res = catch_panic(|| {
         let handle = unsafe { handle.as_mut() }.ok_or_else(|| anyhow!("null handle"))?;
-        let mut ring = handle.inner.events.lock().unwrap_or_else(|p| p.into_inner());
+        let mut ring = handle
+            .inner
+            .events
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let to_copy = ring.len().min(buf_len);
         // Convert from the ffi_handle event type to the cbindgen-visible
         // FfiSlipstreamEvent (defined in this file). Both are repr(C); copy fields.
         let drained: Vec<FfiSlipstreamEvent> = ring
             .drain(..to_copy)
-            .map(|e| FfiSlipstreamEvent { tag: e.tag, value: e.value })
+            .map(|e| FfiSlipstreamEvent {
+                tag: e.tag,
+                value: e.value,
+            })
             .collect();
         // SAFETY: buf is valid for writes for buf_len elements (caller contract above).
         unsafe { std::ptr::copy_nonoverlapping(drained.as_ptr(), *buf, to_copy) };
