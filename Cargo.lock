@@ -3884,7 +3884,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph 0.8.3",
@@ -3903,7 +3903,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -3927,7 +3927,7 @@ dependencies = [
  "derive-deftly",
  "libc",
  "paste",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -4825,7 +4825,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slipstream-core"
 version = "0.6.4"
-source = "git+https://github.com/LukasKorba/slipstream.git?branch=michal%2FMOB-1455%2FMOB-1495-update-librustzcash-deps#475f8e2b4a3da9e74730dd332f07b9f0df6479ab"
+source = "git+https://github.com/LukasKorba/slipstream.git?branch=michal%2FMOB-1455%2FMOB-1495-update-librustzcash-deps#187f639fecbcbed314a043a01a1d5784a0e5f50c"
 dependencies = [
  "ff",
  "futures-util",
@@ -4862,7 +4862,7 @@ dependencies = [
 [[package]]
 name = "slipstream-gpuhash"
 version = "0.0.1"
-source = "git+https://github.com/LukasKorba/slipstream.git?branch=michal%2FMOB-1455%2FMOB-1495-update-librustzcash-deps#475f8e2b4a3da9e74730dd332f07b9f0df6479ab"
+source = "git+https://github.com/LukasKorba/slipstream.git?branch=michal%2FMOB-1455%2FMOB-1495-update-librustzcash-deps#187f639fecbcbed314a043a01a1d5784a0e5f50c"
 dependencies = [
  "bytemuck",
  "ff",
