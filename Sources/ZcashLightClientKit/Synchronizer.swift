@@ -630,6 +630,9 @@ public protocol Synchronizer: AnyObject {
     func isNoteSplitNeeded(accountUUID: AccountUUID) async throws -> Bool
 
     /// The optimal note split for `accountUUID`'s spendable Orchard balance.
+    ///
+    /// Any subsequent propose/prepare call for the same account supersedes previously returned
+    /// proposal handles — commit calls carrying an older handle throw `ZcashError.migrationPlanStale`.
     /// - Parameter accountUUID: the account to prepare a note split for.
     func prepareNoteSplit(accountUUID: AccountUUID) async throws -> NoteSplitProposal
 
@@ -665,7 +668,9 @@ public protocol Synchronizer: AnyObject {
     /// The full migration schedule preview for `accountUUID`'s live spendable Orchard balance, in
     /// chronological broadcast order. Plans fresh (drawing new ZIP 318 schedule randomness) and
     /// caches the preview — a later commit signs exactly this plan, so always confirm the schedule
-    /// the user actually saw. An EMPTY schedule means there is nothing to migrate; after a
+    /// the user actually saw. Any subsequent propose/prepare call for the same account supersedes
+    /// previously returned proposal handles — commit calls carrying an older handle throw
+    /// `ZcashError.migrationPlanStale`. An EMPTY schedule means there is nothing to migrate; after a
     /// completed run this is the "does anything remain" answer of the sequential-runs contract.
     /// - Parameter accountUUID: the account to propose a migration schedule for.
     func proposeMigrationTransfers(accountUUID: AccountUUID) async throws -> MigrationSchedule
@@ -747,7 +752,9 @@ public protocol Synchronizer: AnyObject {
 
     /// Pre-signs and persists every transfer in `schedule` in the migration engine for `accountUUID`
     /// (a no-op when a matching non-terminal run is already stored for the account — the normal
-    /// case, since the note-split submission commits the run).
+    /// case, since the note-split submission commits the run). Any subsequent propose/prepare call
+    /// for the same account supersedes previously returned proposal handles — commit calls
+    /// carrying an older handle throw `ZcashError.migrationPlanStale`.
     ///
     /// The SDK does not retain the proposal list: hosts that need to render the committed schedule
     /// later must persist it themselves at confirmation time.
@@ -875,6 +882,17 @@ public protocol Synchronizer: AnyObject {
     ///   persists NONE of the batch's rebuilds, so a non-throwing return's schedule is exactly what
     ///   was atomically persisted, never a partial batch.
     func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> MigrationSchedule
+
+    /// DEBUG/QA ONLY — rewrites `accountUUID`'s committed migration schedule's transfer heights
+    /// (first due in ~2 blocks, then 4-block strides) and the earliest transfer's anchor boundary
+    /// so real broadcast delivery can be exercised without waiting out ZIP 318's privacy delay.
+    /// Not for production flows.
+    ///
+    /// Returns the number of transfers rescheduled (`0` when the account has no stored
+    /// migration). Already-broadcast and already-mined transfers, and every preparation
+    /// (note-split) transaction, are left untouched.
+    /// - Parameter accountUUID: the account whose schedule should be compressed.
+    func debugRescheduleMigrationTransfers(accountUUID: AccountUUID) async throws -> Int
 
     /// Builds `accountUUID`'s whole previewed migration UNSIGNED — the run is created by this
     /// call, with every transaction persisted awaiting its signature — and returns the preparation
@@ -1027,8 +1045,8 @@ private struct BroadcasterUnimplemented: LocalizedError {
 /// Error thrown by the default implementations of the throwing members of the migration group (see
 /// `public extension Synchronizer` below) when a conformer doesn't override them. One shared,
 /// member-parameterized type rather than one hoisted struct per member (as
-/// ``GetTreeStateUnimplemented``/``BroadcasterUnimplemented`` do): the migration group has 27
-/// throwing requirements, and duplicating that two-struct precedent 27 times over would be pure
+/// ``GetTreeStateUnimplemented``/``BroadcasterUnimplemented`` do): the migration group has 28
+/// throwing requirements, and duplicating that two-struct precedent 28 times over would be pure
 /// boilerplate for the same LocalizedError-conforming, "override this in your conformer" pattern.
 /// Hoisted to file scope for the same reason as those two — protocol-extension methods carry an
 /// implicit `Self` and so count as generic, and Swift forbids nesting concrete types with
@@ -1211,6 +1229,10 @@ public extension Synchronizer {
     }
 
     func refreshStaleMigrationTransfers(accountUUID: AccountUUID, usk: UnifiedSpendingKey?) async throws -> MigrationSchedule {
+        throw MigrationUnimplemented(member: #function)
+    }
+
+    func debugRescheduleMigrationTransfers(accountUUID: AccountUUID) async throws -> Int {
         throw MigrationUnimplemented(member: #function)
     }
 

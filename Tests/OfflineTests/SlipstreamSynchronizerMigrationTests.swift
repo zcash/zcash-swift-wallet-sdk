@@ -2,7 +2,7 @@
 //  SlipstreamSynchronizerMigrationTests.swift
 //  OfflineTests
 //
-//  Tests `SlipstreamSynchronizer`'s migration group (R4-C): the same 31 `Synchronizer` protocol
+//  Tests `SlipstreamSynchronizer`'s migration group (R4-C): the same 32 `Synchronizer` protocol
 //  requirements `SDKSynchronizer` implements (see `SDKSynchronizerMigrationTests`), as thin forwards
 //  to a seamed `OrchardMigrationHost` -- except the DB-free, account-free Keystone batch-signing
 //  bridge (4 members, #1806), which forwards straight to `initializer.rustBackend` instead,
@@ -184,6 +184,20 @@ final class SlipstreamSynchronizerMigrationTests: ZcashTestCase {
         let received = welding.migrationRefreshStaleTransfersUskForReceivedArguments
         XCTAssertEqual(received?.account, accountUUID)
         XCTAssertEqual(received?.usk, usk)
+    }
+
+    /// #1806: `debugRescheduleMigrationTransfers` -- DEBUG/QA ONLY -- forwards to the per-account
+    /// actor and returns the engine's rescheduled-transfer count untouched. Mirrors
+    /// `SDKSynchronizerMigrationTests.testDebugRescheduleMigrationTransfersForwardsToTheAccountsActor`.
+    func testDebugRescheduleMigrationTransfersForwardsToTheAccountsActor() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.migrationDebugRescheduleTransfersForReturnValue = 3
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let rescheduled = try await synchronizer.debugRescheduleMigrationTransfers(accountUUID: accountUUID)
+
+        XCTAssertEqual(rescheduled, 3)
+        XCTAssertEqual(welding.migrationDebugRescheduleTransfersForReceivedAccount, accountUUID)
     }
 
     /// #1806: `createUnsignedNoteSplitPCZTs` gained a required `schedule` parameter with the

@@ -443,6 +443,9 @@ protocol ZcashRustBackendWelding {
     func migrationHasInvalidTransfers(for account: AccountUUID) async throws -> Bool
 
     /// The optimal note split for the spendable Orchard balance.
+    ///
+    /// Any subsequent propose/prepare call for the same account supersedes previously returned
+    /// proposal handles — commit calls carrying an older handle throw `migrationPlanStale`.
     /// - Throws: `rustMigrationPrepareNoteSplit` if the rust layer returns an error.
     func migrationPrepareNoteSplit(for account: AccountUUID) async throws -> NoteSplitProposal
 
@@ -524,7 +527,9 @@ protocol ZcashRustBackendWelding {
     /// Pre-signs and persists every transfer in `schedule` (a no-op when a matching non-terminal
     /// run is already stored — the normal case, since the note-split submission commits the run).
     /// Only `schedule.proposalHandle` crosses to the native side — the schedule's display fields
-    /// are never echoed back. A fresh commit signs exactly the cached plan the handle identifies;
+    /// are never echoed back. Any subsequent propose/prepare call for the same account supersedes
+    /// previously returned proposal handles — commit calls carrying an older handle throw
+    /// `migrationPlanStale`. A fresh commit signs exactly the cached plan the handle identifies;
     /// the resume/no-op case does not consult the handle (the stored run is durable, already
     /// handle-verified state).
     /// - Throws: `migrationPlanStale` when nothing is committed and the identified plan is
@@ -609,6 +614,17 @@ protocol ZcashRustBackendWelding {
         usk: UnifiedSpendingKey?,
         for account: AccountUUID
     ) async throws -> MigrationSchedule
+
+    /// DEBUG/QA ONLY — rewrites the committed migration schedule's transfer heights (first due in
+    /// ~2 blocks, then 4-block strides) and the earliest transfer's anchor boundary so real
+    /// broadcast delivery can be exercised without waiting out ZIP 318's privacy delay. Not for
+    /// production flows.
+    ///
+    /// Returns the number of transfers rescheduled (`0` when the account has no stored migration).
+    /// Already-broadcast and already-mined transfers, and every preparation (note-split)
+    /// transaction, are left untouched.
+    /// - Throws: `rustMigrationDebugRescheduleTransfers` if the rust layer returns an error.
+    func migrationDebugRescheduleTransfers(for account: AccountUUID) async throws -> Int
 
     /// Builds the whole previewed migration UNSIGNED for an external signer — the run is created
     /// by this call, with every transaction persisted awaiting its signature — and returns the

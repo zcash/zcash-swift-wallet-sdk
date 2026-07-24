@@ -3165,6 +3165,30 @@ class SynchronizerMock: Synchronizer {
         }
     }
 
+    // MARK: - debugRescheduleMigrationTransfers
+
+    var debugRescheduleMigrationTransfersAccountUUIDThrowableError: Error?
+    var debugRescheduleMigrationTransfersAccountUUIDCallsCount = 0
+    var debugRescheduleMigrationTransfersAccountUUIDCalled: Bool {
+        return debugRescheduleMigrationTransfersAccountUUIDCallsCount > 0
+    }
+    var debugRescheduleMigrationTransfersAccountUUIDReceivedAccountUUID: AccountUUID?
+    var debugRescheduleMigrationTransfersAccountUUIDReturnValue: Int!
+    var debugRescheduleMigrationTransfersAccountUUIDClosure: ((AccountUUID) async throws -> Int)?
+
+    func debugRescheduleMigrationTransfers(accountUUID: AccountUUID) async throws -> Int {
+        if let error = debugRescheduleMigrationTransfersAccountUUIDThrowableError {
+            throw error
+        }
+        debugRescheduleMigrationTransfersAccountUUIDCallsCount += 1
+        debugRescheduleMigrationTransfersAccountUUIDReceivedAccountUUID = accountUUID
+        if let closure = debugRescheduleMigrationTransfersAccountUUIDClosure {
+            return try await closure(accountUUID)
+        } else {
+            return debugRescheduleMigrationTransfersAccountUUIDReturnValue
+        }
+    }
+
     // MARK: - createUnsignedNoteSplitPCZTs
 
     var createUnsignedNoteSplitPCZTsAccountUUIDForThrowableError: Error?
@@ -5345,6 +5369,30 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
             return try await closure(usk, account)
         } else {
             return migrationRefreshStaleTransfersUskForReturnValue
+        }
+    }
+
+    // MARK: - migrationDebugRescheduleTransfers
+
+    var migrationDebugRescheduleTransfersForThrowableError: Error?
+    var migrationDebugRescheduleTransfersForCallsCount = 0
+    var migrationDebugRescheduleTransfersForCalled: Bool {
+        return migrationDebugRescheduleTransfersForCallsCount > 0
+    }
+    var migrationDebugRescheduleTransfersForReceivedAccount: AccountUUID?
+    var migrationDebugRescheduleTransfersForReturnValue: Int!
+    var migrationDebugRescheduleTransfersForClosure: ((AccountUUID) async throws -> Int)?
+
+    func migrationDebugRescheduleTransfers(for account: AccountUUID) async throws -> Int {
+        if let error = migrationDebugRescheduleTransfersForThrowableError {
+            throw error
+        }
+        migrationDebugRescheduleTransfersForCallsCount += 1
+        migrationDebugRescheduleTransfersForReceivedAccount = account
+        if let closure = migrationDebugRescheduleTransfersForClosure {
+            return try await closure(account)
+        } else {
+            return migrationDebugRescheduleTransfersForReturnValue
         }
     }
 

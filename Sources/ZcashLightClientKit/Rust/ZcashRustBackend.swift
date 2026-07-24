@@ -2007,6 +2007,25 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     }
 
     @DBActor
+    func migrationDebugRescheduleTransfers(for account: AccountUUID) async throws -> Int {
+        let rescheduled = zcashlc_migration_debug_reschedule_transfers(
+            dbData.0,
+            dbData.1,
+            account.id,
+            networkType.networkId
+        )
+
+        // `-1` means only "error" (`0` is the legitimate "no stored migration" answer).
+        guard rescheduled >= 0 else {
+            throw ZcashError.rustMigrationDebugRescheduleTransfers(
+                lastErrorMessage(fallback: "`migrationDebugRescheduleTransfers` failed with unknown error")
+            )
+        }
+
+        return Int(rescheduled)
+    }
+
+    @DBActor
     func migrationCreateUnsignedNoteSplitPczts(
         for schedule: MigrationSchedule,
         for account: AccountUUID

@@ -2,7 +2,7 @@
 //  SDKSynchronizerMigrationTests.swift
 //  OfflineTests
 //
-//  Tests `SDKSynchronizer`'s migration group (R4-B): the 31 `Synchronizer` protocol requirements,
+//  Tests `SDKSynchronizer`'s migration group (R4-B): the 32 `Synchronizer` protocol requirements,
 //  as thin forwards to a seamed `OrchardMigrationHost` -- except the DB-free, account-free Keystone
 //  batch-signing bridge (4 members, #1806), which forwards straight to `initializer.rustBackend`
 //  instead, bypassing the host entirely -- and the two SDK-enforced session-separation behaviors --
@@ -165,6 +165,19 @@ final class SDKSynchronizerMigrationTests: ZcashTestCase {
         let received = welding.migrationRefreshStaleTransfersUskForReceivedArguments
         XCTAssertEqual(received?.account, accountUUID)
         XCTAssertEqual(received?.usk, usk)
+    }
+
+    /// #1806: `debugRescheduleMigrationTransfers` -- DEBUG/QA ONLY -- forwards to the per-account
+    /// actor and returns the engine's rescheduled-transfer count untouched.
+    func testDebugRescheduleMigrationTransfersForwardsToTheAccountsActor() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        welding.migrationDebugRescheduleTransfersForReturnValue = 3
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let rescheduled = try await synchronizer.debugRescheduleMigrationTransfers(accountUUID: accountUUID)
+
+        XCTAssertEqual(rescheduled, 3)
+        XCTAssertEqual(welding.migrationDebugRescheduleTransfersForReceivedAccount, accountUUID)
     }
 
     /// The sequential-runs contract at the API level: `.complete` is per-run, and the authority

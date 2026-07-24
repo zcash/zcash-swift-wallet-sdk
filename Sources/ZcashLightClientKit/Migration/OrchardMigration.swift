@@ -547,6 +547,20 @@ actor OrchardMigration {
         try await welding.migrationRefreshStaleTransfers(usk: usk, for: accountUUID)
     }
 
+    // MARK: - Debug/QA
+
+    /// DEBUG/QA ONLY — rewrites the stored migration schedule's transfer heights (first due in ~2
+    /// blocks, then 4-block strides) and the earliest transfer's anchor boundary so real broadcast
+    /// delivery can be exercised without waiting out ZIP 318's privacy delay. Not for production
+    /// flows.
+    ///
+    /// Returns the number of transfers rescheduled (`0` when nothing is stored). Already-
+    /// broadcast and already-mined transfers, and every preparation (note-split) transaction, are
+    /// left untouched.
+    func debugRescheduleTransfers() async throws -> Int {
+        try await welding.migrationDebugRescheduleTransfers(for: accountUUID)
+    }
+
     // MARK: - External signing (PCZT)
 
     /// Builds the whole previewed migration UNSIGNED — the run is created by this call — and
