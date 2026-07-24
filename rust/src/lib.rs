@@ -95,6 +95,7 @@ mod ffi;
 mod migration;
 mod migration_engine;
 mod migration_finalize;
+mod migration_keystone;
 mod migration_plan_cache;
 mod tor;
 // Voting stays UNGATED: the module compiles as honest-error stubs (15 C symbols preserved —

@@ -41,8 +41,23 @@ zcash_protocol = { version = "0.10", features = ["local-consensus"] }
 zcash_pool_migration_backend = { git = "https://github.com/zcash/librustzcash", rev = "3a10e7fec7afd3a9748cb4fa7f7db853f4537eeb", features = ["wallet"] }
 zcash_script = "0.4"
 zip32 = "0.2"
-pczt = { version = "0.8.0-rc.1", features = ["prover"] }
+pczt = { version = "0.8.0-rc.1", features = ["prover", "orchard", "sapling", "signer"] }
 shardtree = "0.7"
+
+# Keystone hardware-wallet batch signing for the Orchard migration flow.
+#
+# Bypasses the compiled Keystone mobile SDKs (stale — single-PCZT only, no batch API) by
+# depending directly on `keystone-sdk-rust`'s `ur-registry` crate and `ur-rs` from git, mirroring
+# `chainapsis/vizor-wallet`'s verified-working pattern for the same integration (see
+# `rust/src/migration_keystone.rs`'s module doc). The actual batching primitive is
+# `pczt::roles::signer::batch` (the `signer` feature above), not Keystone-specific; these crates
+# only provide the outer UR/QR envelope. `ur-registry`'s Zcash batch-signing types haven't reached
+# a tagged release yet — Android's SDK floats this branch and its lock resolves exactly this rev;
+# we pin it directly instead.
+ur = { git = "https://github.com/KeystoneHQ/ur-rs", tag = "0.3.3" }
+ur-registry = { git = "https://github.com/KeystoneHQ/keystone-sdk-rust", rev = "7c90bf1ae504720c3f4b44ff26f996836d8b1553", package = "ur-registry", default-features = false, features = [
+    "std",
+] }
 
 # EIP-681
 eip681 = "0.1.0"

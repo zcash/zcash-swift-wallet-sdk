@@ -58,7 +58,7 @@ use zcash_client_backend::data_api::{InputSource, WalletRead, WalletWrite};
 use zcash_client_backend::wallet::{LockOwner, OutputRef};
 use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::consensus::{
-    BLOCKS_PER_HOUR, BlockHeight, Network, NetworkUpgrade, Parameters,
+    BLOCKS_PER_HOUR, BlockHeight, Network, NetworkConstants, NetworkUpgrade, Parameters,
 };
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{PoolType, ShieldedPool, TxId};
@@ -1558,7 +1558,10 @@ pub struct FfiUnsignedTransferPczt {
     pub pczt_len: usize,
 }
 
-/// A set of unsigned PCZTs to route to an external signer.
+/// A set of unsigned PCZTs to route to an external signer. Despite the name, this is really a
+/// generic `(id, PCZT bytes)` pair set: [`zcashlc_migration_keystone_apply_batch_signatures`]
+/// also returns its batch-SIGNED PCZTs through this same type, positionally paired back up with
+/// the ids the caller passed in.
 #[repr(C)]
 pub struct FfiUnsignedTransferPczts {
     pub ptr: *mut FfiUnsignedTransferPczt,
@@ -1642,6 +1645,78 @@ pub struct FfiMigrationTransactionStatuses {
     /// order: preparation layers first, then transfers).
     pub ptr: *mut FfiMigrationTransactionStatus,
     pub len: usize,
+}
+
+/// A set of animated multi-part QR frame strings for a Keystone batch-signing request. Element
+/// order is the wire fragment order — display/scan them in that order.
+///
+/// This crate's first string-array FFI output type: kept intentionally minimal (unlike
+/// [`FfiUnsignedTransferPczts`], there is no paired per-element id or byte blob here, just
+/// strings), rather than generalizing [`ffi::BoxedSlice`] (a single binary blob, not an array) or
+/// inventing a shared generic array wrapper for a need that has arisen exactly once so far.
+#[repr(C)]
+pub struct FfiKeystoneQrParts {
+    /// Heap array of `len` owned, NUL-terminated UTF-8 strings.
+    pub ptr: *mut *mut c_char,
+    pub len: usize,
+}
+
+impl FfiKeystoneQrParts {
+    fn from_parts(parts: Vec<String>) -> anyhow::Result<*mut Self> {
+        let items = parts
+            .into_iter()
+            .map(|part| cstring_raw(&part, "keystone QR part"))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let (ptr, len) = ptr_from_vec(items);
+        Ok(Box::into_raw(Box::new(FfiKeystoneQrParts { ptr, len })))
+    }
+}
+
+/// The result of feeding one scanned QR frame to
+/// `zcashlc_migration_keystone_decode_sign_batch_part`, mirroring
+/// [`crate::migration_keystone::DecodePartResult`].
+///
+/// `complete == false` means more frames are needed: `progress` is the 0-100 completion
+/// percentage so far, and `data`/the firmware fields are unset (null / `false` / zeroed).
+/// `complete == true` means `data` holds the serialized `BatchSignResponse` bytes to pass to
+/// `zcashlc_migration_keystone_apply_batch_signatures`, and — when `has_firmware_version` — the
+/// signing device's own reported firmware version is in `firmware_major`/`firmware_minor`/
+/// `firmware_build`.
+#[repr(C)]
+pub struct FfiKeystoneBatchDecodeResult {
+    pub complete: bool,
+    pub progress: u32,
+    /// Heap `data_len`-byte serialized `BatchSignResponse` (null unless `complete`).
+    pub data: *mut u8,
+    pub data_len: usize,
+    pub has_firmware_version: bool,
+    pub firmware_major: u8,
+    pub firmware_minor: u8,
+    pub firmware_build: u8,
+}
+
+impl FfiKeystoneBatchDecodeResult {
+    fn from_parts(result: crate::migration_keystone::DecodePartResult) -> *mut Self {
+        let (data, data_len) = match result.data {
+            Some(bytes) => ptr_from_vec(bytes),
+            None => (ptr::null_mut(), 0),
+        };
+        let (has_firmware_version, firmware_major, firmware_minor, firmware_build) =
+            match result.firmware_version {
+                Some([major, minor, build]) => (true, major, minor, build),
+                None => (false, 0, 0, 0),
+            };
+        Box::into_raw(Box::new(FfiKeystoneBatchDecodeResult {
+            complete: result.complete,
+            progress: result.progress,
+            data,
+            data_len,
+            has_firmware_version,
+            firmware_major,
+            firmware_minor,
+            firmware_build,
+        }))
+    }
 }
 
 /// Build an owned C string from `s`, erroring (rather than panicking across the FFI) if it
@@ -1795,6 +1870,38 @@ pub unsafe extern "C" fn zcashlc_free_migration_transaction_statuses(
     if !ptr.is_null() {
         let boxed = unsafe { Box::from_raw(ptr) };
         free_ptr_from_vec(boxed.ptr, boxed.len);
+        drop(boxed);
+    }
+}
+
+/// Frees a [`FfiKeystoneQrParts`], including every element string.
+///
+/// # Safety
+/// `ptr` must be null or point to a [`FfiKeystoneQrParts`] handed out by this module.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_free_migration_keystone_qr_parts(ptr: *mut FfiKeystoneQrParts) {
+    if !ptr.is_null() {
+        let boxed = unsafe { Box::from_raw(ptr) };
+        free_ptr_from_vec_with(boxed.ptr, boxed.len, |s| {
+            if !s.is_null() {
+                unsafe { zcashlc_string_free(*s) }
+            }
+        });
+        drop(boxed);
+    }
+}
+
+/// Frees a [`FfiKeystoneBatchDecodeResult`], including its data bytes.
+///
+/// # Safety
+/// `ptr` must be null or point to a [`FfiKeystoneBatchDecodeResult`] handed out by this module.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_free_migration_keystone_batch_decode_result(
+    ptr: *mut FfiKeystoneBatchDecodeResult,
+) {
+    if !ptr.is_null() {
+        let boxed = unsafe { Box::from_raw(ptr) };
+        free_ptr_from_vec(boxed.data, boxed.data_len);
         drop(boxed);
     }
 }
@@ -2921,11 +3028,48 @@ pub unsafe extern "C" fn zcashlc_migration_refresh_stale_transfers(
     unwrap_exc_or_null(res)
 }
 
+/// Fetches the account's ZIP 32 seed fingerprint and account index, required to annotate
+/// external-signer (Keystone) migration PCZTs with `spend_zip32_derivation` — see
+/// [`crate::migration_keystone::annotate_spend_zip32_derivation`]'s doc comment for why this is
+/// needed.
+///
+/// Applied as a post-processing step on whatever unsigned PCZT bytes `commit_or_resume` returns
+/// (freshly built, or resumed from an already-committed migration) rather than inside the engine
+/// build call itself: `commit_or_resume` only calls the engine builder on first commit, so
+/// annotating only there would silently skip already-committed migrations (e.g. ones committed
+/// before this annotation existed) on every later re-entry into the Keystone sign screen.
+fn account_zip32_derivation(
+    wallet: &MigrationWallet,
+    account: AccountUuid,
+) -> anyhow::Result<([u8; 32], zip32::AccountId)> {
+    use zcash_client_backend::data_api::Account;
+
+    let account_info = wallet
+        .get_account(account)
+        .map_err(|e| anyhow!("account lookup failed: {}", e))?
+        .ok_or_else(|| anyhow!("Account not found"))?;
+    let derivation = account_info.source().key_derivation().ok_or_else(|| {
+        anyhow!(
+            "Account has no known ZIP 32 seed fingerprint/account index — cannot annotate \
+             migration PCZTs for external-signer batch signing"
+        )
+    })?;
+    Ok((
+        derivation.seed_fingerprint().to_bytes(),
+        derivation.account_index(),
+    ))
+}
+
 /// Builds the whole migration UNSIGNED (external-signer lane): every transaction is persisted
 /// `AwaitingSignature`, and the preparation (note-split) subset is returned for the signing
 /// ceremony. The run is created HERE; the transfer subset of the same build is served by
 /// `zcashlc_migration_create_unsigned_transfer_pczts`. Resumes a stored non-terminal run
 /// (re-serving its still-unsigned preparation transactions); replaces a terminal one.
+///
+/// Every returned PCZT is annotated with the account's ZIP 32 spend derivation (see
+/// [`account_zip32_derivation`]) so an external signer (Keystone) can identify which of its
+/// accounts each spend belongs to — annotation happens here, after `commit_or_resume`, so it
+/// covers both a freshly built and a resumed (already-committed) run alike.
 ///
 /// # Safety
 /// See [`open`]. Free the returned pointer with
@@ -2950,6 +3094,20 @@ pub unsafe extern "C" fn zcashlc_migration_create_unsigned_note_split_pczts(
             .into_iter()
             .filter(|(id, _)| prep_ids.contains(id))
             .collect();
+        let (seed_fingerprint, account_index) = account_zip32_derivation(&ctx.wallet, ctx.account)?;
+        let preps = preps
+            .into_iter()
+            .map(|(id, pczt_bytes)| {
+                let pczt_bytes = crate::migration_keystone::annotate_spend_zip32_derivation(
+                    &pczt_bytes,
+                    seed_fingerprint,
+                    ctx.network.coin_type(),
+                    account_index,
+                )
+                .map_err(|e| anyhow!("Error annotating note-split PCZT derivation: {:?}", e))?;
+                Ok::<_, anyhow::Error>((id, pczt_bytes))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         FfiUnsignedTransferPczts::from_pairs(preps)
     });
     unwrap_exc_or_null(res)
@@ -3018,6 +3176,9 @@ pub unsafe extern "C" fn zcashlc_migration_store_signed_note_split_pczts(
 /// the third (#1806) is re-serve-time-relative display metadata post-commit, with no stable
 /// pre-commit reference surviving here to check it against).
 ///
+/// Every returned PCZT is annotated with the account's ZIP 32 spend derivation — see
+/// [`account_zip32_derivation`] and `zcashlc_migration_create_unsigned_note_split_pczts`'s doc.
+///
 /// # Safety
 /// See [`open`]; array pointers must be valid for reads of `ids_len` elements. Free the returned
 /// pointer with [`zcashlc_free_migration_unsigned_transfer_pczts`].
@@ -3063,6 +3224,20 @@ pub unsafe extern "C" fn zcashlc_migration_create_unsigned_transfer_pczts(
             .into_iter()
             .filter(|(id, _)| transfer_ids.contains(id))
             .collect();
+        let (seed_fingerprint, account_index) = account_zip32_derivation(&ctx.wallet, ctx.account)?;
+        let transfers: Vec<_> = transfers
+            .into_iter()
+            .map(|(id, pczt_bytes)| {
+                let pczt_bytes = crate::migration_keystone::annotate_spend_zip32_derivation(
+                    &pczt_bytes,
+                    seed_fingerprint,
+                    ctx.network.coin_type(),
+                    account_index,
+                )
+                .map_err(|e| anyhow!("Error annotating transfer PCZT derivation: {:?}", e))?;
+                Ok::<_, anyhow::Error>((id, pczt_bytes))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         FfiUnsignedTransferPczts::from_pairs(transfers)
     });
     unwrap_exc_or_null(res)
@@ -3131,6 +3306,136 @@ unsafe fn decode_signed_pairs(
         out.push((id, bytes));
     }
     Ok(out)
+}
+
+// ----- Keystone batch-signing UR bridge (crate::migration_keystone) -----
+//
+// Pure PCZT/UR operations over caller-held bytes — no wallet database, no migration engine.
+
+/// Decode the platform's parallel `(pczt, pczt_len)` arrays into owned PCZT byte vectors.
+///
+/// # Safety
+/// `pczts`/`pczt_lens` must be valid for reads of `len` elements; every `pczts[i]` must be valid
+/// for `pczt_lens[i]` bytes.
+unsafe fn decode_pczt_list(
+    pczts: *const *const u8,
+    pczt_lens: *const usize,
+    len: usize,
+) -> anyhow::Result<Vec<Vec<u8>>> {
+    let pczt_ptrs = unsafe { slice_or_empty(pczts, len) };
+    let lens = unsafe { slice_or_empty(pczt_lens, len) };
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        if pczt_ptrs[i].is_null() {
+            return Err(anyhow!("pczt at index {i} is null"));
+        }
+        out.push(unsafe { slice::from_raw_parts(pczt_ptrs[i], lens[i]) }.to_vec());
+    }
+    Ok(out)
+}
+
+/// Builds the animated multi-part QR frames for a Keystone batch-signing request covering every
+/// PCZT in `pczts`, in the given order (preparation PCZTs first, then transfer PCZTs — see
+/// [`crate::migration_keystone`]'s module doc). `ids` is deliberately NOT a parameter: the build
+/// step has no use for them — only [`zcashlc_migration_keystone_apply_batch_signatures`] echoes
+/// ids back out, since that is what the caller matches signed PCZTs to stored transactions by.
+///
+/// # Safety
+/// `request_id` must be valid for reads of `request_id_len` bytes. `pczts`/`pczt_lens` must be
+/// valid for reads of `pczts_len` elements, and each `pczts[i]` valid for `pczt_lens[i]` bytes.
+/// Free the returned pointer with [`zcashlc_free_migration_keystone_qr_parts`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_migration_keystone_build_sign_batch_qr_parts(
+    request_id: *const u8,
+    request_id_len: usize,
+    pczts: *const *const u8,
+    pczt_lens: *const usize,
+    pczts_len: usize,
+    max_fragment_len: usize,
+) -> *mut FfiKeystoneQrParts {
+    let res = catch_panic(|| {
+        let request_id = unsafe { slice_or_empty(request_id, request_id_len) }.to_vec();
+        let pczts = unsafe { decode_pczt_list(pczts, pczt_lens, pczts_len)? };
+        let parts = crate::migration_keystone::build_sign_batch_qr_parts(
+            request_id,
+            &pczts,
+            max_fragment_len,
+        )
+        .map_err(|e| anyhow!("Error building Keystone sign-batch QR parts: {e}"))?;
+        FfiKeystoneQrParts::from_parts(parts)
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Discards any in-flight multi-part Keystone sign-batch-response scan session. Callers should
+/// invoke this on scan-screen entry so a new attempt always starts from a clean slate regardless
+/// of how a previous attempt ended (cancel, back button, mid-stream error). Void and infallible.
+#[unsafe(no_mangle)]
+pub extern "C" fn zcashlc_migration_keystone_reset_sign_batch_decoder() {
+    crate::migration_keystone::reset_sign_batch_decoder();
+}
+
+/// Feeds one scanned QR frame into the active (or a freshly started) Keystone sign-batch-response
+/// decode session, pinned to the `"zcash-batch-sig-result"` UR type. `expected_request_id` must
+/// match the decoded response's own request id once complete, or this errors (a scan of an
+/// unrelated/stale response) instead of silently accepting it. See
+/// [`crate::migration_keystone::decode_sign_batch_part`].
+///
+/// # Safety
+/// `part` must be a valid, NUL-terminated C string. `expected_request_id` must be valid for reads
+/// of `expected_request_id_len` bytes. Free the returned pointer with
+/// [`zcashlc_free_migration_keystone_batch_decode_result`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_migration_keystone_decode_sign_batch_part(
+    part: *const c_char,
+    expected_request_id: *const u8,
+    expected_request_id_len: usize,
+) -> *mut FfiKeystoneBatchDecodeResult {
+    let res = catch_panic(|| {
+        if part.is_null() {
+            return Err(anyhow!("part is null"));
+        }
+        let part = unsafe { CStr::from_ptr(part) }
+            .to_str()
+            .map_err(|e| anyhow!("part is not valid UTF-8: {e}"))?;
+        let expected_request_id =
+            unsafe { slice_or_empty(expected_request_id, expected_request_id_len) };
+        let result = crate::migration_keystone::decode_sign_batch_part(part, expected_request_id)
+            .map_err(|e| anyhow!("Error decoding Keystone sign-batch QR part: {e}"))?;
+        Ok(FfiKeystoneBatchDecodeResult::from_parts(result))
+    });
+    unwrap_exc_or_null(res)
+}
+
+/// Applies the ceremony's Keystone batch signatures to the caller-held unsigned PCZTs,
+/// positionally (see [`crate::migration_keystone::apply_batch_signatures`]) — `ids`/`pczts` must
+/// be the SAME PCZTs, in the SAME order, passed to
+/// [`zcashlc_migration_keystone_build_sign_batch_qr_parts`]. `ids` pass through positionally onto
+/// the returned signed PCZTs, reusing [`FfiUnsignedTransferPczts`] as a generic `(id, PCZT
+/// bytes)` pair set (see its doc) and [`decode_signed_pairs`] to decode the parallel input
+/// arrays.
+///
+/// # Safety
+/// See [`decode_signed_pairs`]. `response` must be valid for reads of `response_len` bytes. Free
+/// the returned pointer with [`zcashlc_free_migration_unsigned_transfer_pczts`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_migration_keystone_apply_batch_signatures(
+    ids: *const *const c_char,
+    ids_len: usize,
+    pczts: *const *const u8,
+    pczt_lens: *const usize,
+    response: *const u8,
+    response_len: usize,
+) -> *mut FfiUnsignedTransferPczts {
+    let res = catch_panic(|| {
+        let unsigned = unsafe { decode_signed_pairs(ids, ids_len, pczts, pczt_lens)? };
+        let (ids, pczts): (Vec<MigrationTxId>, Vec<Vec<u8>>) = unsigned.into_iter().unzip();
+        let response = unsafe { slice_or_empty(response, response_len) };
+        let signed = crate::migration_keystone::apply_batch_signatures(&pczts, response)
+            .map_err(|e| anyhow!("Error applying Keystone batch signatures: {e}"))?;
+        FfiUnsignedTransferPczts::from_pairs(ids.into_iter().zip(signed).collect())
+    });
+    unwrap_exc_or_null(res)
 }
 
 /// The Ironwood (NU6.3) activation height for a standard network, or `-1` when unset/unknown (and
