@@ -2,7 +2,7 @@
 //  SlipstreamSynchronizerMigrationTests.swift
 //  OfflineTests
 //
-//  Tests `SlipstreamSynchronizer`'s migration group (R4-C): the same 26 `Synchronizer` protocol
+//  Tests `SlipstreamSynchronizer`'s migration group (R4-C): the same 27 `Synchronizer` protocol
 //  requirements `SDKSynchronizer` implements (see `SDKSynchronizerMigrationTests`), as thin forwards
 //  to a seamed `OrchardMigrationHost`, plus the two SDK-enforced session-separation behaviors -- the
 //  `start()` privacy gate and the `submitNoteSplit`/`executeNextPendingMigrationTransfer` broadcast
@@ -67,6 +67,29 @@ final class SlipstreamSynchronizerMigrationTests: ZcashTestCase {
 
         XCTAssertEqual(state, .notStarted)
         XCTAssertEqual(welding.migrationStateForReceivedAccount, accountUUID)
+    }
+
+    func testMigrationTransactionStatusesForwardsToTheAccountsActor() async throws {
+        let welding = ZcashRustBackendWeldingMock()
+        let expected = [
+            MigrationTransactionStatus(
+                id: 3,
+                kind: MigrationTransactionStatus.Kind.transfer(crossing: 0),
+                state: MigrationTransactionStatus.State.signed,
+                scheduledHeight: 1_000_100,
+                expiryHeight: 1_069_220,
+                isReady: false,
+                nextAction: nil,
+                blockedOn: MigrationTransactionStatus.Blocker.schedule
+            )
+        ]
+        welding.migrationTransactionStatusesAccountUUIDReturnValue = expected
+        let synchronizer = try makeSynchronizer(migrationHost: makeHost(welding: welding))
+
+        let statuses = try await synchronizer.migrationTransactionStatuses(accountUUID: accountUUID)
+
+        XCTAssertEqual(statuses, expected)
+        XCTAssertEqual(welding.migrationTransactionStatusesAccountUUIDReceivedAccountUUID, accountUUID)
     }
 
     func testPrepareNoteSplitForwardsToTheAccountsActor() async throws {
