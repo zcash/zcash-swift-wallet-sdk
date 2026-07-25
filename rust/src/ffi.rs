@@ -360,7 +360,6 @@ impl Balance {
             locked_value: 0,
         }
     }
-
 }
 
 /// Balance information for a single account.
@@ -550,7 +549,9 @@ impl WalletSummary {
         if self.account_balances.is_null() {
             &mut []
         } else {
-            unsafe { std::slice::from_raw_parts_mut(self.account_balances, self.account_balances_len) }
+            unsafe {
+                std::slice::from_raw_parts_mut(self.account_balances, self.account_balances_len)
+            }
         }
     }
 

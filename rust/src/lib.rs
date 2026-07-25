@@ -194,10 +194,8 @@ unsafe fn wallet_db(
         .map_err(|e| anyhow!("Error setting wallet database busy_timeout: {}", e))?;
     rusqlite::vtab::array::load_module(&conn)
         .map_err(|e| anyhow!("Error loading wallet database array module: {}", e))?;
-    Ok(
-        WalletDb::from_connection(conn, network, SystemClock, OsRng)
-            .with_anchor_retention_interval(anchor_retention_interval(network)),
-    )
+    Ok(WalletDb::from_connection(conn, network, SystemClock, OsRng)
+        .with_anchor_retention_interval(anchor_retention_interval(network)))
 }
 
 /// Helper method for construcing a FsBlockDb value from path data provided over the FFI.
@@ -5122,10 +5120,22 @@ pub unsafe extern "C" fn zcashlc_slipstream_start(
         // physical-memory hint (0 = unknown → defaults). Explicit field overrides win.
         .scaled_for_device_memory(h.total_memory_bytes);
 
-        // [B6] Anchor-retention floor — see `slipstream_anchor_retention_floor`:
+        // [B6] Anchor-retention policy — see `slipstream_anchor_retention_floor`:
         // without it the engine retains no anchor checkpoints and every scheduled
         // migration transfer's drawn boundary is pruned before proving time.
-        cfg.anchor_retention_height = slipstream_anchor_retention_floor(&h.network);
+        //
+        // The grid is the one this crate configures on the wallet itself (see
+        // `anchor_retention_interval`), NOT a value chosen here. The engine runs its
+        // own tree-update path rather than calling `ll::wallet::put_blocks`, so it
+        // does not see the wallet's setting: passing the same interval is what keeps
+        // the two from retaining different grids, which on a test network would
+        // otherwise leave every transfer anchored to a boundary the engine drops.
+        cfg.anchor_retention = slipstream_anchor_retention_floor(&h.network).map(|floor| {
+            slipstream_core::AnchorRetention::new(
+                BlockHeight::from(floor),
+                anchor_retention_interval(NetworkParams::Standard(h.network)),
+            )
+        });
 
         // v0.3 : GPU Orchard subtree offload. Compiled only with `--features gpu`;
         // opt in at runtime via the ZCASH_GPU_SUBTREE env var (the dev A/B for the device

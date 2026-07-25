@@ -113,12 +113,13 @@ incrementalmerkletree = { version = "0.8", default-features = false }
 # Slipstream engine — the alternative sync engine the SlipstreamSynchronizer
 # drives. Consumed as a remote crate from zodl-inc/slipstream, the engine's
 # home since the personal-fork era (the old PR #6 adaptations are merged
-# there). Tracks the anchor-retention branch (upstream-aligned 144-block
-# anchor retention, typed multi-account sync_once, EngineConfig-owned
-# endpoint probe-then-commit, report.rs presentation split); Cargo.lock pins
-# the exact commit. Return to a release tag once one is cut with these
-# aboard. The engine rides the same librustzcash rev as this package, so the
-# graph stays a single family instance.
+# there). Return to a release tag once one is cut with these aboard.
+#
+# The rev rides [patch.crates-io] below, pinned to a COMMIT HASH rather than a
+# branch: a branch pin silently follows a force-push, so a build can pick up
+# code nobody reviewed, whereas a stale hash fails loudly. The engine rides the
+# same librustzcash rev as this package, so the graph stays a single family
+# instance.
 slipstream-core = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
@@ -152,7 +153,7 @@ lto = true
 # network in `rust/src/lib.rs`. Bump it deliberately (build + OfflineTests
 # green), and delete the whole block at the 0.24-era crates.io release.
 [patch.crates-io]
-slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "b9811a12020f2547fbedf1cf57bf3c25e8c89705" }
+slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "f86eea53d29b94b568e44de0bf3411540a1ae552" }
 zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting.git", rev = "e5d885c2128f59ba39f44631dee537a0ade2f3fd" }
 
 # Pin the whole librustzcash stack to a single git rev, pending a crates.io release.
@@ -166,7 +167,6 @@ zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting.git", rev = "e5
 # librustzcash itself patches orchard to the ZIP 374 deferred-anchor-builder
 # rev below (unreleased); [patch] does not propagate to consumers, so this workspace
 # declares the identical rev. Drop when orchard releases it.
-orchard = { git = "https://github.com/zcash/orchard.git", rev = "3bd2b736d1273226595773265313fc3f3428af16" }
 equihash = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
 f4jumble = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
 pczt = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
