@@ -45,6 +45,13 @@ jobs:
         path: BuildSupport/products/libzcashlc.xcframework
         key: ffi-xcframework-macos-only-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
 
+    - name: Authorize cargo against the private slipstream repository
+      if: steps.cache-ffi.outputs.cache-hit != 'true'
+      uses: ./.github/actions/authorize-slipstream
+      with:
+        app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
+        app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
+
     # Only set up Rust if we need to build FFI
     - name: Setup Rust
       if: steps.cache-ffi.outputs.cache-hit != 'true'
@@ -53,10 +60,30 @@ jobs:
         toolchain: stable
         targets: aarch64-apple-darwin, x86_64-apple-darwin
 
-    # Cache Cargo dependencies (only if building FFI)
     - name: Cache Cargo
       if: steps.cache-ffi.outputs.cache-hit != 'true'
-      uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+      uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+      with:
+        # Deliberately enumerated rather than caching `~/.cargo` wholesale (which is what
+        # Swatinem/rust-cache did): that includes `~/.cargo/git`, where cargo keeps its clone of
+        # the PRIVATE zodl-inc/slipstream repo. This repository is public, and GitHub lets
+        # workflow runs from forked pull requests restore caches created on the base branch — a
+        # cached clone would hand fork PRs the private source without their ever holding the App
+        # credential. Re-cloning one small repo per run is the cost of keeping it out.
+        #
+        # `registry/` is crates.io content and safe to cache. `target/` still holds
+        # slipstream-core's compiled rlib/rmeta, which is a far smaller disclosure than the source
+        # tree and too expensive to rebuild every run; dropping it too would require solving the
+        # public-repo/private-dependency problem properly instead.
+        path: |
+          target
+          ~/.cargo/bin
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/registry/src
+        key: ${{ runner.os }}-cargo-v1-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-v1-
 
     # Build FFI for macOS only (sufficient for running tests)
     - name: Build FFI for macOS

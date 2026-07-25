@@ -1,0 +1,57 @@
+name: "Authorize cargo against the private slipstream repository"
+description: >-
+  Mints a short-lived read token for zodl-inc/slipstream and points cargo's git fetches at it.
+  `slipstream-core` is a git dependency on that private repo, and cargo fetches the source while
+  resolving the dependency graph — before feature selection — so every job that runs cargo needs
+  read access even though the `slipstream` feature is off by default. Without it cargo reports
+  "revision ... not found / failed to authenticate".
+
+  A no-op when the inputs are empty, which is what happens on pull requests from forks: secrets
+  are unavailable there by design, so those runs still cannot build the Rust library. Fixing that
+  would mean making dependency resolution not require the private repo, which no credential can do.
+
+inputs:
+  app-id:
+    description: >-
+      App ID of the GitHub App holding Contents:Read on zodl-inc/slipstream. Leave empty to skip
+      the credential setup entirely.
+    required: false
+    default: ""
+  app-private-key:
+    description: "PEM-encoded private key for the App identified by app-id."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Mint a read token for the private slipstream repository
+      id: token
+      if: inputs.app-id != '' && inputs.app-private-key != ''
+      uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.app-private-key }}
+        # The App is installed on zodl-inc, not on this repository's owner, so the installation
+        # to mint against has to be named explicitly.
+        owner: zodl-inc
+        repositories: slipstream
+        # Narrow the minted token to exactly what cargo needs, rather than inheriting whatever
+        # the App's installation happens to hold. Fetching a git dependency is a read of repository
+        # contents and nothing more.
+        permission-contents: read
+
+    - name: Point cargo's git fetches at the token
+      if: steps.token.outputs.token != ''
+      shell: bash
+      env:
+        SLIPSTREAM_TOKEN: ${{ steps.token.outputs.token }}
+      run: |
+        # The rewrite is scoped to the zodl-inc org: the token is never offered to github.com
+        # generally, so the other git dependencies (librustzcash and friends) keep fetching
+        # anonymously. libgit2, cargo's default git transport, ignores `insteadOf` rewrites
+        # altogether, hence handing the fetch to the git CLI.
+        git config --global \
+          url."https://x-access-token:${SLIPSTREAM_TOKEN}@github.com/zodl-inc/".insteadOf \
+          "https://github.com/zodl-inc/"
+        echo "CARGO_NET_GIT_FETCH_WITH_CLI=true" >> "$GITHUB_ENV"
