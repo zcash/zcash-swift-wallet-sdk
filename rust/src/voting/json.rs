@@ -52,7 +52,6 @@ impl From<voting::NoteInfo> for JsonNoteInfo {
 }
 
 /// JSON-serializable VotingPczt.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JsonVotingPczt {
     pub pczt_bytes: Vec<u8>,
@@ -135,7 +134,6 @@ impl From<JsonWitnessData> for voting::WitnessData {
 }
 
 /// JSON-serializable DelegationProofResult.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JsonDelegationProofResult {
     pub proof: Vec<u8>,
@@ -181,7 +179,6 @@ impl From<voting::DelegationPirPrecomputeResult> for JsonDelegationPirPrecompute
 ///
 /// Omits the spend-auth randomizer `alpha`; the submission already carries
 /// `spend_auth_sig`, so callers do not need the signing secret after signing.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JsonDelegationSubmission {
     pub rk: Vec<u8>,
