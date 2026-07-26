@@ -77,7 +77,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Tor
-fs-mistrust = "0.12"
+fs-mistrust = "0.14"
 tor-rtcompat = "0.35"
 rust_decimal = { version = "1", default-features = false, features = ["c-repr"] }
 # - The "static" feature is required for the "compression" default feature of arti-client.
