@@ -34,7 +34,7 @@ use zcash_client_sqlite::util::SystemClock;
 use zcash_keys::keys::UnifiedSpendingKey;
 use zcash_pool_migration::build::sign_pczt;
 use zcash_pool_migration::engine::{
-    MigrationBackend, MigrationCrypto, MigrationState, MigrationTxId, MigrationTxState,
+    MigrationBackend, MigrationCrypto, MigrationState, MigrationTransferId, MigrationTxState,
     PoolMigrationRead, PoolMigrationWrite,
 };
 use zcash_pool_migration::scheduling::SchedulingParams;
@@ -212,7 +212,7 @@ impl PoolMigrationWrite for Backend<'_> {
 
     fn update_transaction(
         &mut self,
-        id: MigrationTxId,
+        id: MigrationTransferId,
         state: MigrationTxState,
     ) -> Result<(), Self::Error> {
         self.store

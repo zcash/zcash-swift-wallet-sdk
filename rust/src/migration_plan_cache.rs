@@ -13,7 +13,7 @@
 //! echoing schedule values back for comparison against a byte-for-byte reproduction of the
 //! preview DTO, plan details now never cross the FFI boundary inward at all.
 //!
-//! This is deliberately NOT persisted: the engine's `MigrationPlan` (and its `NoteSplitPlan`/
+//! This is deliberately NOT persisted: the engine's `MigrationPlan` (and its `DenominationPlan`/
 //! `PreparationPlan` fields) has no `serde` support and no public constructor — the only way to
 //! obtain one is calling `plan_migration()` itself — so it cannot round-trip through our own
 //! storage. It lives in a process-lifetime static instead, which matches the app's flow: the

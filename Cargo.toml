@@ -21,7 +21,7 @@ ff = "0.13"
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.10", default-features = false }
 zcash_address = { version = "0.13" }
-zcash_client_backend = { version = "0.24.0-rc.1", features = [
+zcash_client_backend = { version = "0.24.0-rc.3", features = [
     "lightwalletd-tonic-tls-webpki-roots",
     "orchard",
     "pczt",
@@ -29,18 +29,16 @@ zcash_client_backend = { version = "0.24.0-rc.1", features = [
     "transparent-inputs",
     "unstable",
 ] }
-zcash_client_sqlite = { version = "0.22.0-rc.1", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.22.0-rc.3", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.30"
 zcash_proofs = "0.30"
 zcash_protocol = { version = "0.10", features = ["local-consensus"] }
-# The pool-migration engine, renamed from `zcash_pool_migration_backend` and now an
-# alpha release on crates.io; it rides the same [patch.crates-io] rev as the rest of
-# the family below (its SQLite store lives in `zcash_client_sqlite::pool_migration`).
-zcash_pool_migration = { version = "0.1.0-alpha.1", features = ["wallet"] }
+# The pool-migration engine (its SQLite store lives in `zcash_client_sqlite::pool_migration`).
+zcash_pool_migration = { version = "0.1.0-rc.2", features = ["wallet"] }
 zcash_script = "0.4"
 zip32 = "0.2"
-pczt = { version = "0.8", features = ["prover", "orchard", "sapling", "signer"] }
+pczt = { version = "0.9", features = ["prover", "orchard", "sapling", "signer"] }
 shardtree = "0.7"
 
 # Keystone hardware-wallet batch signing for the Orchard migration flow.
@@ -106,8 +104,8 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 xz2 = { version = "0.1", features = ["static"] }
 
 # Voting
-zcash_voting = "1"
-zcash_keys = { version = "0.15.0", features = ["orchard"] }
+zcash_voting = "2.0.0-rc.1"
+zcash_keys = { version = "0.16.0", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
 
 [dev-dependencies]
@@ -126,39 +124,12 @@ crate-type = ["staticlib"]
 [profile.release]
 lto = true
 
-# The Ironwood-era librustzcash family is not on crates.io yet; unreleased
-# sources ride [patch.crates-io] against the canonical repo — never direct
-# git+branch dependencies. The rev is a commit hash on
-# zcash/librustzcash's `feature/configurable-anchor-bucket-interval`, which is
-# what supplies the configurable anchor retention interval this SDK selects per
-# network in `rust/src/lib.rs`. Bump it deliberately (build + OfflineTests
-# green), and delete the whole block at the 0.24-era crates.io release.
 [patch.crates-io]
-zcash_voting = { git = "https://github.com/zodl-inc/zcash_voting.git", rev = "e5d885c2128f59ba39f44631dee537a0ade2f3fd" }
-
-# Pin the whole librustzcash stack to a single git rev, pending a crates.io release.
-# zcash_voting no longer hard-pins librustzcash (it declares crates.io versions and
-# patches from its own root), so this workspace's patch governs the rev for the entire
-# graph and everything resolves to one copy. Bump this rev in one place to advance the
-# stack. This rev carries the zcash_primitives 0.30 / zcash_transparent 0.10 releases,
-# and the zcash_voting pin above is on the matching 0.30 generation, so the patch
-# reaches it too and the graph stays single-copy. Keep the two in step: a zcash_voting
-# rev on the 0.29 generation cannot accept this patch and the graph splits.
-# librustzcash itself patches orchard to the ZIP 374 deferred-anchor-builder
-# rev below (unreleased); [patch] does not propagate to consumers, so this workspace
-# declares the identical rev. Drop when orchard releases it.
-orchard = { git = "https://github.com/zcash/orchard.git", rev = "3bd2b736d1273226595773265313fc3f3428af16" }
-equihash = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-f4jumble = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-pczt = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zcash_encoding = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
-zip321 = { git = "https://github.com/zcash/librustzcash", rev = "cd2b9a6a27dd784df3d245cd047bfeade21d9430" }
+# `zcash_voting` has no crates.io release, so it rides a pinned rev of its canonical repo.
+# Keep this rev in step with the librustzcash generation the versions above declare: a
+# voting rev built against an older generation cannot resolve against them.
+#
+# The librustzcash family that used to be patched here is published now (the
+# `zcash_client_backend 0.24` / `zcash_client_sqlite 0.22` / `zcash_pool_migration 0.1`
+# release candidates above), so its patch stanzas are gone.
+zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "e53e74487d31ad0f5713580fb2f0222b53ae9db8" }

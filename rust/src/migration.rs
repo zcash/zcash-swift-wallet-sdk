@@ -72,8 +72,8 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{PoolType, ShieldedPool, TxId};
 
 use zcash_pool_migration::engine::{
-    self, MigrationPlan, MigrationState, MigrationStatus, MigrationTransaction, MigrationTxId,
-    MigrationTxKind, MigrationTxState, PoolMigrationRead, PoolMigrationWrite,
+    self, MigrationPlan, MigrationState, MigrationStatus, MigrationTransaction,
+    MigrationTransferId, MigrationTxKind, MigrationTxState, PoolMigrationRead, PoolMigrationWrite,
 };
 use zcash_pool_migration::wallet::WalletMigrationProver;
 
@@ -210,7 +210,7 @@ impl CallCtx {
 fn insert_invalid_mark(
     wallet: &mut MigrationWallet,
     account: &[u8; 16],
-    id: MigrationTxId,
+    id: MigrationTransferId,
     reason: &str,
 ) -> anyhow::Result<()> {
     wallet.transactionally_with_extension(|_wdb, ext| {
@@ -277,7 +277,7 @@ fn reconcile_mined(ctx: &mut CallCtx) -> anyhow::Result<Option<MigrationState>> 
     if state.is_terminal() {
         return Ok(Some(state));
     }
-    let broadcast: Vec<(MigrationTxId, [u8; 32])> = state
+    let broadcast: Vec<(MigrationTransferId, [u8; 32])> = state
         .transactions()
         .iter()
         .filter_map(|t| match t.state() {
@@ -354,56 +354,37 @@ fn compute_plan(ctx: &mut CallCtx) -> anyhow::Result<Option<(MigrationPlan, Bloc
     }
 }
 
-/// What a transfer spending `funding_note` CROSSES into Ironwood: the note less the fee buffer
-/// that funds the transfer's own fee (the transfer has no change output, so the buffer is consumed
-/// exactly). This is the round `{1,2,5}×10ⁿ` denomination the user consented to and the amount
-/// their Ironwood balance will grow by — the funding note itself is a spend-side value that
-/// overstates it by one transfer fee.
-///
-/// The engine builds every funding note as `crossing + buffer`, so the subtraction cannot
-/// underflow; a stored plan that violated that invariant saturates to zero rather than panicking
-/// across the FFI, and the zero is self-evidently wrong in the platform's display.
-// TODO: [#1806] Replace with the engine's own `transfer_crossing_value` /
-// `crossing_values` accessors (librustzcash #2767) when the pin moves to the next rc.
-fn crossing_amount(funding_note: Zatoshis, note_fee_buffer: Zatoshis) -> Zatoshis {
-    (funding_note - note_fee_buffer).unwrap_or(Zatoshis::ZERO)
-}
-
 /// The row set the platform sees for a plan's transfer schedule: `(engine tx id, crossing amount,
 /// broadcast height, expiry height)`, sorted chronologically by broadcast height.
 ///
-/// - Amounts are what each transfer CROSSES (see [`crossing_amount`]), not the funding note it
-///   spends: serving the note overstates every row by one transfer fee and shows a value that is
-///   not a round denomination the user was asked to approve.
-/// - Rows still pair with `funding_notes()` (the post-reconciliation values), NOT the denomination
-///   plan's raw `crossing_values()` — the two differ whenever preparation fees drop the smallest
-///   denominations, and mispairing silently attaches wrong amounts to schedule heights. Taking the
-///   buffer off each paired row preserves that pairing.
+/// - Amounts are what each transfer CROSSES, straight from the engine's `crossing_values()`:
+///   index-aligned with `funding_notes()` and with `schedule()`, and already net of the fee buffer
+///   that pays each transfer's own fee. Serving the funding note instead would overstate every row
+///   by one transfer fee and show a value that is not a round denomination the user approved.
 /// - The engine numbers every preparation transaction first, then transfers in `schedule()`
 ///   order, so transfer `i`'s real committed id is `prep_tx_count + i`.
 /// - The sort makes the platform's row order chronological: ZIP 318 SHUFFLE deliberately makes
 ///   funding-note order differ from broadcast order.
 fn schedule_rows(
-    funding_notes: &[Zatoshis],
-    note_fee_buffer: Zatoshis,
+    crossing_values: &[Zatoshis],
     schedule: &[zcash_pool_migration::scheduling::Schedule],
     prep_tx_count: u32,
-) -> anyhow::Result<Vec<(MigrationTxId, Zatoshis, BlockHeight, BlockHeight)>> {
-    if funding_notes.len() != schedule.len() {
+) -> anyhow::Result<Vec<(MigrationTransferId, Zatoshis, BlockHeight, BlockHeight)>> {
+    if crossing_values.len() != schedule.len() {
         return Err(anyhow!(
-            "migration plan invariant violated: {} funding notes but {} schedule entries",
-            funding_notes.len(),
+            "migration plan invariant violated: {} crossing values but {} schedule entries",
+            crossing_values.len(),
             schedule.len()
         ));
     }
-    let mut rows: Vec<_> = funding_notes
+    let mut rows: Vec<_> = crossing_values
         .iter()
         .zip(schedule.iter())
         .enumerate()
-        .map(|(i, (funding_note, entry))| {
+        .map(|(i, (crossing, entry))| {
             (
-                MigrationTxId::new(prep_tx_count + i as u32),
-                crossing_amount(*funding_note, note_fee_buffer),
+                MigrationTransferId::new(prep_tx_count + i as u32),
+                *crossing,
                 entry.broadcast_height(),
                 entry.expiry_height(),
             )
@@ -448,12 +429,7 @@ fn encode_schedule_from_plan(
     now_reference: BlockHeight,
     plan_handle: migration_plan_cache::PlanHandle,
 ) -> anyhow::Result<*mut FfiMigrationSchedule> {
-    let rows = schedule_rows(
-        &plan.funding_notes(),
-        plan.note_split().note_fee_buffer(),
-        plan.schedule(),
-        prep_tx_count(plan),
-    )?;
+    let rows = schedule_rows(plan.crossing_values(), plan.schedule(), prep_tx_count(plan))?;
     let transfers = rows
         .into_iter()
         .map(|(id, amount, broadcast, expiry)| {
@@ -579,7 +555,7 @@ fn commit_or_resume(
     usk: Option<zcash_keys::keys::UnifiedSpendingKey>,
     unsigned_out: bool,
     plan_handle: migration_plan_cache::PlanHandle,
-) -> anyhow::Result<(MigrationState, Vec<(MigrationTxId, Vec<u8>)>)> {
+) -> anyhow::Result<(MigrationState, Vec<(MigrationTransferId, Vec<u8>)>)> {
     {
         let backend = Backend::new(&ctx.wallet, ctx.account, None, &mut ctx.store_conn)?;
         if let Some(state) = backend.get_migration()? {
@@ -648,7 +624,7 @@ fn commit_or_resume(
             .collect();
         state = MigrationState::from_parts(
             state.status(),
-            state.note_split().clone(),
+            state.denominations().clone(),
             state.preparation().clone(),
             transactions,
             // Rebuilding transfers does not re-plan the run, so it stays on the grid it was
@@ -701,7 +677,7 @@ fn map_rebuild_err(e: engine::RebuildError<anyhow::Error>) -> anyhow::Error {
 fn prove_if_needed(
     ctx: &mut CallCtx,
     state: &mut MigrationState,
-    id: MigrationTxId,
+    id: MigrationTransferId,
 ) -> anyhow::Result<Option<(Vec<u8>, [u8; 32])>> {
     let tx = state
         .transactions()
@@ -787,9 +763,9 @@ fn drive_and_serve_next_due(
     tip: BlockHeight,
     mut prove: impl FnMut(
         &mut MigrationState,
-        MigrationTxId,
+        MigrationTransferId,
     ) -> anyhow::Result<Option<(Vec<u8>, [u8; 32])>>,
-) -> anyhow::Result<Option<(MigrationTxId, [u8; 32], Vec<u8>)>> {
+) -> anyhow::Result<Option<(MigrationTransferId, [u8; 32], Vec<u8>)>> {
     while state.next_broadcastable(tip).is_none() {
         let Some(provable) = state.next_provable(tip) else {
             return Ok(None);
@@ -817,7 +793,7 @@ fn drive_and_serve_next_due(
 /// transiently unwitnessable anchor (a restored wallet mid-sync) defers the actual delivery, not
 /// the report — the due work exists either way, and the delivery call stays the one place that
 /// consults the prover.
-fn due_assuming_proving(state: &MigrationState, tip: BlockHeight) -> Option<MigrationTxId> {
+fn due_assuming_proving(state: &MigrationState, tip: BlockHeight) -> Option<MigrationTransferId> {
     if let Some(id) = state.next_broadcastable(tip) {
         return Some(id);
     }
@@ -917,20 +893,11 @@ fn derive_state(
     }
 }
 
-/// The amount a stored transfer CROSSES: its funding note (`Transfer { crossing }` indexes into
-/// the run's funding notes) less the fee buffer that pays the transfer's own fee — see
-/// [`crossing_amount`]. `None` for a preparation transaction, which crosses nothing.
+/// The amount a stored transfer CROSSES into Ironwood, or `None` for a preparation transaction
+/// (which crosses nothing). Thin wrapper over the engine's own accessor, which is net of the fee
+/// buffer that pays the transfer's own fee — never the larger funding note it spends.
 fn transfer_amount(state: &MigrationState, tx: &MigrationTransaction) -> Option<Zatoshis> {
-    match tx.kind() {
-        MigrationTxKind::Transfer { crossing } => {
-            let buffer = state.note_split().note_fee_buffer();
-            state
-                .funding_notes()
-                .get(crossing)
-                .map(|funding_note| crossing_amount(*funding_note, buffer))
-        }
-        _ => None,
-    }
+    state.transfer_crossing_value(tx)
 }
 
 // ============================================================================================
@@ -1034,7 +1001,7 @@ pub struct FfiPreparedTransfer {
 
 impl FfiPreparedTransfer {
     fn from_parts(
-        id: MigrationTxId,
+        id: MigrationTransferId,
         txid: [u8; 32],
         pczt_bytes: Vec<u8>,
     ) -> anyhow::Result<*mut Self> {
@@ -1077,7 +1044,7 @@ pub struct FfiTransferProposal {
 
 impl FfiTransferProposal {
     fn boxed(
-        id: MigrationTxId,
+        id: MigrationTransferId,
         amount: Zatoshis,
         now_reference: BlockHeight,
         next_executable_after: BlockHeight,
@@ -1162,7 +1129,7 @@ pub struct FfiUnsignedTransferPczts {
 }
 
 impl FfiUnsignedTransferPczts {
-    fn from_pairs(pairs: Vec<(MigrationTxId, Vec<u8>)>) -> anyhow::Result<*mut Self> {
+    fn from_pairs(pairs: Vec<(MigrationTransferId, Vec<u8>)>) -> anyhow::Result<*mut Self> {
         let items = pairs
             .into_iter()
             .map(|(id, bytes)| {
@@ -1629,7 +1596,7 @@ pub unsafe extern "C" fn zcashlc_migration_prepare_note_split(
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
         let (values, fee, proposal_handle) = match plan_and_cache(&mut ctx, false)? {
             Some((plan, _, handle)) => {
-                let split = plan.note_split();
+                let split = plan.denominations();
                 let values: Vec<i64> = split
                     .migration_outputs()
                     .iter()
@@ -1727,14 +1694,14 @@ pub unsafe extern "C" fn zcashlc_migration_residual_after_migration(
             let backend = Backend::new(&ctx.wallet, ctx.account, None, &mut ctx.store_conn)?;
             if let Some(state) = backend.get_migration()? {
                 if !state.is_terminal() {
-                    return Ok(state.note_split().change().map_or(-1, zat_to_i64));
+                    return Ok(state.denominations().change().map_or(-1, zat_to_i64));
                 }
             }
         }
         // `compute_plan`, NOT `plan_and_cache`: this is a pure peek — caching its throwaway plan
         // would supersede the handle of a proposal the user is currently reviewing.
         Ok(match compute_plan(&mut ctx)? {
-            Some((plan, _)) => plan.note_split().change().map_or(-1, zat_to_i64),
+            Some((plan, _)) => plan.denominations().change().map_or(-1, zat_to_i64),
             None => -1,
         })
     });
@@ -1961,8 +1928,7 @@ pub unsafe extern "C" fn zcashlc_migration_propose_immediate_transfers(
             Some((plan, reference_height, handle)) => {
                 // Preview mirrors the commit-time rewrite: every transfer due at the tip.
                 let rows = schedule_rows(
-                    &plan.funding_notes(),
-                    plan.note_split().note_fee_buffer(),
+                    plan.crossing_values(),
                     plan.schedule(),
                     prep_tx_count(&plan),
                 )?;
@@ -2158,7 +2124,7 @@ pub unsafe extern "C" fn zcashlc_migration_record_transfer_result(
 ) -> bool {
     let res = catch_panic(|| {
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
-        let id = MigrationTxId::new(transfer_id);
+        let id = MigrationTransferId::new(transfer_id);
         match result_tag {
             0 => {
                 if txid_bytes.is_null() {
@@ -2214,7 +2180,7 @@ pub unsafe extern "C" fn zcashlc_migration_restart_step(
                 if !state.is_terminal() {
                     let cancelled = MigrationState::from_parts(
                         MigrationStatus::Failed,
-                        state.note_split().clone(),
+                        state.denominations().clone(),
                         state.preparation().clone(),
                         state.transactions().clone(),
                         state.anchor_bucket_interval(),
@@ -2397,7 +2363,7 @@ pub unsafe extern "C" fn zcashlc_migration_create_unsigned_note_split_pczts(
     let res = catch_panic(|| {
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
         let (state, unsigned) = commit_or_resume(&mut ctx, None, true, proposal_handle)?;
-        let prep_ids: HashSet<MigrationTxId> = state
+        let prep_ids: HashSet<MigrationTransferId> = state
             .transactions()
             .iter()
             .filter(|t| matches!(t.kind(), MigrationTxKind::Preparation { .. }))
@@ -2454,7 +2420,7 @@ pub unsafe extern "C" fn zcashlc_migration_store_signed_note_split_pczts(
         let mut state = backend
             .get_migration()?
             .ok_or_else(|| anyhow!("no migration is committed yet"))?;
-        let mut first: Option<(MigrationTxId, Vec<u8>)> = None;
+        let mut first: Option<(MigrationTransferId, Vec<u8>)> = None;
         for (id, bytes) in signed {
             if first.is_none() {
                 first = Some((id, bytes.clone()));
@@ -2498,7 +2464,7 @@ pub unsafe extern "C" fn zcashlc_migration_create_unsigned_transfer_pczts(
     let res = catch_panic(|| {
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
         let (state, unsigned) = commit_or_resume(&mut ctx, None, true, proposal_handle)?;
-        let transfer_ids: HashSet<MigrationTxId> = state
+        let transfer_ids: HashSet<MigrationTransferId> = state
             .transactions()
             .iter()
             .filter(|t| matches!(t.kind(), MigrationTxKind::Transfer { .. }))
@@ -2576,13 +2542,13 @@ unsafe fn decode_signed_pairs(
     len: usize,
     pczts: *const *const u8,
     pczt_lens: *const usize,
-) -> anyhow::Result<Vec<(MigrationTxId, Vec<u8>)>> {
+) -> anyhow::Result<Vec<(MigrationTransferId, Vec<u8>)>> {
     let ids = unsafe { slice_or_empty(ids, len) };
     let pczt_ptrs = unsafe { slice_or_empty(pczts, len) };
     let lens = unsafe { slice_or_empty(pczt_lens, len) };
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
-        let id = MigrationTxId::new(ids[i]);
+        let id = MigrationTransferId::new(ids[i]);
         if pczt_ptrs[i].is_null() {
             return Err(anyhow!("signed pczt at index {i} is null"));
         }
@@ -2713,7 +2679,7 @@ pub unsafe extern "C" fn zcashlc_migration_keystone_apply_batch_signatures(
 ) -> *mut FfiUnsignedTransferPczts {
     let res = catch_panic(|| {
         let unsigned = unsafe { decode_signed_pairs(ids, ids_len, pczts, pczt_lens)? };
-        let (ids, pczts): (Vec<MigrationTxId>, Vec<Vec<u8>>) = unsigned.into_iter().unzip();
+        let (ids, pczts): (Vec<MigrationTransferId>, Vec<Vec<u8>>) = unsigned.into_iter().unzip();
         let response = unsafe { slice_or_empty(response, response_len) };
         let signed = crate::migration_keystone::apply_batch_signatures(&pczts, response)
             .map_err(|e| anyhow!("Error applying Keystone batch signatures: {e}"))?;
@@ -2748,7 +2714,7 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
-    use zcash_pool_migration::note_splitting::NoteSplitPlan;
+    use zcash_pool_migration::denomination::DenominationPlan;
     use zcash_pool_migration::preparation::PreparationPlan;
     use zcash_pool_migration::scheduling::{self, AnchorBucketInterval, SchedulingParams};
 
@@ -2885,7 +2851,7 @@ mod tests {
         let mut transactions = Vec::new();
         for (i, s) in prep_states.iter().enumerate() {
             transactions.push(MigrationTransaction::from_parts(
-                MigrationTxId::new(i as u32),
+                MigrationTransferId::new(i as u32),
                 MigrationTxKind::Preparation { layer: 0, index: i },
                 vec![0u8],
                 Vec::new(),
@@ -2899,7 +2865,7 @@ mod tests {
         let offset = prep_states.len() as u32;
         for (i, s) in transfer_states.iter().enumerate() {
             transactions.push(MigrationTransaction::from_parts(
-                MigrationTxId::new(offset + i as u32),
+                MigrationTransferId::new(offset + i as u32),
                 MigrationTxKind::Transfer { crossing: i },
                 vec![0u8],
                 Vec::new(),
@@ -2913,7 +2879,7 @@ mod tests {
         let funding: Vec<Zatoshis> = transfer_states.iter().map(|_| zat(100_000_000)).collect();
         MigrationState::from_parts(
             status,
-            NoteSplitPlan::from_stored_parts(
+            DenominationPlan::from_stored_parts(
                 funding.clone(),
                 zat(10_000),
                 None,
@@ -3032,19 +2998,14 @@ mod tests {
         ));
     }
 
-    /// The fee buffer the row fixtures build their funding notes with; any nonzero value exercises
-    /// the crossing subtraction.
-    const TEST_BUFFER: u64 = 15_000;
-
     #[test]
     fn schedule_rows_sort_chronologically_with_prep_offset() {
         let mut rng = StdRng::seed_from_u64(7);
         let schedule = scheduling::schedule(&SchedulingParams::ZIP_318, h(1_000), 5, &mut rng);
-        // Funding notes, i.e. each crossing value PLUS the fee buffer, as the engine mints them.
-        let funding_notes: Vec<Zatoshis> = (1..=5)
-            .map(|i| zat(i * 100_000_000 + TEST_BUFFER))
-            .collect();
-        let rows = schedule_rows(&funding_notes, zat(TEST_BUFFER), &schedule, 3).unwrap();
+        // The engine hands the crossing values straight over; they are already net of the fee
+        // buffer that pays each transfer's own fee.
+        let crossing_values: Vec<Zatoshis> = (1..=5).map(|i| zat(i * 100_000_000)).collect();
+        let rows = schedule_rows(&crossing_values, &schedule, 3).unwrap();
         assert_eq!(rows.len(), 5);
         // Chronological by broadcast height.
         for pair in rows.windows(2) {
@@ -3062,20 +3023,14 @@ mod tests {
         }
     }
 
-    /// A row reports what the transfer moves, never the note it spends: serving the funding note
-    /// would overstate every amount by one transfer fee and stop it being a round denomination.
+    /// A row reports what the transfer moves: the engine's crossing value, already net of the fee
+    /// buffer, so the amount is the round denomination the user approved.
     #[test]
     fn schedule_rows_report_the_crossing_value_not_the_funding_note() {
         let mut rng = StdRng::seed_from_u64(11);
         let schedule = scheduling::schedule(&SchedulingParams::ZIP_318, h(1_000), 1, &mut rng);
         let crossing = 500_000_000;
-        let rows = schedule_rows(
-            &[zat(crossing + TEST_BUFFER)],
-            zat(TEST_BUFFER),
-            &schedule,
-            0,
-        )
-        .unwrap();
+        let rows = schedule_rows(&[zat(crossing)], &schedule, 0).unwrap();
         assert_eq!(
             rows[0].1,
             zat(crossing),
@@ -3087,8 +3042,8 @@ mod tests {
     fn schedule_rows_reject_length_mismatch() {
         let mut rng = StdRng::seed_from_u64(7);
         let schedule = scheduling::schedule(&SchedulingParams::ZIP_318, h(1_000), 3, &mut rng);
-        let funding_notes = vec![zat(100)];
-        assert!(schedule_rows(&funding_notes, zat(0), &schedule, 0).is_err());
+        let crossing_values = vec![zat(100)];
+        assert!(schedule_rows(&crossing_values, &schedule, 0).is_err());
     }
 
     // ----- schedule-duration semantics (#1806): from `now` to the LAST scheduled broadcast -----
@@ -3129,7 +3084,7 @@ mod tests {
     /// suffices.
     fn transfer_at(id: u32, scheduled: u32) -> MigrationTransaction {
         MigrationTransaction::from_parts(
-            MigrationTxId::new(id),
+            MigrationTransferId::new(id),
             MigrationTxKind::Transfer { crossing: 0 },
             vec![0u8],
             Vec::new(),
@@ -3167,7 +3122,7 @@ mod tests {
     fn encode_schedule_from_state_measures_duration_from_now_reference() {
         let transactions = vec![
             MigrationTransaction::from_parts(
-                MigrationTxId::new(0),
+                MigrationTransferId::new(0),
                 MigrationTxKind::Transfer { crossing: 0 },
                 vec![0u8],
                 Vec::new(),
@@ -3178,7 +3133,7 @@ mod tests {
                 None,
             ),
             MigrationTransaction::from_parts(
-                MigrationTxId::new(1),
+                MigrationTransferId::new(1),
                 MigrationTxKind::Transfer { crossing: 1 },
                 vec![0u8],
                 Vec::new(),
@@ -3191,7 +3146,7 @@ mod tests {
         ];
         let state = MigrationState::from_parts(
             MigrationStatus::InProgress,
-            NoteSplitPlan::from_stored_parts(
+            DenominationPlan::from_stored_parts(
                 vec![zat(100_000_000), zat(100_000_000)],
                 zat(0),
                 None,
@@ -3268,9 +3223,27 @@ mod tests {
         let account = [9u8; 16];
         let other = [8u8; 16];
         assert!(invalid_marks(&mut wallet, &account).unwrap().is_empty());
-        insert_invalid_mark(&mut wallet, &account, MigrationTxId::new(4), "invalid_note").unwrap();
-        insert_invalid_mark(&mut wallet, &account, MigrationTxId::new(2), "expired").unwrap();
-        insert_invalid_mark(&mut wallet, &other, MigrationTxId::new(7), "invalid_note").unwrap();
+        insert_invalid_mark(
+            &mut wallet,
+            &account,
+            MigrationTransferId::new(4),
+            "invalid_note",
+        )
+        .unwrap();
+        insert_invalid_mark(
+            &mut wallet,
+            &account,
+            MigrationTransferId::new(2),
+            "expired",
+        )
+        .unwrap();
+        insert_invalid_mark(
+            &mut wallet,
+            &other,
+            MigrationTransferId::new(7),
+            "invalid_note",
+        )
+        .unwrap();
         assert_eq!(invalid_marks(&mut wallet, &account).unwrap(), vec![2, 4]);
         clear_invalid_marks(&mut wallet, &account).unwrap();
         assert!(invalid_marks(&mut wallet, &account).unwrap().is_empty());
@@ -3760,7 +3733,7 @@ mod tests {
             .collect();
         let state = MigrationState::from_parts(
             base.status(),
-            base.note_split().clone(),
+            base.denominations().clone(),
             base.preparation().clone(),
             transactions,
             base.anchor_bucket_interval(),
@@ -3945,7 +3918,7 @@ mod tests {
             .collect();
         MigrationState::from_parts(
             base.status(),
-            base.note_split().clone(),
+            base.denominations().clone(),
             base.preparation().clone(),
             transactions,
             base.anchor_bucket_interval(),
@@ -3963,7 +3936,7 @@ mod tests {
         let res = migration_finalize::prove_due_transaction(
             &mut prover,
             &mut state,
-            MigrationTxId::new(1),
+            MigrationTransferId::new(1),
             None,
         )
         .expect("a boundary-carrying transfer proves");
@@ -3976,7 +3949,7 @@ mod tests {
         let tx = state
             .transactions()
             .iter()
-            .find(|t| t.id() == MigrationTxId::new(1))
+            .find(|t| t.id() == MigrationTransferId::new(1))
             .expect("the transfer row remains");
         assert!(
             matches!(tx.state(), MigrationTxState::Proved),
@@ -4006,7 +3979,7 @@ mod tests {
         let res = migration_finalize::prove_due_transaction(
             &mut prover,
             &mut state,
-            MigrationTxId::new(0),
+            MigrationTransferId::new(0),
             Some(h(777)),
         )
         .expect("a signed preparation proves");
@@ -4019,7 +3992,7 @@ mod tests {
         let tx = state
             .transactions()
             .iter()
-            .find(|t| t.id() == MigrationTxId::new(0))
+            .find(|t| t.id() == MigrationTransferId::new(0))
             .expect("the preparation row remains");
         assert!(
             matches!(tx.state(), MigrationTxState::Proved),
@@ -4037,7 +4010,7 @@ mod tests {
         let err = migration_finalize::prove_due_transaction(
             &mut prover,
             &mut state,
-            MigrationTxId::new(1),
+            MigrationTransferId::new(1),
             None,
         )
         .expect_err("a boundary-less transfer must not prove");
@@ -4052,7 +4025,7 @@ mod tests {
         let tx = state
             .transactions()
             .iter()
-            .find(|t| t.id() == MigrationTxId::new(1))
+            .find(|t| t.id() == MigrationTransferId::new(1))
             .expect("the transfer row remains");
         assert!(
             matches!(tx.state(), MigrationTxState::Signed),
@@ -4079,7 +4052,7 @@ mod tests {
             let res = migration_finalize::prove_due_transaction(
                 &mut prover,
                 &mut state,
-                MigrationTxId::new(1),
+                MigrationTransferId::new(1),
                 None,
             )
             .unwrap_or_else(|e| panic!("{label} must be transient, got hard error: {e}"));
@@ -4087,7 +4060,7 @@ mod tests {
             let tx = state
                 .transactions()
                 .iter()
-                .find(|t| t.id() == MigrationTxId::new(1))
+                .find(|t| t.id() == MigrationTransferId::new(1))
                 .expect("the transfer row remains");
             assert!(
                 matches!(tx.state(), MigrationTxState::Signed),
@@ -4117,7 +4090,7 @@ mod tests {
             let err = migration_finalize::prove_due_transaction(
                 &mut prover,
                 &mut state,
-                MigrationTxId::new(1),
+                MigrationTransferId::new(1),
                 None,
             )
             .expect_err(&format!("{label} must be a hard error"));
@@ -4143,7 +4116,7 @@ mod tests {
         let err = migration_finalize::prove_due_transaction(
             &mut prover,
             &mut state,
-            MigrationTxId::new(0),
+            MigrationTransferId::new(0),
             None,
         )
         .expect_err("a preparation without a natural anchor must not prove");
@@ -4206,7 +4179,7 @@ mod tests {
             .collect();
         MigrationState::from_parts(
             base.status(),
-            base.note_split().clone(),
+            base.denominations().clone(),
             base.preparation().clone(),
             transactions,
             base.anchor_bucket_interval(),
@@ -4224,7 +4197,7 @@ mod tests {
         account: &[u8; 16],
         prover: &mut P,
         state: &mut MigrationState,
-        id: MigrationTxId,
+        id: MigrationTransferId,
     ) -> anyhow::Result<Option<(Vec<u8>, [u8; 32])>>
     where
         P: MigrationProver,
@@ -4295,7 +4268,11 @@ mod tests {
         .expect("driving a provable, due transfer must not fail");
 
         let (id, _txid, bytes) = served.expect("the due Signed transfer must be served");
-        assert_eq!(id, MigrationTxId::new(1), "the transfer row must be served");
+        assert_eq!(
+            id,
+            MigrationTransferId::new(1),
+            "the transfer row must be served"
+        );
         assert_eq!(
             prover.calls,
             vec![ProveCall::Transfer(h(1440))],
@@ -4305,7 +4282,7 @@ mod tests {
         let tx = stored
             .transactions()
             .iter()
-            .find(|t| t.id() == MigrationTxId::new(1))
+            .find(|t| t.id() == MigrationTransferId::new(1))
             .expect("the transfer row remains stored");
         assert!(
             matches!(tx.state(), MigrationTxState::Proved),
@@ -4349,7 +4326,7 @@ mod tests {
         let tx = stored
             .transactions()
             .iter()
-            .find(|t| t.id() == MigrationTxId::new(1))
+            .find(|t| t.id() == MigrationTransferId::new(1))
             .expect("the transfer row remains stored");
         assert!(
             matches!(tx.state(), MigrationTxState::Signed),
@@ -4385,7 +4362,7 @@ mod tests {
         let (id, _, _) = served.expect("the due transfer behind the undue one must be served");
         assert_eq!(
             id,
-            MigrationTxId::new(2),
+            MigrationTransferId::new(2),
             "the schedule-due transfer must be the one served"
         );
         let stored = read_fixture_state(&path, &account);
@@ -4393,7 +4370,7 @@ mod tests {
             let tx = stored
                 .transactions()
                 .iter()
-                .find(|t| t.id() == MigrationTxId::new(expect_id))
+                .find(|t| t.id() == MigrationTransferId::new(expect_id))
                 .expect("the transfer row remains stored");
             assert!(
                 matches!(tx.state(), MigrationTxState::Proved),
@@ -4418,7 +4395,7 @@ mod tests {
         );
         assert_eq!(
             due_assuming_proving(&state, h(100)),
-            Some(MigrationTxId::new(2)),
+            Some(MigrationTransferId::new(2)),
             "a due-but-unproved transfer is due delivery work"
         );
         assert!(
@@ -4444,7 +4421,7 @@ mod tests {
         let proved = scheduled_state(&[MINED], &[(MigrationTxState::Proved, 90, Some(h(40)))]);
         assert_eq!(
             due_assuming_proving(&proved, h(100)),
-            Some(MigrationTxId::new(1))
+            Some(MigrationTransferId::new(1))
         );
     }
 

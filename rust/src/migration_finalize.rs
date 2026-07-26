@@ -38,7 +38,7 @@
 use anyhow::anyhow;
 use zcash_client_backend::data_api::WalletRead;
 use zcash_pool_migration::engine::{
-    self, MigrationProver, MigrationState, MigrationTxId, MigrationTxKind,
+    self, MigrationProver, MigrationState, MigrationTransferId, MigrationTxKind,
 };
 use zcash_pool_migration::wallet::WalletProveError;
 use zcash_protocol::consensus::BlockHeight;
@@ -113,7 +113,7 @@ impl<TE, NE, RE> ProveErrorClass for WalletProveError<TE, NE, RE> {
 pub(crate) fn prove_due_transaction<P>(
     prover: &mut P,
     state: &mut MigrationState,
-    id: MigrationTxId,
+    id: MigrationTransferId,
     natural_anchor: Option<BlockHeight>,
 ) -> anyhow::Result<Option<()>>
 where
