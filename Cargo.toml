@@ -17,7 +17,7 @@ build = "rust/build.rs"
 # Zcash
 orchard = { version = "0.14", features = ["unstable-voting-circuits"] }
 pasta_curves = "0.5"
-ff = "0.13"
+ff = "0.14"
 sapling = { package = "sapling-crypto", version = "0.7", default-features = false }
 transparent = { package = "zcash_transparent", version = "0.8", default-features = false }
 zcash_address = { version = "0.12" }
