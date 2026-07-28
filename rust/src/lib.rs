@@ -458,8 +458,6 @@ pub unsafe extern "C" fn zcashlc_create_account(
     account_name: *const c_char,
     key_source: *const c_char,
 ) -> *mut ffi::BinaryKey {
-    use zcash_client_backend::data_api::BirthdayError;
-
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -469,15 +467,8 @@ pub unsafe extern "C" fn zcashlc_create_account(
                 .map_err(|e| anyhow!("Invalid TreeState: {}", e))?;
         let recover_until = recover_until.try_into().ok();
 
-        let birthday =
-            AccountBirthday::from_treestate(treestate, recover_until).map_err(|e| match e {
-                BirthdayError::HeightInvalid(e) => {
-                    anyhow!("Invalid TreeState: Invalid height: {}", e)
-                }
-                BirthdayError::Decode(e) => {
-                    anyhow!("Invalid TreeState: Invalid frontier encoding: {}", e)
-                }
-            })?;
+        let birthday = AccountBirthday::from_treestate(treestate, recover_until)
+            .map_err(|e| anyhow!("Invalid TreeState: {}", e))?;
 
         let account_name = unsafe { CStr::from_ptr(account_name).to_str()? };
         let key_source = (!key_source.is_null())
@@ -541,8 +532,6 @@ pub unsafe extern "C" fn zcashlc_import_account_ufvk(
     seed_fingerprint: *const u8,
     hd_account_index_raw: u32,
 ) -> *mut ffi::Uuid {
-    use zcash_client_backend::data_api::BirthdayError;
-
     let res = catch_panic(|| {
         let network = parse_network(network_id)?;
         let mut db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
@@ -559,15 +548,8 @@ pub unsafe extern "C" fn zcashlc_import_account_ufvk(
                 .map_err(|e| anyhow!("Invalid TreeState: {}", e))?;
         let recover_until = recover_until.try_into().ok();
 
-        let birthday =
-            AccountBirthday::from_treestate(treestate, recover_until).map_err(|e| match e {
-                BirthdayError::HeightInvalid(e) => {
-                    anyhow!("Invalid TreeState: Invalid height: {}", e)
-                }
-                BirthdayError::Decode(e) => {
-                    anyhow!("Invalid TreeState: Invalid frontier encoding: {}", e)
-                }
-            })?;
+        let birthday = AccountBirthday::from_treestate(treestate, recover_until)
+            .map_err(|e| anyhow!("Invalid TreeState: {}", e))?;
 
         let hd_account_index = zip32::AccountId::try_from(hd_account_index_raw).ok();
         let seed_fp = (!seed_fingerprint.is_null())

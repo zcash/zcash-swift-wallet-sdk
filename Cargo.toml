@@ -107,3 +107,13 @@ crate-type = ["staticlib"]
 
 [profile.release]
 lto = true
+
+[patch.crates-io]
+pczt = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
+zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash.git", rev = "0d56685d376460e62122b0d0f4c8962bd737c13f" }
