@@ -28,8 +28,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `zcash_client_sqlite::pool_migration`, both on librustzcash main; the family pin
   targets a plain main rev — boundary-anchor proving (#2710) and owner-keyed
   note locking (#2716) are both merged, nothing unmerged remains):
-  21 of the 24 `zcashlc_migration_*` entry points (the residual-locking pair
-  and the run-count estimate ride their own entries below) plus the
+  21 of the 30 `zcashlc_migration_*` entry points (the residual-locking pair,
+  the run-count estimate, the per-transaction statuses, the four Keystone
+  batch-signing members, and the debug fast-reschedule ride their own entries
+  below) plus the
   `zcashlc_ironwood_activation_height` helper, with their `#[repr(C)]` return
   types and `zcashlc_free_migration_*` destructors. Each call opens the wallet database and
   the account-keyed migration store (a second connection into the same file) from
