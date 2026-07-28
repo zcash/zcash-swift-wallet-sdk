@@ -14,6 +14,13 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a rewind); the state is now derived from the mined-height evidence instead.
   Previously this misclassification made pending (or even mined) transactions
   flash or stick as failed/expired in clients.
+- `SDKSynchronizer` no longer coalesces consecutive `.error` status updates.
+  Because any two `.error` values compare equal, a repeated sync failure
+  previously left `latestState` (including `latestBlockHeight`) and the state
+  stream frozen at the snapshot taken for the first failure while the compact
+  block processor kept retrying — clients rendered a stale chain tip and a
+  stale error indefinitely. Every failure now re-snapshots and republishes the
+  synchronizer state.
 
 # 2.7.0-rc.2 - 2026-07-26
 

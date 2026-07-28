@@ -1255,8 +1255,21 @@ public class SDKSynchronizer: Synchronizer {
         )
     }
 
+    /// Whether a status transition must be published. `InternalSyncStatus.==` deliberately treats
+    /// any two `.error` values as equal; coalescing repeated failures on that equality would
+    /// freeze `latestState` (chain tip, balances) and the state stream at the snapshot taken for
+    /// the FIRST failure while the compact block processor keeps retrying — so failures are
+    /// always (re)published.
+    static func shouldNotify(oldStatus: InternalSyncStatus, newStatus: InternalSyncStatus) -> Bool {
+        if case .error = newStatus {
+            return true
+        }
+
+        return oldStatus != newStatus
+    }
+
     private func notify(oldStatus: InternalSyncStatus, newStatus: InternalSyncStatus, updateExternalStatus: Bool = true) async {
-        guard oldStatus != newStatus else { return }
+        guard Self.shouldNotify(oldStatus: oldStatus, newStatus: newStatus) else { return }
 
         let newState: SynchronizerState
 
