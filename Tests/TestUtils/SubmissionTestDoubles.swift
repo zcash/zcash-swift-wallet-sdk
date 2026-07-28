@@ -162,6 +162,8 @@ final class EndpointSubmitterMock: EndpointSubmitter {
     private var behaviors: [String: Behavior] = [:]
     private var submitted: [LightWalletEndpoint] = []
     private var cancelled: [LightWalletEndpoint] = []
+    private var inFlightCount = 0
+    private var maxInFlightCount = 0
 
     func set(behavior: Behavior, for endpoint: LightWalletEndpoint) {
         queue.sync { behaviors[Self.key(endpoint)] = behavior }
@@ -175,8 +177,20 @@ final class EndpointSubmitterMock: EndpointSubmitter {
         queue.sync { cancelled }
     }
 
+    /// The highest number of submissions that were ever in flight at once.
+    func maxConcurrentSubmissions() -> Int {
+        queue.sync { maxInFlightCount }
+    }
+
     func submit(transaction: CreatedTransaction, to endpoint: LightWalletEndpoint) async throws {
-        queue.sync { submitted.append(endpoint) }
+        queue.sync {
+            submitted.append(endpoint)
+            inFlightCount += 1
+            maxInFlightCount = max(maxInFlightCount, inFlightCount)
+        }
+        defer {
+            queue.sync { inFlightCount -= 1 }
+        }
         let behavior = queue.sync { behaviors[Self.key(endpoint)] } ?? Behavior.succeed
 
         switch behavior {

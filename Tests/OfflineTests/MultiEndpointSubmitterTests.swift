@@ -14,7 +14,11 @@ final class MultiEndpointSubmitterTests: ZcashTestCase {
     override func setUp() async throws {
         try await super.setUp()
         mock = EndpointSubmitterMock()
-        submitter = MultiEndpointSubmitter(endpointSubmitter: mock, logger: submissionLifecycleLogger())
+        submitter = MultiEndpointSubmitter(
+            endpointSubmitter: mock,
+            sdkFlags: SDKFlags(torEnabled: true, exchangeRateEnabled: false),
+            logger: submissionLifecycleLogger()
+        )
     }
 
     private let fastTiming = SubmissionTiming(responseTimeout: 1.0, postAcceptanceGraceDelay: 0.3)
@@ -239,5 +243,91 @@ final class MultiEndpointSubmitterTests: ZcashTestCase {
         let outcome = await submitter.submit(transaction: makeTransaction(), to: [endpoint(1)], timing: fastTiming)
 
         XCTAssertEqual(outcome, TransactionSubmissionOutcome.rejected(code: -25, message: "bad tx"))
+    }
+
+    // MARK: - Tor-off sequential failover
+
+    private func makeTorOffSubmitter() -> MultiEndpointSubmitter {
+        MultiEndpointSubmitter(
+            endpointSubmitter: mock,
+            sdkFlags: SDKFlags(torEnabled: false, exchangeRateEnabled: false),
+            logger: submissionLifecycleLogger()
+        )
+    }
+
+    func testTorOffStopsAtFirstAcceptance() async {
+        let torOffSubmitter = makeTorOffSubmitter()
+        let endpoints = [endpoint(1), endpoint(2), endpoint(3)]
+        mock.set(behavior: .succeed, for: endpoint(1))
+        mock.set(behavior: .succeed, for: endpoint(2))
+        mock.set(behavior: .succeed, for: endpoint(3))
+
+        let outcome = await torOffSubmitter.submit(transaction: makeTransaction(), to: endpoints, timing: fastTiming)
+
+        XCTAssertEqual(outcome, TransactionSubmissionOutcome.accepted(by: endpoint(1)))
+        // The privacy property: once one endpoint accepted, the remaining
+        // endpoints are never contacted over clearnet.
+        XCTAssertEqual(mock.recordedSubmissions().map(\.host), [endpoint(1).host])
+    }
+
+    func testTorOffNeverOverlapsSubmissionsAndKeepsFailoverOrder() async {
+        let torOffSubmitter = makeTorOffSubmitter()
+        let endpoints = [endpoint(1), endpoint(2), endpoint(3)]
+        mock.set(behavior: .rejectAfter(0.15, code: -25, message: "first"), for: endpoint(1))
+        mock.set(behavior: .rejectAfter(0.15, code: -26, message: "second"), for: endpoint(2))
+        mock.set(behavior: .succeed, for: endpoint(3))
+
+        let outcome = await torOffSubmitter.submit(transaction: makeTransaction(), to: endpoints, timing: fastTiming)
+
+        XCTAssertEqual(outcome, TransactionSubmissionOutcome.accepted(by: endpoint(3)))
+        XCTAssertEqual(mock.recordedSubmissions().map(\.host), endpoints.map(\.host))
+        XCTAssertEqual(mock.maxConcurrentSubmissions(), 1, "Tor-off submissions must never overlap")
+    }
+
+    func testTorOffAllRejectedReturnsFirstEndpointsRejection() async {
+        let torOffSubmitter = makeTorOffSubmitter()
+        let endpoints = [endpoint(1), endpoint(2)]
+        mock.set(behavior: .reject(code: -25, message: "first"), for: endpoint(1))
+        mock.set(behavior: .reject(code: -26, message: "second"), for: endpoint(2))
+
+        let outcome = await torOffSubmitter.submit(transaction: makeTransaction(), to: endpoints, timing: fastTiming)
+
+        // Sequential order makes "first rejection" deterministic.
+        XCTAssertEqual(outcome, TransactionSubmissionOutcome.rejected(code: -25, message: "first"))
+    }
+
+    func testTorOffTimeoutStillBoundsTheWholeAttempt() async {
+        let torOffSubmitter = makeTorOffSubmitter()
+        let endpoints = [endpoint(1), endpoint(2)]
+        mock.set(behavior: .hang, for: endpoint(1))
+        mock.set(behavior: .succeed, for: endpoint(2))
+        let timing = SubmissionTiming(responseTimeout: 0.2, postAcceptanceGraceDelay: 0.1)
+
+        let outcome = await torOffSubmitter.submit(transaction: makeTransaction(), to: endpoints, timing: timing)
+
+        XCTAssertEqual(outcome, TransactionSubmissionOutcome.timedOut)
+        // The hanging endpoint consumed the whole attempt; the next endpoint was
+        // never contacted before the deadline.
+        XCTAssertEqual(mock.recordedSubmissions().map(\.host), [endpoint(1).host])
+    }
+
+    func testTorOffCallerCancellationStopsTheChain() async {
+        let torOffSubmitter = makeTorOffSubmitter()
+        let endpoints = [endpoint(1), endpoint(2)]
+        mock.set(behavior: .hang, for: endpoint(1))
+        mock.set(behavior: .succeed, for: endpoint(2))
+        let transaction = makeTransaction()
+        let timing = SubmissionTiming(responseTimeout: 5.0, postAcceptanceGraceDelay: 0.1)
+
+        let task = Task { () -> TransactionSubmissionOutcome in
+            await torOffSubmitter.submit(transaction: transaction, to: endpoints, timing: timing)
+        }
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+        let outcome = await task.value
+
+        XCTAssertEqual(outcome, TransactionSubmissionOutcome.cancelled)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(mock.recordedSubmissions().map(\.host), [endpoint(1).host])
     }
 }

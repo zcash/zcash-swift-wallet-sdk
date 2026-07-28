@@ -5,17 +5,27 @@
 
 import Foundation
 
-/// Races one transaction against multiple endpoints in parallel.
+/// Submits one transaction to multiple endpoints.
+///
+/// With Tor enabled the endpoints are raced in parallel — every attempt rides
+/// its own isolated circuit, so the parallel fan-out reveals nothing about the
+/// sender. With Tor disabled every attempt is a clearnet connection from the
+/// device's real IP, so the endpoints are instead tried strictly one at a time,
+/// stopping at the first acceptance: fanning the same transaction out to every
+/// operator at once would hand each of them the IP↔txid link.
 ///
 /// Resumes the caller as soon as the outcome is decided (first acceptance, all
-/// endpoints failed, timeout, or caller cancellation); in-flight submissions
-/// continue through the grace window in the background before being cancelled.
+/// endpoints failed, timeout, or caller cancellation); in the parallel race,
+/// in-flight submissions continue through the grace window in the background
+/// before being cancelled.
 final class MultiEndpointSubmitter {
     private let endpointSubmitter: EndpointSubmitter
+    private let sdkFlags: SDKFlags
     private let logger: Logger
 
-    init(endpointSubmitter: EndpointSubmitter, logger: Logger) {
+    init(endpointSubmitter: EndpointSubmitter, sdkFlags: SDKFlags, logger: Logger) {
         self.endpointSubmitter = endpointSubmitter
+        self.sdkFlags = sdkFlags
         self.logger = logger
     }
 
@@ -29,10 +39,14 @@ final class MultiEndpointSubmitter {
             return .unreachable
         }
 
+        let torEnabled = await sdkFlags.torEnabled
+        let dispatch: SubmissionRace.Dispatch = torEnabled ? .parallelRace : .sequentialFailover
+
         let race = SubmissionRace(
             transaction: transaction,
             endpoints: endpoints,
             timing: timing,
+            dispatch: dispatch,
             endpointSubmitter: endpointSubmitter,
             logger: logger
         )
@@ -62,9 +76,23 @@ final class MultiEndpointSubmitter {
 /// Holds the race state and the two promises: the caller-facing outcome and the
 /// internal "race finished" signal that releases the task group.
 actor SubmissionRace {
+    /// How the endpoints are contacted.
+    enum Dispatch {
+        /// All endpoints at once; first acceptance wins and stragglers get the
+        /// post-acceptance grace window. Safe only when each attempt is
+        /// network-isolated (Tor circuit per attempt).
+        case parallelRace
+        /// One endpoint at a time in list order, stopping at the first
+        /// acceptance. Used with Tor off, where simultaneous clearnet
+        /// submissions of the same transaction would link the caller's IP to
+        /// the txid at every contacted operator.
+        case sequentialFailover
+    }
+
     private let transaction: CreatedTransaction
     private let endpoints: [LightWalletEndpoint]
     private let timing: SubmissionTiming
+    private let dispatch: Dispatch
     private let endpointSubmitter: EndpointSubmitter
     private let logger: Logger
 
@@ -81,12 +109,14 @@ actor SubmissionRace {
         transaction: CreatedTransaction,
         endpoints: [LightWalletEndpoint],
         timing: SubmissionTiming,
+        dispatch: Dispatch,
         endpointSubmitter: EndpointSubmitter,
         logger: Logger
     ) {
         self.transaction = transaction
         self.endpoints = endpoints
         self.timing = timing
+        self.dispatch = dispatch
         self.endpointSubmitter = endpointSubmitter
         self.logger = logger
     }
@@ -100,9 +130,17 @@ actor SubmissionRace {
             """
         )
         await withTaskGroup(of: Void.self) { group in
-            for endpoint in endpoints {
+            switch dispatch {
+            case .parallelRace:
+                for endpoint in endpoints {
+                    group.addTask {
+                        await self.submit(to: endpoint)
+                    }
+                }
+
+            case .sequentialFailover:
                 group.addTask {
-                    await self.submit(to: endpoint)
+                    await self.submitSequentially()
                 }
             }
             group.addTask {
@@ -142,6 +180,19 @@ actor SubmissionRace {
 
     // MARK: - Child tasks
 
+    /// Tor-off path: endpoints are contacted strictly one at a time, in list
+    /// order, stopping at the first acceptance so no further operator observes
+    /// the transaction paired with the caller's IP. Rejections and transport
+    /// failures advance to the next endpoint; the response timeout and caller
+    /// cancellation end the chain through the regular race events.
+    private func submitSequentially() async {
+        for endpoint in endpoints {
+            guard resolvedOutcome == nil, !Task.isCancelled else { return }
+            await submit(to: endpoint)
+            if winner != nil { return }
+        }
+    }
+
     private func submit(to endpoint: LightWalletEndpoint) async {
         do {
             try await endpointSubmitter.submit(transaction: transaction, to: endpoint)
@@ -176,7 +227,14 @@ actor SubmissionRace {
             winner = endpoint
             logger.info("Transaction \(transaction.txId.toHexStringTxId()) accepted by \(endpoint.host):\(endpoint.port).")
             resolve(.accepted(by: endpoint))
-            startGraceCountdown()
+            switch dispatch {
+            case .parallelRace:
+                startGraceCountdown()
+            case .sequentialFailover:
+                // Nothing runs behind a sequential acceptance — there is no
+                // straggler to grant a grace window to.
+                finishRace()
+            }
         } else {
             logger.info("Transaction \(transaction.txId.toHexStringTxId()) also accepted by \(endpoint.host):\(endpoint.port) in the grace window.")
         }

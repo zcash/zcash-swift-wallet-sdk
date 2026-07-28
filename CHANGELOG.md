@@ -6,6 +6,18 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Changed
+- Multi-endpoint transaction submission no longer fans the same transaction
+  out to every endpoint in parallel when Tor is disabled. With Tor off, each
+  submission is a clearnet connection from the device's real IP, so the
+  parallel race handed every contacted server operator the IP↔txid link at
+  once. Endpoints are now tried one at a time in list order, stopping at the
+  first acceptance, so at most one operator (plus any that already failed to
+  accept) observes the transaction paired with the caller's IP; rejections and
+  transport failures still fail over to the next endpoint, and the overall
+  response timeout is unchanged. The Tor-enabled path keeps the parallel race,
+  where every attempt already rides its own isolated circuit.
+
 # v2.8.0-rc.1 - 2026-07-26
 
 ## Added

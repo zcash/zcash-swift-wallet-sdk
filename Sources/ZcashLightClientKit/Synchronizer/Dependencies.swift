@@ -107,6 +107,7 @@ enum Dependencies {
         container.register(type: MultiEndpointSubmitter.self, isSingleton: true) { di in
             MultiEndpointSubmitter(
                 endpointSubmitter: di.resolve(EndpointSubmitter.self),
+                sdkFlags: di.resolve(SDKFlags.self),
                 logger: di.resolve(Logger.self)
             )
         }
