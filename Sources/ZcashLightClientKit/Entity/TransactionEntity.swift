@@ -26,19 +26,20 @@ public enum ZcashTransaction {
                 minedHeight: BlockHeight?,
                 expiredUnmined: Bool?
             ) {
-                guard let expiredUnmined, !expiredUnmined else {
+                // `expired_unmined` is NULL whenever the transaction is unmined and its expiry
+                // cannot be evaluated (unknown expiry height, or no scanned blocks yet — e.g.
+                // right after a rewind). NULL means "unknown", never "expired": only a positive
+                // confirmation short-circuits here, everything else is derived from the
+                // mined-height evidence below.
+                if expiredUnmined == true {
                     self = .expired
                     return
                 }
 
                 if let minedHeight, (currentHeight - minedHeight) >= ZcashSDK.defaultStaleTolerance {
                     self = .confirmed
-                } else if let minedHeight, (currentHeight - minedHeight) < ZcashSDK.defaultStaleTolerance {
-                    self = .pending
-                } else if minedHeight == nil {
-                    self = .pending
                 } else {
-                    self = .expired
+                    self = .pending
                 }
             }
         }

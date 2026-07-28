@@ -6,6 +6,15 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Fixed
+- `ZcashTransaction.Overview.State` no longer misreports a transaction as
+  `.expired` when the `expired_unmined` flag is unavailable (`nil`). The flag is
+  `nil` exactly when the transaction is unmined and its expiry cannot be
+  evaluated yet (unknown expiry height, or no scanned blocks — e.g. right after
+  a rewind); the state is now derived from the mined-height evidence instead.
+  Previously this misclassification made pending (or even mined) transactions
+  flash or stick as failed/expired in clients.
+
 # 2.7.0-rc.2 - 2026-07-26
 
 ## Changed

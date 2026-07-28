@@ -54,6 +54,44 @@ final class ZcashTransactionStateTests: XCTestCase {
         )
     }
 
+    /// `expired_unmined` is NULL in `v_transactions` whenever the transaction is unmined and its
+    /// expiry cannot be evaluated (unknown expiry height, or no scanned blocks yet — e.g. right
+    /// after a rewind). NULL means "unknown", never "expired": the state must be derived from the
+    /// mined-height evidence instead of short-circuiting to `.expired`.
+    func testNilExpiredUnminedDerivesStateFromMinedHeight() {
+        let currentHeight = 1_500_000
+
+        // Mined with enough confirmations -> confirmed.
+        XCTAssertEqual(
+            ZcashTransaction.Overview.State(
+                currentHeight: currentHeight,
+                minedHeight: currentHeight - ZcashSDK.defaultStaleTolerance,
+                expiredUnmined: nil
+            ),
+            .confirmed
+        )
+
+        // Freshly mined -> pending.
+        XCTAssertEqual(
+            ZcashTransaction.Overview.State(
+                currentHeight: currentHeight,
+                minedHeight: currentHeight,
+                expiredUnmined: nil
+            ),
+            .pending
+        )
+
+        // Unmined -> pending.
+        XCTAssertEqual(
+            ZcashTransaction.Overview.State(
+                currentHeight: currentHeight,
+                minedHeight: nil,
+                expiredUnmined: nil
+            ),
+            .pending
+        )
+    }
+
     func testMinedHeightAboveOrEqualToStaleConstantIsConfirmed() {
         let currentHeight = 1010
 
