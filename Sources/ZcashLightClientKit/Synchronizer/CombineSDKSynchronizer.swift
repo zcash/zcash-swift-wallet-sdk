@@ -92,6 +92,17 @@ extension CombineSDKSynchronizer: CombineSynchronizer {
         }
     }
 
+    public func proposeSendMax(
+        accountUUID: AccountUUID,
+        recipient: Recipient,
+        memo: Memo?,
+        mode: MaxSpendMode
+    ) -> SinglePublisher<Proposal, Error> {
+        AsyncToCombineGateway.executeThrowingAction() {
+            try await self.synchronizer.proposeSendMax(accountUUID: accountUUID, recipient: recipient, memo: memo, mode: mode)
+        }
+    }
+
     public func proposeOrchardToIronwoodMigration(accountUUID: AccountUUID) -> SinglePublisher<Proposal, Error> {
         AsyncToCombineGateway.executeThrowingAction() {
             try await self.synchronizer.proposeOrchardToIronwoodMigration(accountUUID: accountUUID)

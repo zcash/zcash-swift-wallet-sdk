@@ -1762,6 +1762,30 @@ class SynchronizerMock: Synchronizer {
         }
     }
 
+    // MARK: - proposeSendMax
+
+    var proposeSendMaxAccountUUIDRecipientMemoModeThrowableError: Error?
+    var proposeSendMaxAccountUUIDRecipientMemoModeCallsCount = 0
+    var proposeSendMaxAccountUUIDRecipientMemoModeCalled: Bool {
+        return proposeSendMaxAccountUUIDRecipientMemoModeCallsCount > 0
+    }
+    var proposeSendMaxAccountUUIDRecipientMemoModeReceivedArguments: (accountUUID: AccountUUID, recipient: Recipient, memo: Memo?, mode: MaxSpendMode)?
+    var proposeSendMaxAccountUUIDRecipientMemoModeReturnValue: Proposal!
+    var proposeSendMaxAccountUUIDRecipientMemoModeClosure: ((AccountUUID, Recipient, Memo?, MaxSpendMode) async throws -> Proposal)?
+
+    func proposeSendMax(accountUUID: AccountUUID, recipient: Recipient, memo: Memo?, mode: MaxSpendMode) async throws -> Proposal {
+        if let error = proposeSendMaxAccountUUIDRecipientMemoModeThrowableError {
+            throw error
+        }
+        proposeSendMaxAccountUUIDRecipientMemoModeCallsCount += 1
+        proposeSendMaxAccountUUIDRecipientMemoModeReceivedArguments = (accountUUID: accountUUID, recipient: recipient, memo: memo, mode: mode)
+        if let closure = proposeSendMaxAccountUUIDRecipientMemoModeClosure {
+            return try await closure(accountUUID, recipient, memo, mode)
+        } else {
+            return proposeSendMaxAccountUUIDRecipientMemoModeReturnValue
+        }
+    }
+
     // MARK: - proposeOrchardToIronwoodMigration
 
     var proposeOrchardToIronwoodMigrationAccountUUIDThrowableError: Error?

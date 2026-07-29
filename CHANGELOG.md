@@ -49,6 +49,14 @@ Changes are relative to `2.8.0-rc.3`.
   of its steps, before its fee is deducted. Combined with the existing
   `totalFeeRequired()`, callers can derive the maximum amount a "spend max"
   proposal sends to its recipient as `totalSpendValue() - totalFeeRequired()`.
+- `Synchronizer.proposeSendMax(accountUUID:recipient:memo:mode:)`, plus the
+  matching `ClosureSynchronizer` and `CombineSynchronizer` entries: proposes a
+  transaction that spends the maximum amount available in the account to a
+  single recipient, using `MaxSpendMode` to control how much of the balance
+  is targeted. No `amount` is passed — the fee is already accounted for by
+  the returned proposal. Sending a memo to a transparent recipient still
+  throws `ZcashError.synchronizerSendMemoToTransparentAddress`, same as
+  `proposeTransfer`.
 
 ## Changed
 

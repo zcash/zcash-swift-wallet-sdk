@@ -464,6 +464,23 @@ public class SDKSynchronizer: Synchronizer {
         return proposal
     }
 
+    public func proposeSendMax(accountUUID: AccountUUID, recipient: Recipient, memo: Memo?, mode: MaxSpendMode) async throws -> Proposal {
+        try throwIfUnprepared()
+
+        if case Recipient.transparent = recipient, memo != nil {
+            throw ZcashError.synchronizerSendMemoToTransparentAddress
+        }
+
+        let proposal = try await transactionEncoder.proposeSendMax(
+            accountUUID: accountUUID,
+            recipient: recipient.stringEncoded,
+            memo: memo?.asMemoBytes(),
+            mode: mode
+        )
+
+        return proposal
+    }
+
     public func proposeOrchardToIronwoodMigration(accountUUID: AccountUUID) async throws -> Proposal {
         try throwIfUnprepared()
 

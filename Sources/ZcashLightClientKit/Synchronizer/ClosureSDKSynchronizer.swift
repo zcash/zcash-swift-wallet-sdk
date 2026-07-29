@@ -125,6 +125,18 @@ extension ClosureSDKSynchronizer: ClosureSynchronizer {
         }
     }
 
+    public func proposeSendMax(
+        accountUUID: AccountUUID,
+        recipient: Recipient,
+        memo: Memo?,
+        mode: MaxSpendMode,
+        completion: @escaping (Result<Proposal, Error>) -> Void
+    ) {
+        AsyncToClosureGateway.executeThrowingAction(completion) {
+            try await self.synchronizer.proposeSendMax(accountUUID: accountUUID, recipient: recipient, memo: memo, mode: mode)
+        }
+    }
+
     public func proposeOrchardToIronwoodMigration(
         accountUUID: AccountUUID,
         completion: @escaping (Result<Proposal, Error>) -> Void
