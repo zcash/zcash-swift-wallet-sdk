@@ -4643,6 +4643,30 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         }
     }
 
+    // MARK: - proposeSendMaxTransfer
+
+    var proposeSendMaxTransferAccountUUIDToMemoModeThrowableError: Error?
+    var proposeSendMaxTransferAccountUUIDToMemoModeCallsCount = 0
+    var proposeSendMaxTransferAccountUUIDToMemoModeCalled: Bool {
+        return proposeSendMaxTransferAccountUUIDToMemoModeCallsCount > 0
+    }
+    var proposeSendMaxTransferAccountUUIDToMemoModeReceivedArguments: (accountUUID: AccountUUID, address: String, memo: MemoBytes?, mode: MaxSpendMode)?
+    var proposeSendMaxTransferAccountUUIDToMemoModeReturnValue: FfiProposal!
+    var proposeSendMaxTransferAccountUUIDToMemoModeClosure: ((AccountUUID, String, MemoBytes?, MaxSpendMode) async throws -> FfiProposal)?
+
+    func proposeSendMaxTransfer(accountUUID: AccountUUID, to address: String, memo: MemoBytes?, mode: MaxSpendMode) async throws -> FfiProposal {
+        if let error = proposeSendMaxTransferAccountUUIDToMemoModeThrowableError {
+            throw error
+        }
+        proposeSendMaxTransferAccountUUIDToMemoModeCallsCount += 1
+        proposeSendMaxTransferAccountUUIDToMemoModeReceivedArguments = (accountUUID: accountUUID, address: address, memo: memo, mode: mode)
+        if let closure = proposeSendMaxTransferAccountUUIDToMemoModeClosure {
+            return try await closure(accountUUID, address, memo, mode)
+        } else {
+            return proposeSendMaxTransferAccountUUIDToMemoModeReturnValue
+        }
+    }
+
     // MARK: - proposeOrchardToIronwoodMigration
 
     var proposeOrchardToIronwoodMigrationAccountUUIDThrowableError: Error?

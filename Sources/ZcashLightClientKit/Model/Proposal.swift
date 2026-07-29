@@ -46,6 +46,29 @@ public struct Proposal: Equatable {
             }
         }
     }
+
+    /// Returns the total value this proposal spends, before its fee is deducted, in zatoshis.
+    ///
+    /// This is the sum of the values of every step's inputs (only the `.receivedOutput` case draws
+    /// new value from the wallet; an input that is a prior step's own output or change does not)
+    /// minus the sum of every step's proposed change values.
+    ///
+    /// Combine with `totalFeeRequired()` to derive the maximum amount a "spend max" proposal can
+    /// send to its recipient: `totalSpendValue() - totalFeeRequired()`.
+    public func totalSpendValue() -> Zatoshi {
+        inner.steps.reduce(Zatoshi.zero) { total, step in
+            let stepInputs = step.inputs.reduce(Zatoshi.zero) { inputTotal, input in
+                guard case .receivedOutput(let output) = input.value else {
+                    return inputTotal
+                }
+                return inputTotal + Zatoshi(Int64(output.value))
+            }
+            let stepChange = step.balance.proposedChange.reduce(Zatoshi.zero) { changeTotal, change in
+                changeTotal + Zatoshi(Int64(change.value))
+            }
+            return total + stepInputs - stepChange
+        }
+    }
 }
 
 public extension Proposal {

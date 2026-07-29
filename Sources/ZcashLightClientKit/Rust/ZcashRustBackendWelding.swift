@@ -264,6 +264,22 @@ protocol ZcashRustBackendWelding {
         memo: MemoBytes?
     ) async throws -> FfiProposal
 
+    /// Select transaction inputs, compute fees, and construct a "spend max" proposal that spends
+    /// as much of the account's balance as `mode` allows, for a transaction that can then be
+    /// authorized and made ready for submission to the network with `createProposedTransaction`.
+    ///
+    /// - Parameter accountUUID: the account to spend from.
+    /// - Parameter to: recipient address.
+    /// - Parameter memo: the `MemoBytes` for this transaction. pass `nil` when sending to transparent receivers
+    /// - Parameter mode: how much of the account's balance the proposal should target spending. See `MaxSpendMode`.
+    /// - Throws: `rustProposeSendMaxTransfer`.
+    func proposeSendMaxTransfer(
+        accountUUID: AccountUUID,
+        to address: String,
+        memo: MemoBytes?,
+        mode: MaxSpendMode
+    ) async throws -> FfiProposal
+
     /// Proposes migrating the account's entire Orchard balance into the Ironwood pool.
     ///
     /// Sends the maximum from Orchard to the account's own internal receiver so nothing is

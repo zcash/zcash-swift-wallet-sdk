@@ -36,6 +36,19 @@ Changes are relative to `2.8.0-rc.3`.
   custom (regtest) network takes its voting identity from the registered base
   network — a modified-mainnet chain votes with mainnet hotkeys and address
   HRPs — so `open` fails if that network has not been configured yet.
+- `MaxSpendMode`: describes how a "spend max" request should be evaluated,
+  either targeting only currently-spendable funds (`maxSpendable`) or the
+  wallet's entire balance (`everything`, which fails if any funds are
+  unspendable or the wallet is unsynced).
+- `ZcashRustBackendWelding.proposeSendMaxTransfer(accountUUID:to:memo:mode:)`:
+  binds the Rust FFI's `zcashlc_propose_send_max_transfer` for the public
+  send-max path, proposing a transaction that spends the maximum available
+  balance to a single recipient. Failures surface as the existing
+  `ZcashError.rustProposeSendMaxTransfer` (`ZRUST0129`).
+- `Proposal.totalSpendValue()`: the total value a proposal spends across all
+  of its steps, before its fee is deducted. Combined with the existing
+  `totalFeeRequired()`, callers can derive the maximum amount a "spend max"
+  proposal sends to its recipient as `totalSpendValue() - totalFeeRequired()`.
 
 ## Changed
 
