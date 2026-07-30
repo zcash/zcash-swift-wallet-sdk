@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+# 2.8.0-rc.3 - 2026-07-29
+
 ## Changed
 - Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
   `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
