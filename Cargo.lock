@@ -6737,9 +6737,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_backend"
-version = "0.24.0-rc.5"
+version = "0.24.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "956f2438ea82fbbcf2407fb7c96e14ea6420963fbb0483a522e3e20fab2ae93f"
+checksum = "832ace878c125814bb9e82228d3661499124c6f2936e60fc1df3c6876eb54624"
 dependencies = [
  "arti-client",
  "base64",
@@ -6805,9 +6805,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_client_sqlite"
-version = "0.22.0-rc.5"
+version = "0.22.0-rc.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "70415a7cc23b9850d984231b989813684166adab55c22d92185abd0601288c2e"
+checksum = "c4a789c0038359968f93bfe3952d2b942e3bae5582f79c2f31137c6fd736a225"
 dependencies = [
  "bip32",
  "bitflags",
@@ -6907,9 +6907,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_pool_migration"
-version = "0.1.0-rc.4"
+version = "0.1.0-rc.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5099c9398bc00929cfc6b72842cbd9af60b0acc45f64ce830c4ed42026d2fe"
+checksum = "9010904169a92805128b3a8eab0dd4ff79fd164dd416af68aaeac5c7ebbd2522"
 dependencies = [
  "corez",
  "getset",
@@ -6981,9 +6981,9 @@ dependencies = [
 
 [[package]]
 name = "zcash_protocol"
-version = "0.10.2"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d23144aed9cc370a746896a1b0cb5ebe40d7ce0599aa8522ac6b189c1d61a22"
+checksum = "9f074493fff337207e28bcfa5bbdf0e2a125c4203a4bdd07e72067eea81e9e7b"
 dependencies = [
  "corez",
  "document-features",

@@ -6,6 +6,47 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+# 2.8.0-rc.3 - 2026-07-29
+
+## Changed
+- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
+  `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
+  (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
+  boundaries rather than 16).
+- A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
+  that covers the payment and its fee, falling back to ordinary multi-note funding
+  when no such note exists. Canonical-denomination payments that previously lost
+  the canonical shape to multi-note funding now take it whenever a single covering
+  note exists.
+
+## Fixed
+All of the following were picked up from the librustzcash update:
+
+- A wallet whose database was upgraded by a build using
+  `zcash_client_sqlite 0.22.0-rc.1` (the 2.6.6 internal build) no longer fails
+  every scan. Such a wallet's `orchard_ironwood_migrations` table never acquired
+  the `anchor_bucket_interval` column, added to the table-creation migration in
+  place afterwards, and the column reference then failed on every scan — no block
+  could be written and no transaction ever acquired a mined height, whether or not
+  a pool migration was in progress. A new database migration adds the missing
+  column. The backfilled value is exact on the production network; on a test
+  network, a pool migration planned under a custom anchor grid is reported as
+  `AnchorIntervalMismatch` and must be re-planned.
+- A ZIP 318 crossing anchored to a bucket boundary whose block contains no note
+  commitments in any pool no longer fails with `ProposalError::AnchorNotFound`:
+  scanning now creates a checkpoint at every anchor-retention grid height, and
+  proposal creation additionally falls back to an ordinary crossing when no anchor
+  is computable at the boundary rather than proposing a build that would fail.
+- Note selection now draws the oldest eligible notes first, in note commitment
+  tree (chain) order. Notes were previously drawn in scan-discovery order, which
+  for a restored wallet prefers its most recently discovered — typically newest —
+  notes.
+- A payment to one of the wallet's own transparent addresses is now reported with
+  the transparent receiver address itself as the output's recipient, rather than
+  the receiving account's unified address; for outputs the wallet created, the
+  recipient address recorded at transaction construction time takes precedence
+  over the receiving address.
+
 # 2.8.0-rc.2 - 2026-07-28
 
 ## Changed
