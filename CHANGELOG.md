@@ -6,6 +6,12 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+## Added
+- `Proposal.spendsLegacyOrchardFunds` — whether the proposal spends notes from
+  the legacy Orchard pool, so wallets can warn before a turnstile-crossing send.
+  `Proposal.testOnlyFakeProposal(totalFee:spendsLegacyOrchardFunds:)` gained a
+  defaulted parameter for building test fixtures.
+
 # 2.8.0-rc.3 - 2026-07-29
 
 ## Changed
