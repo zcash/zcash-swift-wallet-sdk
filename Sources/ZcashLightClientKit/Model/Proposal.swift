@@ -31,13 +31,11 @@ public struct Proposal: Equatable {
     /// Whether any transaction in this proposal spends notes received in the legacy
     /// Orchard pool.
     ///
-    /// Post-NU6.3 (Ironwood), spending legacy Orchard notes crosses the Orchard
-    /// turnstile, publicly revealing the value that leaves the pool. Wallets use this
-    /// to warn before sending. Only wallet notes (`receivedOutput` inputs) are
-    /// considered — prior-step references (e.g. the ephemeral transparent leg of a
-    /// ZIP 320 TEX proposal) are not wallet notes. Ironwood inputs (which the FFI
-    /// encodes as a raw value the current generated enum does not name) do not count
-    /// as Orchard.
+    /// This property describes the proposal's inputs only — it does not know or care whether NU6.3 is active; callers
+    /// deciding whether to warn should apply their own network/activation context if they support pre-activation
+    /// networks. Only wallet notes (`receivedOutput` inputs) are considered: prior-step references point at outputs
+    /// created by an earlier step of this same proposal, so any legacy-Orchard value entering the proposal necessarily
+    /// appears as a `receivedOutput` in some step. Ironwood (ZIP 2005) inputs do not count as Orchard.
     public var spendsLegacyOrchardFunds: Bool {
         inner.steps.contains { step in
             step.inputs.contains { input in

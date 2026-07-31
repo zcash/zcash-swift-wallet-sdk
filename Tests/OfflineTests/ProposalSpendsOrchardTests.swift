@@ -27,8 +27,11 @@ final class ProposalSpendsOrchardTests: XCTestCase {
         XCTAssertFalse(proposal.spendsLegacyOrchardFunds)
     }
 
-    func testIronwoodInputDoesNotCountAsOrchard() {
-        let output = Self.makeReceivedOutput(valuePool: FfiValuePool.UNRECOGNIZED(4))
+    func testIronwoodInputDoesNotCountAsOrchard() throws {
+        // Construct via `rawValue:` rather than `.UNRECOGNIZED(4)` directly, so this test keeps covering
+        // Ironwood decode-path-stable even after a future proto regeneration names case 4.
+        let ironwoodPool = try XCTUnwrap(FfiValuePool(rawValue: 4))
+        let output = Self.makeReceivedOutput(valuePool: ironwoodPool)
         let input = Self.makeProposedInput(FfiProposedInput.OneOf_Value.receivedOutput(output))
         let proposal = Self.makeProposal(steps: [Self.makeStep(inputs: [input])])
 
@@ -85,6 +88,20 @@ final class ProposalSpendsOrchardTests: XCTestCase {
         let proposal = Proposal.testOnlyFakeProposal(totalFee: 0, spendsLegacyOrchardFunds: true)
 
         XCTAssertTrue(proposal.spendsLegacyOrchardFunds)
+    }
+
+    func testFactoryTotalFeeIsZeroInBothBranches() {
+        // testOnlyFakeProposal never attaches its `balance` (and thus `totalFee`) to any step, in either
+        // branch, so totalFeeRequired() is always Zatoshi.zero. Pin both branches so a future edit can't
+        // change fee behavior in only one of them.
+        XCTAssertEqual(
+            Proposal.testOnlyFakeProposal(totalFee: 10, spendsLegacyOrchardFunds: false).totalFeeRequired(),
+            Zatoshi.zero
+        )
+        XCTAssertEqual(
+            Proposal.testOnlyFakeProposal(totalFee: 10, spendsLegacyOrchardFunds: true).totalFeeRequired(),
+            Zatoshi.zero
+        )
     }
 
     // MARK: - Helpers
