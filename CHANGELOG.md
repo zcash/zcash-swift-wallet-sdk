@@ -20,8 +20,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SDK that does not know the code has learned nothing about the transaction.
 
 ## Changed
-- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.6` and
-  `zcash_client_sqlite 0.22.0-rc.6`, adopting the revised ZIP 318 migration timing
+- Updated the librustzcash crates to `zcash_client_backend 0.24.0-rc.7` and
+  `zcash_client_sqlite 0.22.0-rc.7`, adopting the revised ZIP 318 migration timing
   (shorter transfer and preparation delays, and an anchor-age cap of 4 bucket
   boundaries rather than 16).
 - A canonical ZIP 318 crossing is now funded from the single oldest Orchard note
@@ -57,6 +57,15 @@ All of the following were picked up from the librustzcash update:
   the receiving account's unified address; for outputs the wallet created, the
   recipient address recorded at transaction construction time takes precedence
   over the receiving address.
+- `createTransactionFromPCZT(pcztWithProofs:pcztWithSigs:)` now records the
+  transaction's Ironwood outputs. Every Ironwood output was previously omitted
+  from the stored transaction, so for a post-NU6.3 PCZT that delivers its payment
+  through the Ironwood pool the recipient address and the memo the wallet sent
+  were never persisted — and are not recoverable afterwards — while the
+  transaction's wallet-internal Ironwood outputs stayed invisible to the wallet,
+  and so absent from `getTransactionOutputs(for:)`, until the transaction was
+  mined and scanned. Shielded outputs stored by this path are also now tagged with
+  their note commitment tree, as the ordinary send path already did.
 
 # 2.8.0-rc.2 - 2026-07-28
 

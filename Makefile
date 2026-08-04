@@ -95,12 +95,25 @@ test: test-offline ## Run the offline test suite
 .PHONY: check
 check: build test ## Build and run the offline tests
 
+# `build` links whatever FFI is already in place; these build the Rust from
+# source first, so the XCFramework matches the tree.
+.PHONY: build-all
+build-all: ffi-macos configure-local-ffi build ## Build the FFI from source, then the Swift package
+
+.PHONY: build-all-release
+build-all-release: ffi-macos configure-local-ffi build-release ## Build the FFI and the Swift package in release mode
+
+.PHONY: check-all
+check-all: build-all test ## Build everything from source and run the offline tests
+
 .PHONY: clean
 clean: ## Clean the SwiftPM build directory
 	$(SWIFT) package clean
 
+# reset-ffi last: it removes LocalPackages/, which would otherwise survive as a
+# stale copy that Package.swift keeps linking after everything else is gone.
 .PHONY: clean-all
-clean-all: clean clean-ffi ## Clean SwiftPM and FFI build artifacts
+clean-all: clean clean-ffi clean-rust reset-ffi ## Clean all artifacts and reset the FFI mode
 
 .PHONY: setup
 setup: ## Set up the development environment
@@ -143,6 +156,27 @@ format: ## Apply SwiftLint autocorrections
 swift-build: build ## Alias for `make build`
 
 # ---------------------------------------------------------------------------
+# Rust crate
+# ---------------------------------------------------------------------------
+#
+# Cargo.toml is at the repo root, so cargo runs from here. These build for the
+# host only; the ffi-* targets below cross-compile for Apple platforms.
+
+.PHONY: build-rust
+build-rust: ## Build the Rust crate for the host (debug)
+	$(CARGO) build
+
+.PHONY: build-rust-release
+build-rust-release: ## Build the Rust crate for the host (release)
+	$(CARGO) build --release
+
+# Removes target/ entirely, including the cross-compiled slices the ffi-*
+# targets build. clean-ffi preserves those on purpose.
+.PHONY: clean-rust
+clean-rust: ## Clean the Cargo build artifacts (target/)
+	$(CARGO) clean
+
+# ---------------------------------------------------------------------------
 # Rust FFI (BuildSupport/)
 # ---------------------------------------------------------------------------
 #
@@ -173,7 +207,7 @@ verify-ffi: ## Check the XCFramework exists and show its contents
 # Package.swift auto-detects LocalPackages/ and links the local FFI instead of
 # the released binary target.
 .PHONY: configure-local-ffi
-configure-local-ffi: ## Point Package.swift at the locally built FFI
+configure-local-ffi: verify-ffi ## Point Package.swift at the locally built FFI
 	mkdir -p LocalPackages
 	cp -R $(XCFRAMEWORK) LocalPackages/
 	cp $(BUILD_SUPPORT)/LocalPackages-Package.swift LocalPackages/Package.swift

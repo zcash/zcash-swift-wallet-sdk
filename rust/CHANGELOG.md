@@ -9,8 +9,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## 2.8.0-rc.2 - 2026-07-28
 
 ### Changed
-- Migrated to `zcash_protocol 0.10.2`, `zcash_client_backend 0.24.0-rc.5`,
-  `zcash_client_sqlite 0.22.0-rc.5`
+- Migrated to `zcash_protocol 0.10.4`, `zcash_client_backend 0.24.0-rc.7`,
+  `zcash_client_sqlite 0.22.0-rc.7`, `pczt 0.9.2`
 - Once NU6.3 has activated, `zcashlc_propose_transfer` and
   `zcashlc_propose_transfer_from_uri` propose a single payment of a canonical
   ZIP 318 denomination that crosses the Orchard turnstile as a ZIP 318
@@ -29,6 +29,14 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   height — was silently discarded). No `repr(C)` struct layout changes.
 
 ### Fixed
+- `zcashlc_extract_and_store_from_pczt` now records the transaction's Ironwood
+  outputs in the stored sent transaction. Every Ironwood output was previously
+  omitted, so for a post-NU6.3 PCZT delivering its payment through the Ironwood
+  pool the external recipient's address and the decrypted memo were never
+  persisted (and are not otherwise recoverable), and wallet-internal Ironwood
+  outputs were invisible to the wallet until the transaction was mined and
+  scanned. Shielded sent outputs stored by this call are also now tagged with
+  their note commitment tree, as the transaction-builder spend path already did.
 - Ironwood notes received on an account's internal address are now classified
   as change once the wallet learns that the same account funded the
   transaction, as was already the case for Sapling and Orchard notes, so
