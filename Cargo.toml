@@ -44,7 +44,7 @@ eip681 = "0.1.0"
 # Infrastructure
 prost = "0.14"
 rusqlite = "0.37"
-secrecy = "0.8"
+secrecy = "0.10"
 rand = "0.8"
 nonempty = "0.11"
 
