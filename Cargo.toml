@@ -163,21 +163,32 @@ lto = true
 slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "ab89ada45f2ef893a05fcefa0ead99f87d848a4e" }
 
 ## Update the `rev` value in the following lines to use a hash-pinned version of the librustzcash crates.
-# INTERIM PIN (MOB-1466 M3): librustzcash main at the #2909 merge — migration transactions
-# classified against ZIP 318 at store time (activates the app's unmined-migration Activity
-# filter). This rev also carries #2907 (engine next_* selection ordered by height). Remove the
-# pin (recomment the block) at the first published rc that contains both.
-pczt = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
-zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
-zip321 = { git = "https://github.com/zcash/librustzcash", rev = "b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c" }
+#
+# TEMPORARY, TEST-ONLY PIN: librustzcash at 59ed8930, for the `zcash_pool_migration` note-locking
+# work (librustzcash#2929 and its stack) that no published crate carries. A version requirement
+# cannot express this: the pinned crate calls itself `zcash_pool_migration` 0.1.0-rc.6, and so
+# does the published rc.6 — but the published one still has the THREE-parameter
+# `WalletProveError`, no `MigrationProver::lock_spent_notes`, and the two-argument
+# `set_transaction_proved`. Only a revision distinguishes them.
+#
+# A COMMIT HASH, not a branch, for the reason the slipstream pin above gives: a branch pin
+# silently follows a force-push, so a build can pick up code nobody reviewed, whereas a stale
+# hash fails loudly.
+#
+# THE PIN MUST NOT OUTLIVE THE RELEASE THAT CARRIES THESE CHANGES. Replace this block with the
+# published version numbers (recomment it) at the first rc containing them; the source adaptation
+# in `rust/src/migration*.rs` stays as it is.
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
+zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "59ed8930b8c6d96ce7c0c44a756d480f7311be8a" }
 
 # Reinstate together with the voting dependencies above:
 # zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "e53e74487d31ad0f5713580fb2f0222b53ae9db8" }

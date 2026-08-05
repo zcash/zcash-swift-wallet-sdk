@@ -89,6 +89,25 @@ impl<'a> Backend<'a> {
         })
     }
 
+    /// The account's most recent stored migration WHATEVER its status, where
+    /// [`PoolMigrationRead::get_migration`] reports only a PENDING one.
+    ///
+    /// The two answers coincide until a run reaches a terminal status; from that moment
+    /// `get_migration` returns `None` and the record is readable only here. Every SDK entry point
+    /// that must still SEE a finished or cancelled run — reporting it complete, or listing the
+    /// transactions it mined — reads through this, and keeps its own `is_terminal()` branch to
+    /// decide what a terminal run means for that particular answer. Entry points that act ON a run
+    /// (committing, signing, proving, broadcasting, replanning) read `get_migration` instead, so
+    /// the store's own pending-only filter is what keeps them off a record nothing will drive.
+    ///
+    /// Inherent rather than part of [`PoolMigrationRead`] because the engine never reads history:
+    /// upstream keeps it off the trait for the same reason.
+    pub(crate) fn latest_migration(&self) -> anyhow::Result<Option<MigrationState>> {
+        self.store
+            .latest_migration()
+            .map_err(|e| anyhow!("migration store history read failed: {e}"))
+    }
+
     /// The target height for note selection (the chain tip plus one).
     fn selection_target(&self) -> anyhow::Result<TargetHeight> {
         let tip = self

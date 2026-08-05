@@ -52,6 +52,7 @@
 
 use anyhow::anyhow;
 use zcash_client_backend::data_api::WalletRead;
+use zcash_client_backend::data_api::locking::LockError;
 use zcash_pool_migration::engine::{
     self, MigrationProver, MigrationState, MigrationTransferId, MigrationTxKind,
 };
@@ -86,21 +87,33 @@ pub(crate) trait ProveErrorClass {
     fn is_transient(&self) -> bool;
 }
 
-impl<TE, NE, RE> ProveErrorClass for WalletProveError<TE, NE, RE> {
+impl<TE, NE, RE, LE> ProveErrorClass for WalletProveError<TE, NE, RE, LE> {
     /// Transient = "not scanned/retained yet or transiently unqueryable — resolves as the wallet
     /// syncs": no spendable note yet matches the spend's revealed nullifier (`UnknownSpentNote` —
     /// a late-mining dependency's note the wallet has not seen yet), no root at the anchor
     /// checkpoint yet (`AnchorNotFound`), the spent note not witnessable there yet
     /// (`WitnessNotFound`), a commitment-tree QUERY failure (`Tree(ShardTreeError::Query(_))` —
     /// shard-tree query races during sync; this exact case crash-looped a prove batch on Android
-    /// on 2026-07-28), or no chain data at all (`ChainTipUnknown`).
+    /// on 2026-07-28), no chain data at all (`ChainTipUnknown`), or a lost race for a spent note's
+    /// reservation (`Lock(LockError::LockFailure(_))`).
+    ///
+    /// The lock case is transient for the same reason upstream declines to call it fatal: another
+    /// flow — typically a user payment proposed while this transaction was being proved — holds an
+    /// ADVISORY reservation on a note this transaction spends, and that flow may release the lock
+    /// or let it expire without ever broadcasting, in which case a later sweep proves the
+    /// transaction unchanged. Deferring is also the only response available: the notes were fixed
+    /// by the transaction's signature, so nothing here can re-select around the conflict. Once the
+    /// rival transaction actually mines, the conflict stops presenting as a lock failure and
+    /// arrives as `UnknownSpentNote` instead, which the satisfiability sweep — not this
+    /// classification — adjudicates.
     ///
     /// Hard = genuinely unrecoverable, must not be swallowed: everything else, including
     /// `IronwoodTreeUnavailable` explicitly — the backend tracks no Ironwood commitment tree at
     /// all, which no amount of syncing produces — and the NON-query `Tree` variants (A6): a
     /// `Storage(_)` failure is the persistence layer erroring and an `Insert(_)` a corrupt tree
     /// write, neither of which more syncing repairs, so deferring them would stall the sweep
-    /// silently forever.
+    /// silently forever. `Lock(LockError::Storage(_))` is hard on that same reading — it is the
+    /// lock table failing, not a rival owner holding it.
     fn is_transient(&self) -> bool {
         matches!(
             self,
@@ -109,6 +122,7 @@ impl<TE, NE, RE> ProveErrorClass for WalletProveError<TE, NE, RE> {
                 | WalletProveError::WitnessNotFound(_)
                 | WalletProveError::Tree(shardtree::error::ShardTreeError::Query(_))
                 | WalletProveError::ChainTipUnknown
+                | WalletProveError::Lock(LockError::LockFailure(_))
         )
     }
 }

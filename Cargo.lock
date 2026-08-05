@@ -1680,7 +1680,7 @@ dependencies = [
 [[package]]
 name = "equihash"
 version = "0.3.0"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -1716,7 +1716,7 @@ dependencies = [
 [[package]]
 name = "f4jumble"
 version = "0.1.1"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "blake2b_simd",
 ]
@@ -3610,7 +3610,7 @@ checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 [[package]]
 name = "pczt"
 version = "0.9.2"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "blake2b_simd",
  "bls12_381",
@@ -7797,7 +7797,7 @@ dependencies = [
 [[package]]
 name = "zcash_address"
 version = "0.13.0"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "bech32",
  "bs58",
@@ -7810,7 +7810,7 @@ dependencies = [
 [[package]]
 name = "zcash_client_backend"
 version = "0.24.0-rc.7"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "arti-client",
  "base64",
@@ -7877,7 +7877,7 @@ dependencies = [
 [[package]]
 name = "zcash_client_sqlite"
 version = "0.22.0-rc.7"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "bip32",
  "bitflags",
@@ -7937,7 +7937,7 @@ dependencies = [
 [[package]]
 name = "zcash_keys"
 version = "0.16.1"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "bech32",
  "bip32",
@@ -7979,8 +7979,9 @@ dependencies = [
 [[package]]
 name = "zcash_pool_migration"
 version = "0.1.0-rc.6"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
+ "blake2b_simd",
  "corez",
  "getset",
  "incrementalmerkletree",
@@ -7999,7 +8000,7 @@ dependencies = [
 [[package]]
 name = "zcash_primitives"
 version = "0.30.0"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "blake2b_simd",
  "block-buffer 0.11.0-rc.3",
@@ -8029,7 +8030,7 @@ dependencies = [
 [[package]]
 name = "zcash_proofs"
 version = "0.30.0"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -8050,7 +8051,7 @@ dependencies = [
 [[package]]
 name = "zcash_protocol"
 version = "0.10.4"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "corez",
  "document-features",
@@ -8088,7 +8089,7 @@ dependencies = [
 [[package]]
 name = "zcash_transparent"
 version = "0.10.0"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "bip32",
  "bs58",
@@ -8181,7 +8182,7 @@ dependencies = [
 [[package]]
 name = "zip321"
 version = "0.9.0-rc.1"
-source = "git+https://github.com/zcash/librustzcash?rev=b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c#b49e2cb3f96e77cd97a0b350cbf0eadfaa0ef05c"
+source = "git+https://github.com/zcash/librustzcash?rev=59ed8930b8c6d96ce7c0c44a756d480f7311be8a#59ed8930b8c6d96ce7c0c44a756d480f7311be8a"
 dependencies = [
  "base64",
  "nom",

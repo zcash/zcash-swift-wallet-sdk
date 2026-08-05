@@ -495,8 +495,8 @@ fn resolve_immediate_run(
 // ----- reconciliation, planning, committing -----
 
 /// Loads the stored run with its `Broadcast` transactions promoted to `Mined` wherever the
-/// wallet's scan has since seen them, persisting once if anything changed. `None` means no
-/// migration is stored.
+/// wallet's scan has since seen them, persisting once if anything changed. `None` means the
+/// account has never stored a migration at all.
 ///
 /// The promotion itself is the ENGINE's — [`PoolMigrationRead::mined_height`], the same query
 /// `advance_migration` sweeps with, bounded by the wallet's fully-scanned height rather than by
@@ -504,9 +504,16 @@ fn resolve_immediate_run(
 /// drive path gets the promotion inside `advance_migration` and does not call this, while the
 /// read-only entry points (progress, statuses, the delivery queries) run it so a standalone read
 /// is not answered from a state the wallet's own scan has already moved past.
+///
+/// The load is [`Backend::latest_migration`], NOT the pending-only `get_migration`: a finished or
+/// cancelled run must stay READABLE — `zcashlc_migration_transaction_statuses` lists the
+/// transactions it mined, and nothing else would ever surface them again — even though nothing
+/// will drive it further. Every caller keeps its own `is_terminal()` branch for what a terminal
+/// run means to its particular answer, and the reconciliation below never touches one: there is
+/// nothing left to promote in a run the engine has already settled.
 fn reconcile_mined(ctx: &mut CallCtx) -> anyhow::Result<Option<MigrationState>> {
     let mut backend = Backend::new(&ctx.wallet, ctx.account, None, &mut ctx.store_conn)?;
-    let Some(mut state) = backend.get_migration()? else {
+    let Some(mut state) = backend.latest_migration()? else {
         return Ok(None);
     };
     if state.is_terminal() {
@@ -1254,13 +1261,16 @@ fn due_assuming_proving(
     next_ready_action(state, targets, NextAction::Prove)?;
     let mut scratch = state.clone();
     while let Some(id) = next_ready_action(&scratch, targets, NextAction::Prove) {
-        let bytes = scratch
+        // The row's own bytes and its own lock owner, so this virtual proof is purely a lifecycle
+        // flip: no prover runs, so no reservation is taken, and re-stating the stored token leaves
+        // the scratch row's reservation exactly as the real one stands.
+        let (bytes, lock_owner) = scratch
             .transactions()
             .iter()
             .find(|t| t.id() == id)
-            .map(|t| t.pczt().clone())
+            .map(|t| (t.pczt().clone(), t.lock_owner()))
             .unwrap_or_default();
-        scratch.set_transaction_proved(id, bytes);
+        scratch.set_transaction_proved(id, bytes, lock_owner);
     }
     next_ready_action(&scratch, targets, NextAction::Broadcast)
 }
@@ -2189,14 +2199,18 @@ fn remaining_orchard(ctx: &mut CallCtx) -> anyhow::Result<Zatoshis> {
 /// targets plus a ten-block reorg-settle depth. Reevaluate and Replan are projected onto the
 /// existing Attend DTO case so the Swift public enum remains source-compatible.
 ///
-/// Returns NULL **with no error recorded** when `get_migration()` returns `None` — no run is
-/// stored, so there is nothing to advance and no step to report. Distinguish that benign NULL
-/// from an error NULL via `zcashlc_last_error_length`. A stored TERMINAL run (Complete, or
-/// Failed/cancelled) reports the `Complete` step VERBATIM, exactly as upstream's `next_step`
-/// does — a cancelled run is never driven further, and is NEVER remapped to any other step.
-/// (The terminal check here is upstream's own first check, hoisted only so the answer needs no
-/// chain-tip lookup — the same answer `next_step` would give, available on a wallet that never
-/// saw a chain tip.)
+/// Returns NULL **with no error recorded** when the account has never stored a migration — there
+/// is nothing to advance and no step to report. Distinguish that benign NULL from an error NULL
+/// via `zcashlc_last_error_length`. A stored TERMINAL run (Complete, or Failed/cancelled) reports
+/// the `Complete` step VERBATIM, exactly as upstream's `next_step` does — a cancelled run is never
+/// driven further, and is NEVER remapped to any other step. (The terminal check here is upstream's
+/// own first check, hoisted only so the answer needs no chain-tip lookup — the same answer
+/// `next_step` would give, available on a wallet that never saw a chain tip.)
+///
+/// Reporting that verbatim `Complete` is why the load is [`Backend::latest_migration`] rather than
+/// the pending-only `get_migration`, which stops reporting a run at the exact moment it becomes
+/// terminal: reading through the pending-only accessor would answer NULL — "no run was ever
+/// stored" — for the one case this function exists to name.
 ///
 /// # Safety
 /// See [`open`]. Free the returned pointer with [`zcashlc_free_migration_advance_step`].
@@ -2212,10 +2226,11 @@ pub unsafe extern "C" fn zcashlc_migration_advance_step(
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
         // A plain load, NOT `reconcile_mined`: `advance_migration` sweeps every in-flight
         // transaction and promotes the ones the wallet's scan has seen mine, so reconciling first
-        // would only ask the same question twice.
+        // would only ask the same question twice. History-inclusive, so the terminal check below
+        // still has a run to check (see the function doc).
         let Some(mut state) = ({
             let backend = Backend::new(&ctx.wallet, ctx.account, None, &mut ctx.store_conn)?;
-            backend.get_migration()?
+            backend.latest_migration()?
         }) else {
             // No stored run: NULL with NO error (see the function doc). Returned before any
             // chain-tip lookup, so it holds even before the wallet ever saw a chain tip.
@@ -2229,11 +2244,20 @@ pub unsafe extern "C" fn zcashlc_migration_advance_step(
         }
         let targets = dueness_targets(ctx.tip()?, estimated_tip);
         let mut backend = Backend::new(&ctx.wallet, ctx.account, None, &mut ctx.store_conn)?;
+        // `OsRng`, the same source every other engine entry point here is given, because these
+        // draws are PRIVACY-BEARING rather than incidental. The rng feeds upstream's re-spread of
+        // a broadcast schedule the wallet slept through, and specifically the anchor-boundary
+        // REDRAW that accompanies it: a still-unproved transfer whose schedule shifts forward but
+        // whose boundary did not would broadcast an anchor older than any honest draw, by exactly
+        // the shift — and every deferred transfer of this wallet older by the SAME amount, which
+        // is a linkable fingerprint. A weak or reproducible source here is an on-chain disclosure,
+        // not a test-determinism concern.
         let step = advance_migration(
             &mut backend,
             &mut state,
             targets,
             &AdvanceConfig::new(ReorgSettleDepth::new(10)),
+            &mut OsRng,
         )?;
         Ok(match step {
             AdvanceStep::Reevaluate | AdvanceStep::Replan => {
@@ -4227,6 +4251,7 @@ mod tests {
     use rand::rngs::StdRng;
     use zcash_client_backend::data_api::WalletWrite;
     use zcash_pool_migration::denomination::DenominationPlan;
+    use zcash_pool_migration::engine::MigrationLockOwner;
     use zcash_pool_migration::preparation::PreparationPlan;
     use zcash_pool_migration::scheduling::{self, AnchorBucketInterval, SchedulingParams};
     use zcash_pool_migration::signing_rounds::min_signing_rounds;
@@ -4249,7 +4274,7 @@ mod tests {
         expiry_height: BlockHeight,
         anchor_boundary: Option<BlockHeight>,
         state: MigrationTxState,
-        lock_owner: Option<[u8; 32]>,
+        lock_owner: Option<MigrationLockOwner>,
     ) -> MigrationTransaction {
         MigrationTransaction::from_parts(
             id,
@@ -6931,7 +6956,7 @@ mod tests {
     /// The prover error type the dispatch tests fail with: the REAL upstream
     /// [`WalletProveError`] (so the classification under test is the production one), with unit
     /// tree/note/chain-state error parameters.
-    type TestProveError = WalletProveError<(), (), ()>;
+    type TestProveError = WalletProveError<(), (), (), ()>;
 
     /// Which prover method the dispatch routed a transaction to, and with which anchor.
     #[derive(Debug, PartialEq, Eq)]
@@ -7477,6 +7502,11 @@ mod tests {
     }
 
     /// Re-reads the stored migration for `account`, for asserting what the sweep persisted.
+    ///
+    /// History-inclusive (`latest_migration`, not the pending-only `get_migration`): a fixture
+    /// whose last transaction the write under test promoted to `Mined` has by that act become
+    /// terminal, and asserting on WHAT was written must not be defeated by the accessor that
+    /// stops reporting a run once it is finished.
     fn read_fixture_state(path: &std::path::Path, account: &[u8; 16]) -> MigrationState {
         let mut conn = Connection::open(path).expect("the verification connection opens");
         let account_id = account_uuid_from_bytes(account.as_ptr()).expect("16 uuid bytes");
@@ -7488,7 +7518,7 @@ mod tests {
         )
         .expect("the account-keyed store resolves the fixture account");
         store
-            .get_migration()
+            .latest_migration()
             .expect("the store reads")
             .expect("a migration is stored")
     }
