@@ -17,7 +17,8 @@ enum Dependencies {
         endpoint: LightWalletEndpoint,
         loggingPolicy: Initializer.LoggingPolicy = .default(.debug),
         isTorEnabled: Bool,
-        isExchangeRateEnabled: Bool
+        isExchangeRateEnabled: Bool,
+        dandelionSubmitConfig: DandelionSubmitConfig = .lightWalletD
     ) {
         container.register(type: SDKFlags.self, isSingleton: true) { _ in
             SDKFlags(
@@ -101,7 +102,30 @@ enum Dependencies {
         }
 
         container.register(type: EndpointSubmitter.self, isSingleton: true) { di in
-            GRPCEndpointSubmitter(torClient: di.resolve(TorClient.self), sdkFlags: di.resolve(SDKFlags.self), logger: di.resolve(Logger.self))
+            let logger = di.resolve(Logger.self)
+            switch dandelionSubmitConfig {
+            case .lightWalletD:
+                return GRPCEndpointSubmitter(
+                    torClient: di.resolve(TorClient.self),
+                    sdkFlags: di.resolve(SDKFlags.self),
+                    logger: logger
+                )
+            case let .directP2P(network, fallback):
+                let p2p = ZcashP2PSubmitter(p2pNetwork: network, logger: logger)
+                if fallback {
+                    return FallbackEndpointSubmitter(
+                        primary: p2p,
+                        fallback: GRPCEndpointSubmitter(
+                            torClient: di.resolve(TorClient.self),
+                            sdkFlags: di.resolve(SDKFlags.self),
+                            logger: logger
+                        ),
+                        logger: logger
+                    )
+                } else {
+                    return p2p
+                }
+            }
         }
 
         container.register(type: MultiEndpointSubmitter.self, isSingleton: true) { di in
