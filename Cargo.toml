@@ -160,7 +160,7 @@ lto = true
 # build can pick up code nobody reviewed, whereas a stale hash fails loudly. Keep it in step with
 # the librustzcash generation the versions above declare: a rev built against an older generation
 # cannot resolve against them.
-slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "ab89ada45f2ef893a05fcefa0ead99f87d848a4e" }
+slipstream-core = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "ab89ada45f2ef893a05fcefa0ead99f87d848a4e" }
 
 ## Update the `rev` value in the following lines to use a hash-pinned version of the librustzcash crates.
 # INTERIM PIN (MOB-1466): the michal/tmp-next-due-plus-exact-funding-note-count branch head —

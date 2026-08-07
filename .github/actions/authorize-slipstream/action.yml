@@ -35,7 +35,7 @@ runs:
         # The App is installed on zodl-inc, not on this repository's owner, so the installation
         # to mint against has to be named explicitly.
         owner: zodl-inc
-        repositories: slipstream
+        repositories: slipstream-internal
         # Narrow the minted token to exactly what cargo needs, rather than inheriting whatever
         # the App's installation happens to hold. Fetching a git dependency is a read of repository
         # contents and nothing more.
