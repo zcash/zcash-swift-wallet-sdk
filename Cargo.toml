@@ -112,9 +112,11 @@ zcash_keys = { version = "0.16.0", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
 
 # Slipstream engine — the alternative sync engine the SlipstreamSynchronizer
-# drives. Consumed as a remote crate from zodl-inc/slipstream, the engine's
-# home since the personal-fork era (the old PR #6 adaptations are merged
-# there). Return to a release tag once one is cut with these aboard.
+# drives. Consumed as a remote crate from zodl-inc/slipstream-internal — the
+# engine's archived read-only home (nuttycom, 2026-08-08: everything pointing
+# at the old `slipstream` name repoints here until versions bump to the
+# released crate; the old name now hosts a different repo). Return to the
+# released crate once one is cut with these aboard.
 #
 # The rev rides [patch.crates-io] below, pinned to a COMMIT HASH rather than a
 # branch: a branch pin silently follows a force-push, so a build can pick up
@@ -160,7 +162,7 @@ lto = true
 # build can pick up code nobody reviewed, whereas a stale hash fails loudly. Keep it in step with
 # the librustzcash generation the versions above declare: a rev built against an older generation
 # cannot resolve against them.
-slipstream-core = { git = "https://github.com/zodl-inc/slipstream.git", rev = "ab89ada45f2ef893a05fcefa0ead99f87d848a4e" }
+slipstream-core = { git = "https://github.com/zodl-inc/slipstream-internal.git", rev = "ab89ada45f2ef893a05fcefa0ead99f87d848a4e" }
 
 ## Update the `rev` value in the following lines to use a hash-pinned version of the librustzcash crates.
 # INTERIM PIN (MOB-1466): the michal/tmp-next-due-plus-exact-funding-note-count branch head —
