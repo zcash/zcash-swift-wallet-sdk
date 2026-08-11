@@ -48,6 +48,11 @@ Changes are relative to `2.8.0-rc.3`.
   late-bound into it, without re-proving or committing again; the returned string is the helper
   request body verbatim.
 
+- `ZcashSDK.nu63ConsensusBranchID` publishes the NU6.3 ("Ironwood") consensus branch ID,
+  `0x37a5_165b`. It was already used internally by the server-validation path; it is public now so
+  hosts that must name the era — voting delegations are rejected outright when built for the wrong
+  branch — take it from the SDK rather than copying the literal.
+
 ## Changed
 
 - Voting is pinned to `zcash_voting = "=2.0.0-rc.5"` (exactly; a non-`=` requirement resolves to

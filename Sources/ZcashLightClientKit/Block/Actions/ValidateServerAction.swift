@@ -22,10 +22,6 @@ final class ValidateServerAction {
 }
 
 extension ValidateServerAction: Action {
-    /// The consensus branch ID of NU6.3 ("Ironwood"). When the chain is on this branch, the
-    /// connected server must serve Ironwood data — see the tree-state check in `run` below.
-    static let nu63ConsensusBranchID: ConsensusBranchID = 0x37a5_165b
-
     var removeBlocksCacheWhenFailed: Bool { false }
 
     func run(with context: ActionContext, didUpdate: @escaping (CompactBlockProcessor.Event) async -> Void) async throws -> ActionContext {
@@ -82,7 +78,7 @@ extension ValidateServerAction: Action {
             //
             // A custom network reports a nonstandard branch id that can never equal the NU6.3 one, so
             // this probe belongs with the other branch-id-derived checks it is gated behind.
-            if remoteBranchID == Self.nu63ConsensusBranchID {
+            if remoteBranchID == ZcashSDK.nu63ConsensusBranchID {
                 var tipBlock = BlockID()
                 tipBlock.height = info.blockHeight
                 let treeState = try await service.getTreeState(tipBlock, mode: await sdkFlags.ifTor(.defaultTor))
