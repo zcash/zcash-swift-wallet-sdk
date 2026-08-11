@@ -592,3 +592,27 @@ public struct VotingPirLayout: Equatable, Sendable {
         self.tier1Layers = tier1Layers
     }
 }
+
+// MARK: - Vote confirmation (JSON)
+
+/// The positions a mined cast-vote transaction confirmed.
+///
+/// Decoded from `zcash_voting::wire::VoteConfirmation`. Both positions are read
+/// out of the chain's confirmation events by the crate, which also writes them
+/// to the voting database in the same transaction that returns them — so this
+/// value and the persisted state can never disagree.
+public struct VotingVoteConfirmation: Codable, Sendable, Equatable {
+    /// The confirmed transaction hash, echoed back from the events.
+    public let txHash: String
+    /// Confirmed vote-authority-note leaf position.
+    public let vanLeafPosition: UInt32
+    /// Confirmed position of the vote commitment within the vote commitment
+    /// tree. This is the value to late-bind into helper-share payloads.
+    public let voteCommitmentTreePosition: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case txHash = "tx_hash"
+        case vanLeafPosition = "van_leaf_position"
+        case voteCommitmentTreePosition = "vc_tree_position"
+    }
+}

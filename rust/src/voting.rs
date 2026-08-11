@@ -6,6 +6,7 @@
 //! `store_commitment_bundle`, `decompose_weight`, `generate_delegation_inputs`)
 //! keep their symbols as honest "superseded" error stubs.
 
+pub mod confirmation;
 mod constants;
 pub mod db;
 pub mod delegation;

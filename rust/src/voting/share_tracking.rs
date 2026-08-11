@@ -275,6 +275,52 @@ pub unsafe extern "C" fn zcashlc_voting_add_sent_servers(
     unwrap_exc_or(res, -1)
 }
 
+/// Rebuild one helper-server share payload as the crate's own wire JSON.
+///
+/// Thin passthrough to `zcash_voting::share::recover_wire_json`: the crate
+/// parses the persisted recovery bundle, selects the requested share, binds the
+/// confirmed vote-commitment-tree position and the scheduled submission time
+/// into it, and serializes the result with its own `VoteShareWire` codec. No
+/// second commit happens, and the FFI shapes nothing: the returned bytes are
+/// the helper payload verbatim.
+///
+/// `commitment_bundle_json` is the recovery JSON previously read with
+/// `zcashlc_voting_get_commitment_bundle`.
+///
+/// Returns the UTF-8 wire JSON as `*mut FfiBoxedSlice`, or null on error.
+///
+/// # Safety
+///
+/// - If `commitment_bundle_json_len > 0` then `commitment_bundle_json` must be
+///   non-null and valid for reads for that many bytes; if it is `0`, the pointer
+///   is ignored.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_voting_recover_wire_json(
+    commitment_bundle_json: *const u8,
+    commitment_bundle_json_len: usize,
+    proposal_id: u32,
+    share_index: u32,
+    vc_tree_position: u64,
+    submit_at: u64,
+) -> *mut crate::ffi::BoxedSlice {
+    let res = catch_panic(|| {
+        let bundle_json =
+            unsafe { str_from_ptr(commitment_bundle_json, commitment_bundle_json_len) }?;
+
+        let wire_json = voting::share::recover_wire_json(
+            &bundle_json,
+            proposal_id,
+            share_index,
+            vc_tree_position,
+            submit_at,
+        )
+        .map_err(|e| anyhow!("recover_wire_json failed: {}", e))?;
+
+        Ok(crate::ffi::BoxedSlice::some(wire_json.into_bytes()))
+    });
+    unwrap_exc_or_null(res)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

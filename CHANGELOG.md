@@ -37,6 +37,17 @@ Changes are relative to `2.8.0-rc.3`.
   network — a modified-mainnet chain votes with mainnet hotkeys and address
   HRPs — so `open` fails if that network has not been configured yet.
 
+- Two thin passthroughs to `zcash_voting` operations the SDK previously made callers assemble by
+  hand. `VotingRustBackend.confirmVoteSubmission(roundId:bundleIndex:proposalId:txHash:eventsJson:)`
+  hands the chain's confirmation events to the crate, which parses them, records the transaction
+  hash, advances the vote-authority-note position and records the vote-commitment tree position in
+  one database transaction, returning both as `VotingVoteConfirmation` — replacing a caller-side
+  `leaf_index` string split and a two-write window in which a crash could leave the two positions
+  disagreeing. `VotingRustBackend.recoverWireJson(commitmentBundleJson:proposalId:shareIndex:voteCommitmentTreePosition:submitAt:)`
+  rebuilds one helper-server payload from the persisted recovery bundle with the confirmed position
+  late-bound into it, without re-proving or committing again; the returned string is the helper
+  request body verbatim.
+
 ## Changed
 
 - Voting is pinned to `zcash_voting = "=2.0.0-rc.5"` (exactly; a non-`=` requirement resolves to

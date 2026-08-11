@@ -414,6 +414,63 @@ extension VotingRustBackend {
             }
         }
     }
+
+    /// Record a confirmed cast-vote transaction in one atomic step.
+    ///
+    /// `zcash_voting` parses the confirmation events, records the transaction
+    /// hash, advances the vote-authority-note position and records the
+    /// vote-commitment tree position inside a single database transaction, then
+    /// returns both positions. Callers must not parse the events themselves:
+    /// splitting the `leaf_index` attribute by hand is exactly the duplicated
+    /// state this entry point exists to delete.
+    ///
+    /// `eventsJson` is the confirmation-events array the wallet's chain client
+    /// already fetches, serialized as JSON — a list of
+    /// `{"type": …, "attributes": [{"key": …, "value": …}]}` objects.
+    ///
+    /// Repeating the call with the same transaction hash and position is
+    /// accepted; a stale confirmation cannot rewind a position that a later one
+    /// already advanced.
+    public func confirmVoteSubmission(
+        roundId: String,
+        bundleIndex: UInt32,
+        proposalId: UInt32,
+        txHash: String,
+        eventsJson: String
+    ) throws -> VotingVoteConfirmation {
+        let roundIdBytes = [UInt8](roundId.utf8)
+        let txHashBytes = [UInt8](txHash.utf8)
+        let eventsBytes = [UInt8](eventsJson.utf8)
+
+        let ptr: UnsafeMutablePointer<FfiBoxedSlice> = try withHandle { dbh in
+            let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
+                txHashBytes.withUnsafeBufferPointer { txBuf in
+                    eventsBytes.withUnsafeBufferPointer { evBuf in
+                        zcashlc_voting_confirm_vote_submission(
+                            dbh,
+                            ridBuf.baseAddress,
+                            UInt(ridBuf.count),
+                            bundleIndex,
+                            proposalId,
+                            txBuf.baseAddress,
+                            UInt(txBuf.count),
+                            evBuf.baseAddress,
+                            UInt(evBuf.count)
+                        )
+                    }
+                }
+            }
+
+            guard let ptr else {
+                throw VotingRustBackendError.rustError(
+                    lastErrorMessage(fallback: "`confirm_vote_submission` failed")
+                )
+            }
+            return ptr
+        }
+        defer { zcashlc_free_boxed_slice(ptr) }
+        return try decodeJSON(from: ptr)
+    }
 }
 
 // MARK: - Share tracking (static)
@@ -460,6 +517,46 @@ extension VotingRustBackend {
         }
         defer { zcashlc_string_free(ptr) }
         return String(cString: ptr)
+    }
+
+    /// Rebuild one helper-server share payload as `zcash_voting`'s own wire JSON.
+    ///
+    /// The crate parses the persisted recovery bundle, selects the requested
+    /// share, late-binds the confirmed vote-commitment-tree position and the
+    /// scheduled submission time, and serializes the payload itself. Nothing is
+    /// re-proved and nothing is committed a second time.
+    ///
+    /// - Parameters:
+    ///   - commitmentBundleJson: ``VotingStoredCommitmentBundle/bundleJson`` from
+    ///     `getCommitmentBundle(roundId:bundleIndex:proposalId:)`.
+    ///   - voteCommitmentTreePosition: the confirmed position, from
+    ///     ``VotingVoteConfirmation/voteCommitmentTreePosition``.
+    /// - Returns: the helper request body. POST it verbatim; do not decode,
+    ///   re-shape or re-encode it.
+    /// - Throws: `VotingRustBackendError.rustError` if the bundle JSON is
+    ///   malformed, its proposal does not match `proposalId`, or the share index
+    ///   is not present in it.
+    public static func recoverWireJson(
+        commitmentBundleJson: String,
+        proposalId: UInt32,
+        shareIndex: UInt32,
+        voteCommitmentTreePosition: UInt64,
+        submitAt: UInt64
+    ) throws -> String {
+        let bundleBytes = [UInt8](commitmentBundleJson.utf8)
+        let payload = try staticBoxedSliceFFI(fallback: "`recover_wire_json` failed") {
+            bundleBytes.withUnsafeBufferPointer { buf in
+                zcashlc_voting_recover_wire_json(
+                    buf.baseAddress,
+                    UInt(buf.count),
+                    proposalId,
+                    shareIndex,
+                    voteCommitmentTreePosition,
+                    submitAt
+                )
+            }
+        }
+        return String(decoding: payload, as: UTF8.self)
     }
 }
 
