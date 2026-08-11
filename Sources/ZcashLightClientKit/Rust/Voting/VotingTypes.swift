@@ -566,3 +566,34 @@ public struct VotingStoredCommitmentBundle: Sendable, Equatable {
     /// Position of the vote commitment within the vote commitment tree.
     public let voteCommitmentTreePosition: UInt64
 }
+
+// MARK: - PIR layout
+
+/// PIR tree geometry advertised by the round's resolved dynamic voting config.
+///
+/// Mirrors `zcash_voting::config::PirLayout` field for field. `zcash_voting`
+/// runs the config/server layout handshake with these values and fails closed
+/// before issuing any private query when the server disagrees, so they must come
+/// from a resolved dynamic config rather than being assumed or compiled in.
+public struct VotingPirLayout: Equatable, Sendable {
+    public let pirDepth: UInt32
+    public let tier0Layers: UInt32
+    public let tier1Layers: UInt32
+
+    /// The crate's `PirLayout::UNKNOWN` sentinel, and its `Default`.
+    ///
+    /// `zcash_voting` rejects it — "pir_layout is unknown; resolve a current
+    /// dynamic voting config first" — so this is a fail-closed placeholder for
+    /// callers that have not resolved a config yet, never a usable layout.
+    public static let unknown = VotingPirLayout(
+        pirDepth: 0,
+        tier0Layers: 0,
+        tier1Layers: 0
+    )
+
+    public init(pirDepth: UInt32, tier0Layers: UInt32, tier1Layers: UInt32) {
+        self.pirDepth = pirDepth
+        self.tier0Layers = tier0Layers
+        self.tier1Layers = tier1Layers
+    }
+}

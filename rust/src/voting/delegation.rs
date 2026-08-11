@@ -416,8 +416,15 @@ pub unsafe extern "C" fn zcashlc_voting_generate_note_witnesses(
 // Keep PIR client construction at the SDK boundary so zcash_voting can accept
 // an injected transport. Today we use direct Hyper/Rustls. In the future this will be the
 // single place to add a Tor-backed transport based on SDK configuration.
-fn connect_pir_client(pir_url: &str) -> anyhow::Result<voting::PirClientBlocking> {
-    voting::PirClientBlocking::with_transport(pir_url, Arc::new(voting::HyperTransport::new()))
+//
+// The layout comes from the round's resolved dynamic config and is passed through
+// unchanged: `connect_pir_blocking` performs the config/server layout handshake and
+// fails closed before any private query when the server disagrees.
+fn connect_pir_client(
+    pir_url: &str,
+    pir_layout: voting::config::PirLayout,
+) -> anyhow::Result<voting::PirClientBlocking> {
+    voting::connect_pir_blocking(pir_layout, pir_url, Arc::new(voting::HyperTransport::new()))
         .map_err(|e| anyhow!("connect to PIR server failed: {}", e))
 }
 
@@ -443,6 +450,9 @@ pub unsafe extern "C" fn zcashlc_voting_precompute_delegation_pir(
     notes_json_len: usize,
     pir_server_url: *const u8,
     pir_server_url_len: usize,
+    pir_depth: u32,
+    tier0_layers: u32,
+    tier1_layers: u32,
 ) -> *mut crate::ffi::BoxedSlice {
     let db = AssertUnwindSafe(db);
     let res = catch_panic(|| {
@@ -458,7 +468,12 @@ pub unsafe extern "C" fn zcashlc_voting_precompute_delegation_pir(
         };
         let core_notes: Vec<voting::NoteInfo> = json_notes.into_iter().map(Into::into).collect();
         let pir_url = unsafe { str_from_ptr(pir_server_url, pir_server_url_len) }?;
-        let pir_client = connect_pir_client(&pir_url)?;
+        let pir_layout = voting::config::PirLayout {
+            pir_depth,
+            tier0_layers,
+            tier1_layers,
+        };
+        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
 
         let result = handle
             .db
@@ -513,6 +528,9 @@ pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
     round_name_len: usize,
     pir_server_url: *const u8,
     pir_server_url_len: usize,
+    pir_depth: u32,
+    tier0_layers: u32,
+    tier1_layers: u32,
     progress_callback: Option<unsafe extern "C" fn(f64, *mut std::ffi::c_void)>,
     progress_context: *mut std::ffi::c_void,
 ) -> *mut crate::ffi::BoxedSlice {
@@ -539,7 +557,12 @@ pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
         })?;
         let round_name_str = unsafe { str_from_ptr(round_name, round_name_len) }?;
         let pir_url = unsafe { str_from_ptr(pir_server_url, pir_server_url_len) }?;
-        let pir_client = connect_pir_client(&pir_url)?;
+        let pir_layout = voting::config::PirLayout {
+            pir_depth,
+            tier0_layers,
+            tier1_layers,
+        };
+        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
 
         let hotkey = voting::VotingHotkey::from_stored_secret(hotkey_secret, handle.network)
             .map_err(|e| anyhow!("failed to reconstruct voting hotkey: {}", e))?;
@@ -757,6 +780,14 @@ fn parse_path(bytes: &[u8]) -> anyhow::Result<[pallas::Base; PIR_PATH_ELEMENT_CO
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The PIR geometry the live dynamic voting config serves today. These
+    /// tests never reach the PIR handshake — they assert null-handle and
+    /// input-validation rejections — so the values only need to be a
+    /// well-formed layout rather than the sentinel `PirLayout::UNKNOWN`.
+    const PIR_DEPTH: u32 = 19;
+    const TIER0_LAYERS: u32 = 12;
+    const TIER1_LAYERS: u32 = 7;
 
     use super::super::constants::HOTKEY_RAW_ADDRESS_LEN;
 
@@ -1218,6 +1249,9 @@ mod tests {
                     round.len(),
                     round.as_ptr(),
                     round.len(),
+                    PIR_DEPTH,
+                    TIER0_LAYERS,
+                    TIER1_LAYERS,
                     None,
                     std::ptr::null_mut(),
                 )
@@ -1511,6 +1545,9 @@ mod tests {
                 0,
                 std::ptr::null(),
                 0,
+                PIR_DEPTH,
+                TIER0_LAYERS,
+                TIER1_LAYERS,
             )
         };
 

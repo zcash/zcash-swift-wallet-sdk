@@ -135,12 +135,17 @@ extension VotingRustBackend {
     /// `pirEndpoints` are probed in parallel via `pirResolver`. The first
     /// endpoint whose served snapshot height equals `expectedSnapshotHeight`
     /// exactly is used. See `PirSnapshotResolver` for the failure semantics.
+    ///
+    /// `pirLayout` must come from the round's resolved dynamic voting config.
+    /// `zcash_voting` fails the config/server layout handshake closed before any
+    /// private query, and rejects the `.unknown` default outright.
     public func precomputeDelegationPir(
         roundId: String,
         bundleIndex: UInt32,
         notes: [VotingNoteInfo],
         pirEndpoints: [String],
         expectedSnapshotHeight: UInt64,
+        pirLayout: VotingPirLayout = .unknown,
         pirResolver: PirSnapshotResolver = PirSnapshotResolver()
     ) async throws -> VotingDelegationPirPrecomputeResult {
         try requireOpenDatabase()
@@ -170,7 +175,10 @@ extension VotingRustBackend {
                             notesBuf.baseAddress,
                             UInt(notesBuf.count),
                             urlBuf.baseAddress,
-                            UInt(urlBuf.count)
+                            UInt(urlBuf.count),
+                            pirLayout.pirDepth,
+                            pirLayout.tier0Layers,
+                            pirLayout.tier1Layers
                         )
                     }
                 }
@@ -1523,6 +1531,7 @@ extension VotingRustBackend {
         _ params: VotingDelegationProofParams,
         pirEndpoints: [String],
         expectedSnapshotHeight: UInt64,
+        pirLayout: VotingPirLayout = .unknown,
         pirResolver: PirSnapshotResolver = PirSnapshotResolver(),
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> VotingDelegationProofResult {
@@ -1547,6 +1556,7 @@ extension VotingRustBackend {
             try syncBuildAndProveDelegation(
                 params,
                 pirServerUrl: pirServerUrl,
+                pirLayout: pirLayout,
                 progress: progress
             )
         }.value
@@ -1789,6 +1799,7 @@ private extension VotingRustBackend {
     func syncBuildAndProveDelegation(
         _ params: VotingDelegationProofParams,
         pirServerUrl: String,
+        pirLayout: VotingPirLayout,
         progress: (@Sendable (Double) -> Void)?
     ) throws -> VotingDelegationProofResult {
         let keys = params.keys
@@ -1833,6 +1844,9 @@ private extension VotingRustBackend {
                                             UInt(nameBuf.count),
                                             urlBuf.baseAddress,
                                             UInt(urlBuf.count),
+                                            pirLayout.pirDepth,
+                                            pirLayout.tier0Layers,
+                                            pirLayout.tier1Layers,
                                             trampoline,
                                             progressContext
                                         )

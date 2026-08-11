@@ -39,6 +39,15 @@ Changes are relative to `2.8.0-rc.3`.
 
 ## Changed
 
+- Voting is pinned to `zcash_voting = "=2.0.0-rc.5"` (exactly; a non-`=` requirement resolves to
+  1.0.0). rc.4 made the PIR layout an explicit client/server handshake, so
+  `VotingRustBackend.precomputeDelegationPir(...)` and `buildAndProveDelegation(...)` take a new
+  `pirLayout: VotingPirLayout` — the `pir_depth`/`tier0_layers`/`tier1_layers` triple from the
+  round's resolved dynamic voting config. It defaults to `VotingPirLayout.unknown`, the crate's own
+  `PirLayout::UNKNOWN` sentinel, which `zcash_voting` rejects: a caller that does not pass a
+  resolved layout fails closed before any private query rather than querying with a guessed
+  geometry.
+
 - The migration sync gate is now BEHAVIOR-BASED, and its post-broadcast privacy buffer is gone
   along with `Synchronizer.migrationPrivacySyncBufferDuration` (the protocol requirement and its
   protocol-extension default): any reference stops compiling, and there is nothing to replace it
