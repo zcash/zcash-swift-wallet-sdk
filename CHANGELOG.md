@@ -48,6 +48,16 @@ Changes are relative to `2.8.0-rc.3`.
   resolved layout fails closed before any private query rather than querying with a guessed
   geometry.
 
+- The voting FFI no longer maintains its own copies of `zcash_voting`'s wire formats. Payloads bound
+  for the vote chain and the helper servers are serialized by the crate and handed across the
+  boundary verbatim, which makes two rc.4 wire corrections automatic rather than hand-written:
+  `VotingDelegationSubmission` gains `tx1Effects` (and loses the wire-level `sighash`), and helper
+  payloads no longer carry every helper's share. Concretely: `VotingDelegationSubmission`'s byte
+  fields are now base64 `String`s matching the crate's encoding; `VotingWireEncryptedShare`'s
+  `ciphertext1`/`ciphertext2` are base64 `String`s; `VotingSharePayload` is removed; and
+  `VotingVoteCommit` no longer carries `sharePayloads`, because payloads built before the vote's
+  tree position is confirmed are provisional and must not be submitted.
+
 - The migration sync gate is now BEHAVIOR-BASED, and its post-broadcast privacy buffer is gone
   along with `Synchronizer.migrationPrivacySyncBufferDuration` (the protocol requirement and its
   protocol-extension default): any reference stops compiling, and there is nothing to replace it

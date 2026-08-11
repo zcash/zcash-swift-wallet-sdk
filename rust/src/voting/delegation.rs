@@ -23,8 +23,8 @@ use super::helpers::{
     voting_network,
 };
 use super::json::{
-    JsonDelegationPirPrecomputeResult, JsonDelegationProofResult, JsonDelegationSubmission,
-    JsonNoteInfo, JsonVotingPczt, JsonWitnessData,
+    JsonDelegationPirPrecomputeResult, JsonDelegationProofResult, JsonNoteInfo, JsonVotingPczt,
+    JsonWitnessData,
 };
 use super::progress::ProgressBridge;
 
@@ -616,7 +616,10 @@ pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
 /// wallet itself. The dropped seed-derived entry point therefore has no
 /// replacement, and `sender_seed`, `network_id` and `account_index` are gone.
 ///
-/// Returns JSON-encoded `DelegationSubmission` as `*mut FfiBoxedSlice`, or null on error.
+/// Returns `zcash_voting`'s own `wire::DelegationSubmissionWire` JSON as
+/// `*mut FfiBoxedSlice`, or null on error. The crate serializes it, so the
+/// field names, the base64 encoding and the Ironwood `tx1_effects` blob are
+/// the crate's and are never reshaped here.
 ///
 /// # Safety
 ///
@@ -640,18 +643,17 @@ pub unsafe extern "C" fn zcashlc_voting_get_delegation_submission_with_signature
         let sig_bytes = unsafe { bytes_from_ptr(sig, sig_len) }?;
         let sighash_bytes = unsafe { bytes_from_ptr(sighash, sighash_len) }?;
 
-        let submission = handle
-            .db
-            .get_delegation_submission_with_signature(
-                &round_id_str,
-                bundle_index,
-                sig_bytes,
-                sighash_bytes,
-            )
-            .map_err(|e| anyhow!("get_delegation_submission_with_signature failed: {}", e))?;
+        let signer =
+            voting::delegate::DelegationSigner::signature_from_bytes(sig_bytes, sighash_bytes)
+                .map_err(|e| anyhow!("invalid delegation signature material: {}", e))?;
+        let submission =
+            voting::delegate::submission(&handle.db, &round_id_str, bundle_index, signer)
+                .map_err(|e| anyhow!("delegate::submission failed: {}", e))?;
 
-        let json_sub: JsonDelegationSubmission = submission.into();
-        json_to_boxed_slice(&json_sub)
+        let wire_json = submission
+            .to_wire_json()
+            .map_err(|e| anyhow!("serialize delegation submission wire JSON failed: {}", e))?;
+        Ok(crate::ffi::BoxedSlice::some(wire_json.into_bytes()))
     });
     unwrap_exc_or_null(res)
 }

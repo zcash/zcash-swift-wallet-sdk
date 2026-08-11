@@ -1,5 +1,31 @@
 # Migrating from previous versions to _Unreleased_
 
+## Voting wire payloads are produced by `zcash_voting`, not by the SDK
+
+`VotingSharePayload` is removed and `VotingVoteCommit.sharePayloads` is gone with it. Helper-server
+payloads are now obtained after confirmation, one per share index:
+
+```swift
+let bundle = try backend.getCommitmentBundle(
+    roundId: roundId, bundleIndex: bundleIndex, proposalId: proposalId
+)
+let payload = try VotingRustBackend.recoverWireJson(
+    commitmentBundleJson: bundle!.bundleJson,
+    proposalId: proposalId,
+    shareIndex: shareIndex,
+    voteCommitmentTreePosition: confirmation.voteCommitmentTreePosition,
+    submitAt: submitAt
+)
+```
+
+`payload` is the helper request body verbatim — do not decode, re-shape or re-encode it.
+
+`VotingDelegationSubmission` and `VotingWireEncryptedShare` are now decoded from the crate's own
+wire structs, so their byte fields are base64 `String`s rather than `[UInt8]`, `sighash` is gone
+from the delegation submission (the vote chain derives the signing digest itself), and
+`tx1Effects` is present. A host that base64-encoded these fields itself before putting them on the
+wire must stop and send the strings as they arrive.
+
 ## The SDK-side migration state machine is removed — `migrationAdvanceStep` replaces it
 
 The public 5-state `MigrationState` enum, `MigrationAttentionReason`, and

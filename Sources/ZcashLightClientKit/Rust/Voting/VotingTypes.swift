@@ -267,26 +267,38 @@ public struct VotingDelegationPirPrecomputeResult: Codable, Sendable {
 
 // MARK: - Delegation Submission (JSON)
 
-/// Delegation submission payload.
+/// The chain-ready delegation submission body, in `zcash_voting`'s own wire
+/// encoding.
+///
+/// The FFI returns `zcash_voting::wire::DelegationSubmissionWire` serialized by
+/// the crate, so the field names and the base64 encoding are the crate's and the
+/// SDK reshapes nothing. Two consequences for callers: `tx1Effects` — the
+/// versioned Ironwood TX1 effecting data the vote chain requires, and whose
+/// absence is the `400: tx1 effects must be 821 bytes, got 0` rejection — is
+/// present without anyone assembling it, and the legacy `sighash` field is gone
+/// from the wire. The signer's sighash still exists; it simply never belonged in
+/// the submission body, because the server derives the signing digest itself.
 public struct VotingDelegationSubmission: Codable, Sendable {
-    /// Randomized verification key (`rk` on the wire).
-    public let randomizedKey: [UInt8]
-    public let spendAuthSig: [UInt8]
-    public let sighash: [UInt8]
-    public let nfSigned: [UInt8]
-    public let cmxNew: [UInt8]
-    public let govComm: [UInt8]
-    public let govNullifiers: [[UInt8]]
-    public let proof: [UInt8]
+    /// Randomized verification key (`rk` on the wire), base64.
+    public let randomizedKey: String
+    /// SpendAuth signature over the PCZT sighash, base64.
+    public let spendAuthSig: String
+    /// Versioned Ironwood TX1 effecting data, base64 (821 bytes decoded).
+    public let tx1Effects: String
+    public let nfSigned: String
+    public let cmxNew: String
+    public let govComm: String
+    public let govNullifiers: [String]
+    public let proof: String
     public let voteRoundId: String
 
     enum CodingKeys: String, CodingKey {
         case randomizedKey = "rk"
         case spendAuthSig = "spend_auth_sig"
-        case sighash
-        case nfSigned = "nf_signed"
+        case tx1Effects = "tx1_effects"
+        case nfSigned = "signed_note_nullifier"
         case cmxNew = "cmx_new"
-        case govComm = "gov_comm"
+        case govComm = "van_cmx"
         case govNullifiers = "gov_nullifiers"
         case proof
         case voteRoundId = "vote_round_id"
@@ -295,13 +307,19 @@ public struct VotingDelegationSubmission: Codable, Sendable {
 
 // MARK: - Vote Commit (JSON)
 
-/// Everything produced by committing one cast vote: the signed commitment
-/// fields destined for the vote chain, the encrypted shares the vote proof
-/// binds, and the helper-server payloads derived from them.
+/// The result of committing one cast vote: the signed commitment fields destined
+/// for the vote chain, and the encrypted shares the vote proof binds.
 ///
-/// Every field here is wire data — it is published on chain or sent to helper
-/// servers — so the commit result carries no secret the wallet must retain. The
-/// signing secrets used to produce it stay inside `zcash_voting`.
+/// Helper-server payloads are deliberately not here. A commit made before the
+/// vote's tree position is confirmed can only produce provisional payloads, and
+/// sending those is the bug the sequence in `CHP_DESIGN.md` §3/A2 exists to
+/// prevent. Build helper payloads with
+/// ``VotingRustBackend/recoverWireJson(commitmentBundleJson:proposalId:shareIndex:voteCommitmentTreePosition:submitAt:)``
+/// after ``VotingRustBackend/confirmVoteSubmission(roundId:bundleIndex:proposalId:txHash:eventsJson:)``.
+///
+/// Every field here is wire data — it is published on chain — so the commit
+/// result carries no secret the wallet must retain. The signing secrets used to
+/// produce it stay inside `zcash_voting`.
 public struct VotingVoteCommit: Codable, Sendable {
     public let proposalId: UInt32
     public let vanNullifier: [UInt8]
@@ -313,7 +331,6 @@ public struct VotingVoteCommit: Codable, Sendable {
     public let voteKeyRandomizer: [UInt8]
     public let voteAuthSig: [UInt8]
     public let encShares: [VotingWireEncryptedShare]
-    public let sharePayloads: [VotingSharePayload]
 
     enum CodingKeys: String, CodingKey {
         case proposalId = "proposal_id"
@@ -325,19 +342,22 @@ public struct VotingVoteCommit: Codable, Sendable {
         case voteKeyRandomizer = "r_vpk"
         case voteAuthSig = "vote_auth_sig"
         case encShares = "enc_shares"
-        case sharePayloads = "share_payloads"
     }
 }
 
 // MARK: - Wire Encrypted Share (JSON)
 
-/// Wire-safe encrypted share — contains only the public ciphertext components.
-/// Secrets (plaintextValue, randomness) stay inside Rust and never cross the FFI boundary.
+/// Wire-safe encrypted share — only the public ciphertext components.
+///
+/// Decoded straight from `zcash_voting::types::WireEncryptedShare`, which
+/// base64-encodes both ciphertext components, so `ciphertext1` and `ciphertext2`
+/// are base64 strings rather than byte arrays. Secrets (`plaintext_value`,
+/// `randomness`) stay inside Rust and never cross the FFI boundary.
 public struct VotingWireEncryptedShare: Codable, Sendable {
-    /// First ciphertext component (`c1` on the wire).
-    public let ciphertext1: [UInt8]
-    /// Second ciphertext component (`c2` on the wire).
-    public let ciphertext2: [UInt8]
+    /// First ciphertext component (`c1` on the wire), base64.
+    public let ciphertext1: String
+    /// Second ciphertext component (`c2` on the wire), base64.
+    public let ciphertext2: String
     public let shareIndex: UInt32
 
     enum CodingKeys: String, CodingKey {
@@ -346,35 +366,10 @@ public struct VotingWireEncryptedShare: Codable, Sendable {
         case shareIndex = "share_index"
     }
 
-    public init(ciphertext1: [UInt8], ciphertext2: [UInt8], shareIndex: UInt32) {
+    public init(ciphertext1: String, ciphertext2: String, shareIndex: UInt32) {
         self.ciphertext1 = ciphertext1
         self.ciphertext2 = ciphertext2
         self.shareIndex = shareIndex
-    }
-}
-
-// MARK: - Share Payload (JSON)
-
-/// Share payload for delegated share submission.
-public struct VotingSharePayload: Codable, Sendable {
-    public let sharesHash: [UInt8]
-    public let proposalId: UInt32
-    public let voteDecision: UInt32
-    public let encShare: VotingWireEncryptedShare
-    public let treePosition: UInt64
-    public let allEncShares: [VotingWireEncryptedShare]
-    public let shareComms: [[UInt8]]
-    public let primaryBlind: [UInt8]
-
-    enum CodingKeys: String, CodingKey {
-        case sharesHash = "shares_hash"
-        case proposalId = "proposal_id"
-        case voteDecision = "vote_decision"
-        case encShare = "enc_share"
-        case treePosition = "tree_position"
-        case allEncShares = "all_enc_shares"
-        case shareComms = "share_comms"
-        case primaryBlind = "primary_blind"
     }
 }
 

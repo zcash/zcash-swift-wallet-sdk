@@ -7,7 +7,6 @@ use crate::{unwrap_exc_or, unwrap_exc_or_null};
 
 use super::db::VotingDatabaseHandle;
 use super::helpers::{json_to_boxed_slice, str_from_ptr};
-use super::json::JsonVanWitness;
 
 // =============================================================================
 // VotingDatabase methods — Tree sync
@@ -70,8 +69,7 @@ pub unsafe extern "C" fn zcashlc_voting_generate_van_witness(
             .generate_van_witness(&handle.db, &round_id_str, bundle_index, anchor_height)
             .map_err(|e| anyhow!("generate_van_witness failed: {}", e))?;
 
-        let json_witness: JsonVanWitness = witness.into();
-        json_to_boxed_slice(&json_witness)
+        json_to_boxed_slice(&witness)
     });
     unwrap_exc_or_null(res)
 }
