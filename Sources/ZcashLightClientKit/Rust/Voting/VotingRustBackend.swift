@@ -1532,6 +1532,101 @@ extension VotingRustBackend {
         }
     }
 
+    /// Sign one delegation bundle's PCZT sighash with this account's own Orchard
+    /// SpendAuth key.
+    ///
+    /// `zcash_voting` 2.0 stopped deriving account keys and signing for its
+    /// callers, and prescribes this replacement for software wallets: load the
+    /// bundle's signing request (account index, network, seed fingerprint,
+    /// sighash and spend-auth randomizer), derive the account SpendAuth key from
+    /// the wallet seed, randomize it with the randomizer, and sign the sighash.
+    /// All of that happens in Rust — the seed goes in, only the detached
+    /// signature comes back out.
+    ///
+    /// This is the software counterpart of the Keystone flow: there, the device
+    /// produces the signature and the app extracts it from the signed PCZT; here
+    /// the wallet produces it itself. Both then call the same
+    /// ``getDelegationSubmission(roundId:bundleIndex:signature:sighash:)``,
+    /// which is the only remaining path into a submission payload.
+    ///
+    /// - Parameters:
+    ///   - keys: the same ``VotingDelegationKeyInputs`` used to build and prove
+    ///     this bundle. The crate loads the signing request through them, so a
+    ///     different account index, hotkey secret or seed fingerprint fails
+    ///     instead of silently signing for the wrong account.
+    ///   - seed: the wallet's root seed, at least 32 bytes. It is borrowed for
+    ///     the duration of this call, is never persisted or logged, and must be
+    ///     the seed whose fingerprint is in `keys` — a mismatch throws rather
+    ///     than producing a signature the chain would reject.
+    /// - Returns: the detached 64-byte SpendAuth signature and the 32-byte
+    ///   ZIP-244 sighash it covers. Pass both to `getDelegationSubmission`
+    ///   unchanged.
+    /// - Throws: ``VotingRustBackendError/databaseNotOpen`` if no database is
+    ///   open; ``VotingRustBackendError/invalidData`` if `seed` or the seed
+    ///   fingerprint is the wrong length; ``VotingRustBackendError/rustError``
+    ///   if the bundle has no stored signing request yet (its PCZT setup has not
+    ///   run), or the seed does not match the request.
+    public func signDelegationRequest(
+        roundId: String,
+        bundleIndex: UInt32,
+        keys: VotingDelegationKeyInputs,
+        seed: [UInt8]
+    ) throws -> VotingDelegationSignature {
+        guard keys.seedFingerprint.count == votingSeedFingerprintByteCount else {
+            throw VotingRustBackendError.invalidData(
+                "seedFingerprint must be exactly \(votingSeedFingerprintByteCount) bytes"
+            )
+        }
+        guard seed.count >= votingMinSeedByteCount else {
+            throw VotingRustBackendError.invalidData(
+                "seed must be at least \(votingMinSeedByteCount) bytes"
+            )
+        }
+
+        let roundIdBytes = [UInt8](roundId.utf8)
+        let roundNameBytes = [UInt8](keys.roundName.utf8)
+
+        let ptr: UnsafeMutablePointer<FfiBoxedSlice> = try withHandle { dbh in
+            let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
+                keys.fvk.withUnsafeBufferPointer { fvkBuf in
+                    keys.hotkeyStoredSecret.withUnsafeBufferPointer { secretBuf in
+                        keys.seedFingerprint.withUnsafeBufferPointer { fpBuf in
+                            roundNameBytes.withUnsafeBufferPointer { nameBuf in
+                                seed.withUnsafeBufferPointer { seedBuf in
+                                    zcashlc_voting_sign_delegation_request(
+                                        dbh,
+                                        ridBuf.baseAddress,
+                                        UInt(ridBuf.count),
+                                        bundleIndex,
+                                        fvkBuf.baseAddress,
+                                        UInt(fvkBuf.count),
+                                        secretBuf.baseAddress,
+                                        UInt(secretBuf.count),
+                                        fpBuf.baseAddress,
+                                        UInt(fpBuf.count),
+                                        keys.accountIndex,
+                                        nameBuf.baseAddress,
+                                        UInt(nameBuf.count),
+                                        seedBuf.baseAddress,
+                                        UInt(seedBuf.count)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            guard let ptr else {
+                throw VotingRustBackendError.rustError(
+                    lastErrorMessage(fallback: "`sign_delegation_request` failed")
+                )
+            }
+            return ptr
+        }
+        defer { zcashlc_free_boxed_slice(ptr) }
+        return try decodeJSON(from: ptr)
+    }
+
     /// Get the delegation submission payload for an externally produced
     /// signature.
     ///

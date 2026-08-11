@@ -18,6 +18,7 @@ pub mod progress;
 pub mod recovery;
 pub mod rounds;
 pub mod share_tracking;
+pub mod signing;
 #[cfg(test)]
 pub(crate) mod test_helpers;
 pub mod tree;

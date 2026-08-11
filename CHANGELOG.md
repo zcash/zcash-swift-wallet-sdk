@@ -53,6 +53,19 @@ Changes are relative to `2.8.0-rc.3`.
   hosts that must name the era — voting delegations are rejected outright when built for the wrong
   branch — take it from the SDK rather than copying the literal.
 
+- `VotingRustBackend.signDelegationRequest(roundId:bundleIndex:keys:seed:)` lets a software
+  wallet produce the SpendAuth signature a delegation submission needs. `zcash_voting 2.0` no
+  longer derives account keys or signs for its callers, which left
+  `getDelegationSubmission(roundId:bundleIndex:signature:sighash:)` reachable only by hardware
+  signers; this is the crate's own prescribed software path — it loads the bundle's signing
+  request, derives the account Orchard SpendAuth key from the wallet seed, randomizes it with
+  the request's spend-auth randomizer and signs the stored ZIP-244 sighash, returning the
+  detached signature and that sighash as `VotingDelegationSignature`. The seed is borrowed for
+  the call and never persisted, logged or handed to `zcash_voting`; the signature is checked
+  against the seed fingerprint the bundle was built for, so signing with the wrong seed fails
+  instead of producing a rejected transaction. Software and hardware delegation now converge on
+  the same submission entry point.
+
 ## Changed
 
 - Voting is pinned to `zcash_voting = "=2.0.0-rc.5"` (exactly; a non-`=` requirement resolves to

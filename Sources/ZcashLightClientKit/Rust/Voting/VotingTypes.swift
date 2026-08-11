@@ -616,3 +616,26 @@ public struct VotingVoteConfirmation: Codable, Sendable, Equatable {
         case voteCommitmentTreePosition = "vc_tree_position"
     }
 }
+
+// MARK: - Delegation signature (JSON)
+
+/// A SpendAuth signature this wallet produced for one delegation bundle, with
+/// the sighash it covers.
+///
+/// Both values go straight into
+/// ``VotingRustBackend/getDelegationSubmission(roundId:bundleIndex:signature:sighash:)``.
+/// The sighash is not informational: `zcash_voting` checks it against the one it
+/// stored when the bundle's PCZT was set up and rejects the submission if they
+/// disagree, so pass back the value that came out with the signature rather than
+/// one recomputed elsewhere.
+public struct VotingDelegationSignature: Codable, Sendable, Equatable {
+    /// The 64-byte detached RedPallas SpendAuth signature.
+    public let signature: [UInt8]
+    /// The 32-byte ZIP-244 sighash the signature covers.
+    public let sighash: [UInt8]
+
+    enum CodingKeys: String, CodingKey {
+        case signature = "sig"
+        case sighash
+    }
+}
