@@ -690,8 +690,11 @@ extension VotingRustBackend {
         }
     }
 
-    /// Extract the 32-byte Orchard note-commitment-tree root from a
+    /// Extract the 32-byte Ironwood note-commitment-tree root from a
     /// protobuf-encoded `TreeState`.
+    ///
+    /// Voting rounds anchor to the Ironwood pool, so a round's `nc_root` is the
+    /// Ironwood tree's root at the snapshot height — not the Orchard tree's.
     public static func extractNcRoot(treeState: [UInt8]) throws -> [UInt8] {
         try staticBoxedSliceFFI(fallback: "`extract_nc_root` failed") {
             treeState.withUnsafeBufferPointer { buf in

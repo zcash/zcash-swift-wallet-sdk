@@ -212,6 +212,18 @@ Changes are relative to `2.8.0-rc.3`.
   and so absent from `getTransactionOutputs(for:)`, until the transaction was
   mined and scanned. Shielded outputs stored by this path are also now tagged with
   their note commitment tree, as the ordinary send path already did.
+- Voting delegation reads the **Ironwood** note-commitment tree, not the Orchard one. Voting notes
+  live in the Ironwood pool and a round's `nc_root` is the Ironwood tree's root at the snapshot
+  height, but `zcashlc_voting_generate_note_witnesses` decoded the Orchard tree out of the cached
+  `TreeState`, validated that Orchard root against the round's Ironwood `nc_root`, and generated
+  witnesses from the wallet's Orchard commitment tree; `VotingRustBackend.extractNcRoot(treeState:)`
+  computed the Orchard root too. The two pools are tracked separately and their roots never
+  coincide, so every delegation failed with `cached TreeState orchard root does not match round
+  nc_root` — on every chain, against every server, for every round. Witness generation now goes
+  through `zcash_voting`'s own Ironwood-aware path, which additionally rejects a wallet database
+  whose network differs from the round's and a snapshot height that is not NU6.3, and `extractNcRoot`
+  returns the Ironwood root. Two regression tests seed a `TreeState` carrying *both* pools and
+  assert the Ironwood one wins, so the wrong-pool read cannot return unnoticed.
 
 ## Added
 
