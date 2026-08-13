@@ -66,6 +66,11 @@ Changes are relative to `2.8.0-rc.3`.
 
 ## Fixed
 
+- Submit plans are no longer deleted for transactions the `v_transactions` history view does not
+  project. Pruning treated absence from that view as proof the transaction was gone, destroying the
+  endpoints recorded for multi-endpoint submission, and did so for exactly the shielding and
+  cross-pay sends the view omits. Existence is now decided by the wallet store, and a failed lookup
+  keeps the plan for the next pass.
 - Transactions created from both ordinary proposals and finalized PCZTs are now returned for
   broadcast from the wallet store instead of being reconstructed from `v_transactions`. If that
   history view has not projected the stored row yet, sends and transparent-fund shielding continue

@@ -12,6 +12,7 @@ final class TxResubmissionActionTests: ZcashTestCase {
     private var transactionEncoder: StubTransactionEncoder!
     private var submitPlanStore: SubmitPlanStoringMock!
     private var endpointSubmitter: EndpointSubmitterMock!
+    private var rustBackend: ZcashRustBackendWeldingMock!
 
     private let latestBlockHeight = BlockHeight(2_000_000)
 
@@ -58,7 +59,11 @@ final class TxResubmissionActionTests: ZcashTestCase {
         transactionEncoder = StubTransactionEncoder(createdTransactions: encoderTransactions)
         submitPlanStore = SubmitPlanStoringMock()
         endpointSubmitter = EndpointSubmitterMock()
+        // Unconfigured, `getTransaction` returns nil, i.e. "the wallet store does not hold this
+        // transaction". Tests that need it to hold one set `getTransactionTxIdClosure`.
+        rustBackend = ZcashRustBackendWeldingMock()
 
+        mockContainer.mock(type: ZcashRustBackendWelding.self, isSingleton: true) { _ in self.rustBackend }
         mockContainer.mock(type: TransactionRepository.self, isSingleton: true) { _ in self.transactionRepository }
         mockContainer.mock(type: TransactionEncoder.self, isSingleton: true) { _ in self.transactionEncoder }
         mockContainer.mock(type: SubmitPlanStoring.self, isSingleton: true) { _ in self.submitPlanStore }
@@ -167,6 +172,82 @@ final class TxResubmissionActionTests: ZcashTestCase {
         // The mined-but-unexpired plan survives: a reorg could un-mine the
         // transaction, and its retries must still use the recorded endpoints.
         XCTAssertEqual(Set(remaining), Set([aliveTxId, minedUnexpiredTxId]))
+    }
+
+    /// A transaction the history view does not project, but which the wallet store holds and which
+    /// has not expired, must keep its submit plan.
+    ///
+    /// `v_transactions` omits a stored transaction whenever none of its inputs was recorded and it
+    /// has no wallet-internal output, which is the shape of a shielding or cross-pay send. Reading
+    /// that omission as "the transaction is gone" destroys the endpoints the user chose for
+    /// multi-endpoint submission, and it does so for precisely the transactions that most need a
+    /// retry, since they are also the ones `findForResubmission` cannot see.
+    func testPlanSurvivesWhenTheTransactionIsMissingFromHistoryButHeldByTheWalletStore() async throws {
+        let hiddenTxId = Data(repeating: 0x0E, count: 32)
+
+        let action = setupAction(candidates: [])
+        await submitPlanStore.recordPlan(txId: hiddenTxId, endpoints: [endpointA])
+
+        transactionRepository.findRawIDClosure = { _ in
+            throw ZcashError.transactionRepositoryEntityNotFound
+        }
+        rustBackend.getTransactionTxIdClosure = { txId in
+            guard txId == hiddenTxId else { return nil }
+            return TransactionData(
+                txId: hiddenTxId,
+                raw: Data([0x01, 0x02, 0x03]),
+                expiryHeight: 3_000_000
+            )
+        }
+
+        _ = try await action.run(with: makeContext()) { _ in }
+
+        let remaining = await submitPlanStore.allPlannedTransactionIds()
+        XCTAssertEqual(
+            Set(remaining),
+            Set([hiddenTxId]),
+            "absence from the history projection is not evidence that the transaction is gone"
+        )
+    }
+
+    /// The counterpart: when the wallet store does not hold the transaction either, the plan is
+    /// genuinely orphaned and is still pruned. Without this, the fix above would simply leak plans.
+    func testPlanIsPrunedWhenNeitherHistoryNorTheWalletStoreHoldsTheTransaction() async throws {
+        let goneTxId = Data(repeating: 0x0F, count: 32)
+
+        let action = setupAction(candidates: [])
+        await submitPlanStore.recordPlan(txId: goneTxId, endpoints: [endpointA])
+
+        transactionRepository.findRawIDClosure = { _ in
+            throw ZcashError.transactionRepositoryEntityNotFound
+        }
+        rustBackend.getTransactionTxIdClosure = { _ in nil }
+
+        _ = try await action.run(with: makeContext()) { _ in }
+
+        let remaining = await submitPlanStore.allPlannedTransactionIds()
+        XCTAssertTrue(remaining.isEmpty, "a plan for a transaction no store holds is orphaned")
+    }
+
+    /// A failed wallet-store read must not be read as absence either: the plan is kept and the
+    /// check retried on the next pass, matching how an unknown repository error is handled.
+    func testPlanSurvivesWhenTheWalletStoreLookupFails() async throws {
+        let txId = Data(repeating: 0x10, count: 32)
+
+        let action = setupAction(candidates: [])
+        await submitPlanStore.recordPlan(txId: txId, endpoints: [endpointA])
+
+        transactionRepository.findRawIDClosure = { _ in
+            throw ZcashError.transactionRepositoryEntityNotFound
+        }
+        rustBackend.getTransactionTxIdClosure = { _ in
+            throw ZcashError.rustGetTransaction("boom")
+        }
+
+        _ = try await action.run(with: makeContext()) { _ in }
+
+        let remaining = await submitPlanStore.allPlannedTransactionIds()
+        XCTAssertEqual(Set(remaining), Set([txId]), "an errored lookup is not evidence of absence")
     }
 
     func testStoreUnavailableSkipsResubmission() async throws {

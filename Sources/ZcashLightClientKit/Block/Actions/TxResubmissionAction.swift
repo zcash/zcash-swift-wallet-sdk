@@ -17,6 +17,7 @@ final class TxResubmissionAction {
     var transactionEncoder: TransactionEncoder
     let submitPlanStore: SubmitPlanStoring
     let submitPlanExecutor: SubmitPlanExecutor
+    let rustBackend: ZcashRustBackendWelding
     let logger: Logger
 
     init(container: DIContainer) {
@@ -24,6 +25,7 @@ final class TxResubmissionAction {
         transactionEncoder = container.resolve(TransactionEncoder.self)
         submitPlanStore = container.resolve(SubmitPlanStoring.self)
         submitPlanExecutor = container.resolve(SubmitPlanExecutor.self)
+        rustBackend = container.resolve(ZcashRustBackendWelding.self)
         logger = container.resolve(Logger.self)
     }
 }
@@ -120,6 +122,27 @@ private extension TxResubmissionAction {
         }
     }
 
+    /// The expiry height of a planned transaction, or `nil` when no store holds it.
+    ///
+    /// `v_transactions` is a history projection, not an existence oracle. It omits a stored
+    /// transaction none of whose inputs was recorded and which has no wallet-internal output, the
+    /// shape of a shielding or cross-pay send, so its silence is not evidence that the transaction
+    /// is gone. The wallet store answers that; the view is consulted first only because it is
+    /// already open.
+    ///
+    /// A transaction with no expiry height reports `0`, which the caller treats as stale. That
+    /// matches `findForResubmission`, which requires `expiryHeight > latestBlockHeight` and so
+    /// never selects one.
+    private func plannedTransactionExpiry(txId: Data) async throws -> BlockHeight? {
+        do {
+            let transaction = try await transactionRepository.find(rawID: txId)
+            return transaction.expiryHeight ?? 0
+        } catch ZcashError.transactionRepositoryEntityNotFound {
+            let stored = try await rustBackend.getTransaction(txId: txId)
+            return stored.map { $0.expiryHeight ?? 0 }
+        }
+    }
+
     func pruneStalePlans(latestBlockHeight: BlockHeight) async {
         let plannedTxIds = await submitPlanStore.allPlannedTransactionIds()
         guard !plannedTxIds.isEmpty else { return }
@@ -127,19 +150,20 @@ private extension TxResubmissionAction {
         var staleTxIds: [Data] = []
         for txId in plannedTxIds {
             do {
-                let transaction = try await transactionRepository.find(rawID: txId)
+                guard let expiryHeight = try await plannedTransactionExpiry(txId: txId) else {
+                    // No store holds it, so nothing will ever be resubmitted for this plan.
+                    staleTxIds.append(txId)
+                    continue
+                }
                 // Stale only once expired: pruning at "mined" would lose the
                 // plan if a reorg un-mines the transaction inside its expiry
                 // window. Transactions without an expiry height are never
                 // resubmission candidates, so their plans are stale right away.
-                let isStale = (transaction.expiryHeight ?? 0) <= latestBlockHeight
-                if isStale {
+                if expiryHeight <= latestBlockHeight {
                     staleTxIds.append(txId)
                 }
-            } catch ZcashError.transactionRepositoryEntityNotFound {
-                staleTxIds.append(txId)
             } catch {
-                // Unknown repository error — keep the plan, try again next pass.
+                // Unknown error — keep the plan, try again next pass.
                 logger.warn("TxResubmissionAction could not check plan staleness for \(txId.toHexStringTxId()): \(error)")
             }
         }
