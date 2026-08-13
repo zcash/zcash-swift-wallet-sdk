@@ -321,6 +321,52 @@ pub unsafe extern "C" fn zcashlc_voting_recover_wire_json(
     unwrap_exc_or_null(res)
 }
 
+/// List the share indices recoverable from a persisted vote recovery bundle.
+///
+/// Thin passthrough to `zcash_voting::vote::parse_recovery` +
+/// `zcash_voting::share::recover_payloads`: the crate parses the bundle and
+/// applies its own single-share slicing (one share when `single_share`, all
+/// of them otherwise), and this wrapper reads off each recovered payload's
+/// `enc_share.share_index`. Crash recovery uses this list instead of guessing
+/// a share count from `single_share` alone (`singleShare ? 1 : numOptions`),
+/// so a caller-side guess can never under- or over-deliver relative to what
+/// the crate actually reconstructs.
+///
+/// `commitment_bundle_json` is the recovery JSON previously read with
+/// `zcashlc_voting_get_commitment_bundle`.
+///
+/// Returns a JSON array of `u32` share indices as `*mut FfiBoxedSlice`, or
+/// null on error.
+///
+/// # Safety
+///
+/// - If `commitment_bundle_json_len > 0` then `commitment_bundle_json` must be
+///   non-null and valid for reads for that many bytes; if it is `0`, the pointer
+///   is ignored.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_voting_recoverable_share_indices(
+    commitment_bundle_json: *const u8,
+    commitment_bundle_json_len: usize,
+) -> *mut crate::ffi::BoxedSlice {
+    let res = catch_panic(|| {
+        let bundle_json =
+            unsafe { str_from_ptr(commitment_bundle_json, commitment_bundle_json_len) }?;
+
+        let bundle = voting::vote::parse_recovery(&bundle_json)
+            .map_err(|e| anyhow!("parse_recovery failed: {}", e))?;
+        let payloads = voting::share::recover_payloads(&bundle)
+            .map_err(|e| anyhow!("recover_payloads failed: {}", e))?;
+
+        let indices: Vec<u32> = payloads
+            .into_iter()
+            .map(|payload| payload.enc_share.share_index)
+            .collect();
+
+        json_to_boxed_slice(&indices)
+    });
+    unwrap_exc_or_null(res)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +424,114 @@ mod tests {
 
         unsafe { zcashlc_free_boxed_slice(result) };
         unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    fn field_bytes(value: u8) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        bytes[0] = value;
+        bytes
+    }
+
+    /// Build a `VoteRecoveryBundle` whose encrypted shares carry exactly
+    /// `share_indices`, in that order — mirroring `zcash_voting`'s own
+    /// `share.rs` fixture, generalized so both the single-share and
+    /// multi-share cases below can reuse it.
+    fn recovery_bundle_with_share_indices(
+        single_share: bool,
+        share_indices: &[u32],
+    ) -> voting::vote::VoteRecoveryBundle {
+        let encrypted_shares: Vec<voting::types::EncryptedShare> = share_indices
+            .iter()
+            .enumerate()
+            .map(|(i, &share_index)| voting::types::EncryptedShare {
+                c1: vec![0x21 + i as u8; 32],
+                c2: vec![0x22 + i as u8; 32],
+                share_index,
+                plaintext_value: 5,
+                randomness: vec![0x23 + i as u8; 32],
+            })
+            .collect();
+        let share_blinds: Vec<[u8; 32]> = (0..encrypted_shares.len())
+            .map(|i| field_bytes(1 + i as u8))
+            .collect();
+        let share_comms: Vec<[u8; 32]> = (0..encrypted_shares.len())
+            .map(|i| [0x51 + i as u8; 32])
+            .collect();
+
+        voting::vote::VoteRecoveryBundle {
+            vote_round_id: "round1".to_string(),
+            bundle_index: 0,
+            proposal_id: 1,
+            vote_decision: 2,
+            anchor_height: 123,
+            vc_tree_position: 456,
+            single_share,
+            num_options: 4,
+            van_nullifier: [0x10; 32],
+            vote_authority_note_new: [0x11; 32],
+            vote_commitment: [0x12; 32],
+            proof: vec![0x13; 96],
+            shares_hash: [0x14; 32],
+            r_vpk: [0x15; 32],
+            alpha_v: [0x16; 32],
+            vote_auth_sig: [0x17; 64],
+            encrypted_shares,
+            share_blinds,
+            share_comms,
+        }
+    }
+
+    /// Call the FFI under test and decode its `Vec<u32>` JSON response,
+    /// failing the test outright if the pointer comes back null.
+    fn recoverable_share_indices(bundle: &voting::vote::VoteRecoveryBundle) -> Vec<u32> {
+        let json = voting::vote::serialize_recovery(bundle).expect("serialize recovery bundle");
+        let json_bytes = json.as_bytes();
+        let ptr = unsafe {
+            zcashlc_voting_recoverable_share_indices(json_bytes.as_ptr(), json_bytes.len())
+        };
+        assert!(!ptr.is_null(), "expected recoverable share indices, got null");
+        let result_bytes = unsafe { (*ptr).as_slice() }.to_vec();
+        unsafe { zcashlc_free_boxed_slice(ptr) };
+        serde_json::from_slice(&result_bytes).expect("share indices json")
+    }
+
+    #[test]
+    fn recoverable_share_indices_single_share_mode_returns_only_the_first_share() {
+        // Four built shares whose indices are deliberately not 0..3 in order,
+        // so a passing assertion proves the FFI reports the crate's actual
+        // sliced share index rather than a hardcoded 0.
+        let bundle = recovery_bundle_with_share_indices(true, &[9, 2, 4, 11]);
+
+        let indices = recoverable_share_indices(&bundle);
+
+        assert_eq!(
+            indices,
+            vec![9],
+            "single-share mode must recover exactly the first built share's own index"
+        );
+    }
+
+    #[test]
+    fn recoverable_share_indices_multi_share_mode_returns_every_built_share() {
+        // Six built shares against a four-option proposal: the recovered
+        // count must track the shares actually built, not `num_options` —
+        // the caller-side guess this FFI replaces.
+        let share_indices: Vec<u32> = (0..6).collect();
+        let bundle = recovery_bundle_with_share_indices(false, &share_indices);
+
+        let indices = recoverable_share_indices(&bundle);
+
+        assert_eq!(indices, share_indices);
+    }
+
+    #[test]
+    fn recoverable_share_indices_rejects_malformed_json() {
+        let malformed = b"{ this is not valid json";
+
+        let ptr = unsafe {
+            zcashlc_voting_recoverable_share_indices(malformed.as_ptr(), malformed.len())
+        };
+
+        assert!(ptr.is_null(), "malformed recovery JSON must return null");
     }
 }

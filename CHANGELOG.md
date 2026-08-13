@@ -66,6 +66,14 @@ Changes are relative to `2.8.0-rc.3`.
   instead of producing a rejected transaction. Software and hardware delegation now converge on
   the same submission entry point.
 
+- `VotingRustBackend.recoverableShareIndices(commitmentBundleJson:)` lists the share indices a
+  persisted vote recovery bundle can actually rebuild, via `zcash_voting::share::recover_payloads`'s
+  own single-share slicing. Crash recovery previously guessed a share count from `singleShare`
+  alone (`singleShare ? 1 : numOptions`), which under-delivers whenever the built share count
+  differs from the option count — four of sixteen built shares on a four-option proposal, in the
+  case that found this. The crate's recovered payloads are now the source of truth for which
+  indices to resubmit.
+
 ## Changed
 
 - Voting is pinned to `zcash_voting = "=2.0.0-rc.5"` (exactly; a non-`=` requirement resolves to

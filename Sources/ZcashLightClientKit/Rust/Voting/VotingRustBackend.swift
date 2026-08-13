@@ -558,6 +558,37 @@ extension VotingRustBackend {
         }
         return String(decoding: payload, as: UTF8.self)
     }
+
+    /// List the share indices recoverable from a persisted vote recovery bundle.
+    ///
+    /// The crate parses the bundle and applies its own single-share slicing
+    /// (one share when the vote was single-share, all of them otherwise);
+    /// this reads off each recovered payload's own share index. Crash
+    /// recovery calls this instead of guessing a share count from
+    /// `singleShare` alone (`singleShare ? 1 : numOptions`), so a caller-side
+    /// guess can never under- or over-deliver relative to what the crate
+    /// actually reconstructs.
+    ///
+    /// - Parameter commitmentBundleJson: ``VotingStoredCommitmentBundle/bundleJson``
+    ///   from `getCommitmentBundle(roundId:bundleIndex:proposalId:)`.
+    /// - Returns: the recoverable share indices, in the crate's own order.
+    /// - Throws: `VotingRustBackendError.rustError` if the bundle JSON is
+    ///   malformed or its vote fields are out of range.
+    public static func recoverableShareIndices(
+        commitmentBundleJson: String
+    ) throws -> [UInt32] {
+        let bundleBytes = [UInt8](commitmentBundleJson.utf8)
+        let ptr = bundleBytes.withUnsafeBufferPointer { buf in
+            zcashlc_voting_recoverable_share_indices(buf.baseAddress, UInt(buf.count))
+        }
+        guard let ptr else {
+            throw VotingRustBackendError.rustError(
+                staticLastErrorMessage(fallback: "`recoverable_share_indices` failed")
+            )
+        }
+        defer { zcashlc_free_boxed_slice(ptr) }
+        return try staticDecodeJSON(from: ptr)
+    }
 }
 
 // MARK: - Foundation helpers (static)
