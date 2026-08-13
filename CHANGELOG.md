@@ -104,6 +104,18 @@ Changes are relative to `2.8.0-rc.3`.
   `ciphertext1`/`ciphertext2` are base64 `String`s; `VotingSharePayload` is removed; and
   `VotingVoteCommit` no longer carries `sharePayloads`, because payloads built before the vote's
   tree position is confirmed are provisional and must not be submitted.
+- The ZODL Slipstream engine (AGPL-3.0-only `zodl-slipstream` crate) is no longer part of the
+  default build. Every release now ships two variants: the default `X.Y.Z` tag / `libzcashlc.xcframework`
+  / `ZcashLightClientKit` product is MIT-clean (zero AGPL code, classic Spend-before-Sync intact),
+  and the opt-in `X.Y.Z-zodl-slipstream` tag swaps in the superset
+  `libzcashlc-zodl-slipstream.xcframework` and adds the `ZODLSlipstream` product. Hosts using
+  `SlipstreamSynchronizer` must pin the variant tag with `exact:` (version ranges never resolve to
+  it — the SemVer pre-release suffix sorts below the release, by design) and add
+  `import ZODLSlipstream`; everything else about the API is unchanged. Shipping the slipstream
+  variant has licensing consequences — read `Sources/ZODLSlipstream/NOTICE.md` before adopting it.
+  On the Rust side the engine sits behind the new `slipstream` cargo feature (`gpu` implies it),
+  and the swift-tools-version floor rises from 5.6 to 5.9 (the split relies on the `package`
+  access modifier).
 
 - The migration sync gate is now BEHAVIOR-BASED, and its post-broadcast privacy buffer is gone
   along with `Synchronizer.migrationPrivacySyncBufferDuration` (the protocol requirement and its

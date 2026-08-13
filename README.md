@@ -26,6 +26,35 @@ Add a package with the source "https://github.com/zcash/ZcashLightClientKit.git"
 
 If you want to include a beta version of `ZCashLightClientKit` in an Xcode project e.g `0.14.0-beta` you will need to specify it with the commit sha instead as it does not appear that Xcode supports 'meta data' from semantic version strings for swift packages (at the time of writing).
 
+## Choosing a variant: default (MIT) or ZODL Slipstream (AGPL)
+
+Every release ships in two variants:
+
+| | Default | ZODL Slipstream |
+|---|---|---|
+| Tag to pin | `X.Y.Z` (normal `from:`/`upToNextMajor` ranges) | `exact: "X.Y.Z-zodl-slipstream"` |
+| Product to link | `ZcashLightClientKit` | `ZODLSlipstream` (plus `ZcashLightClientKit`) |
+| Synchronizer | `SDKSynchronizer` (classic Spend-before-Sync) | adds `SlipstreamSynchronizer` (accelerated Rust engine) |
+| License of the shipped binary | MIT only — zero AGPL code | includes the AGPL-3.0-only `zodl-slipstream` engine |
+
+The default variant is and stays entirely MIT: the `libzcashlc.xcframework` it
+links contains no ZODL Slipstream code, and classic Spend-before-Sync (see
+below) is part of it. The slipstream variant links the superset
+`libzcashlc-zodl-slipstream.xcframework` and exposes `SlipstreamSynchronizer`
+via `import ZODLSlipstream`.
+
+**Before shipping the slipstream variant, read
+[`Sources/ZODLSlipstream/NOTICE.md`](Sources/ZODLSlipstream/NOTICE.md).** In
+short: your app becomes subject to the AGPL, and no AGPL §7 permission exists
+for third parties to distribute it through the Apple App Store — App Store
+distribution effectively requires a commercial license from Znewco, Inc.
+(licensing@zodl.com).
+
+Pin the slipstream variant with `exact:` only. Version ranges never resolve to
+`-zodl-slipstream` tags (SemVer orders the pre-release suffix below the
+release), which is deliberate: no consumer can drift onto AGPL code by a
+routine dependency update.
+
 # FFI Development
 
 This SDK includes Rust code that provides the core cryptographic and wallet functionality via FFI. For most SDK development, you don't need to build the Rust code - SPM automatically downloads pre-built binaries.
@@ -133,4 +162,7 @@ Examples can be found in the [Demo App](/Example/ZcashLightClientSample).
 
 # License
 
-MIT
+MIT for this repository's sources and the default `libzcashlc.xcframework`
+artifact. The opt-in ZODL Slipstream variant additionally links the
+AGPL-3.0-only `zodl-slipstream` engine — see
+[`Sources/ZODLSlipstream/NOTICE.md`](Sources/ZODLSlipstream/NOTICE.md).
