@@ -29,6 +29,7 @@ import Foundation
 import XCTest
 @testable import TestUtils
 @testable import ZcashLightClientKit
+@testable import ZODLSlipstream
 
 class SlipstreamDarksideTests: ZcashTestCase {
     let birthday: BlockHeight = 663150

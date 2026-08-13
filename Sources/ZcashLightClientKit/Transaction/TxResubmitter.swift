@@ -9,7 +9,7 @@ import Foundation
 /// resubmits the transactions that qualify, throttled to at most once per
 /// 300-second window. Shared by the old sync pipeline's `TxResubmissionAction`
 /// and `SlipstreamSynchronizer`, so the retry policy lives in exactly one place.
-final class TxResubmitter {
+package final class TxResubmitter {
     private enum Constants {
         static let thresholdToTrigger = TimeInterval(300.0)
     }
@@ -21,7 +21,7 @@ final class TxResubmitter {
     let submitPlanExecutor: SubmitPlanExecutor
     let logger: Logger
 
-    init(container: DIContainer) {
+    package init(container: DIContainer) {
         transactionRepository = container.resolve(TransactionRepository.self)
         transactionEncoder = container.resolve(TransactionEncoder.self)
         submitPlanStore = container.resolve(SubmitPlanStoring.self)
@@ -29,7 +29,7 @@ final class TxResubmitter {
         logger = container.resolve(Logger.self)
     }
 
-    func checkAndResubmit(latestBlockHeight: BlockHeight) async {
+    package func checkAndResubmit(latestBlockHeight: BlockHeight) async {
         // Plans whose transactions are expired or gone are no longer retry
         // candidates; drop them. Mined transactions keep their plans until
         // expiry so a reorg that un-mines one still retries through its

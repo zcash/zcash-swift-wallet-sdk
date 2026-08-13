@@ -10,6 +10,7 @@
 
 import Foundation
 import libzcashlc
+import ZcashLightClientKit
 
 /// Swift-friendly wrapper around `FfiSlipstreamSnapshot` from the C header.
 /// The C struct is returned BY VALUE from `zcashlc_slipstream_snapshot`; Swift receives it as a

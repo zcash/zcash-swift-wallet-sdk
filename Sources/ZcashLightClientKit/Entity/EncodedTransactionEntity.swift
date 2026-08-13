@@ -7,25 +7,25 @@
 
 import Foundation
 
-struct EncodedTransaction {
+package struct EncodedTransaction {
     let transactionId: Data
     let raw: Data
 }
 
 /// The wallet-store data available for a transaction, independent of whether it was sent or received.
-struct TransactionData: Equatable {
+package struct TransactionData: Equatable {
     let txId: Data
     let raw: Data
     let expiryHeight: BlockHeight?
 }
 
 extension EncodedTransaction: Hashable {
-    func hash(into hasher: inout Hasher) {
+    package func hash(into hasher: inout Hasher) {
         hasher.combine(transactionId)
         hasher.combine(raw)
     }
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    package static func == (lhs: Self, rhs: Self) -> Bool {
         guard lhs.transactionId == rhs.transactionId else { return false }
         guard lhs.raw == rhs.raw else { return false }
         return true

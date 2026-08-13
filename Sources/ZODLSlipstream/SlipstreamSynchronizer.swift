@@ -23,6 +23,7 @@
 
 import Combine
 import Foundation
+import ZcashLightClientKit
 
 // swiftlint:disable type_body_length
 

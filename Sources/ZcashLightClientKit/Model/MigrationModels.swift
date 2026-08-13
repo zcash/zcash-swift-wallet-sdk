@@ -273,7 +273,7 @@ public struct MigrationSyncWakeup: Equatable, Sendable {
 /// `ZcashRustBackendWelding.migrationBlockRateSamples(window:)` — the raw input of
 /// ``ChainTipEstimator``'s measured-block-rate chain-tip projection. Internal: apps consume the
 /// projection (`Synchronizer.estimatedMigrationChainTip()`), never the samples.
-struct MigrationBlockRateSample: Equatable, Sendable {
+package struct MigrationBlockRateSample: Equatable, Sendable {
     /// The scanned block's height.
     let height: BlockHeight
     /// The block header's time, as Unix epoch seconds.

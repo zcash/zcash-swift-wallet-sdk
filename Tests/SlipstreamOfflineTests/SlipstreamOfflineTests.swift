@@ -33,6 +33,7 @@ import Foundation
 import XCTest
 @testable import TestUtils
 @testable import ZcashLightClientKit
+@testable import ZODLSlipstream
 
 class SlipstreamOfflineTests: ZcashTestCase {
     private var cancellables: [AnyCancellable] = []

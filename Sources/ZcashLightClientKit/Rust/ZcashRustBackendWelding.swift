@@ -34,7 +34,7 @@ public enum RewindResult {
     case requestedHeightTooLow(BlockHeight)
 }
 
-protocol ZcashRustBackendWelding {
+package protocol ZcashRustBackendWelding {
     /// Returns a list of the accounts in the wallet.
     func listAccounts() async throws -> [Account]
 

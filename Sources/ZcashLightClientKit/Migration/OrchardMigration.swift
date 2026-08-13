@@ -48,7 +48,7 @@ public struct MigrationNetworkPrivacyOptions: Equatable {
 /// and nothing else — the gate is behavior-based, so see its type doc for why no timed
 /// post-broadcast spacing lives there any more). The engine owns all migration state, including
 /// the committed schedule; the SDK keeps no local copy of the proposal list.
-actor OrchardMigration {
+package actor OrchardMigration {
     /// The immutable configuration an ``OrchardMigration`` is built from.
     ///
     /// Beyond the migration's own inputs, this carries the paths the underlying `ZcashRustBackend`
@@ -265,7 +265,7 @@ actor OrchardMigration {
     /// now, so an opt-out would be a capability for a distinction the surface no longer draws. The
     /// estimate may only ever ACCELERATE schedule due-ness — expiry stays scanned-tip — and an
     /// estimator failure degrades to scanned-tip behavior rather than blocking the advance.
-    func advanceStep() async throws -> MigrationAdvance? {
+    package func advanceStep() async throws -> MigrationAdvance? {
         let estimatedTip = await MigrationTipEstimation.gatingEstimatedTip(welding: welding, now: now())
         let advance = try await welding.migrationAdvanceStep(for: accountUUID, estimatedTip: estimatedTip)
         // Every crank -- regardless of which caller drove it -- replaces the retained outlook,
@@ -302,13 +302,13 @@ actor OrchardMigration {
     /// Live migration progress, or `nil` when no snapshot is reportable: present only while an
     /// engine run is ACTIVE or a recorded immediate sweep is pending (unmined and unexpired);
     /// terminal — complete or cancelled — runs report `nil`.
-    func migrationProgress() async throws -> MigrationProgress? {
+    package func migrationProgress() async throws -> MigrationProgress? {
         try await welding.migrationProgress(for: accountUUID)
     }
 
     /// The LIVE status of every committed migration transaction, keyed by its stable id -- the
     /// per-transaction detail view behind ``migrationProgress()``'s aggregate summary.
-    func transactionStatuses() async throws -> [MigrationTransactionStatus] {
+    package func transactionStatuses() async throws -> [MigrationTransactionStatus] {
         try await welding.migrationTransactionStatuses(for: accountUUID)
     }
 
@@ -317,7 +317,7 @@ actor OrchardMigration {
     /// instruction it returns, plus the transfer ids each wake-up covers. Jitter is re-drawn on
     /// every call; recompute (and re-register with the OS) after any state change rather than
     /// caching. Empty when there is nothing left to prove.
-    func syncWakeups() async throws -> [MigrationSyncWakeup] {
+    package func syncWakeups() async throws -> [MigrationSyncWakeup] {
         try await welding.migrationSyncWakeups(for: accountUUID)
     }
 
@@ -359,7 +359,7 @@ actor OrchardMigration {
     ///   a caller bug, named rather than silently treated as "prove nothing";
     ///   ``ZcashError/migrationProvingUnavailable(_:)`` when proving fails for a non-transient
     ///   reason.
-    func proveTransactions(
+    package func proveTransactions(
         _ instruction: [MigrationProveTarget],
         maxProofs: Int
     ) async throws -> MigrationProveOutcome {
@@ -411,7 +411,7 @@ actor OrchardMigration {
     ///   transfer's txid, for a txid the stored run does not carry, and for the readiness refusal
     ///   of a preparation that is not proved — which a host discharges by proving again rather
     ///   than retrying this.
-    func takePreparation(byTxid txid: Data) async throws -> PreparedMigrationTransfer {
+    package func takePreparation(byTxid txid: Data) async throws -> PreparedMigrationTransfer {
         try await welding.migrationTakePreparation(txid: txid, for: accountUUID)
     }
 
@@ -455,7 +455,7 @@ actor OrchardMigration {
     /// - Throws: ``ZcashError/rustMigrationRecordTransferResult(_:)`` when `prepared` names a
     ///   transfer or a transaction the stored run does not carry, and for rust-layer failures of
     ///   the record itself.
-    func recordPreparationBroadcast(
+    package func recordPreparationBroadcast(
         _ prepared: PreparedMigrationTransfer,
         result: MigrationTransferResult
     ) async throws {
@@ -521,7 +521,7 @@ actor OrchardMigration {
     ///   advisory point-in-time guard (``ZcashError/migrationBroadcastDuringSync``) plus the
     ///   privacy gate (see ``isSyncBlocked()``) — neither is a hard mutual-exclusion
     ///   lock, so hosts must still sequence sync and broadcast sessions.
-    func performBroadcast(
+    package func performBroadcast(
         _ instruction: MigrationBroadcastInstruction,
         options: MigrationNetworkPrivacyOptions
     ) async throws -> MigrationTransferResult {
@@ -545,12 +545,12 @@ actor OrchardMigration {
     ///
     /// - Note: Requires at least one completed sync. On a wallet that has never completed a sync (no
     ///   chain tip known) this throws rather than returning `false`.
-    func isNoteSplitNeeded() async throws -> Bool {
+    package func isNoteSplitNeeded() async throws -> Bool {
         try await welding.migrationIsNoteSplitNeeded(for: accountUUID)
     }
 
     /// The optimal note split for the spendable Orchard balance.
-    func prepareNoteSplit() async throws -> NoteSplitProposal {
+    package func prepareNoteSplit() async throws -> NoteSplitProposal {
         try await welding.migrationPrepareNoteSplit(for: accountUUID)
     }
 
@@ -573,7 +573,7 @@ actor OrchardMigration {
     /// Broadcast flows are single-flight on this actor: when another broadcast-performing call
     /// (this method or ``performBroadcast(_:options:)``) is in flight, this call first waits
     /// for it to finish — it never broadcasts concurrently with it and never throws on contention.
-    func submitNoteSplit(
+    package func submitNoteSplit(
         proposal: NoteSplitProposal,
         usk: UnifiedSpendingKey,
         options: MigrationNetworkPrivacyOptions
@@ -587,7 +587,7 @@ actor OrchardMigration {
     // MARK: - Migration proposal
 
     /// The full migration schedule for the spendable Orchard balance.
-    func proposeMigrationTransfers() async throws -> MigrationSchedule {
+    package func proposeMigrationTransfers() async throws -> MigrationSchedule {
         try await welding.migrationProposeTransfers(for: accountUUID)
     }
 
@@ -597,7 +597,7 @@ actor OrchardMigration {
     /// receiver doubles as the Ironwood receiver). Entirely outside the migration engine: the
     /// returned proposal is an ORDINARY proposal held by the caller, so no engine plan-cache
     /// staleness applies to it (unlike ``proposeMigrationTransfers()``).
-    func proposeImmediateMigration() async throws -> ImmediateMigrationProposal {
+    package func proposeImmediateMigration() async throws -> ImmediateMigrationProposal {
         let ownAddress = try await welding.getCurrentAddress(accountUUID: accountUUID)
         let ffiProposal = try await welding.proposeSendMaxTransfer(
             accountUUID: accountUUID,
@@ -619,7 +619,7 @@ actor OrchardMigration {
     /// the ordinary `createProposedTransactions`/`createTransactionFromPCZT` pipeline, already
     /// guarded there) -- this only records the outcome, so it is not gated by
     /// ``serializedBroadcastFlow(_:)``.
-    func recordImmediateMigration(txid: Data) async throws {
+    package func recordImmediateMigration(txid: Data) async throws {
         try await welding.migrationRecordImmediateRun(txid: txid, for: accountUUID)
     }
 
@@ -628,7 +628,7 @@ actor OrchardMigration {
     ///
     /// - Note: Requires at least one completed sync. On a wallet that has never completed a sync (no
     ///   chain tip known) this throws rather than returning `nil`.
-    func residualAfterMigration() async throws -> Zatoshi? {
+    package func residualAfterMigration() async throws -> Zatoshi? {
         try await welding.migrationResidualAfterMigration(for: accountUUID)
     }
 
@@ -636,21 +636,21 @@ actor OrchardMigration {
     /// unlock and returns the total value locked — the "Lock balance" choice at migration
     /// `Complete`. A straight delegation to the welding lock call, bound to this actor's own
     /// account; not broadcast-performing, so it is not gated by ``serializedBroadcastFlow(_:)``.
-    func lockMigrationResidual() async throws -> Zatoshi {
+    package func lockMigrationResidual() async throws -> Zatoshi {
         try await welding.lockMigrationResidual(accountUUID: accountUUID)
     }
 
     /// Unlocks the account's locked outputs — the release half of ``lockMigrationResidual()`` —
     /// and returns the number of outputs unlocked. A straight delegation to the welding unlock
     /// call, bound to this actor's own account.
-    func unlockMigrationResidual() async throws -> Int {
+    package func unlockMigrationResidual() async throws -> Int {
         try await welding.unlockMigrationResidual(accountUUID: accountUUID)
     }
 
     /// The multi-run ("rounds") estimate for migrating the whole spendable Orchard balance. A
     /// straight delegation to the welding estimate call, bound to this actor's own account; the
     /// zero-run estimate is a legitimate answer, not an error.
-    func estimateMigrationRuns() async throws -> MigrationRunEstimate {
+    package func estimateMigrationRuns() async throws -> MigrationRunEstimate {
         try await welding.estimateMigrationRuns(accountUUID: accountUUID)
     }
 
@@ -658,7 +658,7 @@ actor OrchardMigration {
     ///
     /// The SDK does not retain the proposal list: hosts that need to render the committed schedule
     /// later must persist it themselves at confirmation time.
-    func signAndStoreMigrationSchedule(_ schedule: MigrationSchedule, usk: UnifiedSpendingKey) async throws {
+    package func signAndStoreMigrationSchedule(_ schedule: MigrationSchedule, usk: UnifiedSpendingKey) async throws {
         try await welding.migrationSignAndStoreSchedule(schedule, usk: usk, for: accountUUID)
     }
 
@@ -720,14 +720,14 @@ actor OrchardMigration {
     /// `useEstimatedTip` opts the check into the wall-clock chain-tip estimate: the estimate may
     /// only ACCELERATE due-ness (expiry stays scanned-tip), and an estimator failure degrades to
     /// the scanned-tip behavior — the same plumbing ``advanceStep()`` always applies.
-    func hasOverdueTransfers(useEstimatedTip: Bool) async throws -> Bool {
+    package func hasOverdueTransfers(useEstimatedTip: Bool) async throws -> Bool {
         let estimatedTip = useEstimatedTip ? await MigrationTipEstimation.gatingEstimatedTip(welding: welding, now: now()) : nil
         return try await welding.migrationHasOverdueTransfers(for: accountUUID, estimatedTip: estimatedTip)
     }
 
     /// Whether the migration is in an invalid state (spendable Orchard remains but no scheduled
     /// transfer covers it).
-    func hasInvalidTransfers() async throws -> Bool {
+    package func hasInvalidTransfers() async throws -> Bool {
         try await welding.migrationHasInvalidTransfers(for: accountUUID)
     }
 
@@ -740,7 +740,7 @@ actor OrchardMigration {
     /// plan is previewed for the re-confirm lane — the follow-up
     /// ``signAndStoreMigrationSchedule(_:usk:)`` / ``submitNoteSplit(proposal:usk:options:)`` (or
     /// PCZT store) then commits it.
-    func restartCurrentMigrationStep() async throws -> MigrationSchedule {
+    package func restartCurrentMigrationStep() async throws -> MigrationSchedule {
         try await welding.migrationRestartStep(for: accountUUID)
     }
 
@@ -769,7 +769,7 @@ actor OrchardMigration {
     ///   persisted ALL-OR-NOTHING: a mid-refresh throw (including this one) persists NONE of the
     ///   batch's rebuilds, so a non-throwing return's schedule is exactly what was atomically
     ///   persisted, never a partial batch.
-    func refreshStaleTransfers(usk: UnifiedSpendingKey?) async throws -> MigrationSchedule {
+    package func refreshStaleTransfers(usk: UnifiedSpendingKey?) async throws -> MigrationSchedule {
         try await welding.migrationRefreshStaleTransfers(usk: usk, for: accountUUID)
     }
 
@@ -781,7 +781,7 @@ actor OrchardMigration {
     /// ceremony signs everything. Resumes a stored non-terminal run handle-free; replaces a
     /// terminal one. Only `schedule.proposalHandle` crosses to the native side, and only when this
     /// call is the one creating the run — the display fields are never echoed back.
-    func createUnsignedNoteSplitPCZTs(for schedule: MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt] {
+    package func createUnsignedNoteSplitPCZTs(for schedule: MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt] {
         try await welding.migrationCreateUnsignedNoteSplitPczts(for: schedule, for: accountUUID)
     }
 
@@ -789,12 +789,12 @@ actor OrchardMigration {
     /// all-or-nothing, and returns a STORAGE RECEIPT for the first one (its `txid` is zeroed — the
     /// broadcastable, proven value is served by ``performBroadcast(_:options:)``, once a crank
     /// names it).
-    func storeSignedNoteSplitPCZTs(_ signed: [MigrationSignedTransferPczt]) async throws -> PreparedMigrationTransfer {
+    package func storeSignedNoteSplitPCZTs(_ signed: [MigrationSignedTransferPczt]) async throws -> PreparedMigrationTransfer {
         try await welding.migrationStoreSignedNoteSplitPczts(signed, for: accountUUID)
     }
 
     /// Builds one unsigned, proven PCZT per transfer of `schedule` for an external signer.
-    func createUnsignedTransferPCZTs(for schedule: MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt] {
+    package func createUnsignedTransferPCZTs(for schedule: MigrationSchedule) async throws -> [MigrationUnsignedTransferPczt] {
         try await welding.migrationCreateUnsignedTransferPczts(for: schedule, for: accountUUID)
     }
 
@@ -803,7 +803,7 @@ actor OrchardMigration {
     ///
     /// The SDK does not retain the proposal list: hosts that need to render the committed schedule
     /// later must persist it themselves at confirmation time.
-    func storeSignedSchedulePCZTs(_ signed: [MigrationSignedTransferPczt]) async throws {
+    package func storeSignedSchedulePCZTs(_ signed: [MigrationSignedTransferPczt]) async throws {
         try await welding.migrationStoreSignedSchedulePczts(signed, for: accountUUID)
     }
 
@@ -955,7 +955,7 @@ extension OrchardMigration {
     /// round-trip through the FFI. Static (welding passed in) because the split is account-free —
     /// it weighs caller-held rows, never the wallet database — so it has no per-account instance
     /// counterpart on this actor.
-    static func batchPcztsForSigning(
+    package static func batchPcztsForSigning(
         welding: ZcashRustBackendWelding,
         pczts: [MigrationUnsignedTransferPczt],
         maxActionsPerSession: Int

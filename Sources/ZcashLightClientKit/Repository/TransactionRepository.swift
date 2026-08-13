@@ -7,7 +7,7 @@
 
 import Foundation
 
-protocol TransactionRepository {
+package protocol TransactionRepository {
     func closeDBConnection()
     func countAll() async throws -> Int
     func countUnmined() async throws -> Int

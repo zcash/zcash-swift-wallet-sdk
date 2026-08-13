@@ -9,7 +9,7 @@ import Foundation
 
 /// A protocol that abstracts the requirements around obtaining wallet checkpoints
 /// (also known as TreeStates).
-protocol CheckpointSource {
+package protocol CheckpointSource {
     /// `NetworkType` of this Checkpoint source
     var network: NetworkType { get }
 

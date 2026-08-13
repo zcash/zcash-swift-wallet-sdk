@@ -15,7 +15,7 @@ extension WalletSummary {
     /// Returns `nil` when the wallet has no balance data yet (the FFI's "none" summary,
     /// `fully_scanned_height < 0`) — identical to the legacy wrapper's contract.
     /// The caller owns the pointer and must free it (`zcashlc_free_wallet_summary`).
-    static func fromFFI(_ summaryPtr: UnsafeMutablePointer<FfiWalletSummary>) -> WalletSummary? {
+    package static func fromFFI(_ summaryPtr: UnsafeMutablePointer<FfiWalletSummary>) -> WalletSummary? {
         if summaryPtr.pointee.fully_scanned_height < 0 {
             return nil
         }
@@ -45,7 +45,7 @@ extension WalletSummary {
     /// unchanged: locked value is already non-spendable, so the mask has nothing to shift.
     /// Extracted VERBATIM from `ZcashRustBackend.getWalletSummary()` so the transform has a
     /// single, shared definition.
-    func withSpendableMasked() -> WalletSummary {
+    package func withSpendableMasked() -> WalletSummary {
         var masked = accountBalances
         masked.forEach { key, _ in
             if let accountBalance = masked[key] {

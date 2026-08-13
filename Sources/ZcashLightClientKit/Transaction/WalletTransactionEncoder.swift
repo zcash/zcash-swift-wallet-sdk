@@ -7,7 +7,7 @@
 
 import Foundation
 
-class WalletTransactionEncoder: TransactionEncoder {
+package class WalletTransactionEncoder: TransactionEncoder {
     let lightWalletService: LightWalletService
     let rustBackend: ZcashRustBackendWelding
     let repository: TransactionRepository
@@ -20,7 +20,7 @@ class WalletTransactionEncoder: TransactionEncoder {
     private let fsBlockDbRoot: URL
     private let networkType: NetworkType
 
-    init(
+    package init(
         rustBackend: ZcashRustBackendWelding,
         dataDb: URL,
         fsBlockDbRoot: URL,
@@ -44,7 +44,7 @@ class WalletTransactionEncoder: TransactionEncoder {
         self.sdkFlags = sdkFlags
     }
 
-    convenience init(initializer: Initializer) {
+    package convenience init(initializer: Initializer) {
         let sdkFlags = initializer.container.resolve(SDKFlags.self)
 
         self.init(
@@ -61,7 +61,7 @@ class WalletTransactionEncoder: TransactionEncoder {
         )
     }
 
-    func proposeTransfer(
+    package func proposeTransfer(
         accountUUID: AccountUUID,
         recipient: String,
         amount: Zatoshi,
@@ -77,13 +77,13 @@ class WalletTransactionEncoder: TransactionEncoder {
         return Proposal(inner: proposal)
     }
 
-    func proposeOrchardToIronwoodMigration(accountUUID: AccountUUID) async throws -> Proposal {
+    package func proposeOrchardToIronwoodMigration(accountUUID: AccountUUID) async throws -> Proposal {
         let proposal = try await rustBackend.proposeOrchardToIronwoodMigration(accountUUID: accountUUID)
 
         return Proposal(inner: proposal)
     }
 
-    func proposeShielding(
+    package func proposeShielding(
         accountUUID: AccountUUID,
         shieldingThreshold: Zatoshi,
         memoBytes: MemoBytes?,
@@ -99,7 +99,7 @@ class WalletTransactionEncoder: TransactionEncoder {
         return Proposal(inner: proposal)
     }
 
-    func proposeFulfillingPaymentFromURI(
+    package func proposeFulfillingPaymentFromURI(
         _ uri: String,
         accountUUID: AccountUUID
     ) async throws -> Proposal {
@@ -110,7 +110,7 @@ class WalletTransactionEncoder: TransactionEncoder {
         return Proposal(inner: proposal)
     }
 
-    func createProposedTransactions(
+    package func createProposedTransactions(
         proposal: Proposal,
         spendingKey: UnifiedSpendingKey
     ) async throws -> [CreatedTransaction] {
@@ -126,7 +126,7 @@ class WalletTransactionEncoder: TransactionEncoder {
         return try await createdTransactions(forTxIds: txIds)
     }
 
-    func createdTransactions(forTxIds txIds: [Data]) async throws -> [CreatedTransaction] {
+    package func createdTransactions(forTxIds txIds: [Data]) async throws -> [CreatedTransaction] {
         var createdTransactions: [CreatedTransaction] = []
         for txId in txIds {
             guard let transactionData = try await rustBackend.getTransaction(txId: txId) else {
@@ -141,7 +141,7 @@ class WalletTransactionEncoder: TransactionEncoder {
         return createdTransactions
     }
 
-    func fetchTransactionsForTxIds(_ txIds: [Data]) async throws -> [ZcashTransaction.Overview] {
+    package func fetchTransactionsForTxIds(_ txIds: [Data]) async throws -> [ZcashTransaction.Overview] {
         logger.debug("transaction ids: \(txIds)")
 
         var txs: [ZcashTransaction.Overview] = []
@@ -153,7 +153,7 @@ class WalletTransactionEncoder: TransactionEncoder {
         return txs
     }
 
-    func submit(
+    package func submit(
         transaction: EncodedTransaction
     ) async throws {
         let response = try await self.lightWalletService.submit(
@@ -168,7 +168,7 @@ class WalletTransactionEncoder: TransactionEncoder {
         }
     }
 
-    func isTransactionKnownToServer(txId: Data) async -> Bool {
+    package func isTransactionKnownToServer(txId: Data) async -> Bool {
         do {
             let response = try await self.lightWalletService.fetchTransaction(
                 txId: txId,
@@ -190,7 +190,7 @@ class WalletTransactionEncoder: TransactionEncoder {
         return readableSpend && readableOutput
     }
 
-    func closeDBConnection() {
+    package func closeDBConnection() {
         self.repository.closeDBConnection()
     }
 }

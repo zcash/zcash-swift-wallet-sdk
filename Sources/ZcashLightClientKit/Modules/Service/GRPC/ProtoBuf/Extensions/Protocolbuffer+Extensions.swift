@@ -15,12 +15,12 @@ extension CompactBlockRange {
 }
 
 extension BlockID {
-    init(height: UInt64) {
+    package init(height: UInt64) {
         self = BlockID()
         self.height = height
     }
 
-    init(height: BlockHeight) {
+    package init(height: BlockHeight) {
         self.init(height: UInt64(height))
     }
 

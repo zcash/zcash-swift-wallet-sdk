@@ -18,7 +18,7 @@ public enum TransactionEncoderError: Error {
     case submitError(code: Int, message: String)
 }
 
-protocol TransactionEncoder {
+package protocol TransactionEncoder {
     /// Creates a proposal for transferring funds to the given recipient.
     ///
     /// - Parameter accountUUID: the account from which to transfer funds.

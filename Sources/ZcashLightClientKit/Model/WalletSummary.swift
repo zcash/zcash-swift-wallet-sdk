@@ -128,10 +128,10 @@ struct ScanProgress: Equatable {
     }
 }
 
-struct WalletSummary: Equatable {
-    let accountBalances: [AccountUUID: AccountBalance]
+package struct WalletSummary: Equatable {
+    package let accountBalances: [AccountUUID: AccountBalance]
     let chainTipHeight: BlockHeight
-    let fullyScannedHeight: BlockHeight
+    package let fullyScannedHeight: BlockHeight
     let recoveryProgress: ScanProgress?
     let scanProgress: ScanProgress?
     let nextSaplingSubtreeIndex: UInt32

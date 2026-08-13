@@ -91,7 +91,7 @@ extension LightWalletServiceError: Equatable {
     }
 }
 
-protocol LightWalletdInfo {
+package protocol LightWalletdInfo {
     var version: String { get }
 
     var vendor: String { get }
@@ -129,7 +129,7 @@ protocol LightWalletdInfo {
     var zcashdSubversion: String { get }
 }
 
-protocol LightWalletServiceResponse {
+package protocol LightWalletServiceResponse {
     var errorCode: Int32 { get }
     var errorMessage: String { get }
 }
@@ -143,7 +143,7 @@ struct LightWalletServiceFactory {
 }
 
 /// Mode that determines which connection is used for the lightwalletd networking calls.
-enum ServiceMode: Equatable {
+package enum ServiceMode: Equatable {
     /// Default Tor connection is used, lives for the lifetime of the Synchronizer.
     case defaultTor
     /// GRPC connection is used, no Tor involved.
@@ -154,12 +154,12 @@ enum ServiceMode: Equatable {
     case uniqueTor
 
     /// Helper method that generates a tagged group for a given transaction ID with a prefix.
-    static func txIdGroup(prefix: String, txId: Data) -> ServiceMode {
+    package static func txIdGroup(prefix: String, txId: Data) -> ServiceMode {
         torInGroup("\(prefix)-\(txId.hexEncodedString())")
     }
 }
 
-protocol LightWalletService: AnyObject {
+package protocol LightWalletService: AnyObject {
     /// Closure which is called when connection state changes.
     var connectionStateChange: ((_ from: ConnectionState, _ to: ConnectionState) -> Void)? { get set }
 

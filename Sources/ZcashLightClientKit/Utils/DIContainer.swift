@@ -8,7 +8,7 @@
 import Foundation
 
 /// This class represents depedency injection containers.
-class DIContainer {
+package class DIContainer {
     /// Structure that represents one registered dependency.
     struct Dependency {
         /// Closure which creates instance of the dependency.
@@ -29,13 +29,13 @@ class DIContainer {
     /// Mocked dependencies are stored here.
     private var mockedDependencies: [String: Dependency] = [:]
 
-    init() { }
+    package init() { }
 
     private func key<T>(for type: T.Type) -> String {
         return String(describing: T.self)
     }
 
-    func register<T>(type: T.Type, isSingleton: Bool, factory: @escaping (DIContainer) -> T) {
+    package func register<T>(type: T.Type, isSingleton: Bool, factory: @escaping (DIContainer) -> T) {
         lock.lock()
         let key = self.key(for: type)
         let depedency = Dependency(factory: factory, isSingleton: isSingleton, instance: nil)
@@ -51,7 +51,7 @@ class DIContainer {
         lock.unlock()
     }
 
-    func resolve<T>(_ type: T.Type) -> T {
+    package func resolve<T>(_ type: T.Type) -> T {
         lock.lock()
         defer { lock.unlock() }
         let key = self.key(for: type)

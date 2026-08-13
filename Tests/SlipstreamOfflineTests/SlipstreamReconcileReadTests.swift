@@ -13,6 +13,7 @@
 import XCTest
 import SQLite
 @testable import ZcashLightClientKit
+@testable import ZODLSlipstream
 
 final class SlipstreamReconcileReadTests: XCTestCase {
     private func tempDBPath() -> String {

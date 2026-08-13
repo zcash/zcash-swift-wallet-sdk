@@ -21,22 +21,22 @@ public protocol Logger {
 }
 
 extension Logger {
-    func debug(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
+    package func debug(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
         debug(message, file: file, function: function, line: line)
     }
-    func info(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
+    package func info(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
         info(message, file: file, function: function, line: line)
     }
-    func event(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
+    package func event(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
         event(message, file: file, function: function, line: line)
     }
-    func warn(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
+    package func warn(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
         warn(message, file: file, function: function, line: line)
     }
-    func error(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
+    package func error(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
         error(message, file: file, function: function, line: line)
     }
-    func sync(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
+    package func sync(_ message: String, file: StaticString = #file, function: StaticString = #function, line: Int = #line) {
         sync(message, file: file, function: function, line: line)
     }
 }

@@ -29,11 +29,11 @@ public actor TorClient {
         zcashlc_free_tor_runtime(runtime)
     }
 
-    func prepare() throws {
+    package func prepare() throws {
         _ = try resolveRuntime()
     }
 
-    func close() throws {
+    package func close() throws {
         guard let runtime = underlyingRuntime else { return }
 
         zcashlc_free_tor_runtime(runtime)

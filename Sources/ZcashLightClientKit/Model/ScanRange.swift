@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct ScanRange {
+package struct ScanRange {
     enum Priority: UInt8 {
         case ignored = 0
         case scanned = 10

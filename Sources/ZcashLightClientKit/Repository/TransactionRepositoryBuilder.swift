@@ -17,8 +17,8 @@ enum TransactionRepositoryBuilder {
     }
 }
 
-enum PagedTransactionRepositoryBuilder {
-    static func build(initializer: Initializer, kind: TransactionKind = .all) -> PaginatedTransactionRepository {
+package enum PagedTransactionRepositoryBuilder {
+    package static func build(initializer: Initializer, kind: TransactionKind = .all) -> PaginatedTransactionRepository {
         return PagedTransactionDAO(repository: initializer.transactionRepository, kind: kind)
     }
 }

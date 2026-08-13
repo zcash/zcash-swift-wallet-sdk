@@ -15,7 +15,7 @@ enum BlockDownloaderServiceError: Error {
 /**
 Represents what a compact block downloaded should provide to its clients
 */
-protocol BlockDownloaderService {
+package protocol BlockDownloaderService {
     var storage: CompactBlockRepository { get }
 
     /**

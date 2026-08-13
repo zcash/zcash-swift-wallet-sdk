@@ -106,14 +106,18 @@ public enum ZcashNetworkBuilder {
     }
 }
 
-class ZcashTestnet: ZcashNetwork {
-    let networkType: NetworkType = .testnet
-    let constants: NetworkConstants.Type = ZcashSDKTestnetConstants.self
+package class ZcashTestnet: ZcashNetwork {
+    package let networkType: NetworkType = .testnet
+    package let constants: NetworkConstants.Type = ZcashSDKTestnetConstants.self
+
+    package init() {}
 }
 
-class ZcashMainnet: ZcashNetwork {
-    let networkType: NetworkType = .mainnet
-    let constants: NetworkConstants.Type = ZcashSDKMainnetConstants.self
+package class ZcashMainnet: ZcashNetwork {
+    package let networkType: NetworkType = .mainnet
+    package let constants: NetworkConstants.Type = ZcashSDKMainnetConstants.self
+
+    package init() {}
 }
 
 class ZcashRegtest: ZcashNetwork {

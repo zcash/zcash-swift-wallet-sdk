@@ -138,7 +138,7 @@ extension CreatedTransaction {
         self.expiryHeight = overview.expiryHeight
     }
 
-    var encodedTransaction: EncodedTransaction {
+    package var encodedTransaction: EncodedTransaction {
         EncodedTransaction(transactionId: txId, raw: raw)
     }
 }
