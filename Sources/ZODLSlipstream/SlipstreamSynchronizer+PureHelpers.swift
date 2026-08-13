@@ -9,6 +9,7 @@
 //
 
 import Foundation
+import ZcashLightClientKit
 
 extension SlipstreamSynchronizer {
     // [v2.1 E-5] `counterProgress` is GONE with `forceCounterProgressUntilDone`: the engine

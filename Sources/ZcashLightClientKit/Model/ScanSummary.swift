@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct ScanSummary: Equatable {
+package struct ScanSummary: Equatable {
     let scannedRange: Range<BlockHeight>
     let spentSaplingNoteCount: UInt64
     let receivedSaplingNoteCount: UInt64

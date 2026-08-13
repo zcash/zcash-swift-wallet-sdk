@@ -2691,7 +2691,7 @@ private extension ZcashRustBackend {
     }
 }
 
-nonisolated func lastErrorMessage(fallback: String) -> String {
+nonisolated package func lastErrorMessage(fallback: String) -> String {
     let errorLen = zcashlc_last_error_length()
     defer { zcashlc_clear_last_error() }
 
@@ -2711,13 +2711,13 @@ nonisolated func lastErrorMessage(fallback: String) -> String {
 }
 
 extension URL {
-    func osStr() -> (String, UInt) {
+    package func osStr() -> (String, UInt) {
         let path = self.absoluteString
         return (path, UInt(path.lengthOfBytes(using: .utf8)))
     }
 
     /// use when the rust ffi needs to make filesystem operations
-    func osPathStr() -> (String, UInt) {
+    package func osPathStr() -> (String, UInt) {
         let path = self.path
         return (path, UInt(path.lengthOfBytes(using: .utf8)))
     }

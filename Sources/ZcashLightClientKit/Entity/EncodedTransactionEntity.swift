@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct EncodedTransaction {
+package struct EncodedTransaction {
     let transactionId: Data
     let raw: Data
 }
@@ -20,12 +20,12 @@ struct TransactionData: Equatable {
 }
 
 extension EncodedTransaction: Hashable {
-    func hash(into hasher: inout Hasher) {
+    package func hash(into hasher: inout Hasher) {
         hasher.combine(transactionId)
         hasher.combine(raw)
     }
 
-    static func == (lhs: Self, rhs: Self) -> Bool {
+    package static func == (lhs: Self, rhs: Self) -> Bool {
         guard lhs.transactionId == rhs.transactionId else { return false }
         guard lhs.raw == rhs.raw else { return false }
         return true

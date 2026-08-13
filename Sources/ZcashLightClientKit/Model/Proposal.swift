@@ -9,7 +9,7 @@ import Foundation
 
 /// A data structure that describes a series of transactions to be created.
 public struct Proposal: Equatable {
-    let inner: FfiProposal
+    package let inner: FfiProposal
 
     /// Returns the number of transactions that this proposal will create.
     ///

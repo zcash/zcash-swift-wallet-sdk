@@ -6,7 +6,7 @@
 import Combine
 import Foundation
 
-final class SDKBroadcaster: Broadcaster {
+package final class SDKBroadcaster: Broadcaster {
     private let transactionEncoder: TransactionEncoder
     private let initializer: Initializer
     private let logger: Logger
@@ -15,7 +15,7 @@ final class SDKBroadcaster: Broadcaster {
     private let multiEndpointSubmitter: MultiEndpointSubmitter
     private let statusCheck: () throws -> Void
 
-    init(
+    package init(
         transactionEncoder: TransactionEncoder,
         initializer: Initializer,
         logger: Logger,
@@ -35,21 +35,21 @@ final class SDKBroadcaster: Broadcaster {
 
     // MARK: - Broadcaster conformance
 
-    func createProposedTransactions(
+    package func createProposedTransactions(
         proposal: Proposal,
         spendingKey: UnifiedSpendingKey
     ) async throws -> [CreatedTransaction] {
         try await createProposedTransactions(proposal: proposal, spendingKey: spendingKey, recordingPlans: true)
     }
 
-    func createTransactionFromPCZT(
+    package func createTransactionFromPCZT(
         pcztWithProofs: Pczt,
         pcztWithSigs: Pczt
     ) async throws -> [CreatedTransaction] {
         try await createTransactionFromPCZT(pcztWithProofs: pcztWithProofs, pcztWithSigs: pcztWithSigs, recordingPlans: true)
     }
 
-    func submit(
+    package func submit(
         transaction: CreatedTransaction,
         to endpoints: [LightWalletEndpoint],
         timing: SubmissionTiming
@@ -73,7 +73,7 @@ final class SDKBroadcaster: Broadcaster {
         return outcome
     }
 
-    func submit(
+    package func submit(
         transactions: [CreatedTransaction],
         to endpoints: [LightWalletEndpoint],
         timing: SubmissionTiming

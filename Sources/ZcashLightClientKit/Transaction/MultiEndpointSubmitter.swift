@@ -10,7 +10,7 @@ import Foundation
 /// Resumes the caller as soon as the outcome is decided (first acceptance, all
 /// endpoints failed, timeout, or caller cancellation); in-flight submissions
 /// continue through the grace window in the background before being cancelled.
-final class MultiEndpointSubmitter {
+package final class MultiEndpointSubmitter {
     private let endpointSubmitter: EndpointSubmitter
     private let logger: Logger
 

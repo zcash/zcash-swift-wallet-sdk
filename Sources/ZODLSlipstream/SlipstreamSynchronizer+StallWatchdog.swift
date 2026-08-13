@@ -16,6 +16,7 @@
 //
 
 import Foundation
+import ZcashLightClientKit
 
 extension SlipstreamSynchronizer {
     /// B4 (#1755): stall-watchdog tick. Tracks the engine's progress-counter

@@ -120,23 +120,23 @@ public class Initializer {
     // This is used to uniquely identify instance of the SDKSynchronizer. It's used when checking if the Alias is already used or not.
     let id = UUID()
 
-    let container: DIContainer
-    let alias: ZcashSynchronizerAlias
-    var endpoint: LightWalletEndpoint
-    let fsBlockDbRoot: URL
+    package let container: DIContainer
+    package let alias: ZcashSynchronizerAlias
+    package var endpoint: LightWalletEndpoint
+    package let fsBlockDbRoot: URL
     let generalStorageURL: URL
-    let dataDbURL: URL
-    let torDirURL: URL
-    let spendParamsURL: URL
-    let outputParamsURL: URL
-    let saplingParamsSourceURL: SaplingParamsSourceURL
-    var lightWalletService: LightWalletService
-    let transactionRepository: TransactionRepository
+    package let dataDbURL: URL
+    package let torDirURL: URL
+    package let spendParamsURL: URL
+    package let outputParamsURL: URL
+    package let saplingParamsSourceURL: SaplingParamsSourceURL
+    package var lightWalletService: LightWalletService
+    package let transactionRepository: TransactionRepository
     let storage: CompactBlockRepository
-    var blockDownloaderService: BlockDownloaderService
-    let network: ZcashNetwork
-    let logger: Logger
-    let rustBackend: ZcashRustBackendWelding
+    package var blockDownloaderService: BlockDownloaderService
+    package let network: ZcashNetwork
+    package let logger: Logger
+    package let rustBackend: ZcashRustBackendWelding
 
     /// The effective birthday of the wallet based on the height provided when initializing and the checkpoints available on this SDK.
     ///
@@ -157,7 +157,7 @@ public class Initializer {
     /// `nil` (the legacy `SDKSynchronizer` path) keeps the host-side fetch below,
     /// byte-for-byte (the old sync path is frozen).
     /// Signature: (isRestore, birthday, latest bundled checkpoint height) → anchor.
-    var slipstreamAnchorSource: ((Bool, BlockHeight, BlockHeight) async -> SlipstreamRestoreAnchor?)?
+    package var slipstreamAnchorSource: ((Bool, BlockHeight, BlockHeight) async -> SlipstreamRestoreAnchor?)?
 
     /// Constructs the Initializer and migrates an old cacheDb to the new file system block cache if a `cacheDbURL` is provided.
     /// - Parameters:
@@ -468,7 +468,7 @@ public class Initializer {
     /// - Parameter seed: ZIP-32 Seed bytes for the wallet that will be initialized
     /// - Throws: `InitializerError.dataDbInitFailed` if the creation of the dataDb fails
     /// `InitializerError.accountInitFailed` if the account table can't be initialized.
-    func initialize(
+    package func initialize(
         with seed: [UInt8]?,
         walletBirthday: BlockHeight?,
         name: String,

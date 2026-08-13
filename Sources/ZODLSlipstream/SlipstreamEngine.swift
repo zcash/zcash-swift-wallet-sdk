@@ -14,6 +14,7 @@
 
 import Foundation
 import libzcashlc
+import ZcashLightClientKit
 
 // TODO: [#1755] SlipstreamEngine — consider adding reconnect/retry logic once the
 //   full T4.4 darkside test suite is green and the server-switch path is wired up.
@@ -250,7 +251,7 @@ public actor SlipstreamEngine {
     /// `close()`, making use-after-free impossible.
     /// (Internal because `WalletSummary` is an internal model — the synchronizer is the consumer.)
     func walletSummary(
-        confirmationsPolicy: ConfirmationsPolicy = ConfirmationsPolicy.defaultTransferPolicy()
+        confirmationsPolicy: ZcashLightClientKit.ConfirmationsPolicy = ZcashLightClientKit.ConfirmationsPolicy.defaultTransferPolicy()
     ) -> WalletSummary? {
         guard let handlePtr = handle else { return nil }
         guard let summaryPtr = zcashlc_slipstream_wallet_summary(handlePtr, confirmationsPolicy.toBackend()) else {
@@ -288,15 +289,9 @@ public actor SlipstreamEngine {
 
 // MARK: - Wallet-provisioning anchor (v2.1 E-6, handle-less)
 
-/// [E-6] The engine-resolved wallet-provisioning anchor. RESTORE: `height` = the
-/// recover_until to provision (always valid — live tip, or the engine's offline
-/// `max(bundled checkpoint, birthday+1)` fallback), `treeState` nil (the host keeps its
-/// birthday checkpoint). NEW: the reorg-safe recent server tree state, or nil when
-/// offline (the host keeps its bundled checkpoint defaults).
-struct SlipstreamRestoreAnchor {
-    let height: BlockHeight
-    let treeState: TreeState?
-}
+// `SlipstreamRestoreAnchor` itself lives in the core target
+// (Initializer+SlipstreamAnchor.swift) because `Initializer.slipstreamAnchorSource`
+// names it; only this engine-driven resolver belongs here.
 
 extension SlipstreamEngine {
     /// [E-6] Resolve the provisioning anchor via `zcashlc_slipstream_restore_anchor` —

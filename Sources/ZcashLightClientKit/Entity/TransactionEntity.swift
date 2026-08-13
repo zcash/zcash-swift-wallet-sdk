@@ -165,7 +165,7 @@ public enum ZcashTransaction {
     }
 
     /// Used when fetching blocks from the lightwalletd
-    struct Fetched: Equatable {
+    package struct Fetched: Equatable {
         public let rawID: Data
         public let minedHeight: UInt32?
         public let raw: Data
@@ -307,7 +307,7 @@ extension ZcashTransaction.Overview {
         }
     }
 
-    func anchor(network: ZcashNetwork) -> BlockHeight? {
+    package func anchor(network: ZcashNetwork) -> BlockHeight? {
         guard let minedHeight = self.minedHeight else { return nil }
         if minedHeight != -1 {
             return max(minedHeight - ZcashSDK.defaultStaleTolerance, network.saplingActivationHeight)

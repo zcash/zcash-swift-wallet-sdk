@@ -151,7 +151,7 @@ enum FfiFeeRule: SwiftProtobuf.Enum, Swift.CaseIterable {
 }
 
 /// A data structure that describes a series of transactions to be created.
-struct FfiProposal: Sendable {
+package struct FfiProposal: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -196,9 +196,9 @@ struct FfiProposal: Sendable {
   /// Clears the value of `proposedVersion`. Subsequent reads from it will return its default value.
   mutating func clearProposedVersion() {self._proposedVersion = nil}
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  package var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  package init() {}
 
   fileprivate var _confirmationsPolicy: FfiConfirmationsPolicy? = nil
   fileprivate var _proposedVersion: UInt32? = nil
@@ -497,10 +497,10 @@ extension FfiFeeRule: SwiftProtobuf._ProtoNameProviding {
 }
 
 extension FfiProposal: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".Proposal"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}protoVersion\0\u{1}feeRule\0\u{1}minTargetHeight\0\u{1}steps\0\u{1}confirmationsPolicy\0\u{1}proposedVersion\0")
+  package static let protoMessageName: String = _protobuf_package + ".Proposal"
+  package static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}protoVersion\0\u{1}feeRule\0\u{1}minTargetHeight\0\u{1}steps\0\u{1}confirmationsPolicy\0\u{1}proposedVersion\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  package mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -517,7 +517,7 @@ extension FfiProposal: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementati
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  package func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     // The use of inline closures is to circumvent an issue where the compiler
     // allocates stack space for every if/case branch local when no optimizations
     // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
@@ -543,7 +543,7 @@ extension FfiProposal: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementati
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: FfiProposal, rhs: FfiProposal) -> Bool {
+  package static func ==(lhs: FfiProposal, rhs: FfiProposal) -> Bool {
     if lhs.protoVersion != rhs.protoVersion {return false}
     if lhs.feeRule != rhs.feeRule {return false}
     if lhs.minTargetHeight != rhs.minTargetHeight {return false}

@@ -67,13 +67,19 @@ PROTOC_GEN_SWIFT="$PLUGIN_SCRATCH/swift-protobuf/release/protoc-gen-swift"
 PROTOC_GEN_GRPC_SWIFT="$PLUGIN_SCRATCH/grpc-swift/release/protoc-gen-grpc-swift"
 
 echo "==> Regenerating Swift sources in $OUT_DIR"
+# Visibility=Package: the ZODLSlipstream target (a separate module in this
+# package) reaches generated types like TreeState and FfiProposal through
+# `package`-visible SDK seams, so the generated declarations must be at least
+# `package` themselves. No generated type is part of the SDK's public API.
 protoc -I "$PROTO_DIR" \
     --plugin=protoc-gen-swift="$PROTOC_GEN_SWIFT" \
     --swift_out="$OUT_DIR" \
+    --swift_opt=Visibility=Package \
     compact_formats.proto service.proto
 protoc -I "$PROTO_DIR" \
     --plugin=protoc-gen-grpc-swift="$PROTOC_GEN_GRPC_SWIFT" \
     --grpc-swift_out="$OUT_DIR" \
+    --grpc-swift_opt=Visibility=Package \
     service.proto
 
 # proposal.proto is vendored from librustzcash (zcash_client_backend), not
@@ -82,6 +88,7 @@ protoc -I "$PROTO_DIR" \
 protoc -I "$OUT_DIR/proto" \
     --plugin=protoc-gen-swift="$PROTOC_GEN_SWIFT" \
     --swift_out="$OUT_DIR" \
+    --swift_opt=Visibility=Package \
     proposal.proto
 
 echo

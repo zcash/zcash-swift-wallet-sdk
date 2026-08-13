@@ -42,6 +42,7 @@ import Foundation
 @testable import TestUtils
 import XCTest
 @_spi(Testing) @testable import ZcashLightClientKit
+@testable import ZODLSlipstream
 
 final class SlipstreamSynchronizerMigrationTests: ZcashTestCase {
     private let accountUUID = AccountUUID(id: [UInt8](repeating: 0x0A, count: 16))

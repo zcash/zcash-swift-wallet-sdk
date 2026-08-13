@@ -351,13 +351,13 @@ extension Data {
         self = Data(bytes: bytes, count: bytes.count)
     }
 
-    var bytes: [UInt8] {
+    package var bytes: [UInt8] {
         return [UInt8](self)
     }
 }
 
 extension Array where Element == UInt8 {
-    var data: Data {
+    package var data: Data {
         return Data(self)
     }
 }

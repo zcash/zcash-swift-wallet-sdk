@@ -8,7 +8,7 @@
 
 import Foundation
 
-protocol CompactBlockRepository {
+package protocol CompactBlockRepository {
     /// Creates the underlying repository
     func create() async throws
 

@@ -38,7 +38,7 @@ public struct SynchronizerState: Equatable {
     /// account balance known to this synchronizer given the data that has processed locally
     public var accountsBalances: [AccountUUID: AccountBalance]
     /// status of the whole sync process
-    var internalSyncStatus: InternalSyncStatus
+    package var internalSyncStatus: InternalSyncStatus
     public var syncStatus: SyncStatus
     /// height of the latest block on the blockchain known to this synchronizer.
     public var latestBlockHeight: BlockHeight
@@ -69,7 +69,7 @@ public struct SynchronizerState: Equatable {
         )
     }
 
-    init(
+    package init(
         syncSessionID: UUID,
         accountsBalances: [AccountUUID: AccountBalance],
         internalSyncStatus: InternalSyncStatus,
@@ -1685,7 +1685,7 @@ public enum SyncStatus: Equatable {
     }
 }
 
-enum InternalSyncStatus: Equatable {
+package enum InternalSyncStatus: Equatable {
     /// Indicates that this Synchronizer is actively preparing to start,
     /// which usually involves setting up database tables, migrations or
     /// taking other maintenance steps that need to occur after an upgrade.

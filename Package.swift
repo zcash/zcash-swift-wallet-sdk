@@ -1,13 +1,39 @@
-// swift-tools-version:5.6
+// swift-tools-version:5.9
 import PackageDescription
 import Foundation
+
+let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 
 // Automatically detect local FFI development mode.
 // When LocalPackages/Package.swift exists (created by Scripts/init-local-ffi.sh),
 // the SDK builds against the locally-built FFI instead of the pre-built binary
 // from GitHub Releases. Run `rm -rf LocalPackages` to switch back.
-let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 let useLocalFFI = FileManager.default.fileExists(atPath: packageDir + "/LocalPackages/Package.swift")
+
+// ZODL Slipstream variant (AGPL-3.0-only engine; see Sources/ZODLSlipstream/NOTICE.md).
+// Two switches, one meaning:
+// - `slipstreamVariantPinned` is flipped to `true` by Scripts/release.sh on
+//   `X.Y.Z-zodl-slipstream` release tags. The flag must live in the manifest BYTES
+//   (not only in a filesystem probe): SwiftPM's shared manifest cache is keyed on
+//   manifest content, so byte-identical manifests across the two variant tags would
+//   conflate their target graphs.
+// - The `.zodl-slipstream-variant` marker file serves local development; it is
+//   created by `Scripts/init-local-ffi.sh --slipstream` (which must also purge the
+//   SwiftPM manifest cache when flipping, for the same reason).
+// Plain `X.Y.Z` tags can never resolve to the slipstream variant, and SemVer orders
+// the `-zodl-slipstream` pre-release suffix BELOW `X.Y.Z`, so `from:` ranges never
+// auto-select it — consumers opt in with `exact: "X.Y.Z-zodl-slipstream"`.
+let slipstreamVariantPinned = false
+let slipstreamVariant = slipstreamVariantPinned
+    || FileManager.default.fileExists(atPath: packageDir + "/.zodl-slipstream-variant")
+
+// Binary artifact pins. Updated by Scripts/release.sh during the release process.
+let cleanFFIURL = "https://github.com/zcash/zcash-swift-wallet-sdk/releases/download/2.8.0-rc.2/libzcashlc.xcframework.zip"
+let cleanFFIChecksum = "7d0b196c53a70ae5eed453709cc231318cc1b90077f3157c33704fed32acf02f"
+// No released slipstream artifact exists yet; the first dual release
+// (planned 2.9.0 / 2.9.0-zodl-slipstream) fills these in.
+let slipstreamFFIURL = ""
+let slipstreamFFIChecksum = ""
 
 var dependencies: [Package.Dependency] = [
     .package(url: "https://github.com/grpc/grpc-swift.git", from: "1.24.2"),
@@ -21,21 +47,32 @@ var sdkDependencies: [Target.Dependency] = [
 
 var targets: [Target] = []
 
+// Exactly ONE binaryTarget named `libzcashlc` exists per resolved graph, so a
+// consuming app can never link two copies of the Rust staticlib. The slipstream
+// variant swaps in a strict SUPERSET artifact (all of libzcashlc plus the engine
+// FFI), which is safe for the core target — every `zcashlc_*` symbol resolves.
+let ffiDependency: Target.Dependency
 if useLocalFFI {
     dependencies.append(.package(name: "libzcashlc", path: "LocalPackages"))
-    sdkDependencies.append(.product(name: "libzcashlc", package: "libzcashlc"))
+    ffiDependency = .product(name: "libzcashlc", package: "libzcashlc")
 } else {
-    // Binary target for the Rust FFI library
-    // Updated by Scripts/release.sh during the release process
+    if slipstreamVariant && slipstreamFFIChecksum.isEmpty {
+        fatalError("""
+        The ZODL Slipstream variant has no released binary artifact yet. Build the FFI \
+        locally with Scripts/init-local-ffi.sh --slipstream, or pin a released \
+        X.Y.Z-zodl-slipstream tag once one exists.
+        """)
+    }
     targets.append(
         .binaryTarget(
             name: "libzcashlc",
-            url: "https://github.com/zcash/zcash-swift-wallet-sdk/releases/download/2.8.0-rc.2/libzcashlc.xcframework.zip",
-            checksum: "7d0b196c53a70ae5eed453709cc231318cc1b90077f3157c33704fed32acf02f"
+            url: slipstreamVariant ? slipstreamFFIURL : cleanFFIURL,
+            checksum: slipstreamVariant ? slipstreamFFIChecksum : cleanFFIChecksum
         )
     )
-    sdkDependencies.append("libzcashlc")
+    ffiDependency = "libzcashlc"
 }
+sdkDependencies.append(ffiDependency)
 
 targets.append(contentsOf: [
     .target(
@@ -96,18 +133,47 @@ targets.append(contentsOf: [
     )
 ])
 
+var products: [Product] = [
+    .library(
+        name: "ZcashLightClientKit",
+        targets: ["ZcashLightClientKit"]
+    )
+]
+
+if slipstreamVariant {
+    targets.append(contentsOf: [
+        .target(
+            name: "ZODLSlipstream",
+            dependencies: ["ZcashLightClientKit", ffiDependency],
+            path: "Sources/ZODLSlipstream",
+            exclude: [
+                "NOTICE.md"
+            ]
+        ),
+        .testTarget(
+            name: "SlipstreamOfflineTests",
+            dependencies: ["ZODLSlipstream", "ZcashLightClientKit", "TestUtils"]
+        ),
+        .testTarget(
+            name: "SlipstreamDarksideTests",
+            dependencies: ["ZODLSlipstream", "ZcashLightClientKit", "TestUtils"]
+        )
+    ])
+    products.append(
+        .library(
+            name: "ZODLSlipstream",
+            targets: ["ZODLSlipstream"]
+        )
+    )
+}
+
 let package = Package(
     name: "ZcashLightClientKit",
     platforms: [
         .iOS(.v13),
         .macOS(.v12)
     ],
-    products: [
-        .library(
-            name: "ZcashLightClientKit",
-            targets: ["ZcashLightClientKit"]
-        )
-    ],
+    products: products,
     dependencies: dependencies,
     targets: targets
 )

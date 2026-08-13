@@ -7,7 +7,7 @@ import Foundation
 import SQLite
 
 /// The stored retry plan for one transaction created through `Broadcaster`.
-enum StoredSubmitPlan: Equatable {
+package enum StoredSubmitPlan: Equatable {
     /// Created via `Broadcaster` but never submitted by the caller.
     /// Resubmission must skip it.
     case awaiting
@@ -19,7 +19,7 @@ enum StoredSubmitPlan: Equatable {
     case storeUnavailable
 }
 
-protocol SubmitPlanStoring {
+package protocol SubmitPlanStoring {
     func markAwaitingSubmission(txIds: [Data]) async
     func recordPlan(txId: Data, endpoints: [LightWalletEndpoint]) async
     /// `nil` means the store was read successfully and has no row — a legacy

@@ -21,7 +21,7 @@ import Foundation
 /// dormant account whose actor has never been created this launch still counts) and the
 /// account-free chain-tip estimation pair (``estimatedChainTip()`` /
 /// ``estimatedSecondsPerBlock()``, which read the shared blocks table).
-actor OrchardMigrationHost {
+package actor OrchardMigrationHost {
     private let welding: ZcashRustBackendWelding
     private let sharedBroadcaster: any MigrationBroadcasting
     private let generalStorageURL: URL
@@ -55,7 +55,7 @@ actor OrchardMigrationHost {
     /// and logger. Per-account configs reuse the initializer's paths, network, and logger
     /// (`loggingPolicy: .custom(initializer.logger)`); the wallet-scope predicate borrows the
     /// initializer's `rustBackend` welding.
-    init(initializer: Initializer) {
+    package init(initializer: Initializer) {
         let dataDbURL = initializer.dataDbURL
         let fsBlockDbRoot = initializer.fsBlockDbRoot
         let spendParamsURL = initializer.spendParamsURL
@@ -139,7 +139,7 @@ actor OrchardMigrationHost {
     /// per-account blocked stream is registered with ``syncBlockedStream`` so a broadcast on it
     /// re-evaluates the wallet-scope value immediately, and its live gate view is registered with
     /// the wallet-scope predicate so a failed gate-file write cannot hide its marks (A8).
-    func migration(for accountUUID: AccountUUID) -> OrchardMigration {
+    package func migration(for accountUUID: AccountUUID) -> OrchardMigration {
         if let existing = migrations[accountUUID] {
             return existing
         }
@@ -158,7 +158,7 @@ actor OrchardMigrationHost {
     /// launch) and blocks if any account has a submission in flight. Non-throwing: an account
     /// enumeration failure logs and degrades to "unblocked" (sync allowed) — matching
     /// ``OrchardMigration/isSyncBlocked()``.
-    func isSyncBlocked() async -> Bool {
+    package func isSyncBlocked() async -> Bool {
         await Self.computeSyncBlocked(
             welding: welding,
             generalStorageURL: generalStorageURL,
@@ -177,7 +177,7 @@ actor OrchardMigrationHost {
     /// only height the wallet knows without the network), and throws
     /// ``ZcashError/migrationChainTipUnavailable`` when even that is unknown because the wallet
     /// has never scanned.
-    func estimatedChainTip() async throws -> BlockHeight {
+    package func estimatedChainTip() async throws -> BlockHeight {
         let projection = try await MigrationTipEstimation.project(welding: welding, now: now())
         if let estimated = projection.estimatedTip {
             return estimated
@@ -193,7 +193,7 @@ actor OrchardMigrationHost {
     /// header-time deltas, clamped to [5, 150] s, falling back to 75 s (the target spacing) when
     /// fewer than two samples exist. WALLET-scoped like ``estimatedChainTip()``. A host uses it
     /// to convert wake-up heights into wall-clock OS timers.
-    func estimatedSecondsPerBlock() async throws -> Double {
+    package func estimatedSecondsPerBlock() async throws -> Double {
         try await MigrationTipEstimation.project(welding: welding, now: now()).secondsPerBlock
     }
 
@@ -213,7 +213,7 @@ actor OrchardMigrationHost {
     ///   corrected by the first asynchronous re-evaluation (the ticker's immediate startup recompute,
     ///   or sooner if a broadcast happens first). A subscriber that must be correct from its very
     ///   first value should pair this stream with an initial ``isSyncBlocked()`` call.
-    nonisolated var syncBlockedStream: AnyPublisher<Bool, Never> {
+    package nonisolated var syncBlockedStream: AnyPublisher<Bool, Never> {
         blockedPublisher.stream
     }
 

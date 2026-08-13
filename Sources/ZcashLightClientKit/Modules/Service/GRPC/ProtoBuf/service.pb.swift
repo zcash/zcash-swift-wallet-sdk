@@ -114,18 +114,18 @@ enum ShieldedProtocol: SwiftProtobuf.Enum, Swift.CaseIterable {
 /// hash. Support for specification by hash is not mandatory. (If `hash` is
 /// non-empty, the rpc may return an error.) This field is present to support
 /// a possible future upgrade.
-struct BlockID: Sendable {
+package struct BlockID: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
 
-  var height: UInt64 = 0
+  package var height: UInt64 = 0
 
   var hash: Data = Data()
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  package var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  package init() {}
 }
 
 /// BlockRange specifies a series of blocks from start to end inclusive.
@@ -208,7 +208,7 @@ struct TxFilter: Sendable {
 ///
 /// FIXME: the documentation here about mempool status contradicts the documentation
 /// for the `height` field. See https://github.com/zcash/librustzcash/issues/1484
-struct RawTransaction: Sendable {
+package struct RawTransaction: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -236,9 +236,9 @@ struct RawTransaction: Sendable {
   ///   given height
   var height: UInt64 = 0
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  package var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  package init() {}
 }
 
 /// A SendResponse encodes an error code and a string. It is currently used
@@ -403,7 +403,7 @@ struct LightdInfo: @unchecked Sendable {
 ///
 /// The `poolTypes` field of the `range` argument should be ignored.
 /// Implementations MAY consider it an error if any pool types are specified.
-struct TransparentAddressBlockFilter: Sendable {
+package struct TransparentAddressBlockFilter: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -421,9 +421,9 @@ struct TransparentAddressBlockFilter: Sendable {
   /// Clears the value of `range`. Subsequent reads from it will return its default value.
   mutating func clearRange() {self._range = nil}
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  package var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  package init() {}
 
   fileprivate var _range: BlockRange? = nil
 }
@@ -522,7 +522,7 @@ struct GetMempoolTxRequest: Sendable {
 }
 
 /// The TreeState is derived from the Zcash z_gettreestate rpc.
-struct TreeState: Sendable {
+package struct TreeState: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -548,12 +548,12 @@ struct TreeState: Sendable {
   /// ironwood commitment tree state
   var ironwoodTree: String = String()
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  package var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  package init() {}
 }
 
-struct GetSubtreeRootsArg: Sendable {
+package struct GetSubtreeRootsArg: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -567,12 +567,12 @@ struct GetSubtreeRootsArg: Sendable {
   /// Maximum number of entries to return, or 0 for all entries.
   var maxEntries: UInt32 = 0
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  package var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  package init() {}
 }
 
-struct SubtreeRoot: Sendable {
+package struct SubtreeRoot: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
@@ -586,9 +586,9 @@ struct SubtreeRoot: Sendable {
   /// The height of the block that completed this subtree in the main chain.
   var completingBlockHeight: UInt64 = 0
 
-  var unknownFields = SwiftProtobuf.UnknownStorage()
+  package var unknownFields = SwiftProtobuf.UnknownStorage()
 
-  init() {}
+  package init() {}
 }
 
 /// Results are sorted by height, which makes it easy to issue another
@@ -657,10 +657,10 @@ extension ShieldedProtocol: SwiftProtobuf._ProtoNameProviding {
 }
 
 extension BlockID: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".BlockID"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}height\0\u{1}hash\0")
+  package static let protoMessageName: String = _protobuf_package + ".BlockID"
+  package static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}height\0\u{1}hash\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  package mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -673,7 +673,7 @@ extension BlockID: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBa
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  package func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if self.height != 0 {
       try visitor.visitSingularUInt64Field(value: self.height, fieldNumber: 1)
     }
@@ -683,7 +683,7 @@ extension BlockID: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBa
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: BlockID, rhs: BlockID) -> Bool {
+  package static func ==(lhs: BlockID, rhs: BlockID) -> Bool {
     if lhs.height != rhs.height {return false}
     if lhs.hash != rhs.hash {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
@@ -780,10 +780,10 @@ extension TxFilter: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationB
 }
 
 extension RawTransaction: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".RawTransaction"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}data\0\u{1}height\0")
+  package static let protoMessageName: String = _protobuf_package + ".RawTransaction"
+  package static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}data\0\u{1}height\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  package mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -796,7 +796,7 @@ extension RawTransaction: SwiftProtobuf.Message, SwiftProtobuf._MessageImplement
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  package func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if !self.data.isEmpty {
       try visitor.visitSingularBytesField(value: self.data, fieldNumber: 1)
     }
@@ -806,7 +806,7 @@ extension RawTransaction: SwiftProtobuf.Message, SwiftProtobuf._MessageImplement
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: RawTransaction, rhs: RawTransaction) -> Bool {
+  package static func ==(lhs: RawTransaction, rhs: RawTransaction) -> Bool {
     if lhs.data != rhs.data {return false}
     if lhs.height != rhs.height {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
@@ -1073,10 +1073,10 @@ extension LightdInfo: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementatio
 }
 
 extension TransparentAddressBlockFilter: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".TransparentAddressBlockFilter"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0\u{1}range\0")
+  package static let protoMessageName: String = _protobuf_package + ".TransparentAddressBlockFilter"
+  package static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}address\0\u{1}range\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  package mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -1089,7 +1089,7 @@ extension TransparentAddressBlockFilter: SwiftProtobuf.Message, SwiftProtobuf._M
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  package func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     // The use of inline closures is to circumvent an issue where the compiler
     // allocates stack space for every if/case branch local when no optimizations
     // are enabled. https://github.com/apple/swift-protobuf/issues/1034 and
@@ -1103,7 +1103,7 @@ extension TransparentAddressBlockFilter: SwiftProtobuf.Message, SwiftProtobuf._M
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: TransparentAddressBlockFilter, rhs: TransparentAddressBlockFilter) -> Bool {
+  package static func ==(lhs: TransparentAddressBlockFilter, rhs: TransparentAddressBlockFilter) -> Bool {
     if lhs.address != rhs.address {return false}
     if lhs._range != rhs._range {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
@@ -1302,10 +1302,10 @@ extension GetMempoolTxRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImpl
 }
 
 extension TreeState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".TreeState"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}network\0\u{1}height\0\u{1}hash\0\u{1}time\0\u{1}saplingTree\0\u{1}orchardTree\0\u{1}ironwoodTree\0")
+  package static let protoMessageName: String = _protobuf_package + ".TreeState"
+  package static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}network\0\u{1}height\0\u{1}hash\0\u{1}time\0\u{1}saplingTree\0\u{1}orchardTree\0\u{1}ironwoodTree\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  package mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -1323,7 +1323,7 @@ extension TreeState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementation
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  package func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if !self.network.isEmpty {
       try visitor.visitSingularStringField(value: self.network, fieldNumber: 1)
     }
@@ -1348,7 +1348,7 @@ extension TreeState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementation
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: TreeState, rhs: TreeState) -> Bool {
+  package static func ==(lhs: TreeState, rhs: TreeState) -> Bool {
     if lhs.network != rhs.network {return false}
     if lhs.height != rhs.height {return false}
     if lhs.hash != rhs.hash {return false}
@@ -1362,10 +1362,10 @@ extension TreeState: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementation
 }
 
 extension GetSubtreeRootsArg: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".GetSubtreeRootsArg"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}startIndex\0\u{1}shieldedProtocol\0\u{1}maxEntries\0")
+  package static let protoMessageName: String = _protobuf_package + ".GetSubtreeRootsArg"
+  package static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}startIndex\0\u{1}shieldedProtocol\0\u{1}maxEntries\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  package mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -1379,7 +1379,7 @@ extension GetSubtreeRootsArg: SwiftProtobuf.Message, SwiftProtobuf._MessageImple
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  package func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if self.startIndex != 0 {
       try visitor.visitSingularUInt32Field(value: self.startIndex, fieldNumber: 1)
     }
@@ -1392,7 +1392,7 @@ extension GetSubtreeRootsArg: SwiftProtobuf.Message, SwiftProtobuf._MessageImple
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: GetSubtreeRootsArg, rhs: GetSubtreeRootsArg) -> Bool {
+  package static func ==(lhs: GetSubtreeRootsArg, rhs: GetSubtreeRootsArg) -> Bool {
     if lhs.startIndex != rhs.startIndex {return false}
     if lhs.shieldedProtocol != rhs.shieldedProtocol {return false}
     if lhs.maxEntries != rhs.maxEntries {return false}
@@ -1402,10 +1402,10 @@ extension GetSubtreeRootsArg: SwiftProtobuf.Message, SwiftProtobuf._MessageImple
 }
 
 extension SubtreeRoot: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
-  static let protoMessageName: String = _protobuf_package + ".SubtreeRoot"
-  static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\u{2}rootHash\0\u{1}completingBlockHash\0\u{1}completingBlockHeight\0")
+  package static let protoMessageName: String = _protobuf_package + ".SubtreeRoot"
+  package static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{2}\u{2}rootHash\0\u{1}completingBlockHash\0\u{1}completingBlockHeight\0")
 
-  mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+  package mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
     while let fieldNumber = try decoder.nextFieldNumber() {
       // The use of inline closures is to circumvent an issue where the compiler
       // allocates stack space for every case branch when no optimizations are
@@ -1419,7 +1419,7 @@ extension SubtreeRoot: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementati
     }
   }
 
-  func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+  package func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
     if !self.rootHash.isEmpty {
       try visitor.visitSingularBytesField(value: self.rootHash, fieldNumber: 2)
     }
@@ -1432,7 +1432,7 @@ extension SubtreeRoot: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementati
     try unknownFields.traverse(visitor: &visitor)
   }
 
-  static func ==(lhs: SubtreeRoot, rhs: SubtreeRoot) -> Bool {
+  package static func ==(lhs: SubtreeRoot, rhs: SubtreeRoot) -> Bool {
     if lhs.rootHash != rhs.rootHash {return false}
     if lhs.completingBlockHash != rhs.completingBlockHash {return false}
     if lhs.completingBlockHeight != rhs.completingBlockHeight {return false}

@@ -25,8 +25,8 @@ import Foundation
 ///  - saplingTree: the sapling tree corresponding to the given height. This takes around 15 minutes of processing to generate from scratch because all blocks since activation need to be considered. So when it is calculated in advance it can save the user a lot of time.
 ///  - orchardTree: the orchard tree corresponding to the given height. This field is optional since it won't be available prior
 ///   to NU5 activation height for the given network.
-struct Checkpoint: Equatable {
-    let height: BlockHeight
+package struct Checkpoint: Equatable {
+    package let height: BlockHeight
     let hash: String
     let time: UInt32
     let saplingTree: String

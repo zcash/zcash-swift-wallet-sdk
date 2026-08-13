@@ -28,7 +28,7 @@ enum OutputStatusFilter: Equatable {
     case all
 }
 
-struct TransactionsInvolvingAddress: Equatable {
+package struct TransactionsInvolvingAddress: Equatable {
     /// The address to request transactions and/or UTXOs for.
     let address: String
     /// Only transactions mined at heights greater than or equal to this height should be
@@ -56,7 +56,7 @@ struct TransactionsInvolvingAddress: Equatable {
 
 /// A request for transaction data enhancement, spentness check, or discovery
 /// of spends from a given transparent address within a specific block range.
-enum TransactionDataRequest: Equatable {
+package enum TransactionDataRequest: Equatable {
     /// Information about the chain's view of a transaction is requested.
     ///
     /// The caller evaluating this request on behalf of the wallet backend should respond to this
@@ -94,7 +94,7 @@ enum TransactionDataRequest: Equatable {
 }
 
 /// Metadata about the status of a transaction obtained by inspecting the chain state.
-enum TransactionStatus: Equatable {
+package enum TransactionStatus: Equatable {
     /// The requested transaction ID was not recognized by the node.
     case txidNotRecognized
     /// The requested transaction ID corresponds to a transaction that is recognized by the node,
