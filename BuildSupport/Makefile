@@ -12,6 +12,26 @@ MACOS_ARCHS = x86_64-apple-darwin aarch64-apple-darwin
 IOS_SIM_ARCHS = $(IOS_SIM_ARCHS_STABLE)
 ALL_ARCHS = $(IOS_DEVICE_ARCHS) $(IOS_SIM_ARCHS) $(MACOS_ARCHS)
 
+# SLIPSTREAM=1 links the AGPL-3.0-only zodl-slipstream engine (Cargo feature
+# `slipstream`; the `gpu` feature implies it — see Cargo.toml) and assembles
+# the libzcashlc-zodl-slipstream artifact instead of the default clean one.
+# Output lands in a separate products-slipstream/ tree so the two variants
+# never collide and so the clean tree's paths — which CI cache keys are
+# pinned to — stay byte-identical no matter which variant was built last.
+# A GPU-enabled build is, at the Cargo level, also a slipstream build; this
+# is the one knob that controls both the feature flags below and the header/
+# output-tree split, so there is nothing separate for a GPU build to fight.
+SLIPSTREAM ?= 0
+ifeq ($(SLIPSTREAM),1)
+PRODUCTS_DIR := products-slipstream
+CARGO_FEATURE_FLAGS := --features slipstream
+UNIFDEF_FLAG := -DZCASHLC_FEATURE_SLIPSTREAM
+else
+PRODUCTS_DIR := products
+CARGO_FEATURE_FLAGS :=
+UNIFDEF_FLAG := -UZCASHLC_FEATURE_SLIPSTREAM
+endif
+
 # Cargo serialises concurrent invocations behind a lock on the shared host
 # artifact directory (../target/release), so running one `cargo build --target X`
 # per architecture cannot overlap them — `make -j` does not help. That matters
@@ -20,11 +40,28 @@ ALL_ARCHS = $(IOS_DEVICE_ARCHS) $(IOS_SIM_ARCHS) $(MACOS_ARCHS)
 #
 # Passing several `--target` flags to one invocation puts every architecture in a
 # single job graph, letting those passes run concurrently.
-CARGO_BUILD = RUSTUP_TOOLCHAIN=stable cargo build --manifest-path ../Cargo.toml --release
+CARGO_BUILD = RUSTUP_TOOLCHAIN=stable cargo build --manifest-path ../Cargo.toml --release $(CARGO_FEATURE_FLAGS)
 cargo_targets = $(addprefix --target ,$(1))
 
+# CARGO_TARGET_DIR mirrors cargo's own env var of the same name (default
+# below matches cargo's own default, relative to this Makefile's cwd). Every
+# path below that reaches into cargo's output reads this variable rather than
+# a literal "../target", so overriding it on the command line relocates both
+# sides consistently — cargo honours the same env var directly, and command-
+# line-assigned make variables are exported to recipe subshells automatically.
+#
+# This is the local-dev escape hatch for feature-flip rebuild thrash: cargo's
+# target dir is shared between the clean and slipstream variants, so flipping
+# SLIPSTREAM between local runs changes the active feature set for every crate
+# in the graph and pays the ~2-minute-per-architecture LTO relink again on the
+# next flip. CI is unaffected (each variant gets its own cache, keyed on
+# SLIPSTREAM), but local back-and-forth iteration thrashes. Point it at a
+# variant-specific directory to keep both fingerprint sets warm, e.g.:
+#   CARGO_TARGET_DIR=../target-slipstream make xcframework SLIPSTREAM=1
+CARGO_TARGET_DIR ?= ../target
+
 RUST_SRCS = $(shell find ../rust -name "*.rs") ../Cargo.toml
-STATIC_LIBS = $(shell find ../target -name "libzcashlc.a")
+STATIC_LIBS = $(shell find $(CARGO_TARGET_DIR) -name "libzcashlc.a")
 
 install:
 	rustup toolchain add stable
@@ -35,75 +72,85 @@ install:
 release: clean xcframework
 .PHONY: release
 
-# Discard assembled build products. ../target is deliberately preserved so that
-# cargo's fingerprints (and CI's restored Rust cache) still apply; cargo decides
-# what genuinely needs rebuilding. Every framework under products/ is rebuilt
-# from scratch, so no stale slice can survive this.
+# Discard assembled build products for the currently selected variant (see
+# SLIPSTREAM above). CARGO_TARGET_DIR is deliberately preserved so that
+# cargo's fingerprints (and CI's restored Rust cache) still apply; cargo
+# decides what genuinely needs rebuilding. Every framework under
+# $(PRODUCTS_DIR)/ is rebuilt from scratch, so no stale slice can survive this.
 clean:
-	rm -rf products
+	rm -rf $(PRODUCTS_DIR)
 .PHONY: clean
 
 # Additionally discard the cargo target directory, forcing a from-scratch build.
 distclean: clean
-	rm -rf ../target
+	rm -rf $(CARGO_TARGET_DIR)
 .PHONY: distclean
 
-xcframework: products/libzcashlc.xcframework
+xcframework: $(PRODUCTS_DIR)/libzcashlc.xcframework
 .PHONY: xcframework
 
 # cargo-all is listed first so a full build compiles every architecture in one
 # invocation. The per-platform cargo rules below then find their work already
 # done and reduce to a fingerprint check.
-products/libzcashlc.xcframework: cargo-all $(PLATFORMS)
+$(PRODUCTS_DIR)/libzcashlc.xcframework: cargo-all $(PLATFORMS)
 	rm -rf $@
 	mkdir -p $@
-	cp -R products/ios-device/frameworks $@/ios-arm64
-	cp -R products/ios-simulator/frameworks $@/ios-arm64_x86_64-simulator
-	cp -R products/macos/frameworks $@/macos-arm64_x86_64
+	cp -R $(PRODUCTS_DIR)/ios-device/frameworks $@/ios-arm64
+	cp -R $(PRODUCTS_DIR)/ios-simulator/frameworks $@/ios-arm64_x86_64-simulator
+	cp -R $(PRODUCTS_DIR)/macos/frameworks $@/macos-arm64_x86_64
 	cp Info.plist $@
 
 frameworks: $(PLATFORMS)
 .PHONY: frameworks
 
-$(PLATFORMS): %: products/%/frameworks/libzcashlc.framework
+$(PLATFORMS): %: $(PRODUCTS_DIR)/%/frameworks/libzcashlc.framework
 .PHONY: $(PLATFORMS)
 
-products/%/frameworks/libzcashlc.framework: products/%/universal/libzcashlc.a
+$(PRODUCTS_DIR)/%/frameworks/libzcashlc.framework: $(PRODUCTS_DIR)/%/universal/libzcashlc.a
 	rm -rf $@
-	mkdir -p $@
-	cp products/$*/universal/libzcashlc.a $@/libzcashlc
-	cp -R ../target/Headers $@
+	mkdir -p $@/Headers
+	cp $(PRODUCTS_DIR)/$*/universal/libzcashlc.a $@/libzcashlc
+	# cbindgen wraps the slipstream FFI surface in #if defined(ZCASHLC_FEATURE_SLIPSTREAM)
+	# (rust/build.rs) so a single generated header serves both variants; unifdef
+	# specializes the copy that actually ships, per $(UNIFDEF_FLAG) above.
+	# -x2: exit status 1 just means "output differs from input", which is the
+	# expected, successful case here — only exit 2 (a real parse error) fails the build.
+	#
+	# NOT $(CARGO_TARGET_DIR): rust/build.rs writes the header via a hardcoded
+	# "target/Headers/zcashlc.h" (relative to the crate root, not OUT_DIR), so
+	# it always lands here regardless of any CARGO_TARGET_DIR override above.
+	unifdef -x2 $(UNIFDEF_FLAG) -o $@/Headers/zcashlc.h ../target/Headers/zcashlc.h
 	mkdir $@/Modules
 	cp module.modulemap $@/Modules
 	# Workaround for a bug in the XCode 15.3 build system.
 	# https://github.com/Electric-Coin-Company/zashi-ios/issues/1166
 	cp platform-Info.plist $@/Info.plist
 
-products/macos/universal/libzcashlc.a: $(MACOS_ARCHS)
+$(PRODUCTS_DIR)/macos/universal/libzcashlc.a: $(MACOS_ARCHS)
 	mkdir -p $(@D)
-	lipo -create $(shell find products/macos/static-libraries -name "libzcashlc.a") -output $@
+	lipo -create $(shell find $(PRODUCTS_DIR)/macos/static-libraries -name "libzcashlc.a") -output $@
 
-products/ios-simulator/universal/libzcashlc.a: $(IOS_SIM_ARCHS)
+$(PRODUCTS_DIR)/ios-simulator/universal/libzcashlc.a: $(IOS_SIM_ARCHS)
 	mkdir -p $(@D)
-	lipo -create $(shell find products/ios-simulator/static-libraries -name "libzcashlc.a") -output $@
+	lipo -create $(shell find $(PRODUCTS_DIR)/ios-simulator/static-libraries -name "libzcashlc.a") -output $@
 
-products/ios-device/universal/libzcashlc.a: $(IOS_DEVICE_ARCHS)
+$(PRODUCTS_DIR)/ios-device/universal/libzcashlc.a: $(IOS_DEVICE_ARCHS)
 	mkdir -p $(@D)
-	lipo -create $(shell find products/ios-device/static-libraries -name "libzcashlc.a") -output $@
+	lipo -create $(shell find $(PRODUCTS_DIR)/ios-device/static-libraries -name "libzcashlc.a") -output $@
 
 $(MACOS_ARCHS): %: cargo-macos
-	mkdir -p products/macos/static-libraries/$*
-	cp ../target/$*/release/libzcashlc.a products/macos/static-libraries/$*
+	mkdir -p $(PRODUCTS_DIR)/macos/static-libraries/$*
+	cp $(CARGO_TARGET_DIR)/$*/release/libzcashlc.a $(PRODUCTS_DIR)/macos/static-libraries/$*
 .PHONY: $(MACOS_ARCHS)
 
 $(IOS_DEVICE_ARCHS): %: cargo-ios-device
-	mkdir -p products/ios-device/static-libraries/$*
-	cp ../target/$*/release/libzcashlc.a products/ios-device/static-libraries/$*
+	mkdir -p $(PRODUCTS_DIR)/ios-device/static-libraries/$*
+	cp $(CARGO_TARGET_DIR)/$*/release/libzcashlc.a $(PRODUCTS_DIR)/ios-device/static-libraries/$*
 .PHONY: $(IOS_DEVICE_ARCHS)
 
 $(IOS_SIM_ARCHS_STABLE): %: cargo-ios-simulator
-	mkdir -p products/ios-simulator/static-libraries/$*
-	cp ../target/$*/release/libzcashlc.a products/ios-simulator/static-libraries/$*
+	mkdir -p $(PRODUCTS_DIR)/ios-simulator/static-libraries/$*
+	cp $(CARGO_TARGET_DIR)/$*/release/libzcashlc.a $(PRODUCTS_DIR)/ios-simulator/static-libraries/$*
 .PHONY: $(IOS_SIM_ARCHS_STABLE)
 
 # Each platform builds only its own architectures, so `make macos` still needs

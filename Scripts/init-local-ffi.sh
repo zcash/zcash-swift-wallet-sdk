@@ -1,6 +1,6 @@
 #!/bin/bash
 # Initialize local FFI development environment
-# Usage: ./Scripts/init-local-ffi.sh [option]
+# Usage: ./Scripts/init-local-ffi.sh [option] [--slipstream]
 #
 # Options:
 #   (no option)   Build the full XCFramework (all 5 architectures) from your rust/.
@@ -9,6 +9,12 @@
 #                 and device (aarch64-apple-ios).
 #   --arm-all     Build all arm64 slices: iOS simulator + device + macOS.
 #   --cached      Download the pre-built release XCFramework instead of building.
+#   --slipstream  Build the ZODL Slipstream (AGPL-3.0-only) superset instead of the
+#                 default clean build (Cargo `slipstream` feature). Combine with any
+#                 of the above build-mode options; not yet supported with --cached.
+#                 Leaves a `.zodl-slipstream-variant` marker at the repo root so
+#                 Package.swift knows which variant this checkout is; omitting the
+#                 flag removes the marker, so a bare re-init always returns to clean.
 #
 # The --arm-* options skip the x86_64 simulator/Mac slices, which you cannot run on
 # Apple Silicon anyway, so local iteration is faster. They always build the aarch64
@@ -36,7 +42,7 @@ usage() {
         echo "" >&2
     fi
     cat >&2 << 'USAGEEOF'
-Usage: ./Scripts/init-local-ffi.sh [option]
+Usage: ./Scripts/init-local-ffi.sh [option] [--slipstream]
 
 Options:
   (no option)   Build the full XCFramework (all 5 architectures) from your rust/.
@@ -44,6 +50,9 @@ Options:
   --arm-ios     Build only the arm64 iOS slices: simulator + device.
   --arm-all     Build all arm64 slices: iOS simulator + device + macOS.
   --cached      Download the pre-built release XCFramework instead of building.
+  --slipstream  Build the ZODL Slipstream (AGPL) superset instead of the default
+                clean build. Combine with any build-mode option above; not yet
+                supported together with --cached.
 
 Creates LocalPackages/ with a locally-built xcframework. Package.swift detects
 LocalPackages/ and uses it instead of the released binary.
@@ -96,12 +105,12 @@ build_arm_xcframework() {
                 ;;
         esac
 
-        echo "Building $rust_target -> $slice ..."
+        echo "Building $rust_target -> $slice ...${SLIPSTREAM_LABEL}"
 
         # Ensure the Rust target is available (idempotent), then build it.
         # cargo is incremental, so repeat builds after small edits are fast.
         rustup target add "$rust_target"
-        cargo build --target "$rust_target" --release
+        cargo build --target "$rust_target" --release "${CARGO_FEATURES[@]}"
 
         # Populate the framework for this slice.
         local framework="$temp_xcfw/$slice/libzcashlc.framework"
@@ -109,8 +118,19 @@ build_arm_xcframework() {
         cp "target/$rust_target/release/libzcashlc.a" "$framework/libzcashlc"
         cp BuildSupport/module.modulemap "$framework/Modules/"
         cp BuildSupport/platform-Info.plist "$framework/Info.plist"
-        if [[ -d "target/Headers" ]]; then
-            cp -R target/Headers/* "$framework/Headers/"
+        if [[ -f "target/Headers/zcashlc.h" ]]; then
+            # cbindgen always emits the slipstream FFI surface wrapped in
+            # #if defined(ZCASHLC_FEATURE_SLIPSTREAM), regardless of which cargo
+            # features this particular build used — so an un-specialized header
+            # would hide those declarations from Swift/C interop even when the
+            # .a actually contains them. Resolve the guard the same way
+            # BuildSupport/Makefile does (-x2: "output differs" is expected, not
+            # an error) so this header always matches what was just built.
+            local unifdef_flag="-UZCASHLC_FEATURE_SLIPSTREAM"
+            if [[ "$SLIPSTREAM" == "true" ]]; then
+                unifdef_flag="-DZCASHLC_FEATURE_SLIPSTREAM"
+            fi
+            unifdef -x2 "$unifdef_flag" -o "$framework/Headers/zcashlc.h" target/Headers/zcashlc.h
         fi
 
         # Assemble this slice's AvailableLibraries entry as JSON (arm64 only).
@@ -146,39 +166,59 @@ build_arm_xcframework() {
     fi
 }
 
-# Parse the single optional flag.
-if [[ $# -gt 1 ]]; then
-    usage "Too many arguments; pass at most one option."
+# Parse the build-mode flag plus the independent --slipstream modifier (order
+# doesn't matter, so this is a loop rather than a single positional case).
+if [[ $# -gt 2 ]]; then
+    usage "Too many arguments; pass at most one build-mode option and --slipstream."
 fi
 
 BUILD_MODE="full"
 ARM_TARGETS=()
-case "${1:-}" in
-    "")
-        BUILD_MODE="full"
-        ;;
-    --cached)
-        BUILD_MODE="cached"
-        ;;
-    --arm-macos)
-        BUILD_MODE="arm"
-        ARM_TARGETS=(macos)
-        ;;
-    --arm-ios)
-        BUILD_MODE="arm"
-        ARM_TARGETS=(ios-sim ios-device)
-        ;;
-    --arm-all)
-        BUILD_MODE="arm"
-        ARM_TARGETS=(ios-sim ios-device macos)
-        ;;
-    *)
-        usage "Unknown option: $1"
-        ;;
-esac
+SLIPSTREAM=false
+for arg in "$@"; do
+    case "$arg" in
+        --slipstream)
+            SLIPSTREAM=true
+            ;;
+        --cached)
+            BUILD_MODE="cached"
+            ;;
+        --arm-macos)
+            BUILD_MODE="arm"
+            ARM_TARGETS=(macos)
+            ;;
+        --arm-ios)
+            BUILD_MODE="arm"
+            ARM_TARGETS=(ios-sim ios-device)
+            ;;
+        --arm-all)
+            BUILD_MODE="arm"
+            ARM_TARGETS=(ios-sim ios-device macos)
+            ;;
+        *)
+            usage "Unknown option: $arg"
+            ;;
+    esac
+done
+
+# --cached fetches whichever release Package.swift's binaryTarget currently
+# pins, always the clean artifact today (Package.swift has no slipstream URL
+# to select yet) — so pair it with a plain rebuild instead of guessing here.
+if [[ "$SLIPSTREAM" == "true" && "$BUILD_MODE" == "cached" ]]; then
+    usage "--slipstream is not yet supported together with --cached; build from source instead."
+fi
+
+# CARGO_FEATURES / SLIPSTREAM_LABEL feed both the arm-subset builds
+# (build_arm_xcframework, defined above) and the full build below.
+CARGO_FEATURES=()
+SLIPSTREAM_LABEL=""
+if [[ "$SLIPSTREAM" == "true" ]]; then
+    CARGO_FEATURES=(--features slipstream)
+    SLIPSTREAM_LABEL=" [ZODL Slipstream]"
+fi
 
 if [[ "$BUILD_MODE" == "arm" ]]; then
-    echo "Initializing local FFI for arm64 (${ARM_TARGETS[*]})..."
+    echo "Initializing local FFI for arm64 (${ARM_TARGETS[*]})...${SLIPSTREAM_LABEL}"
     build_arm_xcframework "${ARM_TARGETS[@]}"
 elif [[ "$BUILD_MODE" == "cached" ]]; then
     echo "Downloading pre-built xcframework..."
@@ -242,20 +282,50 @@ elif [[ "$BUILD_MODE" == "cached" ]]; then
     echo "Note: Downloaded pre-built xcframework may not match your local source."
     echo "      Run './Scripts/rebuild-local-ffi.sh' to rebuild for your target platform."
 else
-    echo "Building full xcframework from source (this takes a while)..."
+    echo "Building full xcframework from source (this takes a while)...${SLIPSTREAM_LABEL}"
     cd BuildSupport
-    make xcframework
+    if [[ "$SLIPSTREAM" == "true" ]]; then
+        make xcframework SLIPSTREAM=1
+    else
+        make xcframework
+    fi
     cd ..
     mkdir -p LocalPackages
     # cp -R into an EXISTING directory copies the source INSIDE it (nested
     # libzcashlc.xcframework/libzcashlc.xcframework with stale slices at the top
     # level — device builds silently run old code). Always replace, never merge.
     rm -rf "$XCFRAMEWORK_DIR"
-    cp -R BuildSupport/products/libzcashlc.xcframework "$XCFRAMEWORK_DIR"
+    # SLIPSTREAM=1 assembles into BuildSupport/products-slipstream/ instead of
+    # BuildSupport/products/ (see the Makefile) — the inner xcframework name is
+    # unchanged either way, so LocalPackages/ never needs to know which it got.
+    if [[ "$SLIPSTREAM" == "true" ]]; then
+        cp -R BuildSupport/products-slipstream/libzcashlc.xcframework "$XCFRAMEWORK_DIR"
+    else
+        cp -R BuildSupport/products/libzcashlc.xcframework "$XCFRAMEWORK_DIR"
+    fi
     # The Makefile assembles every slice shallow (iOS layout). macOS embedded
     # frameworks require the versioned bundle layout, else Xcode rejects the app
     # ("expected Versions/Current/Resources/Info.plist"). Fix the macOS slice.
     ./Scripts/version-macos-framework.sh "$XCFRAMEWORK_DIR/macos-arm64_x86_64/libzcashlc.framework"
+fi
+
+# Record which variant this checkout is, for Package.swift to key its binaryTarget
+# selection off of. A plain re-init (no --slipstream) always returns to clean, even
+# if an earlier --slipstream init left the marker behind.
+#
+# On a flip, purge SwiftPM's manifest cache: it is keyed on Package.swift CONTENT,
+# and the marker probe happens at manifest-evaluation time, so a cached evaluation
+# from the other variant would silently serve the wrong target graph.
+if [[ "$SLIPSTREAM" == "true" ]]; then
+    if [[ ! -f .zodl-slipstream-variant ]]; then
+        touch .zodl-slipstream-variant
+        swift package purge-cache > /dev/null 2>&1 || true
+    fi
+else
+    if [[ -f .zodl-slipstream-variant ]]; then
+        rm -f .zodl-slipstream-variant
+        swift package purge-cache > /dev/null 2>&1 || true
+    fi
 fi
 
 # Create local SPM package wrapper
@@ -275,6 +345,12 @@ if [[ "$BUILD_MODE" == "arm" ]]; then
     echo "      Building for an x86_64 simulator/Mac or a slice you didn't include will fail"
     echo "      until you build it. Run ./Scripts/rebuild-local-ffi.sh <target> for a single"
     echo "      arch, or ./Scripts/init-local-ffi.sh (no flags) for the full 5-architecture build."
+fi
+if [[ "$SLIPSTREAM" == "true" ]]; then
+    echo ""
+    echo "Note: this is the ZODL Slipstream (AGPL-3.0-only) superset build."
+    echo "      .zodl-slipstream-variant was created at the repo root; re-run without"
+    echo "      --slipstream to go back to the clean build (this removes the marker)."
 fi
 echo ""
 echo "To switch back to the release binary: rm -rf LocalPackages/"
