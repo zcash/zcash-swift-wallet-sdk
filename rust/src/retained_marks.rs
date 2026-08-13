@@ -32,7 +32,8 @@ use zcash_client_sqlite::WalletDb;
 use zcash_client_sqlite::util::SystemClock;
 use zcash_protocol::consensus::BlockHeight;
 
-use crate::{NetworkParams, anchor_retention_interval, slipstream_anchor_retention_floor};
+use crate::slipstream_ffi::slipstream_anchor_retention_floor;
+use crate::{NetworkParams, anchor_retention_interval};
 
 /// Ensure every anchor-retention mark the network's policy calls for, from the NU6.3
 /// activation floor to the wallet's current chain tip, in all three pools' stores.

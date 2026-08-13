@@ -341,6 +341,7 @@ impl Balance {
     }
 
     /// [Slipstream API v2] An all-zero pool balance.
+    #[cfg(feature = "slipstream")]
     pub(crate) fn zero() -> Self {
         Self {
             spendable_value: 0,
@@ -352,6 +353,7 @@ impl Balance {
 
     /// [Slipstream API v2] A pool balance carrying only a spendable value (the recovery
     /// override's single-number shape).
+    #[cfg(feature = "slipstream")]
     pub(crate) fn from_spendable(spendable_value: i64) -> Self {
         Self {
             spendable_value,
@@ -401,6 +403,7 @@ impl AccountBalance {
 
     /// [Slipstream API v2 §0-5] The account's UUID bytes, for matching against
     /// `ext_slipstream_v_recovery_balance.account_uuid`.
+    #[cfg(feature = "slipstream")]
     pub(crate) fn uuid_bytes(&self) -> &[u8; 16] {
         &self.account_uuid
     }
@@ -420,6 +423,7 @@ impl AccountBalance {
     /// during the (≤120 s) recovery window rather than telling a user to migrate on the strength
     /// of a guess, and the genuine prompt arrives with the real per-pool summary moments later.
     /// Before activation there is no Ironwood and no migration, so the net stays in Orchard.
+    #[cfg(feature = "slipstream")]
     pub(crate) fn override_with_recovery_net(&mut self, net_zat: i64, ironwood_active: bool) {
         let net = Balance::from_spendable(net_zat.max(0));
         self.sapling_balance = Balance::zero();
@@ -436,6 +440,7 @@ impl AccountBalance {
     /// [#1806] Build a balance carrying ONLY the recovery-view net, for the post-restore hold's
     /// synthesized summary (see [`WalletSummary::recovery_hold`]). Mirrors
     /// [`Self::override_with_recovery_net`], including which pool carries the collapsed net.
+    #[cfg(feature = "slipstream")]
     pub(crate) fn recovery_only(
         account_uuid: [u8; 16],
         net_zat: i64,
@@ -561,6 +566,7 @@ impl WalletSummary {
     /// [Slipstream API v2 §0-5] Mutable view of the marshalled per-account balances, for the
     /// recovery override. Safe because the array was allocated by [`Self::some`] and is owned
     /// by this struct until [`zcashlc_free_wallet_summary`].
+    #[cfg(feature = "slipstream")]
     pub(crate) fn account_balances_mut(&mut self) -> &mut [AccountBalance] {
         if self.account_balances.is_null() {
             &mut []
@@ -580,6 +586,7 @@ impl WalletSummary {
     /// "no data yet" — so the caller passes the last-known real scanned/chain-tip heights (clamped
     /// here defensively). Scan-progress pointers are null: this is a pure balance carrier, and the
     /// Slipstream host derives sync progress from the engine snapshot, never from these fields.
+    #[cfg(feature = "slipstream")]
     pub(crate) fn recovery_hold(
         balances: Vec<AccountBalance>,
         chain_tip_height: i32,
@@ -1478,7 +1485,7 @@ pub unsafe extern "C" fn zcashlc_free_address_check_result(ptr: *mut AddressChec
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "slipstream"))]
 mod recovery_hold_tests {
     use super::*;
 
@@ -1545,7 +1552,7 @@ mod recovery_hold_tests {
     // of a real upstream `Some` (which needs a `data_api::WalletSummary` the harness cannot
     // fabricate) is stubbed with a distinctive sentinel; the DB reads hit a real fixture SQLite.
 
-    use crate::{
+    use crate::slipstream_ffi::{
         HoldLatch, POST_FLIP_HOLD_CAP, UpstreamKind, classify_upstream, serve_wallet_summary,
     };
     use std::time::{Duration, Instant};

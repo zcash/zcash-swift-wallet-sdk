@@ -109,18 +109,16 @@ zeroize = "1"
 zcash_keys = { version = "0.16.0", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
 
-# Slipstream engine — the alternative sync engine the SlipstreamSynchronizer
-# drives. Consumed as a remote crate from zodl-inc/slipstream, the engine's
-# home since the personal-fork era (the old PR #6 adaptations are merged
-# there). Return to a release tag once one is cut with these aboard.
-#
-# The rev rides [patch.crates-io] below, pinned to a COMMIT HASH rather than a
-# branch: a branch pin silently follows a force-push, so a build can pick up
-# code nobody reviewed, whereas a stale hash fails loudly. The engine rides the
-# same librustzcash rev as this package, so the graph stays a single family
-# instance.
-slipstream-core = { version = "0.1", package = "zodl-slipstream" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+# ZODL Slipstream engine — the alternative sync engine the SlipstreamSynchronizer
+# drives, consumed as the published crates.io release. AGPL-3.0-only (dual-licensed
+# commercially by Znewco, Inc.; see Sources/ZODLSlipstream/NOTICE.md), so it is
+# OPTIONAL: only the `slipstream` feature links it, and the default (MIT-clean)
+# libzcashlc build carries none of it. The engine rides the same librustzcash
+# generation as this package, so the graph stays a single family instance.
+slipstream-core = { version = "0.1.1", package = "zodl-slipstream", optional = true }
+# tokio is only used by the slipstream FFI surface; everything else gets its
+# async runtime transitively (tor/tonic).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"], optional = true }
 
 [dev-dependencies]
 hex = "0.4"
@@ -134,10 +132,17 @@ cc = "1.0"
 [features]
 default = []
 
+# ZODL Slipstream engine (AGPL-3.0-only) and its FFI surface. OFF by default —
+# the released libzcashlc.xcframework carries zero AGPL code. Enabled only for
+# the libzcashlc-zodl-slipstream artifact and local builds via
+# Scripts/init-local-ffi.sh --slipstream / rebuild-local-ffi.sh --slipstream.
+slipstream = ["dep:slipstream-core", "dep:tokio"]
+
 # GPU-accelerated Orchard subtree building in the engine (wgpu). OFF by
-# default — the released libzcashlc links zero wgpu. Enable for local device
-# builds via Scripts/init-local-ffi.sh --gpu / rebuild-local-ffi.sh --gpu.
-gpu = ["slipstream-core/gpu"]
+# default — the released libzcashlc links zero wgpu. A slipstream-engine
+# feature, so it implies `slipstream`. Enable for local device builds via
+# Scripts/init-local-ffi.sh --gpu / rebuild-local-ffi.sh --gpu.
+gpu = ["slipstream", "slipstream-core?/gpu"]
 
 [lib]
 name = "zcashlc"

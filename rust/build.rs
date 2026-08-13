@@ -30,6 +30,10 @@ fn main() {
     if let Ok(b) = cbindgen::Builder::new()
         .with_crate(crate_dir)
         .with_language(cbindgen::Language::C)
+        // The slipstream FFI surface (AGPL engine) is cfg-gated; emit it inside
+        // an #ifdef so one deterministic header serves both artifact variants.
+        // BuildSupport/Makefile specializes the shipped copy with unifdef.
+        .with_define("feature", "slipstream", "ZCASHLC_FEATURE_SLIPSTREAM")
         .rename_item("Account", "FfiAccount")
         .rename_item("Uuid", "FfiUuid")
         .rename_item("Accounts", "FfiAccounts")
