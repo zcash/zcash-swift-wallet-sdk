@@ -1,6 +1,6 @@
 #!/bin/bash
 # Fast incremental FFI rebuild for local development
-# Usage: ./Scripts/rebuild-local-ffi.sh [target]
+# Usage: ./Scripts/rebuild-local-ffi.sh [target] [--gpu] [--slipstream] [--universal]
 #
 # Targets:
 #   ios-sim     iOS Simulator (default, detects arm64 vs x86_64)
@@ -11,6 +11,7 @@
 #   ./Scripts/rebuild-local-ffi.sh              # iOS Simulator (auto-detect arch)
 #   ./Scripts/rebuild-local-ffi.sh ios-device   # iOS Device
 #   ./Scripts/rebuild-local-ffi.sh macos        # macOS
+#   ./Scripts/rebuild-local-ffi.sh macos --slipstream   # ZODL Slipstream (AGPL) engine
 
 set -e
 cd "$(dirname "$0")/.."
@@ -22,24 +23,39 @@ fi
 
 # Parse a target (ios-sim|ios-device|macos) + optional --gpu (v0.3 GPU Orchard offload
 # build; links wgpu via the libzcashlc `gpu` feature). Runtime opt-in: ZCASH_GPU_SUBTREE.
+# --slipstream links the ZODL Slipstream (AGPL-3.0-only) engine (libzcashlc `slipstream`
+# feature) without the GPU path. --gpu is a slipstream-engine feature and implies it
+# (matches `gpu = ["slipstream", ...]` in Cargo.toml — there is nothing for the GPU
+# build to fight here since it's the same knob).
 # --universal (macos, ios-sim): build BOTH archs of the slice and lipo them — REQUIRED
 # before an Xcode ARCHIVE (Release links arm64+x86_64; a host-arch-only macOS slice
 # fails with hundreds of undefined _zcashlc_* symbols — bit the Beta5 archive
 # 2026-07-07) and before any `generic/platform=iOS Simulator` build (links both sim
 # archs; an arm64-only sim slice fails the x86_64 link — bit Zodl iOS 2026-07-08).
 TARGET="ios-sim"
-CARGO_FEATURES=""
+GPU=false
+SLIPSTREAM=false
 UNIVERSAL=false
 for arg in "$@"; do
     case "$arg" in
-        --gpu) CARGO_FEATURES="--features gpu" ;;
+        --gpu) GPU=true; SLIPSTREAM=true ;;
+        --slipstream) SLIPSTREAM=true ;;
         --universal) UNIVERSAL=true ;;
         ios-sim|ios-device|macos) TARGET="$arg" ;;
-        *) echo "Unknown arg: $arg"; echo "Usage: rebuild-local-ffi.sh [ios-sim|ios-device|macos] [--gpu] [--universal]"; exit 1 ;;
+        *) echo "Unknown arg: $arg"; echo "Usage: rebuild-local-ffi.sh [ios-sim|ios-device|macos] [--gpu] [--slipstream] [--universal]"; exit 1 ;;
     esac
 done
 if [[ "$UNIVERSAL" == "true" && "$TARGET" != "macos" && "$TARGET" != "ios-sim" ]]; then
     echo "--universal is only meaningful for the macos and ios-sim targets"; exit 1
+fi
+# --gpu already implies the slipstream feature at the Cargo level, so passing
+# "--features gpu" alone is sufficient; only fall back to "--features slipstream"
+# when slipstream was requested without gpu.
+CARGO_FEATURES=""
+if [[ "$GPU" == "true" ]]; then
+    CARGO_FEATURES="--features gpu"
+elif [[ "$SLIPSTREAM" == "true" ]]; then
+    CARGO_FEATURES="--features slipstream"
 fi
 XCFRAMEWORK_DIR="LocalPackages/libzcashlc.xcframework"
 
@@ -97,7 +113,7 @@ case "$TARGET" in
         ;;
 esac
 
-echo "Building for $TARGET ($RUST_TARGET)...${CARGO_FEATURES:+ [v0.3 GPU: $CARGO_FEATURES]}"
+echo "Building for $TARGET ($RUST_TARGET)...${CARGO_FEATURES:+ [$CARGO_FEATURES]}"
 echo ""
 
 # Check if Rust target is installed
@@ -178,8 +194,19 @@ cp "$BUILT_LIB" "$TEMP_FRAMEWORK/libzcashlc"
 cp BuildSupport/module.modulemap "$TEMP_FRAMEWORK/Modules/"
 cp BuildSupport/platform-Info.plist "$TEMP_FRAMEWORK/Info.plist"
 
-if [[ -d "target/Headers" ]]; then
-    cp -R target/Headers/* "$TEMP_FRAMEWORK/Headers/"
+if [[ -f "target/Headers/zcashlc.h" ]]; then
+    # cbindgen always emits the slipstream FFI surface wrapped in
+    # #if defined(ZCASHLC_FEATURE_SLIPSTREAM), regardless of which cargo features
+    # this particular build used — so an un-specialized header would hide those
+    # declarations from Swift/C interop even when the .a actually contains them.
+    # Resolve the guard the same way BuildSupport/Makefile does (-x2: "output
+    # differs" is expected here, not an error) so the header always matches
+    # what was just built.
+    UNIFDEF_FLAG="-UZCASHLC_FEATURE_SLIPSTREAM"
+    if [[ "$SLIPSTREAM" == "true" ]]; then
+        UNIFDEF_FLAG="-DZCASHLC_FEATURE_SLIPSTREAM"
+    fi
+    unifdef -x2 "$UNIFDEF_FLAG" -o "$TEMP_FRAMEWORK/Headers/zcashlc.h" target/Headers/zcashlc.h
 fi
 
 # Carry over every OTHER slice from the existing xcframework, with a loud
@@ -284,6 +311,28 @@ rm -rf "$TEMP_DIR"
 # shallow like iOS); without this Xcode rejects the embedded framework.
 if [[ "$TARGET" == "macos" ]]; then
     ./Scripts/version-macos-framework.sh "$XCFRAMEWORK_DIR/$XCFRAMEWORK_SLICE/libzcashlc.framework"
+fi
+
+# Record the slipstream variant like init-local-ffi.sh --slipstream does. This
+# script only ever rebuilds ONE slice at a time and deliberately preserves the
+# others (see above), so — unlike init's plain re-init — a rebuild WITHOUT
+# --slipstream/--gpu does not clear an existing marker: that would silently
+# declare the whole LocalPackages/ checkout "clean" while other, untouched
+# slices might still carry the engine. Warn instead, so the mismatch is loud.
+if [[ "$SLIPSTREAM" == "true" ]]; then
+    if [[ ! -f .zodl-slipstream-variant ]]; then
+        touch .zodl-slipstream-variant
+        # A flip must purge SwiftPM's manifest cache: it is keyed on Package.swift
+        # CONTENT, so a cached evaluation from the clean variant would silently
+        # serve the wrong target graph.
+        swift package purge-cache > /dev/null 2>&1 || true
+    fi
+elif [[ -f .zodl-slipstream-variant ]]; then
+    echo ""
+    echo "⚠️  .zodl-slipstream-variant is present (an earlier build included the ZODL"
+    echo "    Slipstream engine) but this rebuild did not pass --slipstream/--gpu, so"
+    echo "    the $TARGET slice just built is now clean-only. Other slices may still"
+    echo "    carry the engine — pass --slipstream here too to keep them consistent."
 fi
 
 echo ""
