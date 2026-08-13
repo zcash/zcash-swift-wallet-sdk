@@ -87,9 +87,10 @@ LocalPackages/
 BuildSupport/products/
 BuildSupport/products-slipstream/
 
-# Marks a checkout as the ZODL Slipstream (AGPL) variant (see Scripts/init-local-ffi.sh
-# and Scripts/rebuild-local-ffi.sh --slipstream). Committed only by release automation,
-# via `git add -f`, on the dedicated release/*-zodl-slipstream branch.
+# Marks a LOCAL checkout as the ZODL Slipstream (AGPL) variant (see
+# Scripts/init-local-ffi.sh and Scripts/rebuild-local-ffi.sh --slipstream).
+# Never committed: release tags select the variant by flipping the
+# slipstreamVariantPinned constant in Package.swift instead (Scripts/release.sh).
 .zodl-slipstream-variant
 
 # Claude code
