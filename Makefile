@@ -26,8 +26,20 @@ CARGO ?= cargo
 BUILD_SUPPORT := BuildSupport
 SCRIPTS := Scripts
 
+# SLIPSTREAM=1 builds/links the ZODL Slipstream (AGPL-3.0-only) variant: the
+# ffi-* targets compile the Rust with the `slipstream` cargo feature into the
+# parallel products-slipstream/ tree, and configure-local-ffi maintains the
+# .zodl-slipstream-variant marker Package.swift keys the target graph off.
+# See BuildSupport/Makefile and Sources/ZODLSlipstream/NOTICE.md.
+SLIPSTREAM ?= 0
+ifeq ($(SLIPSTREAM),1)
+FFI_PRODUCTS := products-slipstream
+else
+FFI_PRODUCTS := products
+endif
+
 # The XCFramework the Swift package links against when built locally.
-XCFRAMEWORK := $(BUILD_SUPPORT)/products/libzcashlc.xcframework
+XCFRAMEWORK := $(BUILD_SUPPORT)/$(FFI_PRODUCTS)/libzcashlc.xcframework
 
 # Empty by default so a local build is quiet; CI passes -v for a full log.
 SWIFT_BUILD_FLAGS ?=
@@ -133,6 +145,13 @@ resolve: ## Resolve the SwiftPM dependencies
 test-offline: ## Run the offline tests (no network, no lightwalletd)
 	$(SWIFT) test --filter $(OFFLINE_TEST_FILTER)
 
+# Requires a slipstream-variant checkout: make ffi-macos SLIPSTREAM=1 &&
+# make configure-local-ffi SLIPSTREAM=1 (the target graph only contains
+# SlipstreamOfflineTests when the variant marker is present).
+.PHONY: test-offline-slipstream
+test-offline-slipstream: ## Run the ZODL Slipstream offline tests (variant checkout only)
+	$(SWIFT) test --filter SlipstreamOfflineTests
+
 .PHONY: test-all
 test-all: ## Run the whole test suite, including networked tests
 	$(SWIFT) test
@@ -186,20 +205,20 @@ clean-rust: ## Clean the Cargo build artifacts (target/)
 
 .PHONY: ffi-macos
 ffi-macos: require-macos ## Build the macOS FFI and assemble the XCFramework
-	$(MAKE) -C $(BUILD_SUPPORT) macos
-	cd $(BUILD_SUPPORT) && mkdir -p products/libzcashlc.xcframework
+	$(MAKE) -C $(BUILD_SUPPORT) macos SLIPSTREAM=$(SLIPSTREAM)
+	cd $(BUILD_SUPPORT) && mkdir -p $(FFI_PRODUCTS)/libzcashlc.xcframework
 	# Clear the slice first: `cp -R src dst` copies *into* dst when it already
 	# exists, which would nest the framework a level down and leave the previous
 	# build's framework — the one Info.plist names — in place, so the Swift build
 	# would compile against a stale zcashlc.h.
-	cd $(BUILD_SUPPORT) && rm -rf products/libzcashlc.xcframework/macos-arm64_x86_64
-	cd $(BUILD_SUPPORT) && cp -R products/macos/frameworks \
-		products/libzcashlc.xcframework/macos-arm64_x86_64
-	cd $(BUILD_SUPPORT) && cp Info.plist products/libzcashlc.xcframework
+	cd $(BUILD_SUPPORT) && rm -rf $(FFI_PRODUCTS)/libzcashlc.xcframework/macos-arm64_x86_64
+	cd $(BUILD_SUPPORT) && cp -R $(FFI_PRODUCTS)/macos/frameworks \
+		$(FFI_PRODUCTS)/libzcashlc.xcframework/macos-arm64_x86_64
+	cd $(BUILD_SUPPORT) && cp Info.plist $(FFI_PRODUCTS)/libzcashlc.xcframework
 
 .PHONY: ffi-all
 ffi-all: require-macos ## Build the full XCFramework for every platform
-	$(MAKE) -C $(BUILD_SUPPORT) xcframework
+	$(MAKE) -C $(BUILD_SUPPORT) xcframework SLIPSTREAM=$(SLIPSTREAM)
 
 .PHONY: verify-ffi
 verify-ffi: ## Check the XCFramework exists and show its contents
@@ -220,7 +239,21 @@ configure-local-ffi: verify-ffi ## Point Package.swift at the locally built FFI
 	rm -rf LocalPackages/$(notdir $(XCFRAMEWORK))
 	cp -R $(XCFRAMEWORK) LocalPackages/
 	cp $(BUILD_SUPPORT)/LocalPackages-Package.swift LocalPackages/Package.swift
-	@echo "LocalPackages created; Package.swift will use the local FFI"
+	# Keep the variant marker in step with the linked FFI, purging SwiftPM's
+	# content-keyed manifest cache on a flip (a stale cached evaluation would
+	# silently serve the other variant's target graph).
+	@if [ "$(SLIPSTREAM)" = "1" ]; then \
+		if [ ! -f .zodl-slipstream-variant ]; then \
+			touch .zodl-slipstream-variant; \
+			$(SWIFT) package purge-cache > /dev/null 2>&1 || true; \
+		fi; \
+	else \
+		if [ -f .zodl-slipstream-variant ]; then \
+			rm -f .zodl-slipstream-variant; \
+			$(SWIFT) package purge-cache > /dev/null 2>&1 || true; \
+		fi; \
+	fi
+	@echo "LocalPackages created; Package.swift will use the local FFI (SLIPSTREAM=$(SLIPSTREAM))"
 
 .PHONY: clean-ffi
 clean-ffi: ## Clean the FFI build artifacts
