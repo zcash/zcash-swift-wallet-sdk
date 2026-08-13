@@ -4,12 +4,15 @@
 #
 # This script performs the COMPLETE release process:
 #   1. Pre-flight checks (clean dir, branch, GPG)
-#   2. Builds xcframework and uploads draft release (via prepare-release.sh)
-#   3. Updates Package.swift with URL and checksum
+#   2. Builds BOTH xcframework variants and uploads them to one draft release
+#      (via prepare-release.sh --slipstream; the clean build runs the AGPL
+#      purity gate)
+#   3. Updates all four artifact pins in Package.swift
 #   4. Commits the Package.swift change
 #   5. Pauses for manual verification of the draft release
-#   6. Creates a signed tag
-#   7. Pushes to the specified remote
+#   6. Creates two signed tags: X.Y.Z (clean) and X.Y.Z-zodl-slipstream (a
+#      one-commit variant flipping slipstreamVariantPinned)
+#   7. Pushes branch and both tags to the specified remote
 #   8. Publishes the GitHub release
 #
 # Arguments:
@@ -92,11 +95,14 @@ if [[ "$CURRENT_BRANCH" != "main" ]]; then
     fi
 fi
 
-# Check if tag already exists
-if git rev-parse "$VERSION" >/dev/null 2>&1; then
-    echo "Error: Tag $VERSION already exists."
-    exit 1
-fi
+# Check if tags already exist (the release cuts BOTH variant tags)
+SLIPSTREAM_TAG="${VERSION}-zodl-slipstream"
+for tag in "$VERSION" "$SLIPSTREAM_TAG"; do
+    if git rev-parse "$tag" >/dev/null 2>&1; then
+        echo "Error: Tag $tag already exists."
+        exit 1
+    fi
+done
 
 # Verify GPG signing is configured
 if ! git config --get user.signingkey >/dev/null 2>&1; then
@@ -105,39 +111,51 @@ if ! git config --get user.signingkey >/dev/null 2>&1; then
     exit 1
 fi
 
-# === Step 1: Build and upload draft release ===
+# === Step 1: Build and upload draft release (both artifact variants) ===
 echo "=== Step 1/6: Build and upload draft release ==="
-./Scripts/prepare-release.sh "$VERSION"
+./Scripts/prepare-release.sh --slipstream "$VERSION"
 
 # Read release info written by prepare-release.sh
 source "$PRODUCTS_DIR/release.env"
 
+if [[ -z "${SLIPSTREAM_CHECKSUM:-}" ]] || [[ -z "${SLIPSTREAM_DOWNLOAD_URL:-}" ]]; then
+    echo "Error: release.env is missing the slipstream artifact info."
+    exit 1
+fi
+
 echo ""
 echo "=== Step 2/6: Updating Package.swift ==="
 
-# Update the binaryTarget URL and checksum in Package.swift
+# Update the four binary-artifact pins in Package.swift. Both pairs live on
+# every release commit; which pair the manifest uses is decided by the
+# slipstreamVariantPinned constant (flipped only on the variant tag below).
 sed -i.bak -E \
-    -e "s|(url: \"https://github.com/${REPO}/releases/download/)[^\"]+(/libzcashlc.xcframework.zip\")|\1${VERSION}\2|" \
-    -e "s|(checksum: \")[^\"]+(\")|\1${CHECKSUM}\2|" \
+    -e "s|(let cleanFFIURL = \")[^\"]*(\")|\1${DOWNLOAD_URL}\2|" \
+    -e "s|(let cleanFFIChecksum = \")[^\"]*(\")|\1${CHECKSUM}\2|" \
+    -e "s|(let slipstreamFFIURL = \")[^\"]*(\")|\1${SLIPSTREAM_DOWNLOAD_URL}\2|" \
+    -e "s|(let slipstreamFFIChecksum = \")[^\"]*(\")|\1${SLIPSTREAM_CHECKSUM}\2|" \
     Package.swift
 rm -f Package.swift.bak
 
 # Verify the update worked
-if ! grep -q "download/${VERSION}/libzcashlc.xcframework.zip" Package.swift; then
-    echo "Error: Failed to update Package.swift URL"
-    git checkout Package.swift
-    exit 1
-fi
-
-if ! grep -q "checksum: \"${CHECKSUM}\"" Package.swift; then
-    echo "Error: Failed to update Package.swift checksum"
-    git checkout Package.swift
-    exit 1
-fi
+for expected in \
+    "let cleanFFIURL = \"${DOWNLOAD_URL}\"" \
+    "let cleanFFIChecksum = \"${CHECKSUM}\"" \
+    "let slipstreamFFIURL = \"${SLIPSTREAM_DOWNLOAD_URL}\"" \
+    "let slipstreamFFIChecksum = \"${SLIPSTREAM_CHECKSUM}\""
+do
+    if ! grep -qF "$expected" Package.swift; then
+        echo "Error: Failed to update Package.swift (missing: $expected)"
+        git checkout Package.swift
+        exit 1
+    fi
+done
 
 echo "Package.swift updated with:"
-echo "  URL: ${DOWNLOAD_URL}"
-echo "  Checksum: ${CHECKSUM}"
+echo "  Clean URL: ${DOWNLOAD_URL}"
+echo "  Clean checksum: ${CHECKSUM}"
+echo "  Slipstream URL: ${SLIPSTREAM_DOWNLOAD_URL}"
+echo "  Slipstream checksum: ${SLIPSTREAM_CHECKSUM}"
 
 echo ""
 echo "=== Step 3/6: Committing Package.swift ==="
@@ -159,18 +177,41 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     echo ""
     echo "Release paused. To resume manually:"
     echo "  git tag -s ${VERSION} -m \"Release ${VERSION}\""
-    echo "  git push ${UPSTREAM_REMOTE} ${CURRENT_BRANCH} ${VERSION}"
+    echo "  # variant tag: flip slipstreamVariantPinned to true in Package.swift,"
+    echo "  # commit, tag ${SLIPSTREAM_TAG}, then git reset --hard HEAD~1"
+    echo "  git push ${UPSTREAM_REMOTE} ${CURRENT_BRANCH} ${VERSION} ${SLIPSTREAM_TAG}"
     echo "  gh release edit ${VERSION} --repo ${REPO} --draft=false${PRERELEASE_FLAG:+ ${PRERELEASE_FLAG[*]}}"
     exit 0
 fi
 
 echo ""
-echo "=== Step 4/6: Creating signed tag ==="
+echo "=== Step 4/6: Creating signed tags (clean + ZODL Slipstream variant) ==="
 git tag -s "$VERSION" -m "Release ${VERSION}"
+
+# The variant tag is ONE commit on top of the release commit, flipping the
+# slipstreamVariantPinned constant so the manifest selects the AGPL superset
+# artifact and grows the ZODLSlipstream product. The flag must change the
+# manifest BYTES (not just a marker file): SwiftPM's shared manifest cache is
+# keyed on manifest content, and byte-identical manifests across the two tags
+# would conflate their target graphs. SemVer sorts the -zodl-slipstream
+# pre-release suffix below ${VERSION}, so version ranges never resolve to it;
+# consumers opt in with exact: only.
+sed -i.bak 's|let slipstreamVariantPinned = false|let slipstreamVariantPinned = true|' Package.swift
+rm -f Package.swift.bak
+if ! grep -q "let slipstreamVariantPinned = true" Package.swift; then
+    echo "Error: Failed to flip slipstreamVariantPinned for the variant tag"
+    git checkout Package.swift
+    exit 1
+fi
+git add Package.swift
+git commit -m "Select the ZODL Slipstream (AGPL) variant for ${SLIPSTREAM_TAG}"
+git tag -s "$SLIPSTREAM_TAG" -m "Release ${SLIPSTREAM_TAG} (ZODL Slipstream variant, AGPL-3.0-only engine)"
+# Return the branch to the clean release commit; the variant lives on via its tag.
+git reset --hard HEAD~1
 
 echo ""
 echo "=== Step 5/6: Pushing to $UPSTREAM_REMOTE ==="
-git push "$UPSTREAM_REMOTE" "$CURRENT_BRANCH" "$VERSION"
+git push "$UPSTREAM_REMOTE" "$CURRENT_BRANCH" "$VERSION" "$SLIPSTREAM_TAG"
 
 echo ""
 echo "=== Step 6/6: Publishing release ==="
