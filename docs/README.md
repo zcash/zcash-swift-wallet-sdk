@@ -6,5 +6,6 @@ Source code is intended to be self-documented with inline comments complying to 
 - [Continuous Integration](ci.md)
 - [Development Process](development_process.md)
 - [Local FFI Development](LOCAL_DEVELOPMENT.md) — working on the Rust FFI code alongside the Swift SDK
+- [Versioning and SwiftPM Resolution](Versioning.md) — release/variant tag scheme, how SwiftPM resolves it, and the ZODL Slipstream `exact:`-pin caveats
 
 In the [testing/](testing/) folder you will find documentation related to manual and automated testing.
