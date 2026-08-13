@@ -50,10 +50,15 @@ for third parties to distribute it through the Apple App Store — App Store
 distribution effectively requires a commercial license from Znewco, Inc.
 (licensing@zodl.com).
 
-Pin the slipstream variant with `exact:` only. Version ranges never resolve to
-`-zodl-slipstream` tags (SemVer orders the pre-release suffix below the
-release), which is deliberate: no consumer can drift onto AGPL code by a
-routine dependency update.
+Pin the slipstream variant with `exact:` only, and declare it in a
+`Package.swift` manifest rather than Xcode's "Exact Version" field — Xcode's
+UI validates version strings itself and has a history of mangling pre-release
+pins (if you must use the Xcode field, check afterwards that
+`Package.resolved` recorded the `-zodl-slipstream` version). Version ranges
+never resolve to `-zodl-slipstream` tags — SwiftPM's resolver excludes
+pre-release tags from ranges outright — which is deliberate: no consumer can
+drift onto AGPL code by a routine dependency update. Resolution details and
+caveats: [docs/Versioning.md](docs/Versioning.md).
 
 # FFI Development
 
@@ -143,7 +148,11 @@ The CompactBlockProcessor is responsible for downloading and processing blocks f
   
 # Versioning
 
-This project follows [semantic versioning](https://semver.org/) with pre-release versions. An example of a valid version number is `1.0.4-alpha11` denoting the `11th` iteration of the `alpha` pre-release of version `1.0.4`. Stable releases, such as `1.0.4` will not contain any pre-release identifiers. Pre-releases include the following, in order of stability: `alpha`, `beta`, `rc`. Version codes offer a numeric representation of the build name that always increases. The first six significant digits represent the major, minor and patch number (two digits each) and the last 3 significant digits represent the pre-release identifier. The first digit of the identifier signals the build type. Lastly, each new build has a higher version code than all previous builds. The following table breaks this down:
+This project follows [semantic versioning](https://semver.org/) with pre-release versions. An example of a valid version number is `1.0.4-alpha11` denoting the `11th` iteration of the `alpha` pre-release of version `1.0.4`. Stable releases, such as `1.0.4` will not contain any pre-release identifiers. Pre-releases include the following, in order of stability: `alpha`, `beta`, `rc`.
+
+In addition, every release carries a twin `X.Y.Z-zodl-slipstream` tag — the opt-in ZODL Slipstream (AGPL) variant of the same release. The suffix is deliberately a SemVer *pre-release identifier*: SwiftPM's resolver categorically excludes pre-release tags from ordinary version ranges, so `from:`/`.upToNextMajor` ranges can never resolve to the AGPL variant, and `exact:` is the only way to adopt it. The full resolution rules and their caveats (pre-release lower bounds, Xcode's version field, tag ordering) are documented in [docs/Versioning.md](docs/Versioning.md).
+
+Version codes offer a numeric representation of the build name that always increases. The first six significant digits represent the major, minor and patch number (two digits each) and the last 3 significant digits represent the pre-release identifier. The first digit of the identifier signals the build type. Lastly, each new build has a higher version code than all previous builds. The following table breaks this down:
 
 #### Build Types
 
