@@ -175,3 +175,313 @@ pub unsafe extern "C" fn zcashlc_voting_sign_delegation_request(
     });
     unwrap_exc_or_null(res)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use zcash_voting::storage::queries;
+
+    use crate::voting::constants::ORCHARD_FVK_LEN;
+    use crate::voting::db::zcashlc_voting_db_free;
+    use crate::voting::test_helpers::{insert_round_and_bundle, open_memory_db};
+
+    /// Must match the wallet id `test_helpers::open_memory_db` registers, or the
+    /// planted rows are invisible to the handle under test.
+    const TEST_WALLET_ID: &str = "wallet";
+    const TEST_ROUND_ID: &str = "round";
+    const TEST_SEED: [u8; 32] = [1u8; 32];
+    const PLANTED_SIGHASH: [u8; 32] = [9u8; 32];
+
+    fn test_seed_fingerprint() -> [u8; SEED_FINGERPRINT_LEN] {
+        zip32::fingerprint::SeedFingerprint::from_seed(&TEST_SEED)
+            .expect("32-byte seed is valid for ZIP-32")
+            .to_bytes()
+    }
+
+    /// A stored hotkey secret that `zcash_voting` accepts, produced the same way
+    /// a wallet would produce it rather than by guessing at the encoding.
+    fn valid_stored_secret() -> Vec<u8> {
+        voting::hotkey::generate_random_voting_hotkey(voting::Network::Mainnet)
+            .expect("generate hotkey")
+            .stored_secret()
+            .to_vec()
+    }
+
+    /// Plant the round, bundle, and stored PCZT signing fields (`pczt_sighash`,
+    /// `alpha`) that `delegate::signing_request` loads, without running the
+    /// proving pipeline that stores them in production. Only the two loaded
+    /// fields and the crate-validated `tx1_effects` need real shapes; the other
+    /// delegation blobs are inert 32-byte placeholders.
+    fn plant_signing_request(db: *mut VotingDatabaseHandle, alpha: &[u8; 32]) {
+        insert_round_and_bundle(db, TEST_ROUND_ID);
+        let handle = unsafe { db.as_ref() }.expect("db handle");
+        let conn = handle.db.conn();
+        let mut tx1_effects = vec![0u8; voting::tx1::TX1_EFFECTS_LEN];
+        tx1_effects[0] = voting::tx1::TX1_EFFECTS_VERSION;
+        queries::store_delegation_data(
+            &conn,
+            TEST_ROUND_ID,
+            TEST_WALLET_ID,
+            0,
+            &[0u8; 32], // van_comm_rand
+            &[],        // dummy_nullifiers
+            &[0u8; 32], // rho_signed
+            &[],        // padded_cmx
+            &[0u8; 32], // nf_signed
+            &[0u8; 32], // cmx_new
+            alpha,
+            &[0u8; 32], // rseed_signed
+            &[0u8; 32], // rseed_output
+            &[0u8; 32], // gov_comm
+            65_000_000, // total_note_value
+            0,          // address_index
+            &[],        // padded_note_secrets
+            &PLANTED_SIGHASH,
+            &tx1_effects,
+        )
+        .expect("plant delegation signing data");
+    }
+
+    fn call_sign(
+        db: *mut VotingDatabaseHandle,
+        round_id: &[u8],
+        hotkey_secret: &[u8],
+        seed_fingerprint: &[u8],
+        seed: &[u8],
+    ) -> *mut crate::ffi::BoxedSlice {
+        // The FVK rides through `DelegationKeys` unvalidated and unread on the
+        // signing path — `get_delegation_signing_request` consumes only the
+        // network, the account index and the claimed fingerprint — so a fixed
+        // placeholder keeps these tests on the inputs the FFI actually checks.
+        let fvk = [0u8; ORCHARD_FVK_LEN];
+        let round_name = b"NU6.3 voting round";
+        unsafe {
+            zcashlc_voting_sign_delegation_request(
+                db,
+                round_id.as_ptr(),
+                round_id.len(),
+                0,
+                fvk.as_ptr(),
+                fvk.len(),
+                hotkey_secret.as_ptr(),
+                hotkey_secret.len(),
+                seed_fingerprint.as_ptr(),
+                seed_fingerprint.len(),
+                0,
+                round_name.as_ptr(),
+                round_name.len(),
+                seed.as_ptr(),
+                seed.len(),
+            )
+        }
+    }
+
+    #[test]
+    fn sign_delegation_request_rejects_null_db() {
+        let secret = valid_stored_secret();
+
+        let result = call_sign(
+            std::ptr::null_mut(),
+            TEST_ROUND_ID.as_bytes(),
+            &secret,
+            &test_seed_fingerprint(),
+            &TEST_SEED,
+        );
+
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn sign_delegation_request_rejects_invalid_utf8_round_id() {
+        let db = open_memory_db();
+        let secret = valid_stored_secret();
+
+        let result = call_sign(
+            db,
+            &[0xFF, 0xFE],
+            &secret,
+            &test_seed_fingerprint(),
+            &TEST_SEED,
+        );
+
+        unsafe { zcashlc_voting_db_free(db) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn sign_delegation_request_rejects_wrong_length_seed_fingerprint() {
+        let db = open_memory_db();
+        let secret = valid_stored_secret();
+        let short_fingerprint = [0xABu8; SEED_FINGERPRINT_LEN - 1];
+
+        let result = call_sign(
+            db,
+            TEST_ROUND_ID.as_bytes(),
+            &secret,
+            &short_fingerprint,
+            &TEST_SEED,
+        );
+
+        unsafe { zcashlc_voting_db_free(db) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn sign_delegation_request_rejects_wrong_sized_hotkey_secret() {
+        let db = open_memory_db();
+        let short_secret = [0x42u8; 8];
+
+        let result = call_sign(
+            db,
+            TEST_ROUND_ID.as_bytes(),
+            &short_secret,
+            &test_seed_fingerprint(),
+            &TEST_SEED,
+        );
+
+        unsafe { zcashlc_voting_db_free(db) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn sign_delegation_request_rejects_unknown_round() {
+        let db = open_memory_db();
+        let secret = valid_stored_secret();
+
+        let result = call_sign(
+            db,
+            b"no-such-round",
+            &secret,
+            &test_seed_fingerprint(),
+            &TEST_SEED,
+        );
+
+        unsafe { zcashlc_voting_db_free(db) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn sign_delegation_request_rejects_bundle_without_stored_signing_data() {
+        let db = open_memory_db();
+        // Round and bundle exist, but no PCZT build ever stored a sighash or
+        // alpha for the bundle, so the signing request cannot be assembled.
+        insert_round_and_bundle(db, TEST_ROUND_ID);
+        let secret = valid_stored_secret();
+
+        let result = call_sign(
+            db,
+            TEST_ROUND_ID.as_bytes(),
+            &secret,
+            &test_seed_fingerprint(),
+            &TEST_SEED,
+        );
+
+        unsafe { zcashlc_voting_db_free(db) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn sign_delegation_request_rejects_mismatched_wallet_seed_fingerprint() {
+        let db = open_memory_db();
+        plant_signing_request(db, &[0u8; 32]);
+        let secret = valid_stored_secret();
+        let claimed_fingerprint = [0xABu8; SEED_FINGERPRINT_LEN];
+        assert_ne!(
+            claimed_fingerprint,
+            test_seed_fingerprint(),
+            "fixture must not collide with the real fingerprint"
+        );
+
+        let result = call_sign(
+            db,
+            TEST_ROUND_ID.as_bytes(),
+            &secret,
+            &claimed_fingerprint,
+            &TEST_SEED,
+        );
+
+        unsafe { zcashlc_voting_db_free(db) };
+        assert!(
+            result.is_null(),
+            "a claimed fingerprint that is not the wallet seed's must be rejected"
+        );
+    }
+
+    #[test]
+    fn sign_delegation_request_rejects_non_zip32_seed() {
+        let db = open_memory_db();
+        plant_signing_request(db, &[0u8; 32]);
+        let secret = valid_stored_secret();
+        // Below the 32-byte ZIP-32 minimum, so no fingerprint can be derived.
+        let short_seed = [1u8; 16];
+
+        let result = call_sign(
+            db,
+            TEST_ROUND_ID.as_bytes(),
+            &secret,
+            &test_seed_fingerprint(),
+            &short_seed,
+        );
+
+        unsafe { zcashlc_voting_db_free(db) };
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn sign_delegation_request_rejects_non_canonical_alpha() {
+        let db = open_memory_db();
+        // 2^256 - 1 is far above the Pallas scalar modulus, so this stored
+        // alpha has no canonical decoding.
+        plant_signing_request(db, &[0xFFu8; 32]);
+        let secret = valid_stored_secret();
+
+        let result = call_sign(
+            db,
+            TEST_ROUND_ID.as_bytes(),
+            &secret,
+            &test_seed_fingerprint(),
+            &TEST_SEED,
+        );
+
+        unsafe { zcashlc_voting_db_free(db) };
+        assert!(result.is_null());
+    }
+
+    /// Positive control for the planted-request fixtures: the same plant with
+    /// the matching wallet seed signs, which is what proves the negative tests
+    /// above fail on the checks they claim rather than on a broken plant.
+    #[test]
+    fn sign_delegation_request_signs_planted_request_with_matching_seed() {
+        let db = open_memory_db();
+        plant_signing_request(db, &[0u8; 32]);
+        let secret = valid_stored_secret();
+
+        let result = call_sign(
+            db,
+            TEST_ROUND_ID.as_bytes(),
+            &secret,
+            &test_seed_fingerprint(),
+            &TEST_SEED,
+        );
+
+        unsafe { zcashlc_voting_db_free(db) };
+        assert!(!result.is_null(), "matching seed and planted request must sign");
+        let bytes = unsafe { (*result).as_slice() }.to_vec();
+        unsafe { crate::ffi::zcashlc_free_boxed_slice(result) };
+
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("signature json");
+        assert_eq!(json["sig"].as_array().expect("sig array").len(), 64);
+        let sighash: Vec<u8> = json["sighash"]
+            .as_array()
+            .expect("sighash array")
+            .iter()
+            .map(|v| u8::try_from(v.as_u64().expect("byte")).expect("byte range"))
+            .collect();
+        assert_eq!(
+            sighash,
+            PLANTED_SIGHASH.to_vec(),
+            "returned sighash must echo the stored one"
+        );
+    }
+}

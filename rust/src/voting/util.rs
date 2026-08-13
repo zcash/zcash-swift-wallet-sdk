@@ -270,10 +270,14 @@ pub unsafe extern "C" fn zcashlc_voting_verify_witness(
 
 #[cfg(test)]
 mod tests {
-    use orchard::tree::Anchor;
+    use ff::PrimeField;
+    use incrementalmerkletree::frontier::{CommitmentTree, Frontier};
+    use orchard::tree::{Anchor, MerkleHashOrchard};
+    use pasta_curves::pallas;
     use prost::Message;
     use zcash_client_backend::proto::service::TreeState;
     use zcash_keys::keys::UnifiedSpendingKey;
+    use zcash_primitives::merkle_tree::write_commitment_tree;
     use zcash_protocol::consensus::Network;
 
     use super::*;
@@ -588,6 +592,32 @@ mod tests {
         assert_eq!(root, Anchor::empty_tree().to_bytes().to_vec());
     }
 
+    const TREE_DEPTH: u8 = orchard::NOTE_COMMITMENT_TREE_DEPTH as u8;
+
+    /// A distinguishable Orchard-tree leaf built from a small field element.
+    fn merkle_hash(tag: u64) -> MerkleHashOrchard {
+        let repr = pallas::Base::from(tag).to_repr();
+        MerkleHashOrchard::from_bytes(&repr).expect("small field element is canonical")
+    }
+
+    /// A commitment-tree frontier holding one leaf per tag.
+    fn frontier_with(tags: &[u64]) -> Frontier<MerkleHashOrchard, TREE_DEPTH> {
+        let mut frontier = Frontier::empty();
+        for tag in tags {
+            assert!(frontier.append(merkle_hash(*tag)));
+        }
+        frontier
+    }
+
+    /// The hex tree-state encoding `TreeState` carries for a frontier.
+    fn tree_hex(frontier: &Frontier<MerkleHashOrchard, TREE_DEPTH>) -> String {
+        let commitment_tree = CommitmentTree::from_frontier(frontier);
+        let mut tree_bytes = Vec::new();
+        write_commitment_tree(&commitment_tree, &mut tree_bytes)
+            .expect("serialize note commitment tree state");
+        hex::encode(tree_bytes)
+    }
+
     /// Voting rounds are anchored to the **Ironwood** note commitment tree, so
     /// when the cached `TreeState` carries both pools the extracted `nc_root`
     /// must be the Ironwood root, not the Orchard one. This is the second half
@@ -595,35 +625,6 @@ mod tests {
     /// in the suite notices which field this FFI reads.
     #[test]
     fn extract_nc_root_returns_ironwood_root_when_both_trees_present() {
-        use ff::PrimeField;
-        use incrementalmerkletree::frontier::{CommitmentTree, Frontier};
-        use orchard::tree::MerkleHashOrchard;
-        use pasta_curves::pallas;
-        use zcash_primitives::merkle_tree::write_commitment_tree;
-
-        const TREE_DEPTH: u8 = orchard::NOTE_COMMITMENT_TREE_DEPTH as u8;
-
-        fn merkle_hash(tag: u64) -> MerkleHashOrchard {
-            let repr = pallas::Base::from(tag).to_repr();
-            MerkleHashOrchard::from_bytes(&repr).expect("small field element is canonical")
-        }
-
-        fn frontier_with(tags: &[u64]) -> Frontier<MerkleHashOrchard, TREE_DEPTH> {
-            let mut frontier = Frontier::empty();
-            for tag in tags {
-                assert!(frontier.append(merkle_hash(*tag)));
-            }
-            frontier
-        }
-
-        fn tree_hex(frontier: &Frontier<MerkleHashOrchard, TREE_DEPTH>) -> String {
-            let commitment_tree = CommitmentTree::from_frontier(frontier);
-            let mut tree_bytes = Vec::new();
-            write_commitment_tree(&commitment_tree, &mut tree_bytes)
-                .expect("serialize note commitment tree state");
-            hex::encode(tree_bytes)
-        }
-
         let orchard_frontier = frontier_with(&[1, 2, 3]);
         let ironwood_frontier = frontier_with(&[7, 8]);
         assert_ne!(
