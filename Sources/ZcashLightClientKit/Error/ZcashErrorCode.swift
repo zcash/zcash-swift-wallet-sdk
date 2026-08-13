@@ -363,6 +363,8 @@ public enum ZcashErrorCode: String {
     case rustMigrationBatchPcztsByActions = "ZRUST0146"
     /// No chain tip is available to estimate from: the wallet has never scanned a block.
     case migrationChainTipUnavailable = "ZRUST0147"
+    /// Error from rust layer when calling ZcashRustBackend.getStoredTransaction
+    case rustGetStoredTransaction = "ZRUST0150"
     /// SQLite query failed when fetching all accounts from the database.
     case accountDAOGetAll = "ZADAO0001"
     /// Fetched accounts from SQLite but can't decode them.
@@ -423,6 +425,8 @@ public enum ZcashErrorCode: String {
     case transactionRepositoryQueryExecute = "ZTREE0005"
     /// Finding memos in the database failed.
     case transactionRepositoryFindMemos = "ZTREE0006"
+    /// A transaction the rust layer reported as created and stored could not be read back from the
+    case transactionRepositoryCreatedTransactionNotFound = "ZTREE0007"
     /// Can't encode `ZcashCompactBlock` object.
     case compactBlockEncode = "ZCMPB0001"
     /// Invalid UTF-8 Bytes where detected when attempting to create a MemoText.

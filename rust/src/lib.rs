@@ -3372,6 +3372,65 @@ pub unsafe extern "C" fn zcashlc_set_transaction_status(
     unwrap_exc_or(res, false)
 }
 
+/// Returns the raw bytes of the wallet-stored transaction with the given txid, writing its
+/// expiry height to `expiry_height_ret` (`0` when the transaction has no expiry).
+///
+/// The transaction is read back through the data access API's own `transactions` store, so
+/// a transaction that `zcashlc_create_proposed_transactions` has just committed is returned
+/// even when derived views (e.g. `v_transactions`) have no row for it. Returns a boxed
+/// slice with a null `ptr` when no transaction with this txid is stored (not an error).
+///
+/// # Safety
+///
+/// - `db_data` must be non-null and valid for reads for `db_data_len` bytes, and it must
+///   have an alignment of `1`. Its contents must be a string representing a valid system
+///   path in the operating system's preferred representation.
+/// - The memory referenced by `db_data` must not be mutated for the duration of the
+///   function call.
+/// - The total size `db_data_len` must be no larger than `isize::MAX`. See the safety
+///   documentation of pointer::offset.
+/// - `txid_bytes` must be non-null and valid for reads for 32 bytes, and it must have an
+///   alignment of `1`.
+/// - `expiry_height_ret` must be non-null and valid for writes for 8 bytes, and it must
+///   have an alignment of `1`.
+/// - Call [`zcashlc_free_boxed_slice`] to free the memory associated with the returned
+///   pointer when done using it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zcashlc_get_stored_transaction(
+    db_data: *const u8,
+    db_data_len: usize,
+    network_id: u32,
+    txid_bytes: *const u8,
+    expiry_height_ret: *mut u64,
+) -> *mut ffi::BoxedSlice {
+    let res = catch_panic(|| {
+        let network = parse_network(network_id)?;
+        let db_data = unsafe { wallet_db(db_data, db_data_len, network)? };
+
+        let txid_bytes = unsafe { slice::from_raw_parts(txid_bytes, 32) };
+        let txid = TxId::read(txid_bytes)?;
+
+        let expiry_height_ret = unsafe { expiry_height_ret.as_mut() }.ok_or_else(|| {
+            anyhow!("A mutable pointer to a UInt64 is required to return the expiry height")
+        })?;
+
+        match db_data
+            .get_transaction(txid)
+            .map_err(|e| anyhow!("Error while fetching transaction {}: {}", txid, e))?
+        {
+            Some(tx) => {
+                *expiry_height_ret = u64::from(u32::from(tx.expiry_height()));
+                let mut raw = vec![];
+                tx.write(&mut raw)
+                    .map_err(|e| anyhow!("Error serializing transaction {}: {}", txid, e))?;
+                Ok(ffi::BoxedSlice::some(raw))
+            }
+            None => Ok(ffi::BoxedSlice::none()),
+        }
+    });
+    unwrap_exc_or_null(res)
+}
+
 /// Returns a list of transaction data requests that the network client should satisfy.
 ///
 /// # Safety

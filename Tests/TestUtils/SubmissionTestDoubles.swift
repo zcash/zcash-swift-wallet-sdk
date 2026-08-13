@@ -234,6 +234,13 @@ final class StubTransactionEncoder: TransactionEncoder {
     var submitError: Error?
     /// `isTransactionKnownToServer(txId:)` returns `true` for txids in this set.
     var knownToServerTxIds: Set<Data> = []
+    /// When set, `fetchTransactionsForTxIds` throws this error — simulates a transaction
+    /// missing from `v_transactions` (MOB-1703).
+    var fetchError: Error?
+    /// When set, the view-independent creation paths return these values instead of mapping
+    /// `createdTransactions` overviews — simulates transactions built from the backend's own
+    /// transaction store while the view cannot see them (MOB-1703).
+    var createdTransactionsForSubmission: [CreatedTransaction]?
 
     init(createdTransactions: [ZcashTransaction.Overview]) {
         self.createdTransactions = createdTransactions
@@ -289,9 +296,30 @@ final class StubTransactionEncoder: TransactionEncoder {
 
     func fetchTransactionsForTxIds(_ txIds: [Data]) async throws -> [ZcashTransaction.Overview] {
         receivedFetchTxIds = txIds
+        if let fetchError {
+            throw fetchError
+        }
         return txIds.compactMap { txId in
             createdTransactions.first { $0.rawID == txId }
         }
+    }
+
+    func createProposedTransactionsForSubmission(
+        proposal: Proposal,
+        spendingKey: UnifiedSpendingKey
+    ) async throws -> [CreatedTransaction] {
+        receivedCreateArguments = (proposal, spendingKey)
+        if let createdTransactionsForSubmission {
+            return createdTransactionsForSubmission
+        }
+        return try createdTransactions.map { try CreatedTransaction(overview: $0) }
+    }
+
+    func createdTransactions(forTxIds txIds: [Data]) async throws -> [CreatedTransaction] {
+        if let createdTransactionsForSubmission {
+            return createdTransactionsForSubmission.filter { txIds.contains($0.txId) }
+        }
+        return try await fetchTransactionsForTxIds(txIds).map { try CreatedTransaction(overview: $0) }
     }
 
     func closeDBConnection() { }

@@ -137,7 +137,17 @@ private extension TxResubmissionAction {
                     staleTxIds.append(txId)
                 }
             } catch ZcashError.transactionRepositoryEntityNotFound {
-                staleTxIds.append(txId)
+                // Absent from `v_transactions` is not proof the transaction is gone: a created
+                // transaction can be missing from the view while still stored and live (MOB-1703).
+                // Prune only when the backend's own store has no live copy either.
+                if let created = try? await transactionEncoder.createdTransactions(forTxIds: [txId]).first,
+                    (created.expiryHeight ?? 0) > latestBlockHeight {
+                    logger.warn(
+                        "TxResubmissionAction keeping submit plan for \(txId.toHexStringTxId()): absent from v_transactions but still stored and unexpired."
+                    )
+                } else {
+                    staleTxIds.append(txId)
+                }
             } catch {
                 // Unknown repository error — keep the plan, try again next pass.
                 logger.warn("TxResubmissionAction could not check plan staleness for \(txId.toHexStringTxId()): \(error)")

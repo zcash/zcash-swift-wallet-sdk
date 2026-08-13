@@ -92,6 +92,48 @@ final class BroadcasterTests: ZcashTestCase {
         XCTAssertEqual(plan, StoredSubmitPlan.awaiting)
     }
 
+    func testCreateSubmitsInvisibleTransactionAndSkipsFoundTransactionsEvent() async throws {
+        // MOB-1703: the transaction is committed by the rust layer but has no row in
+        // `v_transactions` — creation must still produce a submittable transaction and
+        // record its plan; only the overview-carrying event is skipped.
+        let rawID = Data(repeating: 0xEF, count: 32)
+        let rawTransaction = Data([0x0A, 0x0B])
+        let transactionEncoder = StubTransactionEncoder(createdTransactions: [])
+        transactionEncoder.createdTransactionsForSubmission = [
+            CreatedTransaction(txId: rawID, raw: rawTransaction, expiryHeight: 999_999)
+        ]
+        transactionEncoder.fetchError = ZcashError.transactionRepositoryEntityNotFound
+        let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
+
+        var receivedFoundTransactions = false
+        synchronizer.eventStream
+            .sink { event in
+                if case .foundTransactions = event { receivedFoundTransactions = true }
+            }
+            .store(in: &cancellables)
+
+        await synchronizer.updateStatus(.stopped)
+
+        let transactions = try await synchronizer.broadcaster.createProposedTransactions(
+            proposal: Proposal.testOnlyFakeProposal(totalFee: 10),
+            spendingKey: TestsData(networkType: .testnet).spendingKey
+        )
+
+        XCTAssertEqual(transactions.map(\.txId), [rawID])
+        XCTAssertEqual(transactions.map(\.raw), [rawTransaction])
+
+        let store = mockContainer.resolve(SubmitPlanStoring.self)
+        let plan = await store.plan(for: rawID)
+        XCTAssertEqual(plan, StoredSubmitPlan.awaiting)
+
+        // Give async event delivery a beat before asserting nothing arrived.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(
+            receivedFoundTransactions,
+            "No honest overview exists for a view-invisible transaction; the event must be skipped"
+        )
+    }
+
     func testBroadcasterThrowsWhenNotPrepared() async throws {
         let transactionEncoder = StubTransactionEncoder(createdTransactions: [])
         let synchronizer = try makeSynchronizer(transactionEncoder: transactionEncoder)
@@ -371,6 +413,13 @@ private final class StubTransactionEncoder: TransactionEncoder {
     private(set) var receivedCreateArguments: (proposal: Proposal, spendingKey: UnifiedSpendingKey)?
     private(set) var receivedFetchTxIds: [Data]?
     private(set) var submittedTransactions: [EncodedTransaction] = []
+    /// When set, `fetchTransactionsForTxIds` throws this error — simulates a transaction
+    /// missing from `v_transactions` (MOB-1703).
+    var fetchError: Error?
+    /// When set, the view-independent creation paths return these values instead of mapping
+    /// `createdTransactions` overviews — simulates transactions built from the backend's own
+    /// transaction store while the view cannot see them (MOB-1703).
+    var createdTransactionsForSubmission: [CreatedTransaction]?
 
     init(createdTransactions: [ZcashTransaction.Overview]) {
         self.createdTransactions = createdTransactions
@@ -423,9 +472,30 @@ private final class StubTransactionEncoder: TransactionEncoder {
 
     func fetchTransactionsForTxIds(_ txIds: [Data]) async throws -> [ZcashTransaction.Overview] {
         receivedFetchTxIds = txIds
+        if let fetchError {
+            throw fetchError
+        }
         return txIds.compactMap { txId in
             createdTransactions.first { $0.rawID == txId }
         }
+    }
+
+    func createProposedTransactionsForSubmission(
+        proposal: Proposal,
+        spendingKey: UnifiedSpendingKey
+    ) async throws -> [CreatedTransaction] {
+        receivedCreateArguments = (proposal, spendingKey)
+        if let createdTransactionsForSubmission {
+            return createdTransactionsForSubmission
+        }
+        return try createdTransactions.map { try CreatedTransaction(overview: $0) }
+    }
+
+    func createdTransactions(forTxIds txIds: [Data]) async throws -> [CreatedTransaction] {
+        if let createdTransactionsForSubmission {
+            return createdTransactionsForSubmission.filter { txIds.contains($0.txId) }
+        }
+        return try await fetchTransactionsForTxIds(txIds).map { try CreatedTransaction(overview: $0) }
     }
 
     func closeDBConnection() { }

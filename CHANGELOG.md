@@ -95,6 +95,24 @@ Changes are relative to `2.8.0-rc.3`.
 
 ## Fixed
 
+- [MOB-1703] Sending and shielding no longer fail with `[ZTREE0001] transactionRepositoryEntityNotFound`
+  when a freshly created transaction has no row in `v_transactions`. The rust layer commits every
+  proposal step before returning its txids, but the create path then read the transactions back
+  through the view — driven by the wallet's recorded notes and spends — so a transaction the view
+  could not project was reported as an error *after* its inputs were already marked spent, and it
+  was never broadcast (users saw a TXID that never reached the network, and funds locked until
+  expiry). The create path now builds submittable transactions without requiring view visibility:
+  it retries the view read once on a fresh database connection (a stale read snapshot on the
+  long-lived cached read-only connection would hide a just-committed row), then falls back to the
+  new `zcashlc_get_stored_transaction` FFI accessor, which returns the raw transaction and expiry
+  height straight from the backend's own transaction store. Each fallback logs the txid and which
+  path served it, so field reports can pinpoint the underlying visibility gap. The
+  `.foundTransactions` event still carries only honest view overviews — for an affected
+  transaction it is skipped and the transaction surfaces through enhancement once mined.
+  `TxResubmissionAction` applies the same rule when pruning submit plans: a plan is no longer
+  discarded just because the view cannot see its transaction while a live, unexpired copy exists
+  in the backend store. A created transaction missing from both the view and the backend store now
+  throws the new `[ZTREE0007] transactionRepositoryCreatedTransactionNotFound` carrying the txid.
 - Fetching transactions no longer fails on wallets whose `trust_status` column is NULL — which is
   every wallet today, since transaction trust (`set_tx_trust`) is an opt-in marker with no default,
   no backfill, and no caller yet. The strict `Overview` decode threw on the first row and the whole

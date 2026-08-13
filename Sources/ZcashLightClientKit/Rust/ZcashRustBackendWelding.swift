@@ -403,6 +403,16 @@ protocol ZcashRustBackendWelding {
     /// transactions have been mined.
     func setTransactionStatus(txId: Data, status: TransactionStatus) async throws
 
+    /// Fetches the raw bytes and expiry height of a transaction stored in the wallet database,
+    /// queried by its transaction id.
+    ///
+    /// The transaction is read back through the backend's own transaction store rather than any
+    /// derived view, so a transaction just committed by `createProposedTransactions` is returned
+    /// even when `v_transactions` has no row for it.
+    /// - Returns: the serialized transaction and its expiry height (`nil` expiry when the
+    ///   transaction carries none), or `nil` when no transaction with this txid is stored.
+    func getStoredTransaction(txId: Data) async throws -> (raw: Data, expiryHeight: BlockHeight?)?
+
     /// Fix witnesses - addressing note commitment tree bug.
     /// This function is supposed to be called occasionaly. It's handled by the SDK Synchronizer and called only once per version.
     func fixWitnesses() async

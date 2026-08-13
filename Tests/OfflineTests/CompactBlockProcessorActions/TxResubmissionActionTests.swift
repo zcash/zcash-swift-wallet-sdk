@@ -206,6 +206,42 @@ final class TxResubmissionActionTests: ZcashTestCase {
         )
     }
 
+    func testPrunePlanKeptWhenTransactionOnlyInBackendStore() async throws {
+        // MOB-1703: absent from `v_transactions` but still stored and unexpired in the
+        // backend's own transaction store — the plan must survive the prune.
+        let invisibleTxId = Data(repeating: 0x0F, count: 32)
+        let action = setupAction(candidates: [])
+        await submitPlanStore.recordPlan(txId: invisibleTxId, endpoints: [endpointA])
+        transactionRepository.findRawIDClosure = { _ in
+            throw ZcashError.transactionRepositoryEntityNotFound
+        }
+        transactionEncoder.createdTransactionsForSubmission = [
+            CreatedTransaction(txId: invisibleTxId, raw: Data([0x01]), expiryHeight: 3_000_000)
+        ]
+
+        _ = try await action.run(with: makeContext()) { _ in }
+
+        let remaining = await submitPlanStore.allPlannedTransactionIds()
+        XCTAssertEqual(remaining, [invisibleTxId])
+    }
+
+    func testPrunePlanDroppedWhenBackendCopyExpired() async throws {
+        let invisibleTxId = Data(repeating: 0x10, count: 32)
+        let action = setupAction(candidates: [])
+        await submitPlanStore.recordPlan(txId: invisibleTxId, endpoints: [endpointA])
+        transactionRepository.findRawIDClosure = { _ in
+            throw ZcashError.transactionRepositoryEntityNotFound
+        }
+        transactionEncoder.createdTransactionsForSubmission = [
+            CreatedTransaction(txId: invisibleTxId, raw: Data([0x01]), expiryHeight: latestBlockHeight - 1)
+        ]
+
+        _ = try await action.run(with: makeContext()) { _ in }
+
+        let remaining = await submitPlanStore.allPlannedTransactionIds()
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
     func testNoCandidatesStillPrunes() async throws {
         let staleTxId = Data(repeating: 0x09, count: 32)
         let action = setupAction(candidates: [])

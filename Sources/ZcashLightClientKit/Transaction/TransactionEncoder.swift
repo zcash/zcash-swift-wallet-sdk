@@ -102,5 +102,43 @@ protocol TransactionEncoder {
     /// - Parameter txIds: an array of transaction ids to be fetched from the DB.
     func fetchTransactionsForTxIds(_ txIds: [Data]) async throws -> [ZcashTransaction.Overview]
 
+    /// Builds submittable `CreatedTransaction` values for transactions the rust layer has already
+    /// created and stored, keyed by their transaction ids.
+    ///
+    /// Unlike `fetchTransactionsForTxIds`, this must not depend on the transaction being visible
+    /// in `v_transactions`: a created transaction whose row is missing from the view (MOB-1703)
+    /// must still be returned, so it can be broadcast.
+    /// - Parameter txIds: an array of transaction ids, as returned by the create call.
+    func createdTransactions(forTxIds txIds: [Data]) async throws -> [CreatedTransaction]
+
+    /// Creates the transactions in the given proposal and returns them ready for submission.
+    ///
+    /// Same creation semantics as `createProposedTransactions`, but the result carries the raw
+    /// transaction bytes needed for broadcast and does not require the created transactions to be
+    /// visible in `v_transactions`.
+    func createProposedTransactionsForSubmission(
+        proposal: Proposal,
+        spendingKey: UnifiedSpendingKey
+    ) async throws -> [CreatedTransaction]
+
     func closeDBConnection()
+}
+
+extension TransactionEncoder {
+    /// Default implementation preserving the historical behavior: read the overviews from
+    /// `v_transactions` and wrap them. Conformers backed by the rust layer override this with a
+    /// view-independent lookup.
+    func createdTransactions(forTxIds txIds: [Data]) async throws -> [CreatedTransaction] {
+        try await fetchTransactionsForTxIds(txIds).map { try CreatedTransaction(overview: $0) }
+    }
+
+    /// Default implementation preserving the historical behavior: create via
+    /// `createProposedTransactions` and wrap the returned overviews.
+    func createProposedTransactionsForSubmission(
+        proposal: Proposal,
+        spendingKey: UnifiedSpendingKey
+    ) async throws -> [CreatedTransaction] {
+        try await createProposedTransactions(proposal: proposal, spendingKey: spendingKey)
+            .map { try CreatedTransaction(overview: $0) }
+    }
 }

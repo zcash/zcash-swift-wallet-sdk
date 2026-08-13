@@ -138,6 +138,61 @@ class WalletTransactionEncoder: TransactionEncoder {
         return txs
     }
 
+    func createProposedTransactionsForSubmission(
+        proposal: Proposal,
+        spendingKey: UnifiedSpendingKey
+    ) async throws -> [CreatedTransaction] {
+        guard ensureParams(spend: self.spendParamsURL, output: self.outputParamsURL) else {
+            throw ZcashError.walletTransEncoderCreateTransactionMissingSaplingParams
+        }
+
+        let txIds = try await rustBackend.createProposedTransactions(
+            proposal: proposal.inner,
+            usk: spendingKey
+        )
+
+        return try await createdTransactions(forTxIds: txIds)
+    }
+
+    func createdTransactions(forTxIds txIds: [Data]) async throws -> [CreatedTransaction] {
+        var txs: [CreatedTransaction] = []
+
+        for txId in txIds {
+            txs.append(try await createdTransaction(forTxId: txId))
+        }
+
+        return txs
+    }
+
+    private func createdTransaction(forTxId txId: Data) async throws -> CreatedTransaction {
+        do {
+            return try CreatedTransaction(overview: try await repository.find(rawID: txId))
+        } catch ZcashError.transactionRepositoryEntityNotFound {
+            // `v_transactions` has no row for a txid the rust layer just committed (MOB-1703).
+            // Drop the cached read-only connection first: a stale WAL snapshot would hide a
+            // freshly committed row from this reader.
+            repository.closeDBConnection()
+        }
+
+        do {
+            let created = try CreatedTransaction(overview: try await repository.find(rawID: txId))
+            logger.warn(
+                "txid \(txId.toHexStringTxId()) was invisible on the cached connection but visible after reopening — stale read snapshot."
+            )
+            return created
+        } catch ZcashError.transactionRepositoryEntityNotFound {
+            logger.error(
+                "txid \(txId.toHexStringTxId()) is committed but absent from v_transactions — building it for submission from the backend's transaction store."
+            )
+        }
+
+        guard let stored = try await rustBackend.getStoredTransaction(txId: txId) else {
+            throw ZcashError.transactionRepositoryCreatedTransactionNotFound(txId.toHexStringTxId())
+        }
+
+        return CreatedTransaction(txId: txId, raw: stored.raw, expiryHeight: stored.expiryHeight)
+    }
+
     func submit(
         transaction: EncodedTransaction
     ) async throws {

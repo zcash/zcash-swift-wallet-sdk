@@ -1428,6 +1428,39 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
     }
 
     @DBActor
+    func getStoredTransaction(txId: Data) async throws -> (raw: Data, expiryHeight: BlockHeight?)? {
+        guard txId.count == 32 else {
+            throw ZcashError.rustGetMemoInvalidTxIdLength
+        }
+
+        var expiryHeight: UInt64 = 0
+
+        let txPtr = zcashlc_get_stored_transaction(
+            dbData.0,
+            dbData.1,
+            networkType.networkId,
+            txId.bytes,
+            &expiryHeight
+        )
+
+        guard let txPtr else {
+            throw ZcashError.rustGetStoredTransaction(
+                lastErrorMessage(fallback: "`getStoredTransaction` failed with unknown error")
+            )
+        }
+
+        defer { zcashlc_free_boxed_slice(txPtr) }
+
+        guard txPtr.pointee.ptr != nil else {
+            return nil
+        }
+
+        let raw = Data(bytes: txPtr.pointee.ptr, count: Int(txPtr.pointee.len))
+        let expiry: BlockHeight? = (expiryHeight == 0 || expiryHeight > UInt32.max) ? nil : BlockHeight(expiryHeight)
+        return (raw: raw, expiryHeight: expiry)
+    }
+
+    @DBActor
     func fixWitnesses() async {
         zcashlc_fix_witnesses(dbData.0, dbData.1, networkType.networkId)
     }

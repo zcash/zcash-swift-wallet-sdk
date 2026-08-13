@@ -4978,6 +4978,30 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
         try await setTransactionStatusTxIdStatusClosure!(txId, status)
     }
 
+    // MARK: - getStoredTransaction
+
+    var getStoredTransactionTxIdThrowableError: Error?
+    var getStoredTransactionTxIdCallsCount = 0
+    var getStoredTransactionTxIdCalled: Bool {
+        return getStoredTransactionTxIdCallsCount > 0
+    }
+    var getStoredTransactionTxIdReceivedTxId: Data?
+    var getStoredTransactionTxIdReturnValue: (raw: Data, expiryHeight: BlockHeight?)?
+    var getStoredTransactionTxIdClosure: ((Data) async throws -> (raw: Data, expiryHeight: BlockHeight?)?)?
+
+    func getStoredTransaction(txId: Data) async throws -> (raw: Data, expiryHeight: BlockHeight?)? {
+        if let error = getStoredTransactionTxIdThrowableError {
+            throw error
+        }
+        getStoredTransactionTxIdCallsCount += 1
+        getStoredTransactionTxIdReceivedTxId = txId
+        if let closure = getStoredTransactionTxIdClosure {
+            return try await closure(txId)
+        } else {
+            return getStoredTransactionTxIdReturnValue
+        }
+    }
+
     // MARK: - fixWitnesses
 
     var fixWitnessesCallsCount = 0

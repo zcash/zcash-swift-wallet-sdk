@@ -113,12 +113,12 @@ final class SDKBroadcaster: Broadcaster {
         try statusCheck()
         try await downloadSaplingParamsIfNeeded()
 
-        let overviews = try await transactionEncoder.createProposedTransactions(
+        let createdTransactions = try await transactionEncoder.createProposedTransactionsForSubmission(
             proposal: proposal,
             spendingKey: spendingKey
         )
 
-        return try await finishCreation(overviews: overviews, recordingPlans: recordingPlans)
+        return try await finishCreation(createdTransactions: createdTransactions, recordingPlans: recordingPlans)
     }
 
     func createTransactionFromPCZT(
@@ -134,9 +134,9 @@ final class SDKBroadcaster: Broadcaster {
             pcztWithSigs: pcztWithSigs
         )
 
-        let overviews = try await transactionEncoder.fetchTransactionsForTxIds([txId])
+        let createdTransactions = try await transactionEncoder.createdTransactions(forTxIds: [txId])
 
-        return try await finishCreation(overviews: overviews, recordingPlans: recordingPlans)
+        return try await finishCreation(createdTransactions: createdTransactions, recordingPlans: recordingPlans)
     }
 
     // MARK: - Private
@@ -152,11 +152,9 @@ final class SDKBroadcaster: Broadcaster {
     }
 
     private func finishCreation(
-        overviews: [ZcashTransaction.Overview],
+        createdTransactions: [CreatedTransaction],
         recordingPlans: Bool
     ) async throws -> [CreatedTransaction] {
-        let createdTransactions = try overviews.map { try CreatedTransaction(overview: $0) }
-
         let txIdList = createdTransactions.map { $0.txId.toHexStringTxId() }.joined(separator: ", ")
         if recordingPlans {
             logger.debug("Created \(createdTransactions.count) transaction(s) awaiting submission by the app: \(txIdList).")
@@ -165,8 +163,17 @@ final class SDKBroadcaster: Broadcaster {
             logger.debug("Created \(createdTransactions.count) transaction(s) for immediate submission: \(txIdList).")
         }
 
-        if !overviews.isEmpty {
-            eventSubject.send(.foundTransactions(overviews, nil))
+        // Best-effort: the event carries overviews from `v_transactions`. A created transaction
+        // missing from the view (MOB-1703) cannot honestly be represented as an overview, so the
+        // event is skipped for it — it surfaces through enhancement once mined. Submission above
+        // does not depend on this lookup.
+        if !createdTransactions.isEmpty {
+            if let overviews = try? await transactionEncoder.fetchTransactionsForTxIds(createdTransactions.map(\.txId)),
+                !overviews.isEmpty {
+                eventSubject.send(.foundTransactions(overviews, nil))
+            } else {
+                logger.warn("Skipping foundTransactions event: created transaction(s) \(txIdList) not (all) visible in v_transactions.")
+            }
         }
 
         return createdTransactions
