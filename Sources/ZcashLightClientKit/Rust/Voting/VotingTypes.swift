@@ -584,6 +584,12 @@ public struct VotingPirLayout: Equatable, Sendable {
     public let tier0Layers: UInt32
     public let tier1Layers: UInt32
 
+    /// YPIR RLWE polynomial degree; the crate accepts only 2048 or 4096.
+    ///
+    /// Any other value — including the `0` of ``unknown`` — fails closed in
+    /// `zcash_voting` before any network I/O.
+    public let polyLen: UInt32
+
     /// The crate's `PirLayout::UNKNOWN` sentinel, and its `Default`.
     ///
     /// `zcash_voting` rejects it — "pir_layout is unknown; resolve a current
@@ -592,13 +598,15 @@ public struct VotingPirLayout: Equatable, Sendable {
     public static let unknown = VotingPirLayout(
         pirDepth: 0,
         tier0Layers: 0,
-        tier1Layers: 0
+        tier1Layers: 0,
+        polyLen: 0
     )
 
-    public init(pirDepth: UInt32, tier0Layers: UInt32, tier1Layers: UInt32) {
+    public init(pirDepth: UInt32, tier0Layers: UInt32, tier1Layers: UInt32, polyLen: UInt32) {
         self.pirDepth = pirDepth
         self.tier0Layers = tier0Layers
         self.tier1Layers = tier1Layers
+        self.polyLen = polyLen
     }
 }
 

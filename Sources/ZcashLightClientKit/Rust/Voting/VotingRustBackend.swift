@@ -178,7 +178,8 @@ extension VotingRustBackend {
                             UInt(urlBuf.count),
                             pirLayout.pirDepth,
                             pirLayout.tier0Layers,
-                            pirLayout.tier1Layers
+                            pirLayout.tier1Layers,
+                            pirLayout.polyLen
                         )
                     }
                 }
@@ -2073,6 +2074,7 @@ private extension VotingRustBackend {
                                             pirLayout.pirDepth,
                                             pirLayout.tier0Layers,
                                             pirLayout.tier1Layers,
+                                            pirLayout.polyLen,
                                             trampoline,
                                             progressContext
                                         )

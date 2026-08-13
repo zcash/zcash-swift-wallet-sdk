@@ -1327,6 +1327,43 @@ final class VotingRustBackendTests: XCTestCase {
         }
     }
 
+    // MARK: - precomputeDelegationPir layout gating
+
+    /// Pins that the `.unknown` sentinel layout (`polyLen` 0) fails closed
+    /// inside `zcash_voting` at the FFI boundary: the crate rejects the layout
+    /// locally, before issuing any network request. The probe stub satisfies
+    /// snapshot resolution offline, so the failure can only be the layout
+    /// rejection, not a resolver or transport error.
+    func test_precomputeDelegationPir_unknownLayout_failsClosedThroughFFI() async throws {
+        let backend = VotingRustBackend()
+        try backend.open(path: makeTempDbPath(), networkId: roundTripNetworkId)
+        defer { backend.close() }
+
+        do {
+            _ = try await backend.precomputeDelegationPir(
+                roundId: hexRoundId(0x11),
+                bundleIndex: 0,
+                notes: [],
+                pirEndpoints: ["https://stub"],
+                expectedSnapshotHeight: 0,
+                pirLayout: .unknown,
+                pirResolver: PirSnapshotResolver(probe: MatchingProbe())
+            )
+            XCTFail("expected .rustError for the unknown PIR layout")
+        } catch let error as VotingRustBackendError {
+            guard case .rustError(let message) = error else {
+                XCTFail("expected .rustError, got \(error.localizedDescription)")
+                return
+            }
+            XCTAssertTrue(
+                message.contains("pir_layout is unknown"),
+                "expected the crate's unknown-layout rejection, got: \(message)"
+            )
+        } catch {
+            XCTFail("unexpected error: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Helpers
 
     private func makeTempDbPath() -> String {
@@ -1523,5 +1560,13 @@ private struct FailingProbe: PirSnapshotProbing {
     func probe(url: String, expectedSnapshotHeight: BlockHeight) async -> PirSnapshotProbeOutcome {
         XCTFail("closed voting backend should fail before probing PIR endpoints")
         return PirSnapshotProbeOutcome(url: url, status: .matching(height: expectedSnapshotHeight))
+    }
+}
+
+/// Probe stub that reports every endpoint as serving the expected snapshot,
+/// letting resolution succeed offline so a test can reach the FFI itself.
+private struct MatchingProbe: PirSnapshotProbing {
+    func probe(url: String, expectedSnapshotHeight: BlockHeight) async -> PirSnapshotProbeOutcome {
+        PirSnapshotProbeOutcome(url: url, status: .matching(height: expectedSnapshotHeight))
     }
 }
