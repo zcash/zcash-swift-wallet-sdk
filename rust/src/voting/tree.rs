@@ -14,6 +14,13 @@ use super::helpers::{json_to_boxed_slice, str_from_ptr};
 
 /// Sync the vote commitment tree from a chain node.
 ///
+/// Since `zcash_voting` 3.0 the sync also validates confirmed VAN entries
+/// against the synced tree, so two new failure shapes surface here as error
+/// messages: a confirmed delegation bundle that does not match its synced
+/// vote-tree leaf (the crate resets the round's tree client; witnesses cannot
+/// be generated from unverified data), and a confirmed position still absent
+/// from the synced tree (incremental state is kept; the next sync resumes).
+///
 /// Returns the latest synced block height on success (>= 0), or -1 on error.
 ///
 /// # Safety

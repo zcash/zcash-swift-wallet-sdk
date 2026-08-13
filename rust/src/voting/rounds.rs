@@ -286,6 +286,11 @@ pub unsafe extern "C" fn zcashlc_voting_clear_round(
 
 /// Delete bundle rows with index >= `keep_count`, removing skipped bundles.
 ///
+/// Since `zcash_voting` 3.0 this fails for rounds holding capability-imported
+/// bundles: the imported batch is atomic, so it must be replaced via
+/// `zcashlc_voting_clear_round` and a complete re-import instead of partial
+/// deletion. Locally prepared rounds are unaffected.
+///
 /// Returns the number of deleted rows on success, or -1 on error.
 ///
 /// # Safety
@@ -461,6 +466,54 @@ mod tests {
 
         assert_eq!(code, 0);
         assert!(round_exists(db, round_id));
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    #[test]
+    fn delete_skipped_bundles_deletes_from_locally_prepared_rounds() {
+        use crate::voting::test_helpers::insert_round_and_bundle;
+
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+
+        let deleted = unsafe {
+            zcashlc_voting_delete_skipped_bundles(db, round_id.as_ptr(), round_id.len(), 0)
+        };
+        assert_eq!(deleted, 1);
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    /// Pins the `zcash_voting` 3.0 atomicity guard: an imported-capability
+    /// batch cannot be partially deleted, only replaced via a round clear and
+    /// a complete re-import.
+    #[test]
+    fn delete_skipped_bundles_rejects_imported_capability_rounds() {
+        use crate::voting::test_helpers::insert_round_and_bundle;
+
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+
+        // Simulate a capability-imported bundle through the storage
+        // discriminator the crate documents: imported bundles are exactly
+        // those persisted without note positions (local preparation always
+        // stores them; rc.5 databases therefore never trip this guard).
+        {
+            let handle = unsafe { db.as_ref() }.expect("voting db handle");
+            handle
+                .db
+                .conn()
+                .execute("UPDATE bundles SET note_positions_blob = NULL", [])
+                .expect("mark bundle as capability-imported");
+        }
+
+        let deleted = unsafe {
+            zcashlc_voting_delete_skipped_bundles(db, round_id.as_ptr(), round_id.len(), 0)
+        };
+        assert_eq!(deleted, -1);
 
         unsafe { zcashlc_voting_db_free(db) };
     }

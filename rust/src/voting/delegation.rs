@@ -343,6 +343,11 @@ fn connect_pir_client(
 
 /// Precompute and cache delegation PIR IMT proofs for the delegation ZKP.
 ///
+/// `pir_depth`, `tier0_layers`, `tier1_layers`, and `poly_len` describe the round's
+/// PIR layout from the resolved dynamic voting config. `poly_len` is the YPIR RLWE
+/// polynomial degree and must be 2048 or 4096; any other value (including the
+/// 0 sentinel of an unknown layout) fails closed before any network I/O.
+///
 /// Returns JSON-encoded `DelegationPirPrecomputeResult` as `*mut FfiBoxedSlice`,
 /// or null on error.
 ///
@@ -366,6 +371,7 @@ pub unsafe extern "C" fn zcashlc_voting_precompute_delegation_pir(
     pir_depth: u32,
     tier0_layers: u32,
     tier1_layers: u32,
+    poly_len: u32,
 ) -> *mut crate::ffi::BoxedSlice {
     let db = AssertUnwindSafe(db);
     let res = catch_panic(|| {
@@ -385,6 +391,7 @@ pub unsafe extern "C" fn zcashlc_voting_precompute_delegation_pir(
             pir_depth,
             tier0_layers,
             tier1_layers,
+            poly_len,
         };
         let pir_client = connect_pir_client(&pir_url, pir_layout)?;
 
@@ -406,6 +413,11 @@ pub unsafe extern "C" fn zcashlc_voting_precompute_delegation_pir(
 }
 
 /// Build and prove the real delegation ZKP. Long-running.
+///
+/// `pir_depth`, `tier0_layers`, `tier1_layers`, and `poly_len` describe the round's
+/// PIR layout from the resolved dynamic voting config. `poly_len` is the YPIR RLWE
+/// polynomial degree and must be 2048 or 4096; any other value (including the
+/// 0 sentinel of an unknown layout) fails closed before any network I/O.
 ///
 /// Returns JSON-encoded `DelegationProofResult` as `*mut FfiBoxedSlice`, or null on error.
 ///
@@ -444,6 +456,7 @@ pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
     pir_depth: u32,
     tier0_layers: u32,
     tier1_layers: u32,
+    poly_len: u32,
     progress_callback: Option<unsafe extern "C" fn(f64, *mut std::ffi::c_void)>,
     progress_context: *mut std::ffi::c_void,
 ) -> *mut crate::ffi::BoxedSlice {
@@ -474,6 +487,7 @@ pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
             pir_depth,
             tier0_layers,
             tier1_layers,
+            poly_len,
         };
         let pir_client = connect_pir_client(&pir_url, pir_layout)?;
 
@@ -703,6 +717,7 @@ mod tests {
     const PIR_DEPTH: u32 = 19;
     const TIER0_LAYERS: u32 = 12;
     const TIER1_LAYERS: u32 = 7;
+    const POLY_LEN: u32 = 4096;
 
     use super::super::constants::HOTKEY_RAW_ADDRESS_LEN;
 
@@ -1189,6 +1204,7 @@ mod tests {
                     PIR_DEPTH,
                     TIER0_LAYERS,
                     TIER1_LAYERS,
+                    POLY_LEN,
                     None,
                     std::ptr::null_mut(),
                 )
@@ -1451,6 +1467,7 @@ mod tests {
                 PIR_DEPTH,
                 TIER0_LAYERS,
                 TIER1_LAYERS,
+                POLY_LEN,
             )
         };
 

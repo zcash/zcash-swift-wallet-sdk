@@ -318,7 +318,14 @@ pub unsafe extern "C" fn zcashlc_voting_get_keystone_signatures(
     unwrap_exc_or_null(res)
 }
 
-/// Remove all recovery-state rows for a round.
+/// Clear retryable recovery state for a round without erasing recorded
+/// confirmations.
+///
+/// Share-delegation rows and Keystone signatures are always removed. Since
+/// `zcash_voting` 3.0 the clear is conservative about confirmed state:
+/// delegation tx hashes survive on bundles with a recorded VAN leaf position
+/// (and on capability-imported bundles), and votes with a recorded
+/// `vc_tree_position` keep their tx hash, commitment bundle, and position.
 ///
 /// # Safety
 ///
@@ -589,13 +596,9 @@ mod tests {
         unsafe { zcashlc_voting_db_free(db) };
     }
 
-    #[test]
-    fn clear_recovery_state_removes_stored_recovery_data() {
-        let db = open_memory_db();
-        let round_id = b"round";
-        insert_round_and_bundle(db, "round");
-        insert_vote(db, "round");
-
+    /// Stores the delegation tx hash, vote tx hash, and a Keystone signature
+    /// that the clear-recovery tests start from.
+    fn store_recovery_fixture(db: *mut VotingDatabaseHandle, round_id: &[u8]) {
         let delegation_tx = b"delegation-tx";
         assert_eq!(
             unsafe {
@@ -627,13 +630,6 @@ mod tests {
             0
         );
 
-        assert_eq!(
-            unsafe {
-                zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 42)
-            },
-            0
-        );
-
         let sig = [1u8; KEYSTONE_SIGNATURE_LEN];
         let sighash = [2u8; PCZT_SIGHASH_LEN];
         let rk = [3u8; RANDOMIZED_KEY_LEN];
@@ -660,6 +656,15 @@ mod tests {
         // nullifier from the persisted vote recovery bundle, which only a real
         // `vote::commit` can write. The clear is still asserted to leave no
         // share rows behind.
+    }
+
+    #[test]
+    fn clear_recovery_state_removes_unconfirmed_recovery_data() {
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+        insert_vote(db, "round");
+        store_recovery_fixture(db, round_id);
 
         assert_eq!(
             unsafe { zcashlc_voting_clear_recovery_state(db, round_id.as_ptr(), round_id.len()) },
@@ -676,8 +681,8 @@ mod tests {
         });
         assert_eq!(vote_tx, None);
 
-        // A recorded vote-commitment-tree position is immutable while it is set,
-        // so accepting a different position proves the clear removed it.
+        // No position was recorded before the clear, so the vote row survives
+        // with its recovery columns reset and accepts a fresh recording.
         assert_eq!(
             unsafe {
                 zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 43)
@@ -694,6 +699,66 @@ mod tests {
             zcashlc_voting_get_share_delegations(db, round_id.as_ptr(), round_id.len())
         });
         assert!(share_delegations.is_empty());
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    /// Pins the conservative `zcash_voting` 3.0 clear semantics: a vote whose
+    /// on-chain `vc_tree_position` is recorded is confirmed state, and the
+    /// recovery clear must preserve it (rc.5 nulled it unconditionally).
+    #[test]
+    fn clear_recovery_state_preserves_recorded_vc_position() {
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+        insert_vote(db, "round");
+        store_recovery_fixture(db, round_id);
+
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 42)
+            },
+            0
+        );
+
+        assert_eq!(
+            unsafe { zcashlc_voting_clear_recovery_state(db, round_id.as_ptr(), round_id.len()) },
+            0
+        );
+
+        // The confirmed vote keeps its tx hash: the vote reset skips rows with
+        // a recorded position.
+        let vote_tx: Option<String> = decode_boxed_json(unsafe {
+            zcashlc_voting_get_vote_tx_hash(db, round_id.as_ptr(), round_id.len(), 0, 0)
+        });
+        assert_eq!(vote_tx.as_deref(), Some("vote-tx"));
+
+        // The recorded position survived: a conflicting recording is refused
+        // while re-recording the same position stays idempotent.
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 43)
+            },
+            -1
+        );
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 42)
+            },
+            0
+        );
+
+        // The unconfirmed delegation (no recorded VAN leaf position) is still
+        // cleared, and the unconditional lanes still empty out.
+        let delegation_tx: Option<String> = decode_boxed_json(unsafe {
+            zcashlc_voting_get_delegation_tx_hash(db, round_id.as_ptr(), round_id.len(), 0)
+        });
+        assert_eq!(delegation_tx, None);
+
+        let keystone_sigs: Vec<serde_json::Value> = decode_boxed_json(unsafe {
+            zcashlc_voting_get_keystone_signatures(db, round_id.as_ptr(), round_id.len())
+        });
+        assert!(keystone_sigs.is_empty());
 
         unsafe { zcashlc_voting_db_free(db) };
     }
