@@ -114,13 +114,16 @@ jobs:
         echo "hash=$FFI_HASH" >> $GITHUB_OUTPUT
         echo "FFI source hash: $FFI_HASH"
 
+    # CodeQL builds the ZODL Slipstream variant: the superset target graph
+    # compiles every Swift source in the package (core + ZODLSlipstream), so
+    # the whole tree is scanned in one pass.
     - name: Cache FFI XCFramework
       if: matrix.language == 'swift'
       id: cache-ffi
       uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
       with:
-        path: BuildSupport/products/libzcashlc.xcframework
-        key: ffi-xcframework-macos-only-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
+        path: BuildSupport/products-slipstream/libzcashlc.xcframework
+        key: ffi-xcframework-macos-only-zodl-slipstream-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
 
     - name: Authorize cargo against the private slipstream repository
       if: matrix.language == 'swift' && steps.cache-ffi.outputs.cache-hit != 'true'
@@ -140,35 +143,28 @@ jobs:
       if: matrix.language == 'swift' && steps.cache-ffi.outputs.cache-hit != 'true'
       uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
       with:
-        # Deliberately enumerated rather than caching `~/.cargo` wholesale (which is what
-        # Swatinem/rust-cache did): that includes `~/.cargo/git`, where cargo keeps its clone of
-        # the PRIVATE zodl-inc/slipstream repo. This repository is public, and GitHub lets
-        # workflow runs from forked pull requests restore caches created on the base branch — a
-        # cached clone would hand fork PRs the private source without their ever holding the App
-        # credential. Re-cloning one small repo per run is the cost of keeping it out.
-        #
-        # `registry/` is crates.io content and safe to cache. `target/` still holds
-        # slipstream-core's compiled rlib/rmeta, which is a far smaller disclosure than the source
-        # tree and too expensive to rebuild every run; dropping it too would require solving the
-        # public-repo/private-dependency problem properly instead.
+        # `registry/` is crates.io content (zodl-slipstream is consumed as a
+        # public crates.io release); `target/` holds compiled artifacts for the
+        # slipstream feature set this workflow builds.
         path: |
           target
           ~/.cargo/bin
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/registry/src
-        key: ${{ runner.os }}-cargo-v1-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+        key: ${{ runner.os }}-cargo-zodl-slipstream-v1-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
         restore-keys: |
+          ${{ runner.os }}-cargo-zodl-slipstream-v1-
           ${{ runner.os }}-cargo-v1-
 
     - name: Build FFI for macOS
       if: matrix.language == 'swift' && steps.cache-ffi.outputs.cache-hit != 'true'
       timeout-minutes: 30
-      run: make ffi-macos
+      run: make ffi-macos SLIPSTREAM=1
 
     - name: Configure local FFI
       if: matrix.language == 'swift'
-      run: make configure-local-ffi
+      run: make configure-local-ffi SLIPSTREAM=1
 
     - name: Resolve Swift dependencies
       if: matrix.language == 'swift'

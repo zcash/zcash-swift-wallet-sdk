@@ -19,6 +19,20 @@ jobs:
 
     runs-on: macos-15
 
+    strategy:
+      fail-fast: false
+      matrix:
+        # clean: the default MIT-only product; also runs the AGPL purity gate.
+        # zodl-slipstream: the opt-in AGPL variant product and its test suite.
+        variant: [clean, zodl-slipstream]
+        include:
+          - variant: clean
+            slipstream: 0
+            products_dir: BuildSupport/products
+          - variant: zodl-slipstream
+            slipstream: 1
+            products_dir: BuildSupport/products-slipstream
+
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -37,13 +51,13 @@ jobs:
         echo "hash=$FFI_HASH" >> $GITHUB_OUTPUT
         echo "FFI source hash: $FFI_HASH"
 
-    # Cache the built xcframework (macOS-only for CI tests)
+    # Cache the built xcframework (macOS-only for CI tests), keyed per variant.
     - name: Cache FFI XCFramework
       id: cache-ffi
       uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
       with:
-        path: BuildSupport/products/libzcashlc.xcframework
-        key: ffi-xcframework-macos-only-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
+        path: ${{ matrix.products_dir }}/libzcashlc.xcframework
+        key: ffi-xcframework-macos-only-${{ matrix.variant }}-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
 
     - name: Authorize cargo against the private slipstream repository
       if: steps.cache-ffi.outputs.cache-hit != 'true'
@@ -64,40 +78,50 @@ jobs:
       if: steps.cache-ffi.outputs.cache-hit != 'true'
       uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
       with:
-        # Deliberately enumerated rather than caching `~/.cargo` wholesale (which is what
-        # Swatinem/rust-cache did): that includes `~/.cargo/git`, where cargo keeps its clone of
-        # the PRIVATE zodl-inc/slipstream repo. This repository is public, and GitHub lets
-        # workflow runs from forked pull requests restore caches created on the base branch — a
-        # cached clone would hand fork PRs the private source without their ever holding the App
-        # credential. Re-cloning one small repo per run is the cost of keeping it out.
-        #
-        # `registry/` is crates.io content and safe to cache. `target/` still holds
-        # slipstream-core's compiled rlib/rmeta, which is a far smaller disclosure than the source
-        # tree and too expensive to rebuild every run; dropping it too would require solving the
-        # public-repo/private-dependency problem properly instead.
+        # `registry/` is crates.io content (zodl-slipstream is consumed as a
+        # public crates.io release). `target/` is shared between variants;
+        # cargo fingerprints keep the feature sets apart.
         path: |
           target
           ~/.cargo/bin
           ~/.cargo/registry/index
           ~/.cargo/registry/cache
           ~/.cargo/registry/src
-        key: ${{ runner.os }}-cargo-v1-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
+        key: ${{ runner.os }}-cargo-${{ matrix.variant }}-v1-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}
         restore-keys: |
+          ${{ runner.os }}-cargo-${{ matrix.variant }}-v1-
           ${{ runner.os }}-cargo-v1-
 
     # Build FFI for macOS only (sufficient for running tests)
     - name: Build FFI for macOS
       if: steps.cache-ffi.outputs.cache-hit != 'true'
       timeout-minutes: 60
-      run: make ffi-macos
+      run: make ffi-macos SLIPSTREAM=${{ matrix.slipstream }}
 
     # Verify xcframework exists (whether from cache or fresh build)
     - name: Verify XCFramework
-      run: make verify-ffi
+      run: make verify-ffi SLIPSTREAM=${{ matrix.slipstream }}
 
-    # Set up LocalPackages so Package.swift auto-detects the local build
+    # The default artifact must never ship AGPL code: no zodl-slipstream symbols
+    # in the staticlib, no slipstream declarations left in the shipped header.
+    - name: AGPL purity gate (clean variant)
+      if: matrix.variant == 'clean'
+      run: |
+        LIB="${{ matrix.products_dir }}/libzcashlc.xcframework/macos-arm64_x86_64/libzcashlc.framework/libzcashlc"
+        SYMS=$(nm -gU "$LIB" | grep -c zcashlc_slipstream || true)
+        if [ "$SYMS" -ne 0 ]; then
+          echo "FATAL: clean libzcashlc exports $SYMS zcashlc_slipstream symbol(s)"; exit 1
+        fi
+        HEADER="${{ matrix.products_dir }}/libzcashlc.xcframework/macos-arm64_x86_64/libzcashlc.framework/Headers/zcashlc.h"
+        if grep -q ZCASHLC_FEATURE_SLIPSTREAM "$HEADER"; then
+          echo "FATAL: clean header still references ZCASHLC_FEATURE_SLIPSTREAM"; exit 1
+        fi
+        echo "Clean artifact verified: zero slipstream symbols, header fully stripped."
+
+    # Set up LocalPackages so Package.swift auto-detects the local build; also
+    # maintains the .zodl-slipstream-variant marker for the target graph.
     - name: Configure local FFI for CI
-      run: make configure-local-ffi
+      run: make configure-local-ffi SLIPSTREAM=${{ matrix.slipstream }}
 
     # Build the Swift package
     - name: Build ZcashLightClientKit Swift Package
@@ -106,5 +130,11 @@ jobs:
 
     # Run tests
     - name: Run OfflineTests suite
+      if: matrix.variant == 'clean'
       timeout-minutes: 10
       run: make test-offline
+
+    - name: Run SlipstreamOfflineTests suite
+      if: matrix.variant == 'zodl-slipstream'
+      timeout-minutes: 10
+      run: make test-offline-slipstream

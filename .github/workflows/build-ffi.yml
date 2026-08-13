@@ -8,6 +8,10 @@ on:
       version:
         description: 'SDK version (e.g., 2.5.0)'
         required: true
+      slipstream:
+        description: 'Also build/upload the ZODL Slipstream (AGPL) variant artifact'
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -39,17 +43,9 @@ jobs:
       - name: Cache Cargo
         uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
-          # Deliberately enumerated rather than caching `~/.cargo` wholesale (which is what
-          # Swatinem/rust-cache did): that includes `~/.cargo/git`, where cargo keeps its clone of
-          # the PRIVATE zodl-inc/slipstream repo. This repository is public, and GitHub lets
-          # workflow runs from forked pull requests restore caches created on the base branch — a
-          # cached clone would hand fork PRs the private source without their ever holding the App
-          # credential. Re-cloning one small repo per run is the cost of keeping it out.
-          #
-          # `registry/` is crates.io content and safe to cache. `target/` still holds
-          # slipstream-core's compiled rlib/rmeta, which is a far smaller disclosure than the source
-          # tree and too expensive to rebuild every run; dropping it too would require solving the
-          # public-repo/private-dependency problem properly instead.
+          # `registry/` is crates.io content (zodl-slipstream is consumed as a public
+          # crates.io release) and `target/` holds compiled artifacts for BOTH feature
+          # variants — cargo fingerprints keep them apart within one target dir.
           path: |
             target
             ~/.cargo/bin
@@ -60,11 +56,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-v1-
 
+      # One prepare-release.sh run builds the clean artifact (always, with the
+      # AGPL purity gate) and — with --slipstream — additionally builds and
+      # uploads the libzcashlc-zodl-slipstream superset artifact to the SAME
+      # draft release. Sequential builds on one runner share the cargo cache.
       - name: Build and upload draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ github.event.inputs.version }}
-        run: ./Scripts/prepare-release.sh "$VERSION"
+          WITH_SLIPSTREAM: ${{ github.event.inputs.slipstream }}
+        run: |
+          if [[ "$WITH_SLIPSTREAM" == "true" ]]; then
+            ./Scripts/prepare-release.sh --slipstream "$VERSION"
+          else
+            ./Scripts/prepare-release.sh "$VERSION"
+          fi
 
       - name: Output Package.swift Update
         run: |
@@ -74,7 +80,11 @@ jobs:
           echo "Update Package.swift with:"
           echo "========================================"
           echo ""
-          echo "url: \"${DOWNLOAD_URL}\","
-          echo "checksum: \"${CHECKSUM}\""
+          echo "cleanFFIURL: \"${DOWNLOAD_URL}\","
+          echo "cleanFFIChecksum: \"${CHECKSUM}\""
+          if [[ -n "${SLIPSTREAM_DOWNLOAD_URL:-}" ]]; then
+            echo "slipstreamFFIURL: \"${SLIPSTREAM_DOWNLOAD_URL}\","
+            echo "slipstreamFFIChecksum: \"${SLIPSTREAM_CHECKSUM}\""
+          fi
           echo ""
           echo "Then commit, tag ${VERSION}, and publish the draft release."
