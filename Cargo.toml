@@ -102,7 +102,7 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 xz2 = { version = "0.1", features = ["static"] }
 
 # Zcash voting
-zcash_voting = { version = "=3.0.0-rc.2" }
+zcash_voting = { version = "=3.0.0-rc.3" }
 zeroize = "1"
 
 # Used by the pool-migration engine as well as by voting.

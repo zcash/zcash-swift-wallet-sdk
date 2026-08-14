@@ -458,8 +458,12 @@ mod tests {
             .map(|i| [0x51 + i as u8; 32])
             .collect();
 
+        // Canonical 64-char lowercase-hex round id, matching the crate's own
+        // `share.rs` fixture: since 3.0.0-rc.3, `serialize_recovery` and
+        // `parse_recovery` validate `vote_round_id` as a canonical Pallas
+        // field element, so a placeholder like "round1" no longer round-trips.
         voting::vote::VoteRecoveryBundle {
-            vote_round_id: "round1".to_string(),
+            vote_round_id: "01".repeat(32),
             bundle_index: 0,
             proposal_id: 1,
             vote_decision: 2,
