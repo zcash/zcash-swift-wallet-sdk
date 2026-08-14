@@ -1,5 +1,18 @@
 # Migrating from previous versions to _Unreleased_
 
+## Voting rides `zcash_voting` 3.0 — `VotingPirLayout` gains `polyLen`
+
+`VotingPirLayout`'s memberwise initializer gains a required `polyLen: UInt32` — the YPIR RLWE
+polynomial degree (2048 or 4096), taken from the dynamic voting config's `pir_layout.poly_len` —
+and `precomputeDelegationPir(...)` / `buildAndProveDelegation(...)` consume it through the layout.
+`VotingPirLayout.unknown` (`polyLen` 0) fails closed before any private query. Treat a config
+without `poly_len` as a configuration error rather than defaulting: the server's dataset geometry
+is bound to the value, and 3.0 clients verify the advertised degree at connect.
+
+Helper-server payloads returned by `recoverWireJson(...)` now include `vote_round_id`
+(lowercase hex). Remove any app-side injection of that field; the payload remains verbatim wire
+JSON — do not decode, re-shape or re-encode it.
+
 ## Voting wire payloads are produced by `zcash_voting`, not by the SDK
 
 `VotingSharePayload` is removed and `VotingVoteCommit.sharePayloads` is gone with it. Helper-server

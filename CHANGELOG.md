@@ -76,14 +76,24 @@ Changes are relative to `2.8.0-rc.3`.
 
 ## Changed
 
-- Voting is pinned to `zcash_voting = "=2.0.0-rc.5"` (exactly; a non-`=` requirement resolves to
-  1.0.0). rc.4 made the PIR layout an explicit client/server handshake, so
-  `VotingRustBackend.precomputeDelegationPir(...)` and `buildAndProveDelegation(...)` take a new
+- Voting is pinned to `zcash_voting = "=3.0.0-rc.3"` (exactly; a non-`=` requirement resolves to
+  1.0.0). The 2.0 family made the PIR layout an explicit client/server handshake, so
+  `VotingRustBackend.precomputeDelegationPir(...)` and `buildAndProveDelegation(...)` take a
   `pirLayout: VotingPirLayout` — the `pir_depth`/`tier0_layers`/`tier1_layers` triple from the
   round's resolved dynamic voting config. It defaults to `VotingPirLayout.unknown`, the crate's own
   `PirLayout::UNKNOWN` sentinel, which `zcash_voting` rejects: a caller that does not pass a
   resolved layout fails closed before any private query rather than querying with a guessed
   geometry.
+
+  3.0 extends the handshake with the YPIR RLWE polynomial degree: `VotingPirLayout` gains a
+  required `polyLen` (2048 or 4096), sourced from the dynamic config's `pir_layout.poly_len` and
+  threaded through both wrappers, so PIR queries are built for the degree the server actually
+  serves. The 2.0 family hardcoded 2048 and fails against 4096 datasets with opaque tier-1 query
+  errors; 3.0 additionally verifies the advertised degree at connect and fails loudly on mismatch.
+  `VotingPirLayout.unknown` (`polyLen` 0) still fails closed. Separately, `VoteShareWire` now
+  carries `vote_round_id` (32 bytes, lowercase hex), so helper payloads from
+  `recoverWireJson(...)` include it — wallets that injected the field into the request body can
+  delete the injection.
 
 - The voting FFI no longer maintains its own copies of `zcash_voting`'s wire formats. Payloads bound
   for the vote chain and the helper servers are serialized by the crate and handed across the
