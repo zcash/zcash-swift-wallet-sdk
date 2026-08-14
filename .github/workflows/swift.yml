@@ -88,7 +88,7 @@ jobs:
     # Build FFI for macOS only (sufficient for running tests)
     - name: Build FFI for macOS
       if: steps.cache-ffi.outputs.cache-hit != 'true'
-      timeout-minutes: 30
+      timeout-minutes: 60
       run: make ffi-macos
 
     # Verify xcframework exists (whether from cache or fresh build)
