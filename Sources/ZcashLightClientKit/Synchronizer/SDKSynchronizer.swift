@@ -470,7 +470,7 @@ public class SDKSynchronizer: Synchronizer {
         let proposal = try await transactionEncoder.proposeSendMax(
             accountUUID: accountUUID,
             recipient: recipient.stringEncoded,
-            memo: memo?.asMemoBytes(),
+            memoBytes: memo?.asMemoBytes(),
             mode: mode
         )
 

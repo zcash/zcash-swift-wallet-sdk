@@ -251,7 +251,7 @@ final class StubTransactionEncoder: TransactionEncoder {
     func proposeSendMax(
         accountUUID: AccountUUID,
         recipient: String,
-        memo: MemoBytes?,
+        memoBytes: MemoBytes?,
         mode: MaxSpendMode
     ) async throws -> Proposal {
         fatalError("Unused in test")

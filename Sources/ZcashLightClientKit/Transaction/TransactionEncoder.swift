@@ -42,7 +42,7 @@ protocol TransactionEncoder {
     ///
     /// - Parameter accountUUID: the account from which to spend funds.
     /// - Parameter recipient: string containing the recipient's address.
-    /// - Parameter memo: an optional memo to include as part of the proposal's transactions. Use `nil` when sending to transparent receivers otherwise the function will throw an error.
+    /// - Parameter memoBytes: an optional memo to include as part of the proposal's transactions. Use `nil` when sending to transparent receivers otherwise the function will throw an error.
     /// - Parameter mode: how much of the account's balance the proposal should target spending. See `MaxSpendMode`.
     ///
     /// If `prepare()` hasn't already been called since creation of the synchronizer instance or since the last wipe then this method throws
@@ -50,7 +50,7 @@ protocol TransactionEncoder {
     func proposeSendMax(
         accountUUID: AccountUUID,
         recipient: String,
-        memo: MemoBytes?,
+        memoBytes: MemoBytes?,
         mode: MaxSpendMode
     ) async throws -> Proposal
 

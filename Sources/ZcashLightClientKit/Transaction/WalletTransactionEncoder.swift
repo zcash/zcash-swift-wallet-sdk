@@ -80,13 +80,13 @@ class WalletTransactionEncoder: TransactionEncoder {
     func proposeSendMax(
         accountUUID: AccountUUID,
         recipient: String,
-        memo: MemoBytes?,
+        memoBytes: MemoBytes?,
         mode: MaxSpendMode
     ) async throws -> Proposal {
         let proposal = try await rustBackend.proposeSendMaxTransfer(
             accountUUID: accountUUID,
             to: recipient,
-            memo: memo,
+            memo: memoBytes,
             mode: mode
         )
 
