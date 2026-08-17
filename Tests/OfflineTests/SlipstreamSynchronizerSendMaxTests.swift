@@ -25,7 +25,7 @@ final class SlipstreamSynchronizerSendMaxTests: ZcashTestCase {
     /// unrelated backend error.
     func testProposeSendMaxThrowsWhenSynchronizerIsNotPrepared() async throws {
         let rustBackend = ZcashRustBackendWeldingMock()
-        rustBackend.proposeSendMaxTransferAccountUUIDToMemoModeReturnValue = Self.makeFfiProposal(feeRequired: 5_000)
+        rustBackend.proposeSendMaxTransferAccountUUIDToMemoModeReturnValue = FfiProposalFixtures.makeFfiProposal(feeRequired: 5_000)
         let synchronizer = try makeSynchronizer(rustBackend: rustBackend)
         // Status is left at its initial `.unprepared` value -- `prepare()` is deliberately not called.
 
@@ -77,17 +77,5 @@ final class SlipstreamSynchronizerSendMaxTests: ZcashTestCase {
         )
 
         return SlipstreamSynchronizer(initializer: initializer)
-    }
-
-    private static func makeFfiProposal(feeRequired: UInt64) -> FfiProposal {
-        var balance = FfiTransactionBalance()
-        balance.feeRequired = feeRequired
-
-        var step = FfiProposalStep()
-        step.balance = balance
-
-        var proposal = FfiProposal()
-        proposal.steps = [step]
-        return proposal
     }
 }

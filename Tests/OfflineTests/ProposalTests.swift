@@ -6,15 +6,16 @@
 //
 
 import XCTest
+@testable import TestUtils
 @testable import ZcashLightClientKit
 
 final class ProposalTests: XCTestCase {
     // MARK: - totalSpendValue()
 
     func testTotalSpendValueWithInputsOnly() throws {
-        let proposal = Self.makeProposal(
+        let proposal = FfiProposalFixtures.makeProposal(
             steps: [
-                Self.Step(inputValues: [1_000_000, 500_000], changeValues: [], fee: 10_000)
+                FfiProposalFixtures.Step(inputValues: [1_000_000, 500_000], changeValues: [], fee: 10_000)
             ]
         )
 
@@ -22,9 +23,9 @@ final class ProposalTests: XCTestCase {
     }
 
     func testTotalSpendValueWithInputsAndChangeSubtractsTheChange() throws {
-        let proposal = Self.makeProposal(
+        let proposal = FfiProposalFixtures.makeProposal(
             steps: [
-                Self.Step(inputValues: [1_000_000], changeValues: [200_000], fee: 10_000)
+                FfiProposalFixtures.Step(inputValues: [1_000_000], changeValues: [200_000], fee: 10_000)
             ]
         )
 
@@ -32,9 +33,9 @@ final class ProposalTests: XCTestCase {
     }
 
     func testTotalSpendValueWithMultipleChangeOutputsInAStep() throws {
-        let proposal = Self.makeProposal(
+        let proposal = FfiProposalFixtures.makeProposal(
             steps: [
-                Self.Step(inputValues: [1_000_000], changeValues: [120_000, 80_000], fee: 10_000)
+                FfiProposalFixtures.Step(inputValues: [1_000_000], changeValues: [120_000, 80_000], fee: 10_000)
             ]
         )
 
@@ -42,10 +43,10 @@ final class ProposalTests: XCTestCase {
     }
 
     func testTotalSpendValueSumsAcrossMultipleSteps() throws {
-        let proposal = Self.makeProposal(
+        let proposal = FfiProposalFixtures.makeProposal(
             steps: [
-                Self.Step(inputValues: [1_000_000], changeValues: [100_000], fee: 5_000),
-                Self.Step(inputValues: [300_000, 200_000], changeValues: [50_000], fee: 5_000)
+                FfiProposalFixtures.Step(inputValues: [1_000_000], changeValues: [100_000], fee: 5_000),
+                FfiProposalFixtures.Step(inputValues: [300_000, 200_000], changeValues: [50_000], fee: 5_000)
             ]
         )
 
@@ -55,13 +56,13 @@ final class ProposalTests: XCTestCase {
 
     func testTotalSpendValueIgnoresInputsThatAreNotReceivedOutputs() throws {
         let inputs = [
-            Self.receivedOutputInput(1_000_000),
-            Self.priorStepOutputInput(stepIndex: 0, paymentIndex: 0),
-            Self.priorStepChangeInput(stepIndex: 0, changeIndex: 0)
+            FfiProposalFixtures.receivedOutputInput(1_000_000),
+            FfiProposalFixtures.priorStepOutputInput(stepIndex: 0, paymentIndex: 0),
+            FfiProposalFixtures.priorStepChangeInput(stepIndex: 0, changeIndex: 0)
         ]
-        let proposal = Self.makeProposal(
+        let proposal = FfiProposalFixtures.makeProposal(
             steps: [
-                Self.Step(inputs: inputs, changeValues: [], fee: 10_000)
+                FfiProposalFixtures.Step(inputs: inputs, changeValues: [], fee: 10_000)
             ]
         )
 
@@ -71,7 +72,7 @@ final class ProposalTests: XCTestCase {
     }
 
     func testTotalSpendValueIsZeroWhenThereAreNoSteps() throws {
-        let proposal = Self.makeProposal(steps: [])
+        let proposal = FfiProposalFixtures.makeProposal(steps: [])
 
         XCTAssertEqual(proposal.totalSpendValue(), Zatoshi.zero)
     }
@@ -79,9 +80,9 @@ final class ProposalTests: XCTestCase {
     // MARK: - Relationship with totalFeeRequired()
 
     func testMaxSendableAmountIsTotalSpendValueMinusTotalFeeRequired() throws {
-        let proposal = Self.makeProposal(
+        let proposal = FfiProposalFixtures.makeProposal(
             steps: [
-                Self.Step(inputValues: [2_000_000], changeValues: [], fee: 15_000)
+                FfiProposalFixtures.Step(inputValues: [2_000_000], changeValues: [], fee: 15_000)
             ]
         )
 
@@ -93,10 +94,10 @@ final class ProposalTests: XCTestCase {
     }
 
     func testMaxSendableAmountAcrossMultipleStepsWithChange() throws {
-        let proposal = Self.makeProposal(
+        let proposal = FfiProposalFixtures.makeProposal(
             steps: [
-                Self.Step(inputValues: [1_000_000], changeValues: [50_000], fee: 10_000),
-                Self.Step(inputValues: [500_000], changeValues: [], fee: 5_000)
+                FfiProposalFixtures.Step(inputValues: [1_000_000], changeValues: [50_000], fee: 10_000),
+                FfiProposalFixtures.Step(inputValues: [500_000], changeValues: [], fee: 5_000)
             ]
         )
 
@@ -111,15 +112,15 @@ final class ProposalTests: XCTestCase {
         // Step 0 shields no new value: it spends wallet funds into a transparent ephemeral
         // output that only exists to fund step 1's payment to the TEX recipient. Step 1's
         // input is a `priorStepChange` reference to that ephemeral output, not a fresh spend.
-        let proposal = Self.makeProposal(
+        let proposal = FfiProposalFixtures.makeProposal(
             steps: [
-                Self.Step(
+                FfiProposalFixtures.Step(
                     inputValues: [1_000_000],
-                    changeValues: [Self.ChangeValue(value: 985_000, isEphemeral: true)],
+                    changeValues: [FfiProposalFixtures.ChangeValue(value: 985_000, isEphemeral: true)],
                     fee: 15_000
                 ),
-                Self.Step(
-                    inputs: [Self.priorStepChangeInput(stepIndex: 0, changeIndex: 0)],
+                FfiProposalFixtures.Step(
+                    inputs: [FfiProposalFixtures.priorStepChangeInput(stepIndex: 0, changeIndex: 0)],
                     changeValues: [],
                     fee: 10_000
                 )
@@ -131,13 +132,13 @@ final class ProposalTests: XCTestCase {
     }
 
     func testTotalSpendValueWithMixedChangeSubtractsOnlyNonEphemeralChange() throws {
-        let proposal = Self.makeProposal(
+        let proposal = FfiProposalFixtures.makeProposal(
             steps: [
-                Self.Step(
+                FfiProposalFixtures.Step(
                     inputValues: [1_000_000],
                     changeValues: [
-                        Self.ChangeValue(value: 200_000, isEphemeral: false),
-                        Self.ChangeValue(value: 700_000, isEphemeral: true)
+                        FfiProposalFixtures.ChangeValue(value: 200_000, isEphemeral: false),
+                        FfiProposalFixtures.ChangeValue(value: 700_000, isEphemeral: true)
                     ],
                     fee: 15_000
                 )
@@ -145,92 +146,5 @@ final class ProposalTests: XCTestCase {
         )
 
         XCTAssertEqual(proposal.totalSpendValue(), Zatoshi(800_000))
-    }
-}
-
-// MARK: - FfiProposal fixture builders
-
-extension ProposalTests {
-    /// A single proposed-change entry for a fixture step. Conforms to `ExpressibleByIntegerLiteral`
-    /// so existing call sites that spell change values as bare `UInt64` literals keep compiling,
-    /// defaulting to non-ephemeral change.
-    private struct ChangeValue: ExpressibleByIntegerLiteral {
-        let value: UInt64
-        let isEphemeral: Bool
-
-        init(value: UInt64, isEphemeral: Bool = false) {
-            self.value = value
-            self.isEphemeral = isEphemeral
-        }
-
-        init(integerLiteral value: UInt64) {
-            self.init(value: value)
-        }
-    }
-
-    private struct Step {
-        let inputs: [FfiProposedInput]
-        let changeValues: [ChangeValue]
-        let fee: UInt64
-
-        init(inputValues: [UInt64], changeValues: [ChangeValue], fee: UInt64) {
-            self.inputs = inputValues.map { ProposalTests.receivedOutputInput($0) }
-            self.changeValues = changeValues
-            self.fee = fee
-        }
-
-        init(inputs: [FfiProposedInput], changeValues: [ChangeValue], fee: UInt64) {
-            self.inputs = inputs
-            self.changeValues = changeValues
-            self.fee = fee
-        }
-    }
-
-    private static func receivedOutputInput(_ value: UInt64) -> FfiProposedInput {
-        var receivedOutput = FfiReceivedOutput()
-        receivedOutput.value = value
-        var input = FfiProposedInput()
-        input.receivedOutput = receivedOutput
-        return input
-    }
-
-    private static func priorStepOutputInput(stepIndex: UInt32, paymentIndex: UInt32) -> FfiProposedInput {
-        var priorStepOutput = FfiPriorStepOutput()
-        priorStepOutput.stepIndex = stepIndex
-        priorStepOutput.paymentIndex = paymentIndex
-        var input = FfiProposedInput()
-        input.priorStepOutput = priorStepOutput
-        return input
-    }
-
-    private static func priorStepChangeInput(stepIndex: UInt32, changeIndex: UInt32) -> FfiProposedInput {
-        var priorStepChange = FfiPriorStepChange()
-        priorStepChange.stepIndex = stepIndex
-        priorStepChange.changeIndex = changeIndex
-        var input = FfiProposedInput()
-        input.priorStepChange = priorStepChange
-        return input
-    }
-
-    private static func makeProposal(steps: [Step]) -> Proposal {
-        let ffiSteps: [FfiProposalStep] = steps.map { stepSpec in
-            var balance = FfiTransactionBalance()
-            balance.feeRequired = stepSpec.fee
-            balance.proposedChange = stepSpec.changeValues.map { changeSpec in
-                var change = FfiChangeValue()
-                change.value = changeSpec.value
-                change.isEphemeral = changeSpec.isEphemeral
-                return change
-            }
-
-            var step = FfiProposalStep()
-            step.inputs = stepSpec.inputs
-            step.balance = balance
-            return step
-        }
-
-        var ffiProposal = FfiProposal()
-        ffiProposal.steps = ffiSteps
-        return Proposal(inner: ffiProposal)
     }
 }

@@ -16,7 +16,7 @@ final class SDKSynchronizerProposeSendMaxTests: ZcashTestCase {
 
     func testProposeSendMaxPassesArgumentsThroughToTheRustBackendAndReturnsTheWrappedProposal() async throws {
         let rustBackend = ZcashRustBackendWeldingMock()
-        let ffiProposal = Self.makeFfiProposal(feeRequired: 5_000)
+        let ffiProposal = FfiProposalFixtures.makeFfiProposal(feeRequired: 5_000)
         rustBackend.proposeSendMaxTransferAccountUUIDToMemoModeReturnValue = ffiProposal
 
         let synchronizer = try makeSynchronizer(rustBackend: rustBackend)
@@ -46,7 +46,7 @@ final class SDKSynchronizerProposeSendMaxTests: ZcashTestCase {
 
     func testProposeSendMaxAllowsNilMemoForTransparentRecipientAndPassesArgumentsThrough() async throws {
         let rustBackend = ZcashRustBackendWeldingMock()
-        let ffiProposal = Self.makeFfiProposal(feeRequired: 1_000)
+        let ffiProposal = FfiProposalFixtures.makeFfiProposal(feeRequired: 1_000)
         rustBackend.proposeSendMaxTransferAccountUUIDToMemoModeReturnValue = ffiProposal
 
         let synchronizer = try makeSynchronizer(rustBackend: rustBackend)
@@ -105,7 +105,7 @@ final class SDKSynchronizerProposeSendMaxTests: ZcashTestCase {
     /// same typed error must fire instead of letting the request reach the rust backend.
     func testProposeSendMaxThrowsWhenMemoIsSuppliedForATexRecipient() async throws {
         let rustBackend = ZcashRustBackendWeldingMock()
-        let ffiProposal = Self.makeFfiProposal(feeRequired: 1_000)
+        let ffiProposal = FfiProposalFixtures.makeFfiProposal(feeRequired: 1_000)
         rustBackend.proposeSendMaxTransferAccountUUIDToMemoModeReturnValue = ffiProposal
 
         let synchronizer = try makeSynchronizer(rustBackend: rustBackend)
@@ -166,7 +166,7 @@ final class SDKSynchronizerProposeSendMaxTests: ZcashTestCase {
     /// propose* methods have, so the TEX-recipient regression for `proposeTransfer` lives here too.
     func testProposeTransferThrowsWhenMemoIsSuppliedForATexRecipient() async throws {
         let rustBackend = ZcashRustBackendWeldingMock()
-        let ffiProposal = Self.makeFfiProposal(feeRequired: 1_000)
+        let ffiProposal = FfiProposalFixtures.makeFfiProposal(feeRequired: 1_000)
         rustBackend.proposeTransferAccountUUIDToValueMemoReturnValue = ffiProposal
 
         let synchronizer = try makeSynchronizer(rustBackend: rustBackend)
@@ -222,17 +222,5 @@ final class SDKSynchronizerProposeSendMaxTests: ZcashTestCase {
         )
 
         return SDKSynchronizer(initializer: initializer)
-    }
-
-    private static func makeFfiProposal(feeRequired: UInt64) -> FfiProposal {
-        var balance = FfiTransactionBalance()
-        balance.feeRequired = feeRequired
-
-        var step = FfiProposalStep()
-        step.balance = balance
-
-        var proposal = FfiProposal()
-        proposal.steps = [step]
-        return proposal
     }
 }
