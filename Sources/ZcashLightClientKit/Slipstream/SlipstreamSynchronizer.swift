@@ -729,6 +729,23 @@ public actor SlipstreamSynchronizer: Synchronizer {
         )
     }
 
+    public func proposeSendMax(
+        accountUUID: AccountUUID,
+        recipient: Recipient,
+        memo: Memo?,
+        mode: MaxSpendMode
+    ) async throws -> Proposal {
+        if case Recipient.transparent = recipient, memo != nil {
+            throw ZcashError.synchronizerSendMemoToTransparentAddress
+        }
+        return try await transactionEncoder.proposeSendMax(
+            accountUUID: accountUUID,
+            recipient: recipient.stringEncoded,
+            memo: memo?.asMemoBytes(),
+            mode: mode
+        )
+    }
+
     public func proposeOrchardToIronwoodMigration(accountUUID: AccountUUID) async throws -> Proposal {
         try await transactionEncoder.proposeOrchardToIronwoodMigration(accountUUID: accountUUID)
     }

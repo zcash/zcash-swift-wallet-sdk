@@ -214,6 +214,26 @@ public protocol Synchronizer: AnyObject {
         memo: Memo?
     ) async throws -> Proposal
 
+    /// Creates a proposal that spends the maximum amount available in the given account to a single recipient.
+    ///
+    /// Unlike `proposeTransfer`, no `amount` is passed: the proposal is constructed to spend as much of the
+    /// account's balance as `mode` allows, with the fee already accounted for by the proposal itself. The amount
+    /// the recipient actually receives is `proposal.totalSpendValue() - proposal.totalFeeRequired()`.
+    ///
+    /// - Parameter accountUUID: the account from which to spend funds.
+    /// - Parameter recipient: the recipient's address.
+    /// - Parameter memo: an optional memo to include as part of the proposal's transactions. Use `nil` when sending to transparent receivers otherwise the function will throw an error.
+    /// - Parameter mode: how much of the account's balance the proposal should target spending. See `MaxSpendMode`.
+    ///
+    /// If `prepare()` hasn't already been called since creation of the synchronizer instance or since the last wipe then this method throws
+    /// `SynchronizerErrors.notPrepared`.
+    func proposeSendMax(
+        accountUUID: AccountUUID,
+        recipient: Recipient,
+        memo: Memo?,
+        mode: MaxSpendMode
+    ) async throws -> Proposal
+
     /// Creates a proposal that migrates the account's entire Orchard balance into the Ironwood pool.
     ///
     /// NU6.3 introduces the Orchard turnstile: value may leave the Orchard pool but never re-enter

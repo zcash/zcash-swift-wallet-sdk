@@ -1762,6 +1762,30 @@ class SynchronizerMock: Synchronizer {
         }
     }
 
+    // MARK: - proposeSendMax
+
+    var proposeSendMaxAccountUUIDRecipientMemoModeThrowableError: Error?
+    var proposeSendMaxAccountUUIDRecipientMemoModeCallsCount = 0
+    var proposeSendMaxAccountUUIDRecipientMemoModeCalled: Bool {
+        return proposeSendMaxAccountUUIDRecipientMemoModeCallsCount > 0
+    }
+    var proposeSendMaxAccountUUIDRecipientMemoModeReceivedArguments: (accountUUID: AccountUUID, recipient: Recipient, memo: Memo?, mode: MaxSpendMode)?
+    var proposeSendMaxAccountUUIDRecipientMemoModeReturnValue: Proposal!
+    var proposeSendMaxAccountUUIDRecipientMemoModeClosure: ((AccountUUID, Recipient, Memo?, MaxSpendMode) async throws -> Proposal)?
+
+    func proposeSendMax(accountUUID: AccountUUID, recipient: Recipient, memo: Memo?, mode: MaxSpendMode) async throws -> Proposal {
+        if let error = proposeSendMaxAccountUUIDRecipientMemoModeThrowableError {
+            throw error
+        }
+        proposeSendMaxAccountUUIDRecipientMemoModeCallsCount += 1
+        proposeSendMaxAccountUUIDRecipientMemoModeReceivedArguments = (accountUUID: accountUUID, recipient: recipient, memo: memo, mode: mode)
+        if let closure = proposeSendMaxAccountUUIDRecipientMemoModeClosure {
+            return try await closure(accountUUID, recipient, memo, mode)
+        } else {
+            return proposeSendMaxAccountUUIDRecipientMemoModeReturnValue
+        }
+    }
+
     // MARK: - proposeOrchardToIronwoodMigration
 
     var proposeOrchardToIronwoodMigrationAccountUUIDThrowableError: Error?
@@ -4640,6 +4664,30 @@ class ZcashRustBackendWeldingMock: ZcashRustBackendWelding {
             return try await closure(accountUUID, address, value, memo)
         } else {
             return proposeTransferAccountUUIDToValueMemoReturnValue
+        }
+    }
+
+    // MARK: - proposeSendMaxTransfer
+
+    var proposeSendMaxTransferAccountUUIDToMemoModeThrowableError: Error?
+    var proposeSendMaxTransferAccountUUIDToMemoModeCallsCount = 0
+    var proposeSendMaxTransferAccountUUIDToMemoModeCalled: Bool {
+        return proposeSendMaxTransferAccountUUIDToMemoModeCallsCount > 0
+    }
+    var proposeSendMaxTransferAccountUUIDToMemoModeReceivedArguments: (accountUUID: AccountUUID, address: String, memo: MemoBytes?, mode: MaxSpendMode)?
+    var proposeSendMaxTransferAccountUUIDToMemoModeReturnValue: FfiProposal!
+    var proposeSendMaxTransferAccountUUIDToMemoModeClosure: ((AccountUUID, String, MemoBytes?, MaxSpendMode) async throws -> FfiProposal)?
+
+    func proposeSendMaxTransfer(accountUUID: AccountUUID, to address: String, memo: MemoBytes?, mode: MaxSpendMode) async throws -> FfiProposal {
+        if let error = proposeSendMaxTransferAccountUUIDToMemoModeThrowableError {
+            throw error
+        }
+        proposeSendMaxTransferAccountUUIDToMemoModeCallsCount += 1
+        proposeSendMaxTransferAccountUUIDToMemoModeReceivedArguments = (accountUUID: accountUUID, address: address, memo: memo, mode: mode)
+        if let closure = proposeSendMaxTransferAccountUUIDToMemoModeClosure {
+            return try await closure(accountUUID, address, memo, mode)
+        } else {
+            return proposeSendMaxTransferAccountUUIDToMemoModeReturnValue
         }
     }
 

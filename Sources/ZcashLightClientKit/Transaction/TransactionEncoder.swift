@@ -35,6 +35,25 @@ protocol TransactionEncoder {
         memoBytes: MemoBytes?
     ) async throws -> Proposal
 
+    /// Creates a proposal that spends the maximum amount available in the given account to a single recipient.
+    ///
+    /// Unlike `proposeTransfer`, no `amount` is passed: the proposal spends as much of the account's balance as
+    /// `mode` allows, with the fee already accounted for by the proposal itself.
+    ///
+    /// - Parameter accountUUID: the account from which to spend funds.
+    /// - Parameter recipient: string containing the recipient's address.
+    /// - Parameter memo: an optional memo to include as part of the proposal's transactions. Use `nil` when sending to transparent receivers otherwise the function will throw an error.
+    /// - Parameter mode: how much of the account's balance the proposal should target spending. See `MaxSpendMode`.
+    ///
+    /// If `prepare()` hasn't already been called since creation of the synchronizer instance or since the last wipe then this method throws
+    /// `SynchronizerErrors.notPrepared`.
+    func proposeSendMax(
+        accountUUID: AccountUUID,
+        recipient: String,
+        memo: MemoBytes?,
+        mode: MaxSpendMode
+    ) async throws -> Proposal
+
     /// Proposes migrating the account's entire Orchard balance into the Ironwood pool.
     func proposeOrchardToIronwoodMigration(accountUUID: AccountUUID) async throws -> Proposal
 

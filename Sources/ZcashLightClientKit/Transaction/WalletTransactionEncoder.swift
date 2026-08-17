@@ -77,6 +77,22 @@ class WalletTransactionEncoder: TransactionEncoder {
         return Proposal(inner: proposal)
     }
 
+    func proposeSendMax(
+        accountUUID: AccountUUID,
+        recipient: String,
+        memo: MemoBytes?,
+        mode: MaxSpendMode
+    ) async throws -> Proposal {
+        let proposal = try await rustBackend.proposeSendMaxTransfer(
+            accountUUID: accountUUID,
+            to: recipient,
+            memo: memo,
+            mode: mode
+        )
+
+        return Proposal(inner: proposal)
+    }
+
     func proposeOrchardToIronwoodMigration(accountUUID: AccountUUID) async throws -> Proposal {
         let proposal = try await rustBackend.proposeOrchardToIronwoodMigration(accountUUID: accountUUID)
 
