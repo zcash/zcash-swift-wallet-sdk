@@ -718,9 +718,7 @@ public actor SlipstreamSynchronizer: Synchronizer {
         amount: Zatoshi,
         memo: Memo?
     ) async throws -> Proposal {
-        if case Recipient.transparent = recipient, memo != nil {
-            throw ZcashError.synchronizerSendMemoToTransparentAddress
-        }
+        try recipient.ensureMemoIsAllowed(memo)
         return try await transactionEncoder.proposeTransfer(
             accountUUID: accountUUID,
             recipient: recipient.stringEncoded,
@@ -735,9 +733,7 @@ public actor SlipstreamSynchronizer: Synchronizer {
         memo: Memo?,
         mode: MaxSpendMode
     ) async throws -> Proposal {
-        if case Recipient.transparent = recipient, memo != nil {
-            throw ZcashError.synchronizerSendMemoToTransparentAddress
-        }
+        try recipient.ensureMemoIsAllowed(memo)
         return try await transactionEncoder.proposeSendMax(
             accountUUID: accountUUID,
             recipient: recipient.stringEncoded,

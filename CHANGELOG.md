@@ -181,6 +181,11 @@ Changes are relative to `2.8.0-rc.3`.
   and so absent from `getTransactionOutputs(for:)`, until the transaction was
   mined and scanned. Shielded outputs stored by this path are also now tagged with
   their note commitment tree, as the ordinary send path already did.
+- `proposeTransfer` and `proposeSendMax` now throw
+  `ZcashError.synchronizerSendMemoToTransparentAddress` when a memo accompanies a
+  TEX recipient, matching the existing behavior for transparent recipients.
+  Previously a memo aimed at a TEX address reached the rust backend and failed
+  with a generic `ZcashError.rust*` error instead.
 
 ## Added
 

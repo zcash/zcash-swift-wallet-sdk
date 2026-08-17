@@ -10,6 +10,7 @@ import XCTest
 final class SDKSynchronizerProposeSendMaxTests: ZcashTestCase {
     private let recipientAddress = "zs1vp7kvlqr4n9gpehztr76lcn6skkss9p8keqs3nv8avkdtjrcctrvmk9a7u494kluv756jeee5k0"
     private let transparentAddress = "t1dRJRY7GmyeykJnMH38mdQoaZtFhn1QmGz"
+    private let texAddress = "tex1s2rt77ggv6q689lzd6c34zmc3jvgzn9skq6nzv"
 
     // MARK: - Pass-through to the rust backend
 
@@ -100,6 +101,41 @@ final class SDKSynchronizerProposeSendMaxTests: ZcashTestCase {
         )
     }
 
+    /// TEX recipients are transparent-only and memo-incapable, same as `.transparent`, so the
+    /// same typed error must fire instead of letting the request reach the rust backend.
+    func testProposeSendMaxThrowsWhenMemoIsSuppliedForATexRecipient() async throws {
+        let rustBackend = ZcashRustBackendWeldingMock()
+        let ffiProposal = Self.makeFfiProposal(feeRequired: 1_000)
+        rustBackend.proposeSendMaxTransferAccountUUIDToMemoModeReturnValue = ffiProposal
+
+        let synchronizer = try makeSynchronizer(rustBackend: rustBackend)
+        await synchronizer.updateStatus(.stopped)
+
+        let recipient = Recipient.tex(TexAddress(validatedEncoding: texAddress))
+        let memo = try Memo(string: "not allowed")
+
+        do {
+            _ = try await synchronizer.proposeSendMax(
+                accountUUID: TestsData.mockedAccountUUID,
+                recipient: recipient,
+                memo: memo,
+                mode: .maxSpendable
+            )
+            XCTFail("Expected proposeSendMax to throw synchronizerSendMemoToTransparentAddress")
+        } catch let error as ZcashError {
+            guard case .synchronizerSendMemoToTransparentAddress = error else {
+                XCTFail("Expected synchronizerSendMemoToTransparentAddress but got \(error)")
+                return
+            }
+        }
+
+        XCTAssertEqual(
+            rustBackend.proposeSendMaxTransferAccountUUIDToMemoModeCallsCount,
+            0,
+            "The rust backend must not be reached when the memo-to-TEX-recipient guard rejects the request"
+        )
+    }
+
     func testProposeSendMaxThrowsWhenSynchronizerIsNotPrepared() async throws {
         let rustBackend = ZcashRustBackendWeldingMock()
         let synchronizer = try makeSynchronizer(rustBackend: rustBackend)
@@ -121,6 +157,44 @@ final class SDKSynchronizerProposeSendMaxTests: ZcashTestCase {
                 return
             }
         }
+    }
+
+    // MARK: - Guards (proposeTransfer)
+
+    /// `proposeTransfer` carries the same memo-to-transparent-recipient guard as `proposeSendMax`
+    /// tested above; this suite is the only mocked-rust-backend harness `SDKSynchronizer`'s
+    /// propose* methods have, so the TEX-recipient regression for `proposeTransfer` lives here too.
+    func testProposeTransferThrowsWhenMemoIsSuppliedForATexRecipient() async throws {
+        let rustBackend = ZcashRustBackendWeldingMock()
+        let ffiProposal = Self.makeFfiProposal(feeRequired: 1_000)
+        rustBackend.proposeTransferAccountUUIDToValueMemoReturnValue = ffiProposal
+
+        let synchronizer = try makeSynchronizer(rustBackend: rustBackend)
+        await synchronizer.updateStatus(.stopped)
+
+        let recipient = Recipient.tex(TexAddress(validatedEncoding: texAddress))
+        let memo = try Memo(string: "not allowed")
+
+        do {
+            _ = try await synchronizer.proposeTransfer(
+                accountUUID: TestsData.mockedAccountUUID,
+                recipient: recipient,
+                amount: Zatoshi(1_000),
+                memo: memo
+            )
+            XCTFail("Expected proposeTransfer to throw synchronizerSendMemoToTransparentAddress")
+        } catch let error as ZcashError {
+            guard case .synchronizerSendMemoToTransparentAddress = error else {
+                XCTFail("Expected synchronizerSendMemoToTransparentAddress but got \(error)")
+                return
+            }
+        }
+
+        XCTAssertEqual(
+            rustBackend.proposeTransferAccountUUIDToValueMemoCallsCount,
+            0,
+            "The rust backend must not be reached when the memo-to-TEX-recipient guard rejects the request"
+        )
     }
 
     // MARK: - Helpers

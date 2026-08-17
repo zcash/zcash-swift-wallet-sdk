@@ -352,3 +352,19 @@ public enum Recipient: Equatable, StringEncoded {
         }
     }
 }
+
+extension Recipient {
+    /// Memos can only ride in shielded outputs, so a memo aimed at a transparent or TEX
+    /// recipient must be rejected before the request reaches the FFI, where it would only
+    /// surface as an opaque rust error.
+    func ensureMemoIsAllowed(_ memo: Memo?) throws {
+        guard memo != nil else { return }
+
+        switch self {
+        case .transparent, .tex:
+            throw ZcashError.synchronizerSendMemoToTransparentAddress
+        case .sapling, .unified:
+            break
+        }
+    }
+}
