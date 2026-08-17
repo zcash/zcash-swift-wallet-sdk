@@ -380,14 +380,13 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         ))
     }
 
-    // DB-READ (audited 2026-08-03): propose_send_max_transfer with lock_inputs = None — write
-    // branch statically gated off; selection over a shared read-only reference.
-    func proposeSendMaxTransfer(
+    private func proposeSendMaxTransfer(
         accountUUID: AccountUUID,
-        to address: String,
+        address: String,
         memo: MemoBytes?,
-        mode: MaxSpendMode
-    ) async throws -> FfiProposal {
+        ffiMode: FfiMaxSpendMode,
+        orchardOnly: Bool
+    ) throws -> FfiProposal {
         let proposal = zcashlc_propose_send_max_transfer(
             dbData.0,
             dbData.1,
@@ -395,9 +394,9 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             accountUUID.id,
             [CChar](address.utf8CString),
             memo?.bytes,
-            mode.ffiMode,
+            ffiMode,
             confirmationsPolicy.toBackend(),
-            false // orchard_only — the public send-max path draws on every shielded pool
+            orchardOnly
         )
 
         guard let proposal else {
@@ -410,6 +409,23 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
             bytes: proposal.pointee.ptr,
             count: Int(proposal.pointee.len)
         ))
+    }
+
+    // DB-READ (audited 2026-08-03): propose_send_max_transfer with lock_inputs = None — write
+    // branch statically gated off; selection over a shared read-only reference.
+    func proposeSendMaxTransfer(
+        accountUUID: AccountUUID,
+        to address: String,
+        memo: MemoBytes?,
+        mode: MaxSpendMode
+    ) async throws -> FfiProposal {
+        return try proposeSendMaxTransfer(
+            accountUUID: accountUUID,
+            address: address,
+            memo: memo,
+            ffiMode: mode.ffiMode,
+            orchardOnly: false // orchard_only — the public send-max path draws on every shielded pool
+        )
     }
 
     // DB-READ (audited 2026-08-03): propose_send_max_transfer with lock_inputs = None — the
@@ -2006,28 +2022,13 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         memo: MemoBytes?,
         orchardOnly: Bool
     ) async throws -> FfiProposal {
-        let proposal = zcashlc_propose_send_max_transfer(
-            dbData.0,
-            dbData.1,
-            networkType.networkId,
-            accountUUID.id,
-            [CChar](recipient.utf8CString),
-            memo?.bytes,
-            MaxSpendable,
-            confirmationsPolicy.toBackend(),
-            orchardOnly
+        return try proposeSendMaxTransfer(
+            accountUUID: accountUUID,
+            address: recipient,
+            memo: memo,
+            ffiMode: MaxSpendable,
+            orchardOnly: orchardOnly
         )
-
-        guard let proposal else {
-            throw ZcashError.rustProposeSendMaxTransfer(lastErrorMessage(fallback: "`proposeSendMaxTransfer` failed with unknown error"))
-        }
-
-        defer { zcashlc_free_boxed_slice(proposal) }
-
-        return try FfiProposal(serializedBytes: Data(
-            bytes: proposal.pointee.ptr,
-            count: Int(proposal.pointee.len)
-        ))
     }
 
     @DBActor
