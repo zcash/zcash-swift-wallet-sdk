@@ -46,9 +46,12 @@ Changes are relative to `2.8.0-rc.3`.
   balance to a single recipient. Failures surface as the existing
   `ZcashError.rustProposeSendMaxTransfer` (`ZRUST0129`).
 - `Proposal.totalSpendValue()`: the total value a proposal spends across all
-  of its steps, before its fee is deducted. Combined with the existing
-  `totalFeeRequired()`, callers can derive the maximum amount a "spend max"
-  proposal sends to its recipient as `totalSpendValue() - totalFeeRequired()`.
+  of its steps, before its fee is deducted — each step's inputs minus its
+  non-ephemeral proposed change. Ephemeral (ZIP-320) change is spent by a
+  later step of the same proposal rather than retained by the wallet, so it
+  is not deducted. Combined with the existing `totalFeeRequired()`, callers
+  can derive the maximum amount a "spend max" proposal sends to its
+  recipient as `totalSpendValue() - totalFeeRequired()`.
 - `Synchronizer.proposeSendMax(accountUUID:recipient:memo:mode:)`, plus the
   matching `ClosureSynchronizer` and `CombineSynchronizer` entries: proposes a
   transaction that spends the maximum amount available in the account to a

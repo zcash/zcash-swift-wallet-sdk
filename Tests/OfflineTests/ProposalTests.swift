@@ -104,23 +104,82 @@ final class ProposalTests: XCTestCase {
 
         XCTAssertEqual(maxSendable, Zatoshi((1_000_000 - 50_000 - 10_000) + (500_000 - 5_000)))
     }
+
+    // MARK: - Ephemeral (ZIP-320) change
+
+    func testTotalSpendValueForZip320TwoStepProposalExcludesEphemeralChange() throws {
+        // Step 0 shields no new value: it spends wallet funds into a transparent ephemeral
+        // output that only exists to fund step 1's payment to the TEX recipient. Step 1's
+        // input is a `priorStepChange` reference to that ephemeral output, not a fresh spend.
+        let proposal = Self.makeProposal(
+            steps: [
+                Self.Step(
+                    inputValues: [1_000_000],
+                    changeValues: [Self.ChangeValue(value: 985_000, isEphemeral: true)],
+                    fee: 15_000
+                ),
+                Self.Step(
+                    inputs: [Self.priorStepChangeInput(stepIndex: 0, changeIndex: 0)],
+                    changeValues: [],
+                    fee: 10_000
+                )
+            ]
+        )
+
+        XCTAssertEqual(proposal.totalSpendValue(), Zatoshi(1_000_000))
+        XCTAssertEqual(proposal.totalSpendValue() - proposal.totalFeeRequired(), Zatoshi(975_000))
+    }
+
+    func testTotalSpendValueWithMixedChangeSubtractsOnlyNonEphemeralChange() throws {
+        let proposal = Self.makeProposal(
+            steps: [
+                Self.Step(
+                    inputValues: [1_000_000],
+                    changeValues: [
+                        Self.ChangeValue(value: 200_000, isEphemeral: false),
+                        Self.ChangeValue(value: 700_000, isEphemeral: true)
+                    ],
+                    fee: 15_000
+                )
+            ]
+        )
+
+        XCTAssertEqual(proposal.totalSpendValue(), Zatoshi(800_000))
+    }
 }
 
 // MARK: - FfiProposal fixture builders
 
 extension ProposalTests {
+    /// A single proposed-change entry for a fixture step. Conforms to `ExpressibleByIntegerLiteral`
+    /// so existing call sites that spell change values as bare `UInt64` literals keep compiling,
+    /// defaulting to non-ephemeral change.
+    private struct ChangeValue: ExpressibleByIntegerLiteral {
+        let value: UInt64
+        let isEphemeral: Bool
+
+        init(value: UInt64, isEphemeral: Bool = false) {
+            self.value = value
+            self.isEphemeral = isEphemeral
+        }
+
+        init(integerLiteral value: UInt64) {
+            self.init(value: value)
+        }
+    }
+
     private struct Step {
         let inputs: [FfiProposedInput]
-        let changeValues: [UInt64]
+        let changeValues: [ChangeValue]
         let fee: UInt64
 
-        init(inputValues: [UInt64], changeValues: [UInt64], fee: UInt64) {
+        init(inputValues: [UInt64], changeValues: [ChangeValue], fee: UInt64) {
             self.inputs = inputValues.map { ProposalTests.receivedOutputInput($0) }
             self.changeValues = changeValues
             self.fee = fee
         }
 
-        init(inputs: [FfiProposedInput], changeValues: [UInt64], fee: UInt64) {
+        init(inputs: [FfiProposedInput], changeValues: [ChangeValue], fee: UInt64) {
             self.inputs = inputs
             self.changeValues = changeValues
             self.fee = fee
@@ -157,9 +216,10 @@ extension ProposalTests {
         let ffiSteps: [FfiProposalStep] = steps.map { stepSpec in
             var balance = FfiTransactionBalance()
             balance.feeRequired = stepSpec.fee
-            balance.proposedChange = stepSpec.changeValues.map { value in
+            balance.proposedChange = stepSpec.changeValues.map { changeSpec in
                 var change = FfiChangeValue()
-                change.value = value
+                change.value = changeSpec.value
+                change.isEphemeral = changeSpec.isEphemeral
                 return change
             }
 

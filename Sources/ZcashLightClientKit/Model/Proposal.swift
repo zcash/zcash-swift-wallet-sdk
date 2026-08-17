@@ -51,7 +51,10 @@ public struct Proposal: Equatable {
     ///
     /// This is the sum of the values of every step's inputs (only the `.receivedOutput` case draws
     /// new value from the wallet; an input that is a prior step's own output or change does not)
-    /// minus the sum of every step's proposed change values.
+    /// minus the sum of every step's non-ephemeral proposed change values. Ephemeral (ZIP-320)
+    /// change is spent by a later step of the same proposal rather than retained by the wallet, so
+    /// it is not deducted here — mirroring how a `priorStepChange` input that re-spends it is
+    /// already excluded from the input side.
     ///
     /// Combine with `totalFeeRequired()` to derive the maximum amount a "spend max" proposal can
     /// send to its recipient: `totalSpendValue() - totalFeeRequired()`.
@@ -64,7 +67,10 @@ public struct Proposal: Equatable {
                 return inputTotal + Zatoshi(Int64(output.value))
             }
             let stepChange = step.balance.proposedChange.reduce(Zatoshi.zero) { changeTotal, change in
-                changeTotal + Zatoshi(Int64(change.value))
+                guard !change.isEphemeral else {
+                    return changeTotal
+                }
+                return changeTotal + Zatoshi(Int64(change.value))
             }
             return total + stepInputs - stepChange
         }
