@@ -71,6 +71,16 @@ public struct ConfirmationsPolicy {
     }
 }
 
+extension MaxSpendMode {
+    /// The `libzcashlc` representation of this mode, as passed to `zcashlc_propose_send_max_transfer`.
+    var ffiMode: FfiMaxSpendMode {
+        switch self {
+        case .maxSpendable: return MaxSpendable
+        case .everything: return Everything
+        }
+    }
+}
+
 struct ZcashRustBackend: ZcashRustBackendWelding {
     let confirmationsPolicy: ConfirmationsPolicy = ConfirmationsPolicy.defaultTransferPolicy()
     let shieldingConfirmationsPolicy: ConfirmationsPolicy = ConfirmationsPolicy.defaultShieldingPolicy()
