@@ -40,11 +40,6 @@ Changes are relative to `2.8.0-rc.3`.
   either targeting only currently-spendable funds (`maxSpendable`) or the
   wallet's entire balance (`everything`, which fails if any funds are
   unspendable or the wallet is unsynced).
-- `ZcashRustBackendWelding.proposeSendMaxTransfer(accountUUID:to:memo:mode:)`:
-  binds the Rust FFI's `zcashlc_propose_send_max_transfer` for the public
-  send-max path, proposing a transaction that spends the maximum available
-  balance to a single recipient. Failures surface as the existing
-  `ZcashError.rustProposeSendMaxTransfer` (`ZRUST0129`).
 - `Proposal.totalSpendValue()`: the total value a proposal spends across all
   of its steps, before its fee is deducted — each step's inputs minus its
   non-ephemeral proposed change. Ephemeral (ZIP-320) change is spent by a
@@ -52,14 +47,6 @@ Changes are relative to `2.8.0-rc.3`.
   is not deducted. Combined with the existing `totalFeeRequired()`, callers
   can derive the maximum amount a "spend max" proposal sends to its
   recipient as `totalSpendValue() - totalFeeRequired()`.
-- `Synchronizer.proposeSendMax(accountUUID:recipient:memo:mode:)`, plus the
-  matching `ClosureSynchronizer` and `CombineSynchronizer` entries: proposes a
-  transaction that spends the maximum amount available in the account to a
-  single recipient, using `MaxSpendMode` to control how much of the balance
-  is targeted. No `amount` is passed — the fee is already accounted for by
-  the returned proposal. Sending a memo to a transparent recipient still
-  throws `ZcashError.synchronizerSendMemoToTransparentAddress`, same as
-  `proposeTransfer`.
 
 ## Changed
 
@@ -116,6 +103,16 @@ Changes are relative to `2.8.0-rc.3`.
   write-lane pass (the platform's next advance-step, prove, or delivery call — typically its next
   sync edge or UI refresh); checkmark/"done" rendering is unaffected (it derives from the
   wallet's own mined transactions).
+- `Synchronizer` gained the required method `proposeSendMax(accountUUID:recipient:memo:mode:)` —
+  plus matching `ClosureSynchronizer` and `CombineSynchronizer` entries — with no default
+  implementation: any external conformer or test double of these protocols must now implement it.
+  It proposes a transaction that spends the maximum amount available in the account to a single
+  recipient, using `MaxSpendMode` to control how much of the balance is targeted; no `amount` is
+  passed, since the fee is already accounted for by the returned proposal. The proposal draws on
+  shielded funds only (Sapling, Orchard, Ironwood) — transparent balance is never selected and must
+  be shielded first (see `proposeShielding`). Sending a memo to a transparent recipient still throws
+  `ZcashError.synchronizerSendMemoToTransparentAddress`, same as `proposeTransfer`. Failures surface
+  as the existing `ZcashError.rustProposeSendMaxTransfer` (`ZRUST0129`).
 
 ## Fixed
 

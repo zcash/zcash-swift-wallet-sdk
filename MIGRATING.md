@@ -667,9 +667,11 @@ constants), so the two desynchronize — the registration call reports this (and
 `Synchronizer`, `ClosureSynchronizer`, and `CombineSynchronizer` each gained a new required method,
 `proposeSendMax(accountUUID:recipient:memo:mode:)`, alongside the existing `proposeTransfer`. It
 proposes a transaction that spends the maximum amount available in the account — as much as the new
-`MaxSpendMode` allows — to a single recipient. Unlike `proposeTransfer`, no `amount` is passed; the
-fee is already accounted for by the returned proposal. Any external conformer of these protocols must
-implement the new method.
+`MaxSpendMode` allows — to a single recipient. The proposal draws on shielded funds only (Sapling,
+Orchard, Ironwood); transparent balance is never selected and must be shielded first (see
+`proposeShielding`). Unlike `proposeTransfer`, no `amount` is passed; the fee is already accounted
+for by the returned proposal. Any external conformer of these protocols must implement the new
+method.
 
 # Migrating from previous versions to v2.8.0-rc.1
 

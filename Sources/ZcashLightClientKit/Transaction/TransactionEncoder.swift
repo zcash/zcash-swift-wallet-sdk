@@ -40,6 +40,9 @@ protocol TransactionEncoder {
     /// Unlike `proposeTransfer`, no `amount` is passed: the proposal spends as much of the account's balance as
     /// `mode` allows, with the fee already accounted for by the proposal itself.
     ///
+    /// The proposal draws on shielded funds only (Sapling, Orchard, Ironwood); transparent balance is never
+    /// selected and must be shielded first — see `proposeShielding`.
+    ///
     /// - Parameter accountUUID: the account from which to spend funds.
     /// - Parameter recipient: string containing the recipient's address.
     /// - Parameter memoBytes: an optional memo to include as part of the proposal's transactions. Use `nil` when sending to transparent receivers otherwise the function will throw an error.

@@ -268,6 +268,9 @@ protocol ZcashRustBackendWelding {
     /// as much of the account's balance as `mode` allows, for a transaction that can then be
     /// authorized and made ready for submission to the network with `createProposedTransaction`.
     ///
+    /// The proposal draws on shielded funds only (Sapling, Orchard, Ironwood); transparent balance
+    /// is never selected and must be shielded first — see `proposeShielding`.
+    ///
     /// - Parameter accountUUID: the account to spend from.
     /// - Parameter to: recipient address.
     /// - Parameter memo: the `MemoBytes` for this transaction. pass `nil` when sending to transparent receivers
