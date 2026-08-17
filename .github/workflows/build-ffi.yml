@@ -8,6 +8,10 @@ on:
       version:
         description: 'SDK version (e.g., 2.5.0)'
         required: true
+      force:
+        description: 'Replace the assets of an existing release'
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -37,17 +41,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ github.event.inputs.version }}
-        run: ./Scripts/prepare-release.sh "$VERSION"
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then
+            ./Scripts/prepare-release.sh artifacts --force-overwrite-existing-release "$VERSION"
+          else
+            ./Scripts/prepare-release.sh artifacts "$VERSION"
+          fi
 
-      - name: Output Package.swift Update
+      - name: Report the release artifacts
         run: |
           source BuildSupport/products/release.env
           echo ""
           echo "========================================"
-          echo "Update Package.swift with:"
+          echo "Draft release ${VERSION} now carries:"
           echo "========================================"
           echo ""
-          echo "url: \"${DOWNLOAD_URL}\","
-          echo "checksum: \"${CHECKSUM}\""
+          echo "url:      ${DOWNLOAD_URL}"
+          echo "checksum: ${CHECKSUM}"
           echo ""
-          echo "Then commit, tag ${VERSION}, and publish the draft release."
+          echo "From a checkout on candidate/${VERSION}, run:"
+          echo "  ./Scripts/prepare-release.sh build --artifacts ci <remote> ${VERSION}"
+          echo ""
+          echo "It will find this draft release, reuse its checksum, write"
+          echo "Package.swift, and mark the release PR ready for review."

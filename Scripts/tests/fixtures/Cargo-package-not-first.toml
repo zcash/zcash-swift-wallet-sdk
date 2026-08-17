@@ -1,0 +1,8 @@
+[dependencies.orchard]
+version = "0.15"
+features = ["multicore"]
+
+[package]
+name = "libzcashlc"
+version = "2.7.0-rc.3"
+edition = "2024"

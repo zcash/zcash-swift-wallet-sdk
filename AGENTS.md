@@ -60,9 +60,19 @@ See `docs/LOCAL_DEVELOPMENT.md` for the full reference.
 
 ## Release
 
-- `./Scripts/release.sh <remote> <version>` — fully automated release (bumps the XCFramework URL+checksum in `Package.swift`, signs a tag, drafts GitHub Release).
-- `./Scripts/prepare-release.sh <version>` — semi-automated alternative.
-- The `Build FFI XCFramework` GitHub Action (`workflow_dispatch`) produces release artifacts, never a PR build.
+A release runs in two phases, with a human reading a pull request in between.
+`CONTRIBUTING.md` carries the full procedure; every command below accepts
+`--dry-run`.
+
+- `./Scripts/prepare-release.sh start --issue <N> <remote> <version>` — cut `release/X.Y.Z` from the previous release tag and `candidate/X.Y.Z` from the revision being released, promote the CHANGELOG, and open a draft pull request between them. Its diff is what users receive relative to the last release.
+- `./Scripts/prepare-release.sh build <remote> <version>` — bump the recorded version, build the XCFramework and verify the SDK against it, upload it as a draft release, point `Package.swift` at it, and mark the pull request ready. Each step derives whether it has already run, so a failure resumes rather than restarting.
+- `./Scripts/prepare-release.sh artifacts <version>` — the build and upload alone, touching no git or pull-request state. This is what the `Build FFI XCFramework` GitHub Action (`workflow_dispatch`) runs; it never builds a PR.
+- `./Scripts/release.sh <remote> <version>` — after the pull request merges, run from `release/X.Y.Z`. Verifies the checksum against the uploaded asset, signs and pushes the tag, and publishes the release.
+
+A version carrying a pre-release suffix, such as `2.8.0-rc.1`, is marked as a
+pre-release on GitHub. The text transforms and predicates these scripts are
+built from live in `Scripts/lib/release-lib.sh` and are covered by
+`make test-scripts`, which `make check` includes.
 
 ## Architecture
 
@@ -197,7 +207,7 @@ hand-written `swift` command:
 
 | Workflow | Trigger | Local equivalent |
 |---|---|---|
-| `swift.yml` | any PR outside its `paths-ignore` list | `make check` (`make build` then `make test-offline`) |
+| `swift.yml` | any PR outside its `paths-ignore` list | `make check` (`make build`, `make test-offline`, `make test-rust`) |
 | `swiftlint.yml` | any PR touching `**/*.swift` or `.swiftlint.yml` | `make lint` |
 | `proto-sync.yml` | any PR outside its `paths-ignore` list | `./Scripts/update-proposal-proto.sh --check` |
 | `zizmor.yml` | every PR | matters when you change a workflow file |
@@ -223,8 +233,12 @@ macOS slice alone is enough to build and test the Swift package:
 ```bash
 make ffi-macos           # once per branch, and after each Rust edit
 make configure-local-ffi # point Package.swift at the local build
-make check               # build, then the offline suite
+make check               # build, the offline suite, then the Rust tests
 ```
+
+`make test-rust` runs `cargo test`. The Rust unit tests sit below the Swift
+package, so no `swift test` filter reaches them and `make test-offline` passing
+says nothing about them; `swift.yml` runs both.
 
 ### When to run which
 
@@ -234,7 +248,7 @@ make check               # build, then the offline suite
 | Any other doc, including this one | `make check` — the build runs regardless |
 | Swift style or rename | `make lint` |
 | Swift logic or refactor | `make check`, then `make lint` |
-| Rust internals | `make ffi-macos`, then `make check` |
+| Rust internals | `make ffi-macos`, then `make check` (which runs `make test-rust`) |
 | Any change to an FFI signature or a new FFI function | `make ffi-all` (all five architectures) before PRing |
 | Bumping the pinned `zcash_client_backend` | `./Scripts/update-proposal-proto.sh --check` |
 

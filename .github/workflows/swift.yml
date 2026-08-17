@@ -28,6 +28,9 @@ jobs:
     - name: Select Xcode version
       run: sudo xcode-select -s '/Applications/Xcode_16.0.app/Contents/Developer'
 
+    - name: Run release-script tests
+      run: make test-scripts
+
     # Generate a hash of all Rust source files for cache key
     - name: Generate FFI source hash
       id: ffi-hash
@@ -45,17 +48,16 @@ jobs:
         path: BuildSupport/products/libzcashlc.xcframework
         key: ffi-xcframework-macos-only-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
 
-    # Only set up Rust if we need to build FFI
+    # Needed unconditionally: even on an FFI cache hit, the Rust test step below
+    # compiles the crate's test profile and so needs the toolchain.
     - name: Setup Rust
-      if: steps.cache-ffi.outputs.cache-hit != 'true'
       uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
       with:
         toolchain: stable
         targets: aarch64-apple-darwin, x86_64-apple-darwin
 
-    # Cache Cargo dependencies (only if building FFI)
+    # Cache Cargo dependencies (used by both the FFI build and the Rust tests)
     - name: Cache Cargo
-      if: steps.cache-ffi.outputs.cache-hit != 'true'
       uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
 
     # Build FFI for macOS only (sufficient for running tests)
@@ -67,6 +69,13 @@ jobs:
     # Verify xcframework exists (whether from cache or fresh build)
     - name: Verify XCFramework
       run: make verify-ffi
+
+    # The Rust unit tests cover the FFI layer below the Swift package, so no
+    # `swift test` filter reaches them. Without this step a failing Rust test
+    # can sit on a branch indefinitely.
+    - name: Run Rust unit tests
+      timeout-minutes: 30
+      run: make test-rust
 
     # Set up LocalPackages so Package.swift auto-detects the local build
     - name: Configure local FFI for CI

@@ -1,0 +1,6 @@
+The content of this directory has been removed in
+45f8a4d436bafe7df680c92e095e7eaa1de07fee.
+It was containing DarksideTests that were not maintained anymore.
+Revamping the tests might happen in the future, and therefore, to keep track of
+that work, we keep this file with the git reference to allow reverting the
+changes when/if needed.
