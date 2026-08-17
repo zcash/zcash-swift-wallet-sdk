@@ -733,6 +733,13 @@ public actor SlipstreamSynchronizer: Synchronizer {
         memo: Memo?,
         mode: MaxSpendMode
     ) async throws -> Proposal {
+        // Parity with `start()`'s guard above and with `SDKSynchronizer.proposeSendMax`'s
+        // `throwIfUnprepared()`: the encoder path below never touches the engine handle, so
+        // without this check an unprepared call would fall straight through to the rust
+        // backend instead of failing with the documented `synchronizerNotPrepared`.
+        guard latestState.internalSyncStatus.isPrepared else {
+            throw ZcashError.synchronizerNotPrepared
+        }
         try recipient.ensureMemoIsAllowed(memo)
         return try await transactionEncoder.proposeSendMax(
             accountUUID: accountUUID,
