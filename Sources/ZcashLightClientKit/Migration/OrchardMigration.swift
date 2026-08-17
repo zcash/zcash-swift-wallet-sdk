@@ -607,7 +607,7 @@ actor OrchardMigration {
         )
         let proposal = Proposal(inner: ffiProposal)
         let fee = proposal.totalFeeRequired()
-        let amount = OrchardMigration.sweptPaymentValue(of: ffiProposal) - fee
+        let amount = proposal.totalSpendValue() - fee
         return ImmediateMigrationProposal(proposal: proposal, amount: amount, fee: fee)
     }
 
@@ -994,24 +994,5 @@ extension OrchardMigration {
             nextIndex += size
         }
         return sessions
-    }
-
-    /// The net value swept by an immediate-migration `FfiProposal` before its fee is subtracted:
-    /// the total value of the notes it consumes, minus any declared change. A send-max proposal
-    /// declares no change (there is nothing left to return), so this is ordinarily just the input
-    /// total; the change subtraction is defensive rather than load-bearing.
-    private static func sweptPaymentValue(of proposal: FfiProposal) -> Zatoshi {
-        proposal.steps.reduce(Zatoshi.zero) { total, step in
-            let stepInput = step.inputs.reduce(Zatoshi.zero) { inputTotal, input in
-                guard case .receivedOutput(let output) = input.value else {
-                    return inputTotal
-                }
-                return inputTotal + Zatoshi(Int64(output.value))
-            }
-            let stepChange = step.balance.proposedChange.reduce(Zatoshi.zero) { changeTotal, change in
-                changeTotal + Zatoshi(Int64(change.value))
-            }
-            return total + stepInput - stepChange
-        }
     }
 }
