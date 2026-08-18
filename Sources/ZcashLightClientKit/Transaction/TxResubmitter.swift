@@ -8,7 +8,7 @@ import Foundation
 /// Engine-independent resubmission core: prunes stale submit plans and
 /// resubmits the transactions that qualify, throttled to at most once per
 /// 300-second window. Shared by the old sync pipeline's `TxResubmissionAction`
-/// and any alternative synchronizer, so the retry policy lives in exactly one place.
+/// and `SlipstreamSynchronizer`, so the retry policy lives in exactly one place.
 package final class TxResubmitter {
     private enum Constants {
         static let thresholdToTrigger = TimeInterval(300.0)

@@ -8,7 +8,7 @@ import Foundation
 
 /// The per-synchronizer owner of all Orchard -> Ironwood migration machinery.
 ///
-/// `SDKSynchronizer` (and any alternative synchronizer) each hold exactly one host. It owns the
+/// `SDKSynchronizer` (and, later, `SlipstreamSynchronizer`) each hold exactly one host. It owns the
 /// lazily-created, per-account ``OrchardMigration`` actors, a single ``MigrationBroadcaster`` shared
 /// across every account (so two accounts never race two independent Tor bootstraps against the shared
 /// `migration_tor` directory), and the wallet-scope sync-blocked predicate/stream the synchronizer's

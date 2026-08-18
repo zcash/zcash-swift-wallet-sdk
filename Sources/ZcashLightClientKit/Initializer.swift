@@ -47,7 +47,7 @@ public struct LightWalletEndpoint {
 }
 
 // Sendable: a pure value type (String/Int/Bool fields). [v0.7 P1b] Alternate-endpoint
-// lists cross an alternative synchronizer's actor boundary, which makes hosts building
+// lists cross the SlipstreamSynchronizer actor boundary, which makes hosts building
 // under strict concurrency need this conformance spelled out.
 extension LightWalletEndpoint: Equatable, Sendable {}
 
@@ -150,20 +150,21 @@ public class Initializer {
     /// or `SDKSynchronizer.wipe()`.
     var urlsParsingError: ZcashError?
 
-    /// [v2.1 E-6] Optional wallet-provisioning anchor source, for an alternative
-    /// `Synchronizer` that resolves the provisioning chain facts itself rather than
-    /// through the host-side fetch below. Installed before `prepare()` runs
-    /// `initialize`; `nil` (the default `SDKSynchronizer` path) keeps the host-side
-    /// fetch, byte-for-byte (the old sync path is frozen).
+    /// [v2.1 E-6] Engine-owned wallet-provisioning anchor source. `SlipstreamSynchronizer`
+    /// sets this before `prepare()` runs `initialize`, routing the restore/new chain-fact
+    /// fetch (recover_until tip; reorg-safe new-wallet tree state) through the engine's
+    /// `restore_anchor` primitive — offline fallback policy and Tor privacy included.
+    /// `nil` (the legacy `SDKSynchronizer` path) keeps the host-side fetch below,
+    /// byte-for-byte (the old sync path is frozen).
     ///
-    /// It is resolved lazily, here, rather than by the caller ahead of time: the
-    /// anchor is only needed once `listAccounts()` proves the wallet is
-    /// unprovisioned, and resolving it eagerly would spend — and leak — a network
-    /// round trip on every launch of an already-provisioned wallet.
+    /// Resolved lazily, here rather than by the caller: the anchor is only needed once
+    /// `listAccounts()` proves the wallet unprovisioned, so resolving it eagerly would
+    /// spend — and leak — a network round trip on every launch of a provisioned wallet.
     ///
     /// Signature: (isRestore, birthday, latest bundled checkpoint height) →
-    /// (provisioning height, tree state at that height).
-    package var provisioningAnchorSource:
+    /// (provisioning height, tree state at that height). `SlipstreamRestoreAnchor` itself
+    /// lives in the ZODLSlipstream module, so the clean product carries no engine type.
+    package var slipstreamAnchorSource:
         ((Bool, BlockHeight, BlockHeight) async -> (height: BlockHeight, treeState: TreeState?)?)?
 
     /// Constructs the Initializer and migrates an old cacheDb to the new file system block cache if a `cacheDbURL` is provided.
@@ -514,11 +515,12 @@ public class Initializer {
             var chainTip: UInt32?
             var accountTreeState = checkpoint.treeState()
 
-            if let anchorSource = provisioningAnchorSource {
-                // The provisioning chain facts come from the installed anchor source,
-                // which owns its own offline-fallback and privacy policy. Keys never
-                // cross: the `createAccount(seed:…)` call below stays host-side.
-                let resolved = await resolveProvisioningAnchor(
+            if let anchorSource = slipstreamAnchorSource {
+                // [v2.1 E-6] SLIPSTREAM: the provisioning chain facts come from the engine's
+                // `restore_anchor` primitive — one policy for every host (offline fallback +
+                // Tor privacy inside; see slipstream-core anchor.rs). Keys never cross: the
+                // `createAccount(seed:…)` call below stays host-side.
+                let resolved = await resolveSlipstreamAnchor(
                     anchorSource,
                     checkpointSource: checkpointSource,
                     isRestore: walletBirthday != nil
@@ -575,8 +577,8 @@ public class Initializer {
             let recoverUntil = chainTip.map { "tip \($0)" } ?? "unknown"
             logger.info(
                 walletBirthday != nil
-                    ? "[init] flow: RESTORE — birthday \(self.walletBirthday), recover_until=\(recoverUntil)"
-                    : "[init] flow: NEW — start height \(self.walletBirthday), recover_until=nil",
+                    ? "[slipstream] init flow: RESTORE — birthday \(self.walletBirthday), recover_until=\(recoverUntil)"
+                    : "[slipstream] init flow: NEW — start height \(self.walletBirthday), recover_until=nil",
                 file: #file,
                 function: #function,
                 line: #line
@@ -592,8 +594,8 @@ public class Initializer {
         } else {
             logger.info(
                 existingAccounts.isEmpty
-                    ? "[init] flow: OPEN — no seed supplied, not creating an account"
-                    : "[init] flow: EXISTING — \(existingAccounts.count) account(s) present, opening (no create)",
+                    ? "[slipstream] init flow: OPEN — no seed supplied, not creating an account"
+                    : "[slipstream] init flow: EXISTING — \(existingAccounts.count) account(s) present, opening (no create)",
                 file: #file,
                 function: #function,
                 line: #line
@@ -621,12 +623,12 @@ public class Initializer {
         guard seedIsRelevant else { throw ZcashError.initializerSeedMismatch }
     }
 
-    /// [v2.1 E-6] Resolve the provisioning anchor. RESTORE ⇒ `chainTip` = the
+    /// [v2.1 E-6] Resolve the slipstream provisioning anchor. RESTORE ⇒ `chainTip` = the
     /// recover_until height (the anchor source's policy guarantees one: live tip, or an
     /// offline max(bundled checkpoint, birthday+1) — never NULL). NEW ⇒ `treeState` =
     /// the reorg-safe recent server tree state, or nil offline (the caller keeps the
     /// bundled checkpoint defaults).
-    private func resolveProvisioningAnchor(
+    private func resolveSlipstreamAnchor(
         _ anchorSource: (Bool, BlockHeight, BlockHeight) async -> (height: BlockHeight, treeState: TreeState?)?,
         checkpointSource: CheckpointSource,
         isRestore: Bool

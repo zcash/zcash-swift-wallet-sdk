@@ -293,9 +293,9 @@ public actor SlipstreamSynchronizer: Synchronizer {
         let anchorServer = currentEndpoint
         let anchorNetwork = initializer.network
         let anchorTorDir = await slipstreamTorDirPath()
-        // Core's seam is engine-agnostic and speaks in types it already owns, so the
-        // engine's own anchor type is mapped to a plain tuple on the way out.
-        initializer.provisioningAnchorSource = { isRestore, birthday, fallbackCheckpoint in
+        // Core holds the hook but not the engine's anchor type, so it is mapped to a
+        // plain tuple on the way out.
+        initializer.slipstreamAnchorSource = { isRestore, birthday, fallbackCheckpoint in
             guard let anchor = await SlipstreamEngine.restoreAnchor(
                 isRestore: isRestore,
                 birthday: birthday,
