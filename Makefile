@@ -149,9 +149,23 @@ test-offline: ## Run the offline tests (no network, no lightwalletd)
 # Requires a ZODL Slipstream-variant checkout: make ffi-macos ZODL_SLIPSTREAM=1 &&
 # make configure-local-ffi ZODL_SLIPSTREAM=1 (the target graph only contains
 # ZODLSlipstreamOfflineTests when the variant marker is present).
+#
+# The run is asserted to be non-empty. A filter that matches nothing exits 0, so
+# without this a clean-variant checkout — or a stale .build tree left by renaming
+# the target — reports success having tested none of the engine, which is exactly
+# the outcome this target exists to rule out.
 .PHONY: test-offline-zodl-slipstream
 test-offline-zodl-slipstream: ## Run the ZODL Slipstream offline tests (variant checkout only)
-	$(SWIFT) test --filter ZODLSlipstreamOfflineTests
+	@set -o pipefail; \
+	$(SWIFT) test --filter ZODLSlipstreamOfflineTests 2>&1 | tee /tmp/zodl-slipstream-tests.log; \
+	if ! grep -qE "Executed [1-9][0-9]* tests" /tmp/zodl-slipstream-tests.log; then \
+		echo ""; \
+		echo "FATAL: the ZODL Slipstream suite executed no tests."; \
+		echo "  Is this a variant checkout? .zodl-slipstream-variant must exist"; \
+		echo "  (make configure-local-ffi ZODL_SLIPSTREAM=1). If it does, the"; \
+		echo "  build tree may be stale — run 'swift package clean' and retry."; \
+		exit 1; \
+	fi
 
 .PHONY: test-all
 test-all: ## Run the whole test suite, including networked tests
@@ -240,18 +254,23 @@ configure-local-ffi: verify-ffi ## Point Package.swift at the locally built FFI
 	rm -rf LocalPackages/$(notdir $(XCFRAMEWORK))
 	cp -R $(XCFRAMEWORK) LocalPackages/
 	cp $(BUILD_SUPPORT)/LocalPackages-Package.swift LocalPackages/Package.swift
-	# Keep the variant marker in step with the linked FFI, purging SwiftPM's
-	# content-keyed manifest cache on a flip (a stale cached evaluation would
-	# silently serve the other variant's target graph).
+	# Keep the variant marker in step with the linked FFI. A flip must also discard
+	# SwiftPM's resolved state: the marker decides the TARGET GRAPH, and
+	# `purge-cache` alone leaves .build's resolution in place, so the next build
+	# silently keeps the other variant's graph (observed: flipping to clean still
+	# ran the add-on's 84 tests). `reset` is heavy, but a flip already pays a full
+	# FFI rebuild, and testing the wrong graph is worse than waiting.
 	@if [ "$(ZODL_SLIPSTREAM)" = "1" ]; then \
 		if [ ! -f .zodl-slipstream-variant ]; then \
 			touch .zodl-slipstream-variant; \
 			$(SWIFT) package purge-cache > /dev/null 2>&1 || true; \
+			$(SWIFT) package reset > /dev/null 2>&1 || true; \
 		fi; \
 	else \
 		if [ -f .zodl-slipstream-variant ]; then \
 			rm -f .zodl-slipstream-variant; \
 			$(SWIFT) package purge-cache > /dev/null 2>&1 || true; \
+			$(SWIFT) package reset > /dev/null 2>&1 || true; \
 		fi; \
 	fi
 	@echo "LocalPackages created; Package.swift will use the local FFI (ZODL_SLIPSTREAM=$(ZODL_SLIPSTREAM))"
