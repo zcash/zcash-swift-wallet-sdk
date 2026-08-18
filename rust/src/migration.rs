@@ -5771,8 +5771,8 @@ mod tests {
     }
 
     // ----- plan-cache supersession contract, end-to-end against a REALLY funded wallet
-    // (#1806 / MOB-1458): `plan_and_cache`'s only input is `engine::plan_migration`, which has
-    // no test-only backdoor (see `plan_cache_lookup_misses_and_clear`'s doc: the plan type has
+    // (#1806 / MOB-1458): `plan_and_cache`'s only input is `engine::plan_migration_sized_with`, which
+    // has no test-only backdoor (see `plan_cache_lookup_misses_and_clear`'s doc: the plan type has
     // no public constructor), so pinning the handle contract against a genuine plan means the
     // fixture wallet must hold a genuine spendable Orchard note. `zcash_client_backend`'s own
     // `TestBuilder` harness (the `test-dependencies` feature) would normally build one, but this
@@ -6990,11 +6990,12 @@ mod tests {
     }
 
     /// Everything that is not Keystone-tagged — no tag, the platform's own `zashi` tag, an
-    /// unrelated tag — is signed in process, where a signing round has no per-interaction cost to
-    /// bound, so it keeps note-cap sizing at the raised in-process cap.
+    /// unrelated tag, a near-miss of the Keystone tag — is signed in process, where a signing round
+    /// has no per-interaction cost to bound, so it keeps note-cap sizing at the raised in-process
+    /// cap.
     #[test]
     fn run_sizing_is_the_in_process_note_cap_for_every_other_account() {
-        for (i, tag) in [None, Some("zashi"), Some("ledger")]
+        for (i, tag) in [None, Some("zashi"), Some("ledger"), Some("keystone2")]
             .into_iter()
             .enumerate()
         {

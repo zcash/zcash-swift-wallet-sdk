@@ -154,8 +154,9 @@ pub(crate) const ZODL_MAX_PREPARED_NOTES_PER_RUN: NonZeroUsize = NonZeroUsize::n
 
 /// The `key_source` tag that marks an account whose transactions a Keystone hardware wallet signs,
 /// compared case-insensitively. It is the tag the platform layers stamp on a Keystone import
-/// (zodl-ios's `WalletAccount.vendor`, `AccountDataSource.importKeystoneAccount` on Android), and
-/// the only account-level signal this SDK has that a run's signing carries a per-round QR cost.
+/// (zodl-ios stamps it in `AddHWWalletStore` and reads it back as `WalletAccount.vendor`;
+/// `AccountDataSource.importKeystoneAccount` on Android), and the only account-level signal this
+/// SDK has that a run's signing carries a per-round QR cost.
 pub(crate) const KEYSTONE_KEY_SOURCE: &str = "keystone";
 
 /// How one migration run of `account` is bounded — the sizing every planning and estimating call

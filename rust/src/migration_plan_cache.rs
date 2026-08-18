@@ -1,5 +1,5 @@
 //! In-process cache of the most recent [`MigrationPlan`] per `(database, account)`, bridging the
-//! gap between `plan_migration()` (a pure, unpersisted preview) and the commit functions
+//! gap between `plan_migration_sized_with()` (a pure, unpersisted preview) and the commit functions
 //! (`commit_preparation`/`build_preparation_unsigned`) that must sign that exact plan value later.
 //!
 //! Every cached plan is identified by an opaque, randomly drawn [`PlanHandle`], returned to the
@@ -7,21 +7,21 @@
 //! `FfiMigrationSchedule::proposal_handle`). A commit call passes the handle back, and [`get`]
 //! refuses to release a plan under any other handle — so a commit can only ever sign the exact
 //! plan the platform displayed, never one that a later propose/prepare call happened to cache in
-//! the meantime (ZIP 318's scheduling draws fresh randomness on every `plan_migration()` call, so
-//! two plans essentially never agree even over unchanged wallet state). The handle gate replaces
-//! the earlier field-by-field "verified consent echo" (F4) contract: instead of the platform
-//! echoing schedule values back for comparison against a byte-for-byte reproduction of the
+//! the meantime (ZIP 318's scheduling draws fresh randomness on every `plan_migration_sized_with()`
+//! call, so two plans essentially never agree even over unchanged wallet state). The handle gate
+//! replaces the earlier field-by-field "verified consent echo" (F4) contract: instead of the
+//! platform echoing schedule values back for comparison against a byte-for-byte reproduction of the
 //! preview DTO, plan details now never cross the FFI boundary inward at all.
 //!
 //! This is deliberately NOT persisted: the engine's `MigrationPlan` (and its `DenominationPlan`/
 //! `PreparationPlan` fields) has no `serde` support and no public constructor — the only way to
-//! obtain one is calling `plan_migration()` itself — so it cannot round-trip through our own
-//! storage. It lives in a process-lifetime static instead, which matches the app's flow: the
+//! obtain one is calling `plan_migration_sized_with()` itself — so it cannot round-trip through our
+//! own storage. It lives in a process-lifetime static instead, which matches the app's flow: the
 //! whole "review a migration proposal, then confirm it" sequence happens in one app-process
 //! lifetime. If the process is killed between propose and confirm, the commit path surfaces the
-//! stable `MIGRATION_PLAN_STALE` error (mapped to `ZcashError.migrationPlanStale` in Swift) so
-//! the app re-proposes, rather than silently recomputing a fresh, differently-randomized plan the
-//! user never saw or approved.
+//! stable `MIGRATION_PLAN_STALE` error (mapped to `ZcashError.migrationPlanStale` in Swift) so the
+//! app re-proposes, rather than silently recomputing a fresh, differently-randomized plan the user
+//! never saw or approved.
 //!
 //! Each entry also records whether the plan was previewed through the IMMEDIATE lane, so the
 //! commit path knows to rewrite the committed transfers' scheduled heights to the commit height

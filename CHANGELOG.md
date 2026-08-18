@@ -58,12 +58,8 @@ Changes are relative to `2.8.0-rc.3`.
   still counts.
 
 - The librustzcash family rides an interim git pin — librustzcash `main` at rev `0891e00d`
-  (2026-08-17), which carries the PRs this SDK consumes together: librustzcash #2927, the
-  scanned-chain-tip overdue re-spread (the released overdue step lands on scanned chain data, and
-  the re-spread fires only when more of the schedule is due behind it, so a wallet driven in short
-  foreground sessions can actually prove and broadcast the released step instead of livelocking
-  with its schedule re-pinned past the scan on every open); #2951, the adapter and
-  planned-transaction-graph work: `wallet::WalletMigration` takes the account's viewing key as a
+  (2026-08-17), which carries the PRs this SDK consumes together: librustzcash #2951, the adapter
+  and planned-transaction-graph work: `wallet::WalletMigration` takes the account's viewing key as a
   constructor parameter and holds no spend authority (the engine's two signing entry points take an
   `orchard::keys::SpendingKey` per call, deriving its full viewing key and checking it against the
   account's before building anything — a foreign key is refused eagerly, as
@@ -84,7 +80,7 @@ Changes are relative to `2.8.0-rc.3`.
   from `MigrationState::transaction_statuses`, rather than delegating to those selectors. The
   compressed-schedule spacing floors (`AdvanceConfig::with_compressed_schedule_floors`) left the
   pinned lineage, and this SDK no longer derives or passes them. The pin reverts to published
-  crates at the first rc containing #2927, #2951, #2957, #2962 and #2970.
+  crates at the first rc containing #2951, #2957, #2962 and #2970.
 - Migration runs are now sized PER ACCOUNT, by how the account signs. The contract is the
   `keySource` an account was created or imported with (`prepare(with:walletBirthday:name:keySource:)`,
   `importAccount(ufvk:seedFingerprint:zip32AccountIndex:purpose:name:keySource:birthday:)`), until
@@ -99,15 +95,21 @@ Changes are relative to `2.8.0-rc.3`.
     `restartCurrentMigrationStep` all plan and preview under this sizing: expect MORE runs on a
     large or fragmented wallet, each with `MigrationRunEstimate.Run.keystoneSigningSessions == 1` (a
     run exceeds one round only when even a one-note run would, which no smaller run can fix).
+    Because each smaller run re-consolidates its own funding notes, the whole balance migrates
+    through more preparation transactions in total than under the old flat cap, so the total ZIP 317
+    fees paid over all runs are somewhat higher.
   - Every other account (including a `nil` `keySource`) is signed in process, where a signing round
     has no per-interaction cost to bound, and keeps note-cap sizing — with the per-run cap raised
     from the engine's Keystone-oriented 50 notes to 200: FEWER runs (and so fewer background
     sync/broadcast campaigns) for the same wallet, at the cost of a longer single planning and
-    proving pass. `Run.keystoneSigningSessions` is still reported for these runs, as what a
+    proving pass, a proportionally longer per-run transfer schedule
+    (`MigrationSchedule.estimatedDurationHours` grows with the run), and note reservations held for
+    that whole schedule. `Run.keystoneSigningSessions` is still reported for these runs, as what a
     Keystone would need for a run of that shape, for comparison only.
 
-  No call-site edit is needed. A host that imports a Keystone account under a different `keySource`
-  must switch to `"keystone"` to get one-round runs.
+  No call-site edit is needed. A host that imported a Keystone account under a different `keySource`
+  must re-import it under `"keystone"` to get one-round runs — there is no API to re-tag an existing
+  account.
 - Restarting a migration (`restartCurrentMigrationStep`) now cancels the stored run through the
   engine's own cancel: the run is recorded with the terminal `Cancelled` status (previously
   `Failed`, which left a deliberate abandonment indistinguishable from a broken run) and every
