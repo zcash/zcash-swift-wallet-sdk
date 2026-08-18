@@ -205,6 +205,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself never touches.
 
 ### Changed
+- The pool-migration planning and estimating entry points — `zcashlc_migration_propose_transfers`,
+  `zcashlc_migration_prepare_note_split`, `zcashlc_migration_is_note_split_needed`,
+  `zcashlc_migration_residual_after_migration`, `zcashlc_migration_restart_step` and
+  `zcashlc_migration_estimate_runs` — now size each run PER ACCOUNT, from the account row's
+  `key_source`: an account tagged `keystone` (case-insensitive) is sized to one 96-action Keystone
+  signing round per run (upstream `plan_migration_sized_with` /
+  `estimate_migration_runs_sized_with` under `RunSizing::Signer(RunSigningCapacity::KEYSTONE)`);
+  every other account keeps note-cap sizing with the per-run cap raised from the crate's 50-note
+  default to 200 (`RunSizing::Notes(200)`). Signatures and `#[repr(C)]` shapes are unchanged;
+  `FfiRunEstimate::keystone_rounds` is 1 for every run of a Keystone-tagged account (more only when
+  a one-note run already overflows a round). Planning and estimating take the sizing from one seam,
+  so an estimate always describes the runs that get planned. Rides the librustzcash pin at
+  `0891e00d` (librustzcash #2962 + #2970).
 - The `zcashlc_voting_*` FFI is compiled again, against the Ironwood (NU6.3)
   dependency stack. It had been gated behind `#[cfg(zcash_voting)]` on the
   grounds that `zcash_voting` could not resolve against the Ironwood `orchard`

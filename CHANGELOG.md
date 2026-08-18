@@ -57,27 +57,59 @@ Changes are relative to `2.8.0-rc.3`.
   build load unchanged: the buffer field is read and ignored, and an in-flight marker beside it
   still counts.
 
-- The librustzcash family rides an interim git pin — the `kris/tmp-respread-plus-adapter-2` branch
-  head (rev `fa3e1de5`), librustzcash main merged with two PRs this SDK consumes together:
-  librustzcash #2927, the scanned-chain-tip overdue re-spread (the released overdue step lands on
-  scanned chain data, and the re-spread fires only when more of the schedule is due behind it, so a
-  wallet driven in short foreground sessions can actually prove and broadcast the released step
-  instead of livelocking with its schedule re-pinned past the scan on every open), and #2951, the
-  adapter and planned-transaction-graph work: `wallet::WalletMigration` takes the account's viewing
-  key as a constructor parameter and holds no spend authority (the engine's two signing entry
-  points take an `orchard::keys::SpendingKey` per call, deriving its full viewing key and checking
-  it against the account's before building anything — a foreign key is refused eagerly, as
+- The librustzcash family rides an interim git pin — librustzcash `main` at rev `0891e00d`
+  (2026-08-17), which carries the PRs this SDK consumes together: librustzcash #2951, the adapter
+  and planned-transaction-graph work: `wallet::WalletMigration` takes the account's viewing key as a
+  constructor parameter and holds no spend authority (the engine's two signing entry points take an
+  `orchard::keys::SpendingKey` per call, deriving its full viewing key and checking it against the
+  account's before building anything — a foreign key is refused eagerly, as
   `CommitError::WrongSpendAuthority` / `RebuildError::WrongSpendAuthority`, rather than silently
   signing nothing), and `MigrationPlan::planned_transactions` publishes the run's execution shape —
   each row's `depends_on` and `scheduled_height` — as the same enumeration the commit builds from,
-  retiring this SDK's own fork of the adapter and its re-derivation of the plan preview. The pin
-  deliberately EXCLUDES #2938's read-only next-due selectors (`next_due_broadcast`/
-  `next_provable`): every SDK lane instead drives through the engine's public `advance_migration`
-  (the verified step plus its advisory outlook) and takes its read-only views from
-  `MigrationState::transaction_statuses`, rather than delegating to those selectors. The
+  retiring this SDK's own fork of the adapter and its re-derivation of the plan preview; #2957,
+  which chains each rebuilt expired transfer's fresh scheduled height onto the latest pending
+  transfer schedule instead of drawing it independently from the chain tip — rebuilding several
+  expired transfers at one tip previously scheduled them clustered around it, broadcasting the
+  cohort as a linkable burst rather than the spread the ZIP 318 inter-arrival delays require; and
+  #2962 + #2970, signer-capacity run sizing (`RunSigningCapacity`, `plan_migration_for_signer`,
+  `estimate_migration_runs_for_signer`, and the `RunSizing`-valued `plan_migration_sized_with` /
+  `estimate_migration_runs_sized_with`), which the per-account migration run sizing this SDK now
+  applies is built on. The pin deliberately EXCLUDES #2938's read-only next-due selectors
+  (`next_due_broadcast`/`next_provable`): every SDK lane instead drives through the engine's public
+  `advance_migration` (the verified step plus its advisory outlook) and takes its read-only views
+  from `MigrationState::transaction_statuses`, rather than delegating to those selectors. The
   compressed-schedule spacing floors (`AdvanceConfig::with_compressed_schedule_floors`) left the
   pinned lineage, and this SDK no longer derives or passes them. The pin reverts to published
-  crates at the first rc containing both #2927 and #2951.
+  crates at the first rc containing #2951, #2957, #2962 and #2970.
+- Migration runs are now sized PER ACCOUNT, by how the account signs. The contract is the
+  `keySource` an account was created or imported with (`prepare(with:walletBirthday:name:keySource:)`,
+  `importAccount(ufvk:seedFingerprint:zip32AccountIndex:purpose:name:keySource:birthday:)`), until
+  now a free-form client tag the SDK never read:
+  - An account whose `keySource` is `"keystone"` (compared case-insensitively — the tag zodl-ios
+    stamps on a Keystone import) has every migration run sized to what a Keystone signs in ONE
+    QR-scanned round (96 Orchard-family actions: 16 per note-preparation transaction, 3 per
+    transfer) instead of to a fixed note count. A run's action count follows the wallet's
+    fragmentation, so the previous flat 50-notes-per-run cap could still need several signing
+    ceremonies inside what the UI presents as one run. `proposeMigrationTransfers`,
+    `estimateMigrationRuns`, `isNoteSplitNeeded`, `prepareNoteSplit`, `residualAfterMigration` and
+    `restartCurrentMigrationStep` all plan and preview under this sizing: expect MORE runs on a
+    large or fragmented wallet, each with `MigrationRunEstimate.Run.keystoneSigningSessions == 1` (a
+    run exceeds one round only when even a one-note run would, which no smaller run can fix).
+    Because each smaller run re-consolidates its own funding notes, the whole balance migrates
+    through more preparation transactions in total than under the old flat cap, so the total ZIP 317
+    fees paid over all runs are somewhat higher.
+  - Every other account (including a `nil` `keySource`) is signed in process, where a signing round
+    has no per-interaction cost to bound, and keeps note-cap sizing — with the per-run cap raised
+    from the engine's Keystone-oriented 50 notes to 200: FEWER runs (and so fewer background
+    sync/broadcast campaigns) for the same wallet, at the cost of a longer single planning and
+    proving pass, a proportionally longer per-run transfer schedule
+    (`MigrationSchedule.estimatedDurationHours` grows with the run), and note reservations held for
+    that whole schedule. `Run.keystoneSigningSessions` is still reported for these runs, as what a
+    Keystone would need for a run of that shape, for comparison only.
+
+  No call-site edit is needed. A host that imported a Keystone account under a different `keySource`
+  must re-import it under `"keystone"` to get one-round runs — there is no API to re-tag an existing
+  account.
 - Restarting a migration (`restartCurrentMigrationStep`) now cancels the stored run through the
   engine's own cancel: the run is recorded with the terminal `Cancelled` status (previously
   `Failed`, which left a deliberate abandonment indistinguishable from a broken run) and every

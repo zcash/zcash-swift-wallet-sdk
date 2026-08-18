@@ -98,6 +98,7 @@ use zcash_pool_migration::engine::{
     self, MigrationBackend, MigrationPlan, MigrationState, MigrationTransaction,
     MigrationTransferId, MigrationTxKind, MigrationTxState, PoolMigrationRead, PoolMigrationWrite,
 };
+use zcash_pool_migration::preparation::default_portfolio;
 use zcash_pool_migration::satisfiability::{
     Advance, AdvanceConfig, DuenessTargets, ReorgSettleDepth, ReplanThreshold, UnsatisfiableKind,
     advance_migration,
@@ -113,7 +114,7 @@ use zcash_pool_migration::state::{
 use zcash_pool_migration::wallet::WalletMigrationProver;
 
 use crate::migration_engine::{
-    AdapterError, MigrationWallet, account_migration, account_store, stored_orchard_fvk,
+    AdapterError, MigrationWallet, account_migration, account_store, run_sizing, stored_orchard_fvk,
 };
 use crate::migration_finalize;
 use crate::migration_plan_cache;
@@ -708,14 +709,29 @@ fn plan_and_cache(
 /// `zcashlc_migration_residual_after_migration`'s pre-commit branch) that must NOT cache:
 /// replacing the cached plan would invalidate the handle of a proposal the user is currently
 /// reviewing, failing its later commit with `MIGRATION_PLAN_STALE` for no user-visible reason.
+///
+/// The run is bounded the way [`run_sizing`] bounds it for THIS account — one Keystone signing
+/// round for a Keystone-tagged account, the in-process note cap for every other — and
+/// [`zcashlc_migration_estimate_runs`] previews under the same value from the same seam, so a
+/// preview always describes the runs that get planned. The engine's `plan_migration` default (the
+/// crate's flat 50-note cap) is deliberately not used here: a Keystone-tagged wallet fragmented
+/// enough that its 50-note run needs several QR-scanned rounds is exactly what that default cannot
+/// express (see `zcash_pool_migration::signing_rounds`'s module doc).
 fn compute_plan(ctx: &mut CallCtx) -> anyhow::Result<Option<(MigrationPlan, BlockHeight)>> {
+    let sizing = run_sizing(&ctx.wallet, ctx.account)?;
     let backend = account_migration(&ctx.wallet, ctx.account, &mut ctx.store_conn)?;
     let mut rng = OsRng;
-    match engine::plan_migration(&ctx.network, &backend, &mut rng) {
+    match engine::plan_migration_sized_with(
+        &default_portfolio(),
+        sizing,
+        &ctx.network,
+        &backend,
+        &mut rng,
+    ) {
         Ok(plan) => {
-            // `plan_migration` itself just resolved the tip internally (`chain_tip_height`) to
-            // plan against, so this can't newly fail here; it just makes the same value available
-            // to every caller that encodes from the plan.
+            // Planning itself just resolved the tip internally (`chain_tip_height`) to plan
+            // against, so this can't newly fail here; it just makes the same value available to
+            // every caller that encodes from the plan.
             let reference_height = ctx.tip()?;
             Ok(Some((plan, reference_height)))
         }
@@ -2106,7 +2122,10 @@ pub struct FfiRunEstimate {
     /// total actions per round, `SigningRoundBudget::KEYSTONE`), computed by the optimal
     /// `MinRounds` packing. Count-based `ceil(transaction_count / max_transactions_per_session)`
     /// UNDERCOUNTS this: 6 preparations (96 actions) plus 1 transfer (3 actions) is 99 actions —
-    /// one Keystone round over — so it needs 2 rounds, not 1.
+    /// one Keystone round over — so it needs 2 rounds, not 1. For a Keystone-tagged account the
+    /// run is SIZED to one round (see `zcashlc_migration_estimate_runs`), so this is 1 unless even
+    /// a one-note run overflows the budget; for an in-process account it is what a Keystone would
+    /// need for a run of this shape — a comparison figure, not a plan.
     pub keystone_rounds: u32,
 }
 
@@ -3481,10 +3500,16 @@ pub unsafe extern "C" fn zcashlc_migration_unlock_residual(
 /// STRUCTURE, not just its total value (each run is decomposed with the real planners, and the
 /// notes a run spends plus the residuals it leaves form the next run's structure).
 ///
-/// An external signer's per-session capacity is NOT part of the estimate: the SDK evaluates
-/// signing sessions from the returned per-run transaction counts for any signer capacity,
-/// without re-running the planners. A zero (or fully sub-quantum) balance yields the ZERO-RUN
-/// estimate (`runs_len == 0`) — a legitimate result, not an error. NULL signals an error (see
+/// Each run is bounded the way `crate::migration_engine::run_sizing` bounds it for THIS account —
+/// one 96-action Keystone signing round for a Keystone-tagged account (`key_source` `"keystone"`,
+/// case-insensitive), the in-process note cap for every other — the same value, from the same
+/// seam, that every planning entry point (`zcashlc_migration_propose_transfers` and the note-split
+/// and peek calls behind `compute_plan`) plans under, so this preview describes the runs that get
+/// planned. `keystone_rounds` is still reported per run under the Keystone budget: 1 for a
+/// Keystone-tagged account (more only when even a one-note run overflows a round, which no smaller
+/// run can fix), and, for an in-process account, what a Keystone would need for that run's shape —
+/// a comparison figure. A zero (or fully sub-quantum) balance yields the ZERO-RUN estimate
+/// (`runs_len == 0`) — a legitimate result, not an error. NULL signals an error (see
 /// `zcashlc_last_error_message`).
 ///
 /// # Safety
@@ -3498,9 +3523,16 @@ pub unsafe extern "C" fn zcashlc_migration_estimate_runs(
 ) -> *mut FfiMigrationRunEstimate {
     let res = catch_panic(|| {
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
+        let sizing = run_sizing(&ctx.wallet, ctx.account)?;
         let backend = account_migration(&ctx.wallet, ctx.account, &mut ctx.store_conn)?;
         let mut rng = OsRng;
-        let estimate = match engine::estimate_migration_runs(&ctx.network, &backend, &mut rng) {
+        let estimate = match engine::estimate_migration_runs_sized_with(
+            &default_portfolio(),
+            sizing,
+            &ctx.network,
+            &backend,
+            &mut rng,
+        ) {
             Ok(estimate) => Some(estimate),
             // The estimator answers a zero balance with the zero-run estimate rather than this
             // error, so this arm should never fire; map it to the same zero-run answer anyway,
@@ -4572,6 +4604,10 @@ mod tests {
     use zcash_pool_migration::scheduling::{self, AnchorBucketInterval, SchedulingParams};
     use zcash_pool_migration::signing_rounds::min_signing_rounds;
 
+    use crate::migration_engine::ZODL_MAX_PREPARED_NOTES_PER_RUN;
+    use zcash_pool_migration::engine::RunSizing;
+    use zcash_pool_migration::signing_rounds::RunSigningCapacity;
+
     fn zat(v: u64) -> Zatoshis {
         Zatoshis::from_u64(v).unwrap()
     }
@@ -4776,6 +4812,18 @@ mod tests {
     /// account they query — exactly like a real caller, where the uuid always comes from a
     /// previously created account.
     fn create_fixture_account_with_usk(path: &std::path::Path) -> ([u8; 16], Vec<u8>) {
+        create_fixture_account_with_usk_and_key_source(path, None)
+    }
+
+    /// [`create_fixture_account_with_usk`] with the account row's `key_source` set to
+    /// `key_source` — the tag [`crate::migration_engine::run_sizing`] reads (`"keystone"` marks a
+    /// Keystone-signed account). The seed-derived account stands in for the UFVK-imported one a
+    /// real Keystone account is: sizing consults the tag alone, and holding a spending key is what
+    /// lets the fixture fund the account through [`fund_fixture_account_with_orchard_notes`].
+    fn create_fixture_account_with_usk_and_key_source(
+        path: &std::path::Path,
+        key_source: Option<&str>,
+    ) -> ([u8; 16], Vec<u8>) {
         use secrecy::SecretVec;
         use zcash_client_backend::data_api::AccountBirthday;
         use zcash_client_backend::proto::service::TreeState;
@@ -4798,7 +4846,7 @@ mod tests {
             Err(_) => panic!("the fixture treestate must convert to a birthday"),
         };
         let (account, usk) = db
-            .create_account("fixture", &seed, &birthday, None)
+            .create_account("fixture", &seed, &birthday, key_source)
             .expect("account creation must succeed");
         (
             account.expose_uuid().into_bytes(),
@@ -5723,8 +5771,8 @@ mod tests {
     }
 
     // ----- plan-cache supersession contract, end-to-end against a REALLY funded wallet
-    // (#1806 / MOB-1458): `plan_and_cache`'s only input is `engine::plan_migration`, which has
-    // no test-only backdoor (see `plan_cache_lookup_misses_and_clear`'s doc: the plan type has
+    // (#1806 / MOB-1458): `plan_and_cache`'s only input is `engine::plan_migration_sized_with`, which
+    // has no test-only backdoor (see `plan_cache_lookup_misses_and_clear`'s doc: the plan type has
     // no public constructor), so pinning the handle contract against a genuine plan means the
     // fixture wallet must hold a genuine spendable Orchard note. `zcash_client_backend`'s own
     // `TestBuilder` harness (the `test-dependencies` feature) would normally build one, but this
@@ -6901,6 +6949,247 @@ mod tests {
             2,
             "6 preparations + 1 transfer = 99 actions, one Keystone round (96) short"
         );
+    }
+
+    // ----- Per-account run sizing (MOB-1732: Keystone runs sized by signing-round capacity) -----
+
+    /// Opens the fixture wallet at `path` exactly as an FFI entry point does and answers
+    /// [`crate::migration_engine::run_sizing`] for `account_bytes`.
+    fn fixture_run_sizing(
+        path: &std::path::Path,
+        account_bytes: &[u8; 16],
+    ) -> anyhow::Result<RunSizing> {
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let ctx = unsafe {
+            open(
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                account_bytes.as_ptr(),
+                NETWORK_ID_MAINNET,
+            )
+        }
+        .expect("the fixture wallet opens");
+        crate::migration_engine::run_sizing(&ctx.wallet, ctx.account)
+    }
+
+    /// The tag is matched case-insensitively: it is what the platform layer stamps on a Keystone
+    /// import, and a wallet that capitalizes it differently is still signing through a Keystone.
+    #[test]
+    fn run_sizing_is_one_keystone_round_for_a_keystone_tagged_account() {
+        for (i, tag) in ["keystone", "Keystone", "KEYSTONE"].into_iter().enumerate() {
+            let path = init_fixture_db(&format!("zcashlc_run_sizing_keystone_{i}"));
+            let (account_bytes, _usk) =
+                create_fixture_account_with_usk_and_key_source(&path, Some(tag));
+            assert_eq!(
+                fixture_run_sizing(&path, &account_bytes).expect("the sizing resolves"),
+                RunSizing::Signer(RunSigningCapacity::KEYSTONE),
+                "a `{tag}` account must be sized to one Keystone signing round"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// Everything that is not Keystone-tagged — no tag, the platform's own `zashi` tag, an
+    /// unrelated tag, a near-miss of the Keystone tag — is signed in process, where a signing round
+    /// has no per-interaction cost to bound, so it keeps note-cap sizing at the raised in-process
+    /// cap.
+    #[test]
+    fn run_sizing_is_the_in_process_note_cap_for_every_other_account() {
+        for (i, tag) in [None, Some("zashi"), Some("ledger"), Some("keystone2")]
+            .into_iter()
+            .enumerate()
+        {
+            let path = init_fixture_db(&format!("zcashlc_run_sizing_in_process_{i}"));
+            let (account_bytes, _usk) = create_fixture_account_with_usk_and_key_source(&path, tag);
+            assert_eq!(
+                fixture_run_sizing(&path, &account_bytes).expect("the sizing resolves"),
+                RunSizing::Notes(ZODL_MAX_PREPARED_NOTES_PER_RUN),
+                "an account tagged {tag:?} signs in process and keeps note-cap sizing"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// An account the wallet does not know cannot be sized: a hard error, like every other
+    /// account-row read in the migration layer, never a silent default that would plan a run for
+    /// nobody.
+    #[test]
+    fn run_sizing_rejects_an_unknown_account() {
+        let path = init_fixture_db("zcashlc_run_sizing_unknown_account");
+        let _known = create_fixture_account(&path);
+        let unknown = [0xEEu8; 16];
+        let err = fixture_run_sizing(&path, &unknown)
+            .expect_err("an account the wallet does not know must not be sized");
+        assert!(
+            err.to_string().contains("unknown account"),
+            "unexpected error message: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The in-process cap is deliberately far above the crate's Keystone-oriented default: that
+    /// default bounds a run for a signer with a per-round budget, which an in-process signer does
+    /// not have, so a larger cap only means fewer runs for the same wallet.
+    #[test]
+    fn in_process_note_cap_is_two_hundred_and_above_the_crate_default() {
+        assert_eq!(ZODL_MAX_PREPARED_NOTES_PER_RUN.get(), 200);
+        assert!(
+            ZODL_MAX_PREPARED_NOTES_PER_RUN
+                > zcash_pool_migration::denomination::MIGRATION_MAX_PREPARED_NOTES_PER_RUN,
+            "the in-process cap must exceed the crate's per-run default"
+        );
+    }
+
+    /// The estimate and the plan share one sizing seam (`run_sizing`), and it is per account: a
+    /// Keystone-tagged account is sized to what one QR-scanned round signs — so on a wallet whose
+    /// note-cap run would take several rounds, EVERY Keystone-sized run fits one — while the same
+    /// wallet held by an in-process account is sized by the 200-note cap and needs more than one
+    /// round in some run, in fewer runs. Nothing about the funding differs between the two
+    /// accounts; only the tag does.
+    #[test]
+    fn migration_estimate_runs_sizes_a_keystone_account_to_one_signing_round_per_run() {
+        // 1,000,000 ZEC in a single note: about a hundred cap-sized (10,000 ZEC) crossings under
+        // the in-process 200-note cap, needing several layered preparation transactions —
+        // hundreds of actions, so several Keystone rounds in ONE run — while the Keystone sizing
+        // caps each run at the largest note count keeping `16 * preparations + 3 * transfers <= 96`.
+        const FUNDING_ZAT: u64 = 100_000_000_000_000;
+
+        // `(crossings, actions, keystone_rounds)` per run, in run order.
+        let estimate_for = |prefix: &str, key_source: Option<&str>| -> Vec<(u32, u32, u32)> {
+            let path = init_fixture_db(prefix);
+            let (account_bytes, usk_bytes) =
+                create_fixture_account_with_usk_and_key_source(&path, key_source);
+            fund_fixture_account_with_orchard_note(&path, &usk_bytes, FUNDING_ZAT);
+            let path_bytes = path.to_str().unwrap().as_bytes();
+            assert!(
+                unsafe {
+                    crate::zcashlc_update_chain_tip(
+                        path_bytes.as_ptr(),
+                        path_bytes.len(),
+                        3_600_000,
+                        NETWORK_ID_MAINNET,
+                    )
+                },
+                "chain-tip update must succeed"
+            );
+            let ptr = unsafe {
+                zcashlc_migration_estimate_runs(
+                    path_bytes.as_ptr(),
+                    path_bytes.len(),
+                    account_bytes.as_ptr(),
+                    NETWORK_ID_MAINNET,
+                )
+            };
+            assert!(
+                !ptr.is_null(),
+                "the estimate must succeed for a {key_source:?} account"
+            );
+            let est = unsafe { &*ptr };
+            let runs = unsafe { std::slice::from_raw_parts(est.runs, est.runs_len) }
+                .iter()
+                .map(|run| (run.crossings, run.actions, run.keystone_rounds))
+                .collect::<Vec<_>>();
+            unsafe { zcashlc_free_migration_run_estimate(ptr) };
+            let _ = std::fs::remove_file(&path);
+            runs
+        };
+
+        let keystone = estimate_for("zcashlc_estimate_runs_keystone_sized", Some("keystone"));
+        let in_process = estimate_for("zcashlc_estimate_runs_in_process_sized", None);
+
+        assert!(
+            !keystone.is_empty(),
+            "the funded Keystone account must estimate at least one run"
+        );
+        for (i, (crossings, actions, rounds)) in keystone.iter().enumerate() {
+            assert_eq!(
+                *rounds, 1,
+                "Keystone run {i} ({crossings} crossings, {actions} actions) must fit one \
+                 96-action signing round; got {rounds} rounds"
+            );
+        }
+        assert!(
+            in_process.iter().any(|(_, _, rounds)| *rounds > 1),
+            "the same wallet under the in-process note cap must need more than one Keystone \
+             round in some run, or the two sizings are not being applied: {in_process:?}"
+        );
+        assert!(
+            in_process.len() < keystone.len(),
+            "the in-process sizing must take fewer runs ({}) than the Keystone sizing ({}) over \
+             the same wallet",
+            in_process.len(),
+            keystone.len()
+        );
+    }
+
+    /// The sizing is one value, read once per call at BOTH planning sites, so the run
+    /// `zcashlc_migration_propose_transfers` plans for a Keystone-tagged account is the run
+    /// `zcashlc_migration_estimate_runs` previews as its first: same wallet, same tag, same
+    /// crossing count. A half-reverted call site — one of the two planning under the crate's flat
+    /// 50-note default again — breaks the equality (50 against 16 on this fixture), which the
+    /// estimate-only test above cannot see.
+    #[test]
+    fn migration_propose_transfers_plans_the_run_the_estimate_previews_for_a_keystone_account() {
+        let path = init_fixture_db("zcashlc_propose_matches_estimate_keystone");
+        let (account_bytes, usk_bytes) =
+            create_fixture_account_with_usk_and_key_source(&path, Some("keystone"));
+        fund_fixture_account_with_orchard_note(&path, &usk_bytes, 100_000_000_000_000);
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        assert!(
+            unsafe {
+                crate::zcashlc_update_chain_tip(
+                    path_bytes.as_ptr(),
+                    path_bytes.len(),
+                    3_600_000,
+                    NETWORK_ID_MAINNET,
+                )
+            },
+            "chain-tip update must succeed"
+        );
+
+        let est_ptr = unsafe {
+            zcashlc_migration_estimate_runs(
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                account_bytes.as_ptr(),
+                NETWORK_ID_MAINNET,
+            )
+        };
+        assert!(!est_ptr.is_null(), "the estimate must succeed");
+        let est = unsafe { &*est_ptr };
+        assert!(
+            est.runs_len > 0,
+            "the funded Keystone account must estimate at least one run"
+        );
+        let first_run_crossings = unsafe { &*est.runs }.crossings;
+        unsafe { zcashlc_free_migration_run_estimate(est_ptr) };
+
+        let propose_ptr = unsafe {
+            zcashlc_migration_propose_transfers(
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                account_bytes.as_ptr(),
+                NETWORK_ID_MAINNET,
+            )
+        };
+        assert!(
+            !propose_ptr.is_null(),
+            "a funded Keystone account must propose a real schedule"
+        );
+        let proposed_transfers = unsafe { &*propose_ptr }.transfers_len;
+        unsafe { zcashlc_free_migration_schedule(propose_ptr) };
+
+        assert_eq!(
+            proposed_transfers as u32, first_run_crossings,
+            "the proposed schedule must carry exactly the crossings the estimate previews for the \
+             first run: both plan under the Keystone sizing of one signing round per run"
+        );
+        assert!(
+            proposed_transfers < 50,
+            "a Keystone-sized run over this fixture must be smaller than the crate's flat 50-note \
+             default would make it; got {proposed_transfers} transfers"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Both locking entry points report `-1` (with the last-error channel set) on a wallet
