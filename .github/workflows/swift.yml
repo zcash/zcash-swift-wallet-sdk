@@ -59,13 +59,6 @@ jobs:
         path: ${{ matrix.products_dir }}/libzcashlc.xcframework
         key: ffi-xcframework-macos-only-${{ matrix.variant }}-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
 
-    - name: Authorize cargo against the private slipstream repository
-      if: steps.cache-ffi.outputs.cache-hit != 'true'
-      uses: ./.github/actions/authorize-slipstream
-      with:
-        app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-        app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
-
     # Only set up Rust if we need to build FFI
     - name: Setup Rust
       if: steps.cache-ffi.outputs.cache-hit != 'true'

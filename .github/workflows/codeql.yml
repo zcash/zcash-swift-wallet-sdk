@@ -125,13 +125,6 @@ jobs:
         path: BuildSupport/products-zodl-slipstream/libzcashlc.xcframework
         key: ffi-xcframework-macos-only-zodl-slipstream-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
 
-    - name: Authorize cargo against the private slipstream repository
-      if: matrix.language == 'swift' && steps.cache-ffi.outputs.cache-hit != 'true'
-      uses: ./.github/actions/authorize-slipstream
-      with:
-        app-id: ${{ secrets.SLIPSTREAM_APP_ID }}
-        app-private-key: ${{ secrets.SLIPSTREAM_APP_PRIVATE_KEY }}
-
     - name: Setup Rust
       if: matrix.language == 'swift' && steps.cache-ffi.outputs.cache-hit != 'true'
       uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
