@@ -400,7 +400,7 @@ impl AccountBalance {
     }
 
     /// [Slipstream API v2 §0-5] The account's UUID bytes, for matching against
-    /// `slipstream_v_recovery_balance.account_uuid`.
+    /// `ext_slipstream_v_recovery_balance.account_uuid`.
     pub(crate) fn uuid_bytes(&self) -> &[u8; 16] {
         &self.account_uuid
     }
@@ -1570,13 +1570,13 @@ mod recovery_hold_tests {
         let _ = std::fs::remove_file(&path);
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(
-            "CREATE TABLE slipstream_v_recovery_balance (account_uuid BLOB, balance_zat INTEGER);
+            "CREATE TABLE ext_slipstream_v_recovery_balance (account_uuid BLOB, balance_zat INTEGER);
              CREATE TABLE v_transactions (account_uuid BLOB, mined_height INTEGER, spent_note_count INTEGER, expired_unmined INTEGER);",
         )
         .unwrap();
         for (u, bal) in recovery {
             conn.execute(
-                "INSERT INTO slipstream_v_recovery_balance (account_uuid, balance_zat) VALUES (?1, ?2)",
+                "INSERT INTO ext_slipstream_v_recovery_balance (account_uuid, balance_zat) VALUES (?1, ?2)",
                 rusqlite::params![u.to_vec(), bal],
             )
             .unwrap();

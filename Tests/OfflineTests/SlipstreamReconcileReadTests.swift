@@ -3,7 +3,7 @@
 //  ZcashLightClientKit-Unit-Tests
 //
 //  [#1755] Covers the SDK read side of the slipstream reconciliation gate:
-//  `TransactionSQLDAO.unreconciledTxids()` reads the `slipstream_v_tx_reconciled`
+//  `TransactionSQLDAO.unreconciledTxids()` reads the `ext_slipstream_v_tx_reconciled`
 //  view (the view's SQL logic itself is proven in the engine's `reconcile.rs`
 //  Rust tests). Here we verify the Swift blob-read returns the right txid set,
 //  and that a database WITHOUT the view (legacy / non-slipstream) degrades to an
@@ -24,16 +24,16 @@ final class SlipstreamReconcileReadTests: XCTestCase {
         // A view is just a SELECT; the DAO issues `SELECT txid ... WHERE reconciled = 0`, so a
         // same-shaped table exercises the exact read path without rebuilding upstream's schema.
         let setup = try Connection(path)
-        try setup.run("CREATE TABLE slipstream_v_tx_reconciled (txid BLOB, reconciled INTEGER)")
+        try setup.run("CREATE TABLE ext_slipstream_v_tx_reconciled (txid BLOB, reconciled INTEGER)")
 
         let unreconciled = Data(repeating: 0xAA, count: 32)
         let reconciled = Data(repeating: 0xBB, count: 32)
         try setup.run(
-            "INSERT INTO slipstream_v_tx_reconciled (txid, reconciled) VALUES (?, 0)",
+            "INSERT INTO ext_slipstream_v_tx_reconciled (txid, reconciled) VALUES (?, 0)",
             Blob(bytes: [UInt8](unreconciled))
         )
         try setup.run(
-            "INSERT INTO slipstream_v_tx_reconciled (txid, reconciled) VALUES (?, 1)",
+            "INSERT INTO ext_slipstream_v_tx_reconciled (txid, reconciled) VALUES (?, 1)",
             Blob(bytes: [UInt8](reconciled))
         )
 

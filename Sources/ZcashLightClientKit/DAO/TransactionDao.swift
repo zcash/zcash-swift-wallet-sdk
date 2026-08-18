@@ -116,16 +116,16 @@ class TransactionSQLDAO: TransactionRepository {
         return txids
     }
 
-    // DB-READ (audited 2026-08-03): SELECT over the slipstream_v_tx_reconciled VIEW — read-only
+    // DB-READ (audited 2026-08-03): SELECT over the ext_slipstream_v_tx_reconciled VIEW — read-only
     // by construction.
     func unreconciledTxids() async throws -> Set<Data> {
-        // [#1755] Reads the slipstream-owned `slipstream_v_tx_reconciled` view (a VIEW over upstream's
+        // [#1755] Reads the slipstream-owned `ext_slipstream_v_tx_reconciled` view (a VIEW over upstream's
         // nullifier_map / *_received_notes — see slipstream `reconcile.rs`). Returns the txids whose
         // delta is not yet final because a recent-first restore scanned the spend before its input's
         // origin block. Defensive: a DB the slipstream engine never opened has no such view, so the
         // query throws — we swallow it and return an empty set (nothing held back; legacy behavior).
         do {
-            let statement = try connection().prepare("SELECT txid FROM slipstream_v_tx_reconciled WHERE reconciled = 0")
+            let statement = try connection().prepare("SELECT txid FROM ext_slipstream_v_tx_reconciled WHERE reconciled = 0")
             var result: Set<Data> = []
             for row in statement {
                 if let blob = row[0] as? Blob {

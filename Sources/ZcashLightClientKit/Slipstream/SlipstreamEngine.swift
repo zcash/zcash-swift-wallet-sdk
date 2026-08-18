@@ -232,7 +232,7 @@ public actor SlipstreamEngine {
 
     /// [Engine API v2 §0.5 / v2.1 Phase 1] The unified, PHASE-RESOLVING wallet summary:
     /// one call that is correct at every phase — recovering ⇒ the upstream summary with
-    /// per-account balances REPLACED by `slipstream_v_recovery_balance` (Σ of final,
+    /// per-account balances REPLACED by `ext_slipstream_v_recovery_balance` (Σ of final,
     /// reconciled tx deltas — never over-shows); not recovering ⇒ the upstream summary
     /// passed through unchanged. No host ever re-implements restore balance math.
     ///

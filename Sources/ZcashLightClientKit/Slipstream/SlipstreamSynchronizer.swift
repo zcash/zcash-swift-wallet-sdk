@@ -185,7 +185,7 @@ public actor SlipstreamSynchronizer: Synchronizer {
     /// [#1755] Mirrors the wallet's deep-recovery state. Seeded from the persisted summary at
     /// prepare()/start(); ENGINE-OWNED during a run (tickPoll adopts `snap.isRecovering`, which embeds
     /// the terminal fail-safe latch — Done/Error force it 0). Drives the "Restoring"
-    /// LABEL and the Activity gate: the Activity is gated PER-TRANSACTION by the `slipstream_v_tx_reconciled`
+    /// LABEL and the Activity gate: the Activity is gated PER-TRANSACTION by the `ext_slipstream_v_tx_reconciled`
     /// view (not held wholesale), so reconciled txs surface immediately while only the provisional ones
     /// wait. (Balance is NOT special-cased — live is correct on a fresh restore; see tickPoll.) Tracks the
     /// LIVE signal, so it self-corrects across rewind / truncate / stop.
@@ -1000,7 +1000,7 @@ public actor SlipstreamSynchronizer: Synchronizer {
 
     /// [#1755] During a recent-first RESTORE the scheduler scans a recent block that spends an older note
     /// before that note's origin block, so a self-send's change reads as a phantom "+receive" until the
-    /// spend links. `slipstream_v_tx_reconciled` flags those still-provisional txs, and we hold them out of
+    /// spend links. `ext_slipstream_v_tx_reconciled` flags those still-provisional txs, and we hold them out of
     /// the Activity list until their delta is final (genuine receives + already-linked sends still surface
     /// as soon as they appear).
     ///
@@ -1030,7 +1030,7 @@ public actor SlipstreamSynchronizer: Synchronizer {
     }
 
     /// Pure: which txs the Activity list shows. Outside recovery (or with nothing flagged) every tx passes;
-    /// during recovery the unreconciled txids (a dangling shielded spend per `slipstream_v_tx_reconciled`)
+    /// during recovery the unreconciled txids (a dangling shielded spend per `ext_slipstream_v_tx_reconciled`)
     /// are held back until their delta is final. Static + pure so it is unit-testable.
     static func reconciledVisible(
         _ txs: [ZcashTransaction.Overview],

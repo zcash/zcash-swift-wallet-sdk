@@ -528,7 +528,7 @@ class SlipstreamOfflineTests: ZcashTestCase {
 
     // MARK: - reconciledVisible pure-helper unit tests ([#1755] vanishing-tx fix)
     //
-    // The reconcile filter (`slipstream_v_tx_reconciled`) must hold provisional txs back ONLY during an
+    // The reconcile filter (`ext_slipstream_v_tx_reconciled`) must hold provisional txs back ONLY during an
     // active recovery. On a synced wallet a mined tx the view flags unreconciled (transiently OR, as seen
     // in the field with a Keystone send, persistently) must still show — dropping a confirmed tx is the
     // "vanishing transaction" bug.
