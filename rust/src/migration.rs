@@ -4572,6 +4572,10 @@ mod tests {
     use zcash_pool_migration::scheduling::{self, AnchorBucketInterval, SchedulingParams};
     use zcash_pool_migration::signing_rounds::min_signing_rounds;
 
+    use crate::migration_engine::ZODL_MAX_PREPARED_NOTES_PER_RUN;
+    use zcash_pool_migration::engine::RunSizing;
+    use zcash_pool_migration::signing_rounds::RunSigningCapacity;
+
     fn zat(v: u64) -> Zatoshis {
         Zatoshis::from_u64(v).unwrap()
     }
@@ -4776,6 +4780,18 @@ mod tests {
     /// account they query — exactly like a real caller, where the uuid always comes from a
     /// previously created account.
     fn create_fixture_account_with_usk(path: &std::path::Path) -> ([u8; 16], Vec<u8>) {
+        create_fixture_account_with_usk_and_key_source(path, None)
+    }
+
+    /// [`create_fixture_account_with_usk`] with the account row's `key_source` set to
+    /// `key_source` — the tag [`crate::migration_engine::run_sizing`] reads (`"keystone"` marks a
+    /// Keystone-signed account). The seed-derived account stands in for the UFVK-imported one a
+    /// real Keystone account is: sizing consults the tag alone, and holding a spending key is what
+    /// lets the fixture fund the account through [`fund_fixture_account_with_orchard_notes`].
+    fn create_fixture_account_with_usk_and_key_source(
+        path: &std::path::Path,
+        key_source: Option<&str>,
+    ) -> ([u8; 16], Vec<u8>) {
         use secrecy::SecretVec;
         use zcash_client_backend::data_api::AccountBirthday;
         use zcash_client_backend::proto::service::TreeState;
@@ -4798,7 +4814,7 @@ mod tests {
             Err(_) => panic!("the fixture treestate must convert to a birthday"),
         };
         let (account, usk) = db
-            .create_account("fixture", &seed, &birthday, None)
+            .create_account("fixture", &seed, &birthday, key_source)
             .expect("account creation must succeed");
         (
             account.expose_uuid().into_bytes(),
@@ -6900,6 +6916,94 @@ mod tests {
             min_signing_rounds(6, 1, SigningRoundBudget::KEYSTONE),
             2,
             "6 preparations + 1 transfer = 99 actions, one Keystone round (96) short"
+        );
+    }
+
+    // ----- Per-account run sizing (MOB-1732: Keystone runs sized by signing-round capacity) -----
+
+    /// Opens the fixture wallet at `path` exactly as an FFI entry point does and answers
+    /// [`crate::migration_engine::run_sizing`] for `account_bytes`.
+    fn fixture_run_sizing(
+        path: &std::path::Path,
+        account_bytes: &[u8; 16],
+    ) -> anyhow::Result<RunSizing> {
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        let ctx = unsafe {
+            open(
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                account_bytes.as_ptr(),
+                NETWORK_ID_MAINNET,
+            )
+        }
+        .expect("the fixture wallet opens");
+        crate::migration_engine::run_sizing(&ctx.wallet, ctx.account)
+    }
+
+    /// The tag is matched case-insensitively: it is what the platform layer stamps on a Keystone
+    /// import, and a wallet that capitalizes it differently is still signing through a Keystone.
+    #[test]
+    fn run_sizing_is_one_keystone_round_for_a_keystone_tagged_account() {
+        for (i, tag) in ["keystone", "Keystone", "KEYSTONE"].into_iter().enumerate() {
+            let path = init_fixture_db(&format!("zcashlc_run_sizing_keystone_{i}"));
+            let (account_bytes, _usk) =
+                create_fixture_account_with_usk_and_key_source(&path, Some(tag));
+            assert_eq!(
+                fixture_run_sizing(&path, &account_bytes).expect("the sizing resolves"),
+                RunSizing::Signer(RunSigningCapacity::KEYSTONE),
+                "a `{tag}` account must be sized to one Keystone signing round"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// Everything that is not Keystone-tagged — no tag, the platform's own `zashi` tag, an
+    /// unrelated tag — is signed in process, where a signing round has no per-interaction cost to
+    /// bound, so it keeps note-cap sizing at the raised in-process cap.
+    #[test]
+    fn run_sizing_is_the_in_process_note_cap_for_every_other_account() {
+        for (i, tag) in [None, Some("zashi"), Some("ledger")]
+            .into_iter()
+            .enumerate()
+        {
+            let path = init_fixture_db(&format!("zcashlc_run_sizing_in_process_{i}"));
+            let (account_bytes, _usk) = create_fixture_account_with_usk_and_key_source(&path, tag);
+            assert_eq!(
+                fixture_run_sizing(&path, &account_bytes).expect("the sizing resolves"),
+                RunSizing::Notes(ZODL_MAX_PREPARED_NOTES_PER_RUN),
+                "an account tagged {tag:?} signs in process and keeps note-cap sizing"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    /// An account the wallet does not know cannot be sized: a hard error, like every other
+    /// account-row read in the migration layer, never a silent default that would plan a run for
+    /// nobody.
+    #[test]
+    fn run_sizing_rejects_an_unknown_account() {
+        let path = init_fixture_db("zcashlc_run_sizing_unknown_account");
+        let _known = create_fixture_account(&path);
+        let unknown = [0xEEu8; 16];
+        let err = fixture_run_sizing(&path, &unknown)
+            .expect_err("an account the wallet does not know must not be sized");
+        assert!(
+            err.to_string().contains("unknown account"),
+            "unexpected error message: {err}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The in-process cap is deliberately far above the crate's Keystone-oriented default: that
+    /// default bounds a run for a signer with a per-round budget, which an in-process signer does
+    /// not have, so a larger cap only means fewer runs for the same wallet.
+    #[test]
+    fn in_process_note_cap_is_two_hundred_and_above_the_crate_default() {
+        assert_eq!(ZODL_MAX_PREPARED_NOTES_PER_RUN.get(), 200);
+        assert!(
+            ZODL_MAX_PREPARED_NOTES_PER_RUN
+                > zcash_pool_migration::denomination::MIGRATION_MAX_PREPARED_NOTES_PER_RUN,
+            "the in-process cap must exceed the crate's per-run default"
         );
     }
 
