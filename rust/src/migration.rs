@@ -7121,6 +7121,76 @@ mod tests {
         );
     }
 
+    /// The sizing is one value, read once per call at BOTH planning sites, so the run
+    /// `zcashlc_migration_propose_transfers` plans for a Keystone-tagged account is the run
+    /// `zcashlc_migration_estimate_runs` previews as its first: same wallet, same tag, same
+    /// crossing count. A half-reverted call site — one of the two planning under the crate's flat
+    /// 50-note default again — breaks the equality (50 against 16 on this fixture), which the
+    /// estimate-only test above cannot see.
+    #[test]
+    fn migration_propose_transfers_plans_the_run_the_estimate_previews_for_a_keystone_account() {
+        let path = init_fixture_db("zcashlc_propose_matches_estimate_keystone");
+        let (account_bytes, usk_bytes) =
+            create_fixture_account_with_usk_and_key_source(&path, Some("keystone"));
+        fund_fixture_account_with_orchard_note(&path, &usk_bytes, 100_000_000_000_000);
+        let path_bytes = path.to_str().unwrap().as_bytes();
+        assert!(
+            unsafe {
+                crate::zcashlc_update_chain_tip(
+                    path_bytes.as_ptr(),
+                    path_bytes.len(),
+                    3_600_000,
+                    NETWORK_ID_MAINNET,
+                )
+            },
+            "chain-tip update must succeed"
+        );
+
+        let est_ptr = unsafe {
+            zcashlc_migration_estimate_runs(
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                account_bytes.as_ptr(),
+                NETWORK_ID_MAINNET,
+            )
+        };
+        assert!(!est_ptr.is_null(), "the estimate must succeed");
+        let est = unsafe { &*est_ptr };
+        assert!(
+            est.runs_len > 0,
+            "the funded Keystone account must estimate at least one run"
+        );
+        let first_run_crossings = unsafe { &*est.runs }.crossings;
+        unsafe { zcashlc_free_migration_run_estimate(est_ptr) };
+
+        let propose_ptr = unsafe {
+            zcashlc_migration_propose_transfers(
+                path_bytes.as_ptr(),
+                path_bytes.len(),
+                account_bytes.as_ptr(),
+                NETWORK_ID_MAINNET,
+            )
+        };
+        assert!(
+            !propose_ptr.is_null(),
+            "a funded Keystone account must propose a real schedule"
+        );
+        let proposed_transfers = unsafe { &*propose_ptr }.transfers_len;
+        unsafe { zcashlc_free_migration_schedule(propose_ptr) };
+
+        assert_eq!(
+            proposed_transfers as u32, first_run_crossings,
+            "the proposed schedule must carry exactly the crossings the estimate previews for the \
+             first run: both plan under the Keystone sizing of one signing round per run"
+        );
+        assert!(
+            proposed_transfers < 50,
+            "a Keystone-sized run over this fixture must be smaller than the crate's flat 50-note \
+             default would make it; got {proposed_transfers} transfers"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     /// Both locking entry points report `-1` (with the last-error channel set) on a wallet
     /// database that was never initialized: the error-path smoke for the `i64` sentinel.
     #[test]
