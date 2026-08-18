@@ -22,7 +22,7 @@ import Foundation
 ///
 /// WHAT THIS ACTOR GUARANTEES: no two Swift-initiated writes ever interleave.
 ///
-/// WHAT IT DOES NOT AND CANNOT GUARANTEE: the slipstream engine writes to the same database
+/// WHAT IT DOES NOT AND CANNOT GUARANTEE: an alternative sync engine may write to the same database
 /// files from Rust-managed threads continuously, outside any Swift actor — Swift-side
 /// serialization has never covered it. Nor does the actor provide cross-call snapshot
 /// consistency: every FFI call opens its own connection and sees its own WAL snapshot. Data

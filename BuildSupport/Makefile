@@ -12,24 +12,33 @@ MACOS_ARCHS = x86_64-apple-darwin aarch64-apple-darwin
 IOS_SIM_ARCHS = $(IOS_SIM_ARCHS_STABLE)
 ALL_ARCHS = $(IOS_DEVICE_ARCHS) $(IOS_SIM_ARCHS) $(MACOS_ARCHS)
 
-# SLIPSTREAM=1 links the AGPL-3.0-only zodl-slipstream engine (Cargo feature
-# `slipstream`; the `gpu` feature implies it — see Cargo.toml) and assembles
-# the libzcashlc-zodl-slipstream artifact instead of the default clean one.
-# Output lands in a separate products-slipstream/ tree so the two variants
-# never collide and so the clean tree's paths — which CI cache keys are
-# pinned to — stay byte-identical no matter which variant was built last.
-# A GPU-enabled build is, at the Cargo level, also a slipstream build; this
-# is the one knob that controls both the feature flags below and the header/
-# output-tree split, so there is nothing separate for a GPU build to fight.
-SLIPSTREAM ?= 0
-ifeq ($(SLIPSTREAM),1)
-PRODUCTS_DIR := products-slipstream
-CARGO_FEATURE_FLAGS := --features slipstream
-UNIFDEF_FLAG := -DZCASHLC_FEATURE_SLIPSTREAM
+# ZODL_SLIPSTREAM=1 links the AGPL-3.0-only zodl-slipstream engine (Cargo
+# feature `zodl-slipstream`; the `gpu` feature implies it — see Cargo.toml)
+# and assembles the libzcashlc-zodl-slipstream artifact instead of the default
+# clean one. Output lands in a separate products-zodl-slipstream/ tree so the
+# two variants never collide and so the clean tree's paths — which CI cache
+# keys are pinned to — stay byte-identical no matter which variant was built
+# last. A GPU-enabled build is, at the Cargo level, also a zodl-slipstream
+# build; this is the one knob that controls both the feature flags below and
+# the header/output-tree split, so there is nothing separate for a GPU build
+# to fight.
+#
+# The engine requires BOTH the cargo feature and the `--cfg zodl_slipstream`
+# rustflag to be enabled — the feature alone (e.g. via `--all-features`) must
+# not turn it on. CARGO_ENV carries that rustflag, appended to any
+# caller-provided RUSTFLAGS rather than clobbering it.
+RUSTFLAGS ?=
+ZODL_SLIPSTREAM ?= 0
+ifeq ($(ZODL_SLIPSTREAM),1)
+PRODUCTS_DIR := products-zodl-slipstream
+CARGO_FEATURE_FLAGS := --features zodl-slipstream
+UNIFDEF_FLAG := -DZCASHLC_ZODL_SLIPSTREAM
+CARGO_ENV := RUSTFLAGS="$(RUSTFLAGS) --cfg zodl_slipstream"
 else
 PRODUCTS_DIR := products
 CARGO_FEATURE_FLAGS :=
-UNIFDEF_FLAG := -UZCASHLC_FEATURE_SLIPSTREAM
+UNIFDEF_FLAG := -UZCASHLC_ZODL_SLIPSTREAM
+CARGO_ENV :=
 endif
 
 # Cargo serialises concurrent invocations behind a lock on the shared host
@@ -40,7 +49,7 @@ endif
 #
 # Passing several `--target` flags to one invocation puts every architecture in a
 # single job graph, letting those passes run concurrently.
-CARGO_BUILD = RUSTUP_TOOLCHAIN=stable cargo build --manifest-path ../Cargo.toml --release $(CARGO_FEATURE_FLAGS)
+CARGO_BUILD = RUSTUP_TOOLCHAIN=stable $(CARGO_ENV) cargo build --manifest-path ../Cargo.toml --release $(CARGO_FEATURE_FLAGS)
 cargo_targets = $(addprefix --target ,$(1))
 
 # CARGO_TARGET_DIR mirrors cargo's own env var of the same name (default
@@ -51,13 +60,14 @@ cargo_targets = $(addprefix --target ,$(1))
 # line-assigned make variables are exported to recipe subshells automatically.
 #
 # This is the local-dev escape hatch for feature-flip rebuild thrash: cargo's
-# target dir is shared between the clean and slipstream variants, so flipping
-# SLIPSTREAM between local runs changes the active feature set for every crate
-# in the graph and pays the ~2-minute-per-architecture LTO relink again on the
-# next flip. CI is unaffected (each variant gets its own cache, keyed on
-# SLIPSTREAM), but local back-and-forth iteration thrashes. Point it at a
-# variant-specific directory to keep both fingerprint sets warm, e.g.:
-#   CARGO_TARGET_DIR=../target-slipstream make xcframework SLIPSTREAM=1
+# target dir is shared between the clean and zodl-slipstream variants, so
+# flipping ZODL_SLIPSTREAM between local runs changes the active feature set
+# for every crate in the graph and pays the ~2-minute-per-architecture LTO
+# relink again on the next flip. CI is unaffected (each variant gets its own
+# cache, keyed on ZODL_SLIPSTREAM), but local back-and-forth iteration
+# thrashes. Point it at a variant-specific directory to keep both fingerprint
+# sets warm, e.g.:
+#   CARGO_TARGET_DIR=../target-zodl-slipstream make xcframework ZODL_SLIPSTREAM=1
 CARGO_TARGET_DIR ?= ../target
 
 RUST_SRCS = $(shell find ../rust -name "*.rs") ../Cargo.toml
@@ -73,7 +83,7 @@ release: clean xcframework
 .PHONY: release
 
 # Discard assembled build products for the currently selected variant (see
-# SLIPSTREAM above). CARGO_TARGET_DIR is deliberately preserved so that
+# ZODL_SLIPSTREAM above). CARGO_TARGET_DIR is deliberately preserved so that
 # cargo's fingerprints (and CI's restored Rust cache) still apply; cargo
 # decides what genuinely needs rebuilding. Every framework under
 # $(PRODUCTS_DIR)/ is rebuilt from scratch, so no stale slice can survive this.
@@ -110,7 +120,7 @@ $(PRODUCTS_DIR)/%/frameworks/libzcashlc.framework: $(PRODUCTS_DIR)/%/universal/l
 	rm -rf $@
 	mkdir -p $@/Headers
 	cp $(PRODUCTS_DIR)/$*/universal/libzcashlc.a $@/libzcashlc
-	# cbindgen wraps the slipstream FFI surface in #if defined(ZCASHLC_FEATURE_SLIPSTREAM)
+	# cbindgen wraps the zodl-slipstream FFI surface in #if defined(ZCASHLC_ZODL_SLIPSTREAM)
 	# (rust/build.rs) so a single generated header serves both variants; unifdef
 	# specializes the copy that actually ships, per $(UNIFDEF_FLAG) above.
 	# -x2: exit status 1 just means "output differs from input", which is the

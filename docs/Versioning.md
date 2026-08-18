@@ -80,7 +80,7 @@ protection rests on a release invariant:
 Consumers who want to avoid this class of surprise entirely should pin
 pre-releases with `exact:` rather than using pre-release lower bounds.
 
-### 2. Pin the slipstream variant in `Package.swift`, not Xcode's version field
+### 2. Pin the ZODL Slipstream variant in `Package.swift`, not Xcode's version field
 
 Xcode's Package Dependencies UI runs its own version-string validation,
 separate from SwiftPM's parser, and it has a documented history of mishandling
@@ -106,7 +106,7 @@ the variant appears *after* the release candidates and *before* the release.
 ### 4. Both variants share one release
 
 The two tags of a release point at almost-identical commits: the variant tag
-is exactly one commit ahead, flipping the `slipstreamVariantPinned` constant
+is exactly one commit ahead, flipping the `zodlSlipstreamVariantPinned` constant
 in `Package.swift`. The flag lives in the manifest bytes (rather than only in
 a marker file) because SwiftPM's shared manifest cache is keyed on manifest
 *content* — byte-identical manifests across the two tags would let one

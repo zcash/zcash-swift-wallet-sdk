@@ -111,11 +111,11 @@ Changes are relative to `2.8.0-rc.3`.
   `libzcashlc-zodl-slipstream.xcframework` and adds the `ZODLSlipstream` product. Hosts using
   `SlipstreamSynchronizer` must pin the variant tag with `exact:` (version ranges never resolve to
   it — the SemVer pre-release suffix sorts below the release, by design) and add
-  `import ZODLSlipstream`; everything else about the API is unchanged. Shipping the slipstream
+  `import ZODLSlipstream`; everything else about the API is unchanged. Shipping the ZODL Slipstream
   variant has licensing consequences — read `Sources/ZODLSlipstream/NOTICE.md` before adopting it.
-  On the Rust side the engine sits behind the new `slipstream` cargo feature (`gpu` implies it),
-  and the swift-tools-version floor rises from 5.6 to 5.9 (the split relies on the `package`
-  access modifier).
+  On the Rust side the engine sits behind the new `zodl-slipstream` cargo feature plus the
+  required `--cfg zodl_slipstream` rustflag (`gpu` implies both), and the swift-tools-version
+  floor rises from 5.6 to 5.9 (the split relies on the `package` access modifier).
 
 - The migration sync gate is now BEHAVIOR-BASED, and its post-broadcast privacy buffer is gone
   along with `Synchronizer.migrationPrivacySyncBufferDuration` (the protocol requirement and its

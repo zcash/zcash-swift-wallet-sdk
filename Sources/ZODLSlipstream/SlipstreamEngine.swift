@@ -289,9 +289,19 @@ public actor SlipstreamEngine {
 
 // MARK: - Wallet-provisioning anchor (v2.1 E-6, handle-less)
 
-// `SlipstreamRestoreAnchor` itself lives in the core target
-// (Initializer+SlipstreamAnchor.swift) because `Initializer.slipstreamAnchorSource`
-// names it; only this engine-driven resolver belongs here.
+/// [E-6] The engine-resolved wallet-provisioning anchor. RESTORE: `height` = the
+/// recover_until to provision (always valid — live tip, or the engine's offline
+/// `max(bundled checkpoint, birthday+1)` fallback), `treeState` nil (the host keeps its
+/// birthday checkpoint). NEW: the reorg-safe recent server tree state, or nil when
+/// offline (the host keeps its bundled checkpoint defaults).
+///
+/// This type is deliberately confined to this module: the core SDK's provisioning seam
+/// takes a tuple of types it already owns, so a wallet built without ZODL Slipstream
+/// carries nothing that names or reaches the engine.
+struct SlipstreamRestoreAnchor {
+    let height: BlockHeight
+    let treeState: TreeState?
+}
 
 extension SlipstreamEngine {
     /// [E-6] Resolve the provisioning anchor via `zcashlc_slipstream_restore_anchor` —

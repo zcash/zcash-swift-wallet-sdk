@@ -102,10 +102,10 @@ mod migration_finalize;
 mod migration_keystone;
 mod migration_plan_cache;
 mod migration_turnstile;
-#[cfg(feature = "slipstream")]
+#[cfg(all(zodl_slipstream, feature = "zodl-slipstream"))]
 mod retained_marks;
-#[cfg(feature = "slipstream")]
-mod slipstream_ffi;
+#[cfg(all(zodl_slipstream, feature = "zodl-slipstream"))]
+mod zodl_slipstream_ffi;
 mod tor;
 mod voting;
 

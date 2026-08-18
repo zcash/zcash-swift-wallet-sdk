@@ -36,7 +36,7 @@ the MIT license (see the repository's `LICENSE` file).
 Depend on a plain `X.Y.Z` release tag (the default) and use the
 `ZcashLightClientKit` product with `SDKSynchronizer`. Classic Spend-before-Sync
 scan ordering is part of the default product; only the accelerated Rust engine
-(`SlipstreamSynchronizer`) is AGPL-licensed. The slipstream variant is only
+(`SlipstreamSynchronizer`) is AGPL-licensed. The ZODL Slipstream variant is only
 ever selected by explicitly pinning an `X.Y.Z-zodl-slipstream` tag.
 
 The full AGPL-3.0 text is available at

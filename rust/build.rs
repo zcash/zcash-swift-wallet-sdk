@@ -27,13 +27,28 @@ fn main() {
 
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
 
+    // The ZODL Slipstream FFI surface (AGPL engine) is gated on BOTH a custom cfg
+    // and a cargo feature, so `--all-features` alone cannot compile it. cbindgen
+    // therefore needs a `[defines]` entry for each half of that conjunction; both
+    // map to the same C define, so the emitted guard collapses to one condition.
+    // A bare cfg cannot be expressed through `.with_define()` (which always writes
+    // a `key = value` entry), so the defines go in via the config directly.
+    // One deterministic header serves both artifact variants; the shipped copy is
+    // specialized with unifdef (see BuildSupport/Makefile).
+    let mut cbindgen_config = cbindgen::Config::default();
+    cbindgen_config.defines.insert(
+        "zodl_slipstream".to_string(),
+        "ZCASHLC_ZODL_SLIPSTREAM".to_string(),
+    );
+    cbindgen_config.defines.insert(
+        "feature = zodl-slipstream".to_string(),
+        "ZCASHLC_ZODL_SLIPSTREAM".to_string(),
+    );
+
     if let Ok(b) = cbindgen::Builder::new()
+        .with_config(cbindgen_config)
         .with_crate(crate_dir)
         .with_language(cbindgen::Language::C)
-        // The slipstream FFI surface (AGPL engine) is cfg-gated; emit it inside
-        // an #ifdef so one deterministic header serves both artifact variants.
-        // BuildSupport/Makefile specializes the shipped copy with unifdef.
-        .with_define("feature", "slipstream", "ZCASHLC_FEATURE_SLIPSTREAM")
         .rename_item("Account", "FfiAccount")
         .rename_item("Uuid", "FfiUuid")
         .rename_item("Accounts", "FfiAccounts")

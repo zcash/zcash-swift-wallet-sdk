@@ -111,3 +111,147 @@ Suites: `swift build && swift test --filter OfflineTests` (no marker, clean loca
 - `BuildSupport/Makefile`, `Scripts/prepare-release.sh`, `Scripts/release.sh`, `Scripts/init-local-ffi.sh`, `Scripts/rebuild-local-ffi.sh`
 - `Sources/ZcashLightClientKit/Slipstream/*` → `Sources/ZODLSlipstream/*` (+ `SlipstreamRestoreAnchor` extraction from `SlipstreamEngine.swift:296` into core)
 - `.github/workflows/{build-ffi,swift,codeql}.yml`, delete `.github/actions/authorize-slipstream/`
+
+---
+
+# Revision 2 — review feedback (PR #1964, 2026-08-18)
+
+Seven review comments changed three parts of the design. Recorded here so the
+rationale survives the PR.
+
+## R1. The engine needs a non-`feature` cfg gate (nuttycom)
+
+> "These should be done using `cfg(all(zodl_slipstream, feature = "slipstream"))`
+> flags or something of the sort, so that `--all-features` does not enable it."
+
+A bare cargo feature is enabled by `cargo build/test --all-features`, which is a
+routine CI and developer command — so the AGPL surface could be compiled by
+someone who never asked for it. The gate becomes a **conjunction**:
+
+```rust
+#[cfg(all(zodl_slipstream, feature = "zodl-slipstream"))]
+mod zodl_slipstream_ffi;
+```
+
+`zodl_slipstream` is a custom cfg set via `RUSTFLAGS="--cfg zodl_slipstream"`
+(the same mechanism `cfg(zcash_voting)` already uses in this crate, including a
+`check-cfg` entry under `[lints.rust]`). `--all-features` alone therefore emits
+zero `zcashlc_slipstream_*` symbols.
+
+The cargo feature is still required, because only a feature can make the
+`zodl-slipstream` *dependency* optional — a cfg flag cannot gate a dependency.
+Feature = "link the crate"; cfg = "compile the FFI surface". Both are needed;
+neither alone produces an engine-enabled build.
+
+Consequences: `rust/build.rs` maps **both** cfgs to the C define, and every
+build path (`BuildSupport/Makefile`, the local-FFI scripts) passes the RUSTFLAG
+alongside `--features`. Verification gains a case: `--all-features` (without the
+cfg) must produce zero slipstream symbols.
+
+## R2. Full "ZODL Slipstream" name on every identifier (pacu)
+
+> "the name is ZODL Slipstream. Features, config flags, product identifiers or
+> anything related to it must have its complete name 'ZODL Slipstream'"
+
+| Kind | Was | Now |
+| :-- | :-- | :-- |
+| Cargo feature | `slipstream` | `zodl-slipstream` |
+| Rust cfg | — | `zodl_slipstream` |
+| Rust module | `rust/src/slipstream_ffi.rs` | `rust/src/zodl_slipstream_ffi.rs` |
+| C define | `ZCASHLC_FEATURE_SLIPSTREAM` | `ZCASHLC_ZODL_SLIPSTREAM` |
+| Make variable | `SLIPSTREAM=0\|1` | `ZODL_SLIPSTREAM=0\|1` |
+| Script flag | `--slipstream` | `--zodl-slipstream` |
+| Products tree | `products-slipstream/` | `products-zodl-slipstream/` |
+| Make target | `test-offline-slipstream` | `test-offline-zodl-slipstream` |
+| Manifest constants | `slipstreamVariantPinned`, `slipstreamFFIURL/Checksum` | `zodlSlipstreamVariantPinned`, `zodlSlipstreamFFIURL/Checksum` |
+| Test targets | `SlipstreamOfflineTests`, `SlipstreamDarksideTests` | `ZODLSlipstreamOfflineTests`, `ZODLSlipstreamDarksideTests` |
+
+Already compliant and unchanged: product/target/module `ZODLSlipstream`,
+artifact `libzcashlc-zodl-slipstream.xcframework.zip`, marker
+`.zodl-slipstream-variant`, variant tag `X.Y.Z-zodl-slipstream`, CI matrix
+variant `zodl-slipstream`.
+
+Open question deliberately NOT actioned: the pre-existing public Swift types
+(`SlipstreamSynchronizer`, `SlipstreamEngine`, …) predate this PR and renaming
+them is a downstream-breaking API change; they are already namespaced by the
+`ZODLSlipstream` module. Flagged for the author to decide separately.
+
+## R3. Core must contain nothing ZODL-Slipstream-related (pacu)
+
+> "this extraction does not make much sense the Initializer still preserves the
+> slipstream related property … Clients not using ZODL Slipstream should not get
+> anything related to it."
+> "Non-ZODL-Slipstream variants should not get this code or this type."
+
+Revision 1 extracted `SlipstreamRestoreAnchor` **into** core so the
+`Initializer` hook could name it. That was backwards. Revision 2:
+
+- `Sources/ZcashLightClientKit/Initializer+SlipstreamAnchor.swift` is **deleted**;
+  `SlipstreamRestoreAnchor` returns to `Sources/ZODLSlipstream/` where it began.
+  (This also answers nuttycom's "need more information about this move" — the
+  move is reverted rather than explained.)
+- The `Initializer` seam is renamed to a neutral, generally-useful extension
+  point and returns a **tuple of types core already has**, so core gains no new
+  type and never names the engine:
+
+  ```swift
+  package var provisioningAnchorSource:
+      ((Bool, BlockHeight, BlockHeight) async -> (height: BlockHeight, treeState: TreeState?)?)?
+  ```
+
+  `resolveSlipstreamAnchor` becomes `resolveProvisioningAnchor`. The add-on maps
+  its own `SlipstreamRestoreAnchor` into the tuple when installing the closure.
+  (A tuple over a new core type also matches the SDK's standing "no new types"
+  preference.)
+
+A seam of some shape is unavoidable: the anchor must be resolved lazily, in the
+middle of `initialize()`, only once `listAccounts()` proves the wallet is
+unprovisioned — resolving it eagerly would cost a network round-trip (and leak
+one) on every launch of an already-provisioned wallet. What the review requires,
+and what this delivers, is that the seam is not *branded*: nothing in the clean
+product names, or can reach, the engine.
+
+Remaining core references are swept in the same pass; anything that cannot be
+removed without breaking public API (e.g. the `ZcashError.rustSlipstream*`
+cases, which are public enum cases generated by Sourcery) is reported for an
+explicit decision rather than changed unilaterally.
+
+## R4. The test is AGPL exposure, not the word "Slipstream"
+
+Clarified goal: an SDK client who does not want ZODL Slipstream must be unable
+to infringe its licence *unintentionally*. That is a statement about what code
+ends up in their binary — not about vocabulary in our source. It settles the two
+items R3 left open:
+
+- **`ZcashError.rustSlipstream*` (5 public cases): KEEP.** These are our own
+  MIT-licensed enum cases and message strings. Naming an engine does not
+  incorporate it, so they create no AGPL exposure for a clean client. Removing
+  public enum cases would break exhaustive `switch`es for *every* client
+  (against the SDK's standing "minimize API breaks" rule) and buy nothing.
+- **`slipstream_v_tx_reconciled` read in `TransactionDao`: KEEP.** A SQL string
+  naming a view is likewise our text, not the engine's code. The query returns
+  empty against a database the engine never touched.
+
+The de-branding already applied to the `Initializer` seam still stands on its
+own merits — a core API that names one specific engine is bad layering — but it
+is a design improvement, not a licensing control.
+
+### What the licensing controls actually are
+
+1. The clean artifact contains **no AGPL machine code**. Verified at the object
+   level: no `zodl_slipstream` symbols and no engine object files in the
+   archive, not merely an absence of our `zcashlc_slipstream_*` wrappers.
+   (Checking only the wrappers is the trap: their absence says nothing about
+   whether the engine's own code was linked in.)
+2. A clean build never even **resolves** the crate — `cargo tree` lists zero
+   `zodl` packages, so the AGPL source is not fetched, let alone compiled.
+3. `--all-features` cannot produce an engine build (R1's cfg), because that is
+   the one command a well-meaning contributor or CI job runs without intending
+   to select anything.
+4. A consumer cannot reach the variant by accident: SwiftPM excludes
+   pre-release tags from version ranges, so only an explicit
+   `exact: "X.Y.Z-zodl-slipstream"` selects it.
+5. The release path **fails closed**: `prepare-release.sh` and the clean CI job
+   abort if AGPL code is detected in the default artifact, so shipping an
+   infringing default requires defeating an explicit gate, not merely
+   forgetting a flag.

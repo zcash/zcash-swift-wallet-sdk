@@ -1415,7 +1415,7 @@ public extension Synchronizer {
     //
     // Default implementations so adding the migration group to the protocol is not a
     // source-breaking change for downstream/stacked conformers (in particular the
-    // `SlipstreamSynchronizer` stack, until it carries its own implementations). Conformers with
+    // alternative synchronizer stack, until it carries its own implementations). Conformers with
     // migration support (`SDKSynchronizer`) override every one of these; conformers that don't fall
     // through here. The throwing members all throw `MigrationUnimplemented`; the four non-throwing
     // members get inert defaults instead, documented below — conformers must override them to offer

@@ -26,14 +26,15 @@ CARGO ?= cargo
 BUILD_SUPPORT := BuildSupport
 SCRIPTS := Scripts
 
-# SLIPSTREAM=1 builds/links the ZODL Slipstream (AGPL-3.0-only) variant: the
-# ffi-* targets compile the Rust with the `slipstream` cargo feature into the
-# parallel products-slipstream/ tree, and configure-local-ffi maintains the
-# .zodl-slipstream-variant marker Package.swift keys the target graph off.
-# See BuildSupport/Makefile and Sources/ZODLSlipstream/NOTICE.md.
-SLIPSTREAM ?= 0
-ifeq ($(SLIPSTREAM),1)
-FFI_PRODUCTS := products-slipstream
+# ZODL_SLIPSTREAM=1 builds/links the ZODL Slipstream (AGPL-3.0-only) variant:
+# the ffi-* targets compile the Rust with the `zodl-slipstream` cargo feature
+# (plus the required `--cfg zodl_slipstream` rustflag; see BuildSupport/Makefile)
+# into the parallel products-zodl-slipstream/ tree, and configure-local-ffi
+# maintains the .zodl-slipstream-variant marker Package.swift keys the target
+# graph off. See BuildSupport/Makefile and Sources/ZODLSlipstream/NOTICE.md.
+ZODL_SLIPSTREAM ?= 0
+ifeq ($(ZODL_SLIPSTREAM),1)
+FFI_PRODUCTS := products-zodl-slipstream
 else
 FFI_PRODUCTS := products
 endif
@@ -145,12 +146,12 @@ resolve: ## Resolve the SwiftPM dependencies
 test-offline: ## Run the offline tests (no network, no lightwalletd)
 	$(SWIFT) test --filter $(OFFLINE_TEST_FILTER)
 
-# Requires a slipstream-variant checkout: make ffi-macos SLIPSTREAM=1 &&
-# make configure-local-ffi SLIPSTREAM=1 (the target graph only contains
-# SlipstreamOfflineTests when the variant marker is present).
-.PHONY: test-offline-slipstream
-test-offline-slipstream: ## Run the ZODL Slipstream offline tests (variant checkout only)
-	$(SWIFT) test --filter SlipstreamOfflineTests
+# Requires a ZODL Slipstream-variant checkout: make ffi-macos ZODL_SLIPSTREAM=1 &&
+# make configure-local-ffi ZODL_SLIPSTREAM=1 (the target graph only contains
+# ZODLSlipstreamOfflineTests when the variant marker is present).
+.PHONY: test-offline-zodl-slipstream
+test-offline-zodl-slipstream: ## Run the ZODL Slipstream offline tests (variant checkout only)
+	$(SWIFT) test --filter ZODLSlipstreamOfflineTests
 
 .PHONY: test-all
 test-all: ## Run the whole test suite, including networked tests
@@ -205,7 +206,7 @@ clean-rust: ## Clean the Cargo build artifacts (target/)
 
 .PHONY: ffi-macos
 ffi-macos: require-macos ## Build the macOS FFI and assemble the XCFramework
-	$(MAKE) -C $(BUILD_SUPPORT) macos SLIPSTREAM=$(SLIPSTREAM)
+	$(MAKE) -C $(BUILD_SUPPORT) macos ZODL_SLIPSTREAM=$(ZODL_SLIPSTREAM)
 	cd $(BUILD_SUPPORT) && mkdir -p $(FFI_PRODUCTS)/libzcashlc.xcframework
 	# Clear the slice first: `cp -R src dst` copies *into* dst when it already
 	# exists, which would nest the framework a level down and leave the previous
@@ -218,7 +219,7 @@ ffi-macos: require-macos ## Build the macOS FFI and assemble the XCFramework
 
 .PHONY: ffi-all
 ffi-all: require-macos ## Build the full XCFramework for every platform
-	$(MAKE) -C $(BUILD_SUPPORT) xcframework SLIPSTREAM=$(SLIPSTREAM)
+	$(MAKE) -C $(BUILD_SUPPORT) xcframework ZODL_SLIPSTREAM=$(ZODL_SLIPSTREAM)
 
 .PHONY: verify-ffi
 verify-ffi: ## Check the XCFramework exists and show its contents
@@ -242,7 +243,7 @@ configure-local-ffi: verify-ffi ## Point Package.swift at the locally built FFI
 	# Keep the variant marker in step with the linked FFI, purging SwiftPM's
 	# content-keyed manifest cache on a flip (a stale cached evaluation would
 	# silently serve the other variant's target graph).
-	@if [ "$(SLIPSTREAM)" = "1" ]; then \
+	@if [ "$(ZODL_SLIPSTREAM)" = "1" ]; then \
 		if [ ! -f .zodl-slipstream-variant ]; then \
 			touch .zodl-slipstream-variant; \
 			$(SWIFT) package purge-cache > /dev/null 2>&1 || true; \
@@ -253,7 +254,7 @@ configure-local-ffi: verify-ffi ## Point Package.swift at the locally built FFI
 			$(SWIFT) package purge-cache > /dev/null 2>&1 || true; \
 		fi; \
 	fi
-	@echo "LocalPackages created; Package.swift will use the local FFI (SLIPSTREAM=$(SLIPSTREAM))"
+	@echo "LocalPackages created; Package.swift will use the local FFI (ZODL_SLIPSTREAM=$(ZODL_SLIPSTREAM))"
 
 .PHONY: clean-ffi
 clean-ffi: ## Clean the FFI build artifacts

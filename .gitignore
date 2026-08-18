@@ -85,7 +85,7 @@ LocalPackages/
 
 # Build products
 BuildSupport/products/
-BuildSupport/products-slipstream/
+BuildSupport/products-zodl-slipstream/
 
 # Marks a LOCAL checkout as the ZODL Slipstream (AGPL) variant (see
 # Scripts/init-local-ffi.sh and Scripts/rebuild-local-ffi.sh --slipstream).

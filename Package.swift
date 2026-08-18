@@ -12,28 +12,28 @@ let useLocalFFI = FileManager.default.fileExists(atPath: packageDir + "/LocalPac
 
 // ZODL Slipstream variant (AGPL-3.0-only engine; see Sources/ZODLSlipstream/NOTICE.md).
 // Two switches, one meaning:
-// - `slipstreamVariantPinned` is flipped to `true` by Scripts/release.sh on
+// - `zodlSlipstreamVariantPinned` is flipped to `true` by Scripts/release.sh on
 //   `X.Y.Z-zodl-slipstream` release tags. The flag must live in the manifest BYTES
 //   (not only in a filesystem probe): SwiftPM's shared manifest cache is keyed on
 //   manifest content, so byte-identical manifests across the two variant tags would
 //   conflate their target graphs.
 // - The `.zodl-slipstream-variant` marker file serves local development; it is
-//   created by `Scripts/init-local-ffi.sh --slipstream` (which must also purge the
-//   SwiftPM manifest cache when flipping, for the same reason).
-// Plain `X.Y.Z` tags can never resolve to the slipstream variant, and SemVer orders
-// the `-zodl-slipstream` pre-release suffix BELOW `X.Y.Z`, so `from:` ranges never
-// auto-select it — consumers opt in with `exact: "X.Y.Z-zodl-slipstream"`.
-let slipstreamVariantPinned = false
-let slipstreamVariant = slipstreamVariantPinned
+//   created by `Scripts/init-local-ffi.sh --zodl-slipstream` (which must also purge
+//   the SwiftPM manifest cache when flipping, for the same reason).
+// Plain `X.Y.Z` tags can never resolve to the ZODL Slipstream variant, and SemVer
+// orders the `-zodl-slipstream` pre-release suffix BELOW `X.Y.Z`, so `from:` ranges
+// never auto-select it — consumers opt in with `exact: "X.Y.Z-zodl-slipstream"`.
+let zodlSlipstreamVariantPinned = false
+let zodlSlipstreamVariant = zodlSlipstreamVariantPinned
     || FileManager.default.fileExists(atPath: packageDir + "/.zodl-slipstream-variant")
 
 // Binary artifact pins. Updated by Scripts/release.sh during the release process.
 let cleanFFIURL = "https://github.com/zcash/zcash-swift-wallet-sdk/releases/download/2.8.0-rc.2/libzcashlc.xcframework.zip"
 let cleanFFIChecksum = "7d0b196c53a70ae5eed453709cc231318cc1b90077f3157c33704fed32acf02f"
-// No released slipstream artifact exists yet; the first dual release
+// No released ZODL Slipstream artifact exists yet; the first dual release
 // (planned 2.9.0 / 2.9.0-zodl-slipstream) fills these in.
-let slipstreamFFIURL = ""
-let slipstreamFFIChecksum = ""
+let zodlSlipstreamFFIURL = ""
+let zodlSlipstreamFFIChecksum = ""
 
 var dependencies: [Package.Dependency] = [
     .package(url: "https://github.com/grpc/grpc-swift.git", from: "1.24.2"),
@@ -48,26 +48,27 @@ var sdkDependencies: [Target.Dependency] = [
 var targets: [Target] = []
 
 // Exactly ONE binaryTarget named `libzcashlc` exists per resolved graph, so a
-// consuming app can never link two copies of the Rust staticlib. The slipstream
-// variant swaps in a strict SUPERSET artifact (all of libzcashlc plus the engine
-// FFI), which is safe for the core target — every `zcashlc_*` symbol resolves.
+// consuming app can never link two copies of the Rust staticlib. The ZODL
+// Slipstream variant swaps in a strict SUPERSET artifact (all of libzcashlc plus
+// the engine FFI), which is safe for the core target — every `zcashlc_*` symbol
+// resolves.
 let ffiDependency: Target.Dependency
 if useLocalFFI {
     dependencies.append(.package(name: "libzcashlc", path: "LocalPackages"))
     ffiDependency = .product(name: "libzcashlc", package: "libzcashlc")
 } else {
-    if slipstreamVariant && slipstreamFFIChecksum.isEmpty {
+    if zodlSlipstreamVariant && zodlSlipstreamFFIChecksum.isEmpty {
         fatalError("""
         The ZODL Slipstream variant has no released binary artifact yet. Build the FFI \
-        locally with Scripts/init-local-ffi.sh --slipstream, or pin a released \
+        locally with Scripts/init-local-ffi.sh --zodl-slipstream, or pin a released \
         X.Y.Z-zodl-slipstream tag once one exists.
         """)
     }
     targets.append(
         .binaryTarget(
             name: "libzcashlc",
-            url: slipstreamVariant ? slipstreamFFIURL : cleanFFIURL,
-            checksum: slipstreamVariant ? slipstreamFFIChecksum : cleanFFIChecksum
+            url: zodlSlipstreamVariant ? zodlSlipstreamFFIURL : cleanFFIURL,
+            checksum: zodlSlipstreamVariant ? zodlSlipstreamFFIChecksum : cleanFFIChecksum
         )
     )
     ffiDependency = "libzcashlc"
@@ -140,7 +141,7 @@ var products: [Product] = [
     )
 ]
 
-if slipstreamVariant {
+if zodlSlipstreamVariant {
     targets.append(contentsOf: [
         .target(
             name: "ZODLSlipstream",
@@ -151,12 +152,14 @@ if slipstreamVariant {
             ]
         ),
         .testTarget(
-            name: "SlipstreamOfflineTests",
-            dependencies: ["ZODLSlipstream", "ZcashLightClientKit", "TestUtils"]
+            name: "ZODLSlipstreamOfflineTests",
+            dependencies: ["ZODLSlipstream", "ZcashLightClientKit", "TestUtils"],
+            path: "Tests/ZODLSlipstreamOfflineTests"
         ),
         .testTarget(
-            name: "SlipstreamDarksideTests",
-            dependencies: ["ZODLSlipstream", "ZcashLightClientKit", "TestUtils"]
+            name: "ZODLSlipstreamDarksideTests",
+            dependencies: ["ZODLSlipstream", "ZcashLightClientKit", "TestUtils"],
+            path: "Tests/ZODLSlipstreamDarksideTests"
         )
     ])
     products.append(

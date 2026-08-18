@@ -293,15 +293,18 @@ public actor SlipstreamSynchronizer: Synchronizer {
         let anchorServer = currentEndpoint
         let anchorNetwork = initializer.network
         let anchorTorDir = await slipstreamTorDirPath()
-        initializer.slipstreamAnchorSource = { isRestore, birthday, fallbackCheckpoint in
-            await SlipstreamEngine.restoreAnchor(
+        // Core's seam is engine-agnostic and speaks in types it already owns, so the
+        // engine's own anchor type is mapped to a plain tuple on the way out.
+        initializer.provisioningAnchorSource = { isRestore, birthday, fallbackCheckpoint in
+            guard let anchor = await SlipstreamEngine.restoreAnchor(
                 isRestore: isRestore,
                 birthday: birthday,
                 fallbackCheckpointHeight: fallbackCheckpoint,
                 server: anchorServer,
                 network: anchorNetwork,
                 torDirPath: anchorTorDir
-            )
+            ) else { return nil }
+            return (height: anchor.height, treeState: anchor.treeState)
         }
         if case .seedRequired = try await initializer.initialize(
             with: seed,

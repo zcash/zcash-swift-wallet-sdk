@@ -122,7 +122,7 @@ jobs:
       id: cache-ffi
       uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
       with:
-        path: BuildSupport/products-slipstream/libzcashlc.xcframework
+        path: BuildSupport/products-zodl-slipstream/libzcashlc.xcframework
         key: ffi-xcframework-macos-only-zodl-slipstream-${{ runner.os }}-${{ steps.ffi-hash.outputs.hash }}
 
     - name: Authorize cargo against the private slipstream repository
@@ -145,7 +145,7 @@ jobs:
       with:
         # `registry/` is crates.io content (zodl-slipstream is consumed as a
         # public crates.io release); `target/` holds compiled artifacts for the
-        # slipstream feature set this workflow builds.
+        # zodl-slipstream feature set this workflow builds.
         path: |
           target
           ~/.cargo/bin
@@ -160,11 +160,11 @@ jobs:
     - name: Build FFI for macOS
       if: matrix.language == 'swift' && steps.cache-ffi.outputs.cache-hit != 'true'
       timeout-minutes: 30
-      run: make ffi-macos SLIPSTREAM=1
+      run: make ffi-macos ZODL_SLIPSTREAM=1
 
     - name: Configure local FFI
       if: matrix.language == 'swift'
-      run: make configure-local-ffi SLIPSTREAM=1
+      run: make configure-local-ffi ZODL_SLIPSTREAM=1
 
     - name: Resolve Swift dependencies
       if: matrix.language == 'swift'

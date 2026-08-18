@@ -31,7 +31,7 @@ jobs:
             products_dir: BuildSupport/products
           - variant: zodl-slipstream
             slipstream: 1
-            products_dir: BuildSupport/products-slipstream
+            products_dir: BuildSupport/products-zodl-slipstream
 
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -96,11 +96,11 @@ jobs:
     - name: Build FFI for macOS
       if: steps.cache-ffi.outputs.cache-hit != 'true'
       timeout-minutes: 60
-      run: make ffi-macos SLIPSTREAM=${{ matrix.slipstream }}
+      run: make ffi-macos ZODL_SLIPSTREAM=${{ matrix.slipstream }}
 
     # Verify xcframework exists (whether from cache or fresh build)
     - name: Verify XCFramework
-      run: make verify-ffi SLIPSTREAM=${{ matrix.slipstream }}
+      run: make verify-ffi ZODL_SLIPSTREAM=${{ matrix.slipstream }}
 
     # The default artifact must never ship AGPL code: no zodl-slipstream symbols
     # in the staticlib, no slipstream declarations left in the shipped header.
@@ -112,16 +112,23 @@ jobs:
         if [ "$SYMS" -ne 0 ]; then
           echo "FATAL: clean libzcashlc exports $SYMS zcashlc_slipstream symbol(s)"; exit 1
         fi
-        HEADER="${{ matrix.products_dir }}/libzcashlc.xcframework/macos-arm64_x86_64/libzcashlc.framework/Headers/zcashlc.h"
-        if grep -q ZCASHLC_FEATURE_SLIPSTREAM "$HEADER"; then
-          echo "FATAL: clean header still references ZCASHLC_FEATURE_SLIPSTREAM"; exit 1
+        # The symbol check proves the engine is unreachable; this one proves no
+        # AGPL code was linked at all (the engine crate leaves its own identifiers
+        # in the binary). That is the licensing-relevant assertion.
+        ENGINE=$(strings "$LIB" | grep -ci 'zodl.slipstream' || true)
+        if [ "$ENGINE" -ne 0 ]; then
+          echo "FATAL: clean libzcashlc contains $ENGINE ZODL Slipstream identifier(s) — AGPL code is linked"; exit 1
         fi
-        echo "Clean artifact verified: zero slipstream symbols, header fully stripped."
+        HEADER="${{ matrix.products_dir }}/libzcashlc.xcframework/macos-arm64_x86_64/libzcashlc.framework/Headers/zcashlc.h"
+        if grep -q ZCASHLC_ZODL_SLIPSTREAM "$HEADER"; then
+          echo "FATAL: clean header still references ZCASHLC_ZODL_SLIPSTREAM"; exit 1
+        fi
+        echo "Clean artifact verified: no ZODL Slipstream entry points, no AGPL engine code, header fully stripped."
 
     # Set up LocalPackages so Package.swift auto-detects the local build; also
     # maintains the .zodl-slipstream-variant marker for the target graph.
     - name: Configure local FFI for CI
-      run: make configure-local-ffi SLIPSTREAM=${{ matrix.slipstream }}
+      run: make configure-local-ffi ZODL_SLIPSTREAM=${{ matrix.slipstream }}
 
     # Build the Swift package
     - name: Build ZcashLightClientKit Swift Package
@@ -134,7 +141,7 @@ jobs:
       timeout-minutes: 10
       run: make test-offline
 
-    - name: Run SlipstreamOfflineTests suite
+    - name: Run ZODLSlipstreamOfflineTests suite
       if: matrix.variant == 'zodl-slipstream'
       timeout-minutes: 10
-      run: make test-offline-slipstream
+      run: make test-offline-zodl-slipstream

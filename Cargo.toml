@@ -136,13 +136,20 @@ default = []
 # the released libzcashlc.xcframework carries zero AGPL code. Enabled only for
 # the libzcashlc-zodl-slipstream artifact and local builds via
 # Scripts/init-local-ffi.sh --slipstream / rebuild-local-ffi.sh --slipstream.
-slipstream = ["dep:slipstream-core", "dep:tokio"]
+zodl-slipstream = ["dep:slipstream-core", "dep:tokio"]
 
 # GPU-accelerated Orchard subtree building in the engine (wgpu). OFF by
 # default — the released libzcashlc links zero wgpu. A slipstream-engine
 # feature, so it implies `slipstream`. Enable for local device builds via
 # Scripts/init-local-ffi.sh --gpu / rebuild-local-ffi.sh --gpu.
-gpu = ["slipstream", "slipstream-core?/gpu"]
+gpu = ["zodl-slipstream", "slipstream-core?/gpu"]
+
+# `zodl_slipstream` is a custom cfg, deliberately NOT a plain cargo feature:
+# `--all-features` would enable a feature, and that must never be enough to
+# compile the AGPL engine surface into a build nobody asked for. Set it with
+# RUSTFLAGS="--cfg zodl_slipstream" alongside `--features zodl-slipstream`.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zodl_slipstream)'] }
 
 [lib]
 name = "zcashlc"

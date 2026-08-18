@@ -39,18 +39,18 @@ Every release ships in two variants:
 
 The default variant is and stays entirely MIT: the `libzcashlc.xcframework` it
 links contains no ZODL Slipstream code, and classic Spend-before-Sync (see
-below) is part of it. The slipstream variant links the superset
+below) is part of it. The ZODL Slipstream variant links the superset
 `libzcashlc-zodl-slipstream.xcframework` and exposes `SlipstreamSynchronizer`
 via `import ZODLSlipstream`.
 
-**Before shipping the slipstream variant, read
+**Before shipping the ZODL Slipstream variant, read
 [`Sources/ZODLSlipstream/NOTICE.md`](Sources/ZODLSlipstream/NOTICE.md).** In
 short: your app becomes subject to the AGPL, and no AGPL §7 permission exists
 for third parties to distribute it through the Apple App Store — App Store
 distribution effectively requires a commercial license from Znewco, Inc.
 (licensing@zodl.com).
 
-Pin the slipstream variant with `exact:` only, and declare it in a
+Pin the ZODL Slipstream variant with `exact:` only, and declare it in a
 `Package.swift` manifest rather than Xcode's "Exact Version" field — Xcode's
 UI validates version strings itself and has a history of mangling pre-release
 pins (if you must use the Xcode field, check afterwards that
