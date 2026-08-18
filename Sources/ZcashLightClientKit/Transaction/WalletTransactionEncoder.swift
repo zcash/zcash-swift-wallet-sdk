@@ -126,7 +126,7 @@ package class WalletTransactionEncoder: TransactionEncoder {
         return try await createdTransactions(forTxIds: txIds)
     }
 
-    func createdTransactions(forTxIds txIds: [Data]) async throws -> [CreatedTransaction] {
+    package func createdTransactions(forTxIds txIds: [Data]) async throws -> [CreatedTransaction] {
         var createdTransactions: [CreatedTransaction] = []
         for txId in txIds {
             guard let transactionData = try await rustBackend.getTransaction(txId: txId) else {

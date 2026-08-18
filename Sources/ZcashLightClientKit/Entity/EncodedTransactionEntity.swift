@@ -13,10 +13,16 @@ package struct EncodedTransaction {
 }
 
 /// The wallet-store data available for a transaction, independent of whether it was sent or received.
-struct TransactionData: Equatable {
-    let txId: Data
-    let raw: Data
-    let expiryHeight: BlockHeight?
+package struct TransactionData: Equatable {
+    package let txId: Data
+    package let raw: Data
+    package let expiryHeight: BlockHeight?
+
+    package init(txId: Data, raw: Data, expiryHeight: BlockHeight?) {
+        self.txId = txId
+        self.raw = raw
+        self.expiryHeight = expiryHeight
+    }
 }
 
 extension EncodedTransaction: Hashable {
