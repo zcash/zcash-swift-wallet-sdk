@@ -163,15 +163,15 @@ slipstream-core = { git = "https://github.com/zodl-inc/slipstream-internal.git",
 # author and reviewer should have certainty that the revision *will end up
 # merged to `main`* so that commits in our history can always be successfully
 # built.
-pczt = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
-zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
-zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
-zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
-zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
-zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
-zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
-zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
-zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
-zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
-zip321 = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
+zcash_pool_migration = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
+zip321 = { git = "https://github.com/zcash/librustzcash", rev = "0891e00d6c6319d2354c9a2c69e3191eac3f8f0c" }
 
