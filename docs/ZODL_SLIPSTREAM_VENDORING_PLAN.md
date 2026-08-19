@@ -171,10 +171,14 @@ artifact `libzcashlc-zodl-slipstream.xcframework.zip`, marker
 `.zodl-slipstream-variant`, variant tag `X.Y.Z-zodl-slipstream`, CI matrix
 variant `zodl-slipstream`.
 
-Open question deliberately NOT actioned: the pre-existing public Swift types
-(`SlipstreamSynchronizer`, `SlipstreamEngine`, …) predate this PR and renaming
-them is a downstream-breaking API change; they are already namespaced by the
-`ZODLSlipstream` module. Flagged for the author to decide separately.
+DECIDED (2026-08-18): the pre-existing public Swift types
+(`SlipstreamSynchronizer`, `SlipstreamEngine`, `SlipstreamSnapshot`, …) keep
+their names. They predate this PR, they are already namespaced by the module
+that carries the full product name (`ZODLSlipstream.SlipstreamSynchronizer`),
+and renaming them would break every downstream call site for no licensing or
+clarity gain. The full-name convention applies to the things this PR
+introduces — features, cfgs, defines, build knobs, artifacts, products,
+targets — not to established API.
 
 ## R3. Core must contain nothing ZODL-Slipstream-related (pacu)
 
