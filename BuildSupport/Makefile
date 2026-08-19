@@ -33,11 +33,13 @@ ifeq ($(ZODL_SLIPSTREAM),1)
 PRODUCTS_DIR := products-zodl-slipstream
 CARGO_FEATURE_FLAGS := --features zodl-slipstream
 UNIFDEF_FLAG := -DZCASHLC_ZODL_SLIPSTREAM
+VARIANT_NAME := zodl-slipstream
 CARGO_ENV := RUSTFLAGS="$(RUSTFLAGS) --cfg zodl_slipstream"
 else
 PRODUCTS_DIR := products
 CARGO_FEATURE_FLAGS :=
 UNIFDEF_FLAG := -UZCASHLC_ZODL_SLIPSTREAM
+VARIANT_NAME := clean
 CARGO_ENV :=
 endif
 
@@ -109,6 +111,14 @@ $(PRODUCTS_DIR)/libzcashlc.xcframework: cargo-all $(PLATFORMS)
 	cp -R $(PRODUCTS_DIR)/ios-simulator/frameworks $@/ios-arm64_x86_64-simulator
 	cp -R $(PRODUCTS_DIR)/macos/frameworks $@/macos-arm64_x86_64
 	cp Info.plist $@
+	# Stamp which variant this is. The two artifacts are otherwise structurally
+	# identical — same inner framework, same module, same plists — so without this
+	# an unzipped xcframework can only be identified by running nm/strings over its
+	# binary. Note this answers "which artifact is this?", NOT "what did an app
+	# ship": libzcashlc is a staticlib, so the plist never reaches a linked app.
+	# `make verify-ffi-variant` requires this stamp to agree with the binary, so a
+	# mislabelled artifact fails rather than being believed.
+	plutil -replace ZCASHLCVariant -string "$(VARIANT_NAME)" $@/Info.plist
 
 frameworks: $(PLATFORMS)
 .PHONY: frameworks
@@ -135,6 +145,7 @@ $(PRODUCTS_DIR)/%/frameworks/libzcashlc.framework: $(PRODUCTS_DIR)/%/universal/l
 	# Workaround for a bug in the XCode 15.3 build system.
 	# https://github.com/Electric-Coin-Company/zashi-ios/issues/1166
 	cp platform-Info.plist $@/Info.plist
+	plutil -replace ZCASHLCVariant -string "$(VARIANT_NAME)" $@/Info.plist
 
 $(PRODUCTS_DIR)/macos/universal/libzcashlc.a: $(MACOS_ARCHS)
 	mkdir -p $(@D)

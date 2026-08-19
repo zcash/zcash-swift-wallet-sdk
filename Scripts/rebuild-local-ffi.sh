@@ -200,6 +200,11 @@ mkdir -p "$TEMP_FRAMEWORK/Headers"
 cp "$BUILT_LIB" "$TEMP_FRAMEWORK/libzcashlc"
 cp BuildSupport/module.modulemap "$TEMP_FRAMEWORK/Modules/"
 cp BuildSupport/platform-Info.plist "$TEMP_FRAMEWORK/Info.plist"
+# Stamp the variant, exactly as BuildSupport/Makefile does for released
+# artifacts: the two xcframeworks are otherwise structurally identical, and
+# `make verify-ffi-variant` requires this stamp to agree with the binary.
+if [[ "$ZODL_SLIPSTREAM" == "true" ]]; then VARIANT_NAME="zodl-slipstream"; else VARIANT_NAME="clean"; fi
+plutil -replace ZCASHLCVariant -string "$VARIANT_NAME" "$TEMP_FRAMEWORK/Info.plist"
 
 if [[ -f "target/Headers/zcashlc.h" ]]; then
     # cbindgen always emits the zodl-slipstream FFI surface wrapped in
@@ -308,6 +313,7 @@ ENTRYEOF
 </plist>
 PLISTTAIL
 } > "$TEMP_XCFW/Info.plist"
+plutil -replace ZCASHLCVariant -string "$VARIANT_NAME" "$TEMP_XCFW/Info.plist"
 
 # Atomic swap
 rm -rf "$XCFRAMEWORK_DIR"

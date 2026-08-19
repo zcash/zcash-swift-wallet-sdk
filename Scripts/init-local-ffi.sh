@@ -126,6 +126,8 @@ build_arm_xcframework() {
         cp "target/$rust_target/release/libzcashlc.a" "$framework/libzcashlc"
         cp BuildSupport/module.modulemap "$framework/Modules/"
         cp BuildSupport/platform-Info.plist "$framework/Info.plist"
+        if [[ "$ZODL_SLIPSTREAM" == "true" ]]; then VARIANT_NAME="zodl-slipstream"; else VARIANT_NAME="clean"; fi
+        plutil -replace ZCASHLCVariant -string "$VARIANT_NAME" "$framework/Info.plist"
         if [[ -f "target/Headers/zcashlc.h" ]]; then
             # cbindgen always emits the zodl-slipstream FFI surface wrapped in
             # #if defined(ZCASHLC_ZODL_SLIPSTREAM), regardless of which cargo
@@ -158,6 +160,7 @@ build_arm_xcframework() {
     # and validates it in one step, so we avoid hand-writing plist whitespace.
     printf '{"AvailableLibraries": [%s], "CFBundlePackageType": "XFWK", "XCFrameworkFormatVersion": "1.0"}' "$libraries_json" \
         | plutil -convert xml1 -o "$temp_xcfw/Info.plist" -
+    plutil -replace ZCASHLCVariant -string "$VARIANT_NAME" "$temp_xcfw/Info.plist"
 
     # Atomically swap the freshly built xcframework into place.
     mkdir -p LocalPackages

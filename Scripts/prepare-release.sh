@@ -147,7 +147,15 @@ if [[ "$CLEAN_CONTAMINATED" == "true" ]]; then
     echo "Aborting: the default libzcashlc.xcframework artifact must be MIT-clean (zero AGPL code)."
     exit 1
 fi
-echo "Clean: no ZODL Slipstream entry points, no AGPL engine code, no ZCASHLC_ZODL_SLIPSTREAM in the header."
+# The artifact must also SAY what it is: once unzipped the two xcframeworks are
+# structurally identical, so a missing or disagreeing stamp would let a
+# mislabelled artifact ship under the right filename.
+CLEAN_STAMP=$(plutil -extract ZCASHLCVariant raw -o - "$PRODUCTS_DIR/libzcashlc.xcframework/Info.plist" 2>/dev/null || echo "<unstamped>")
+if [[ "$CLEAN_STAMP" != "clean" ]]; then
+    echo "FATAL: the default artifact is stamped '$CLEAN_STAMP', expected 'clean'."
+    exit 1
+fi
+echo "Clean: no ZODL Slipstream entry points, no AGPL engine code, no ZCASHLC_ZODL_SLIPSTREAM in the header, stamped 'clean'."
 
 # Create release archive
 echo ""
@@ -189,7 +197,14 @@ if [[ "$ZODL_SLIPSTREAM" == "true" ]]; then
         echo "Aborting: the ZODL Slipstream artifact must carry the full zodl-slipstream engine in every slice."
         exit 1
     fi
-    echo "ZODL Slipstream engine present in every staticlib slice."
+    # It must also SAY what it is, or the two structurally-identical artifacts
+    # could be swapped and still pass every other check.
+    ZODL_SLIPSTREAM_STAMP=$(plutil -extract ZCASHLCVariant raw -o - "$ZODL_SLIPSTREAM_PRODUCTS_DIR/libzcashlc.xcframework/Info.plist" 2>/dev/null || echo "<unstamped>")
+    if [[ "$ZODL_SLIPSTREAM_STAMP" != "zodl-slipstream" ]]; then
+        echo "FATAL: the ZODL Slipstream artifact is stamped '$ZODL_SLIPSTREAM_STAMP', expected 'zodl-slipstream'."
+        exit 1
+    fi
+    echo "ZODL Slipstream engine present in every staticlib slice, stamped 'zodl-slipstream'."
 
     echo ""
     echo "=== Creating ZODL Slipstream release archive ==="

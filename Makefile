@@ -81,6 +81,11 @@ info: ## Print the resolved toolchain and FFI state
 	@printf "LocalPackages:"; \
 		if [ -d LocalPackages ]; then echo " present (local FFI in use)"; \
 		else echo " absent (Package.swift uses the released FFI)"; fi
+	@printf "Artifact:     "; \
+		if [ -d "$(XCFRAMEWORK)" ]; then \
+			plutil -extract ZCASHLCVariant raw -o - "$(XCFRAMEWORK)/Info.plist" 2>/dev/null \
+				|| echo "<unstamped — built before variant stamping>"; \
+		else echo "<not built>"; fi
 	@printf "Variant:      "; \
 		if [ -f .zodl-slipstream-variant ]; then \
 			echo "ZODL Slipstream (AGPL) — marker present, target graph includes ZODLSlipstream"; \
@@ -240,6 +245,9 @@ ffi-macos: require-macos ## Build the macOS FFI and assemble the XCFramework
 	cd $(BUILD_SUPPORT) && cp -R $(FFI_PRODUCTS)/macos/frameworks \
 		$(FFI_PRODUCTS)/libzcashlc.xcframework/macos-arm64_x86_64
 	cd $(BUILD_SUPPORT) && cp Info.plist $(FFI_PRODUCTS)/libzcashlc.xcframework
+	@# keep the local-dev xcframework stamped like a released one (see BuildSupport/Makefile)
+	plutil -replace ZCASHLCVariant -string "$(if $(filter 1,$(ZODL_SLIPSTREAM)),zodl-slipstream,clean)" \
+		$(BUILD_SUPPORT)/$(FFI_PRODUCTS)/libzcashlc.xcframework/Info.plist
 
 .PHONY: ffi-all
 ffi-all: require-macos ## Build the full XCFramework for every platform
@@ -267,11 +275,18 @@ verify-ffi-variant: ## Assert the built XCFramework matches ZODL_SLIPSTREAM (0|1
 	if [ -z "$$slice" ]; then echo "Error: no libzcashlc binary inside $(XCFRAMEWORK)"; exit 1; fi; \
 	syms=$$(nm -gU "$$slice" 2>/dev/null | grep -c zcashlc_slipstream || true); \
 	engine=$$(strings "$$slice" | grep -ci 'zodl.slipstream' || true); \
+	want=$(if $(filter 1,$(ZODL_SLIPSTREAM)),zodl-slipstream,clean); \
+	stamp=$$(plutil -extract ZCASHLCVariant raw -o - "$(XCFRAMEWORK)/Info.plist" 2>/dev/null || echo "<unstamped>"); \
+	if [ "$$stamp" != "$$want" ]; then \
+		echo "FATAL: $(XCFRAMEWORK) is stamped '$$stamp' but ZODL_SLIPSTREAM=$(ZODL_SLIPSTREAM) expects '$$want'."; \
+		echo "       An artifact that misreports itself is worse than an unlabelled one."; \
+		echo "       Rebuild it: make clean-ffi && make ffi-macos ZODL_SLIPSTREAM=$(ZODL_SLIPSTREAM)"; \
+		exit 1; fi; \
 	if [ "$(ZODL_SLIPSTREAM)" = "1" ]; then \
 		if [ "$$syms" -eq 0 ]; then \
 			echo "FATAL: ZODL_SLIPSTREAM=1 but $$slice carries no engine (rebuild: make ffi-macos ZODL_SLIPSTREAM=1)"; \
 			exit 1; fi; \
-		echo "Variant verified: ZODL Slipstream engine present ($$syms entry points, $$engine identifiers)."; \
+		echo "Variant verified: stamped '$$stamp', engine present ($$syms entry points, $$engine identifiers)."; \
 	else \
 		if [ "$$syms" -ne 0 ] || [ "$$engine" -ne 0 ]; then \
 			echo "FATAL: this is supposed to be the MIT-clean artifact, but $$slice"; \
@@ -281,7 +296,7 @@ verify-ffi-variant: ## Assert the built XCFramework matches ZODL_SLIPSTREAM (0|1
 			echo "       or with ZODL_SLIPSTREAM=1; the products/ trees are gitignored and shared"; \
 			echo "       across branches. Rebuild: make clean-ffi && make ffi-macos"; \
 			exit 1; fi; \
-		echo "Variant verified: MIT-clean (no engine entry points, no engine identifiers)."; \
+		echo "Variant verified: stamped '$$stamp', MIT-clean (no engine entry points, no engine identifiers)."; \
 	fi
 
 # Package.swift auto-detects LocalPackages/ and links the local FFI instead of
