@@ -57,6 +57,21 @@ entirely. It is the **only** supported way to consume a `-zodl-slipstream`
 tag. Do not attempt to construct ranges across variant tags; besides being
 unsupported, ranges cannot reach them at all (above).
 
+## Toolchain floor
+
+The manifest declares `swift-tools-version:5.9`, which the ZODLSlipstream split
+requires: the two targets share internals through the `package` access modifier,
+introduced in Swift 5.9.
+
+This raises nothing in practice. The resolved dependency graph already contains
+manifests at tools-version **6.2** (swift-protobuf, swift-collections,
+swift-async-algorithms, reached through grpc-swift), and SwiftPM requires a
+toolchain at least as new as the highest tools-version in the graph — so
+consumers already needed Swift 6.2+ before this package declared 5.9. The
+previous `5.6` declaration was also already inaccurate: the sources use the
+Swift 5.7 `if let x {` shorthand in dozens of places and cannot compile on a 5.6
+compiler.
+
 ## Caveats
 
 ### 1. Pre-release lower bounds open the whole range to pre-releases

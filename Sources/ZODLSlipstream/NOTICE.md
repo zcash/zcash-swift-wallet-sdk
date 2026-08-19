@@ -39,6 +39,19 @@ scan ordering is part of the default product; only the accelerated Rust engine
 (`SlipstreamSynchronizer`) is AGPL-licensed. The ZODL Slipstream variant is only
 ever selected by explicitly pinning an `X.Y.Z-zodl-slipstream` tag.
 
+### Check that nothing selected the variant on your behalf
+
+SwiftPM resolves a single version of a package across your whole dependency
+graph, so a library you depend on can pin the variant tag and pull your app onto
+the AGPL-linked artifact even though you never named it. Declaring the SDK
+yourself with an ordinary range makes that a loud resolution conflict rather than
+a silent adoption — version ranges exclude pre-release tags — but an app that
+only reaches the SDK transitively has no such warning. One line proves it:
+
+```bash
+grep -- '-zodl-slipstream' Package.resolved   # prints nothing on a clean graph
+```
+
 The full AGPL-3.0 text is available at
 <https://www.gnu.org/licenses/agpl-3.0.txt> and in the
 [`LICENSE`](https://github.com/zodl-inc/slipstream/blob/main/LICENSE) file of
