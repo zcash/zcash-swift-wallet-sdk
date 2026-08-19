@@ -102,6 +102,55 @@ vim rust/src/lib.rs
 
 If using Xcode, you may also need to reset package caches: File > Packages > Reset Package Caches.
 
+## Working with the ZODL Slipstream (AGPL) variant
+
+The engine is opt-in. Locally it is selected by a `.zodl-slipstream-variant`
+marker file at the repo root, which `Package.swift` reads while evaluating the
+manifest to decide whether the `ZODLSlipstream` product and its tests exist at
+all. Build it with either:
+
+```bash
+./Scripts/init-local-ffi.sh --zodl-slipstream      # full init, all slices
+./Scripts/rebuild-local-ffi.sh macos --zodl-slipstream   # one slice, fast
+make ffi-macos ZODL_SLIPSTREAM=1 && make configure-local-ffi ZODL_SLIPSTREAM=1
+```
+
+Going back to a clean checkout is the same commands without the flag (or
+`ZODL_SLIPSTREAM=0`), or `./Scripts/reset-local-ffi.sh`.
+
+### Check what you actually have
+
+Never infer the variant from which command you last ran — the build products
+directories are gitignored and therefore **shared across branches**, so building
+on a branch where the engine is unconditional leaves an engine-containing
+artifact where this branch expects a clean one. Ask the tooling instead:
+
+```bash
+make info                      # reports the marker AND whether the linked FFI carries the engine
+make verify-ffi-variant        # fails if the built artifact disagrees with ZODL_SLIPSTREAM
+make verify-ffi-variant ZODL_SLIPSTREAM=1
+```
+
+`verify-ffi-variant` inspects the binary (`nm` / `strings`) rather than trusting
+the path, and runs automatically as part of `make verify-ffi`, which
+`configure-local-ffi` depends on. It is the same check the release script and CI
+apply before an artifact can ship.
+
+### Xcode needs help on a flip
+
+SwiftPM's caches and Xcode's are different things. The scripts and make targets
+purge SwiftPM's manifest cache and reset `.build` when the marker flips, but
+**Xcode resolves packages into DerivedData and will not notice**. After changing
+variant, in Xcode:
+
+1. **File > Packages > Reset Package Caches**, and
+2. if the target graph still looks wrong, delete the scheme's DerivedData
+   (`rm -rf ~/Library/Developer/Xcode/DerivedData/<YourApp>-*`).
+
+The `FFIBuilder` target reads the marker and rebuilds the matching variant, so
+an Xcode build will not silently swap an engine slice for a clean one — but it
+cannot re-resolve the Swift package graph for you.
+
 ## Scripts Reference
 
 ### `init-local-ffi.sh`

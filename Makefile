@@ -76,11 +76,21 @@ info: ## Print the resolved toolchain and FFI state
 			xcode-select -p 2>/dev/null || echo "not selected"; \
 		else echo "absent (not macOS)"; fi
 	@printf "XCFramework:  "; \
-		if [ -d "$(XCFRAMEWORK)" ]; then echo "$(XCFRAMEWORK)"; \
-		else echo "<not built; run make ffi-macos>"; fi
+		if [ -d "$(XCFRAMEWORK)" ]; then echo "$(XCFRAMEWORK) (for ZODL_SLIPSTREAM=$(ZODL_SLIPSTREAM))"; \
+		else echo "<not built; run make ffi-macos ZODL_SLIPSTREAM=$(ZODL_SLIPSTREAM)>"; fi
 	@printf "LocalPackages:"; \
 		if [ -d LocalPackages ]; then echo " present (local FFI in use)"; \
 		else echo " absent (Package.swift uses the released FFI)"; fi
+	@printf "Variant:      "; \
+		if [ -f .zodl-slipstream-variant ]; then \
+			echo "ZODL Slipstream (AGPL) — marker present, target graph includes ZODLSlipstream"; \
+		else echo "MIT-clean — no marker, ZODLSlipstream is absent from the target graph"; fi
+	@printf "Linked FFI:   "; \
+		slice=$$(find LocalPackages/libzcashlc.xcframework -name libzcashlc -type f 2>/dev/null | head -1); \
+		if [ -z "$$slice" ]; then echo "<none linked locally>"; \
+		elif [ "$$(nm -gU "$$slice" 2>/dev/null | grep -c zcashlc_slipstream || true)" -ne 0 ]; then \
+			echo "carries the ZODL Slipstream engine"; \
+		else echo "MIT-clean (no engine)"; fi
 
 # The FFI targets produce an Apple XCFramework, which only Xcode can do.
 .PHONY: require-macos
@@ -236,12 +246,43 @@ ffi-all: require-macos ## Build the full XCFramework for every platform
 	$(MAKE) -C $(BUILD_SUPPORT) xcframework ZODL_SLIPSTREAM=$(ZODL_SLIPSTREAM)
 
 .PHONY: verify-ffi
-verify-ffi: ## Check the XCFramework exists and show its contents
+verify-ffi: ## Check the XCFramework exists, and that it matches the requested variant
 	@if [ ! -d "$(XCFRAMEWORK)" ]; then \
 		echo "Error: $(XCFRAMEWORK) not found"; \
 		exit 1; fi
 	@echo "XCFramework contents:"
 	@ls -la $(XCFRAMEWORK)/
+	@$(MAKE) --no-print-directory verify-ffi-variant
+
+# Assert the built artifact actually matches ZODL_SLIPSTREAM, by inspecting the
+# binary rather than trusting the path it sits in. This is the same check the
+# release script and CI run, hoisted onto the everyday build path because the
+# products/ trees are gitignored and therefore SHARED ACROSS BRANCHES: building
+# on a branch where the engine is unconditional (main, or anything before the
+# split) leaves an engine-containing artifact sitting at the path this branch
+# calls "clean", and nothing else would notice.
+.PHONY: verify-ffi-variant
+verify-ffi-variant: ## Assert the built XCFramework matches ZODL_SLIPSTREAM (0|1)
+	@slice=$$(find "$(XCFRAMEWORK)" -name libzcashlc -type f | head -1); \
+	if [ -z "$$slice" ]; then echo "Error: no libzcashlc binary inside $(XCFRAMEWORK)"; exit 1; fi; \
+	syms=$$(nm -gU "$$slice" 2>/dev/null | grep -c zcashlc_slipstream || true); \
+	engine=$$(strings "$$slice" | grep -ci 'zodl.slipstream' || true); \
+	if [ "$(ZODL_SLIPSTREAM)" = "1" ]; then \
+		if [ "$$syms" -eq 0 ]; then \
+			echo "FATAL: ZODL_SLIPSTREAM=1 but $$slice carries no engine (rebuild: make ffi-macos ZODL_SLIPSTREAM=1)"; \
+			exit 1; fi; \
+		echo "Variant verified: ZODL Slipstream engine present ($$syms entry points, $$engine identifiers)."; \
+	else \
+		if [ "$$syms" -ne 0 ] || [ "$$engine" -ne 0 ]; then \
+			echo "FATAL: this is supposed to be the MIT-clean artifact, but $$slice"; \
+			echo "       carries $$syms ZODL Slipstream entry point(s) and $$engine engine identifier(s)."; \
+			echo "       AGPL code would ship in a build labelled clean."; \
+			echo "       Most likely it was built on a branch where the engine is unconditional,"; \
+			echo "       or with ZODL_SLIPSTREAM=1; the products/ trees are gitignored and shared"; \
+			echo "       across branches. Rebuild: make clean-ffi && make ffi-macos"; \
+			exit 1; fi; \
+		echo "Variant verified: MIT-clean (no engine entry points, no engine identifiers)."; \
+	fi
 
 # Package.swift auto-detects LocalPackages/ and links the local FFI instead of
 # the released binary target.

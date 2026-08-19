@@ -71,7 +71,7 @@ pub struct SlipstreamHandle {
     summary_refresh_inflight: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// [#1806] Last successfully-read recovery-balance nets (account-uuid bytes → reconciled
     /// net zatoshi), used ONLY as a fallback when the bounded (250 ms) read of
-    /// `slipstream_v_recovery_balance` is contended — so a momentarily-locked view never
+    /// `ext_slipstream_v_recovery_balance` is contended — so a momentarily-locked view never
     /// nulls the whole summary. `None` until the first successful read; see
     /// [`zcashlc_slipstream_wallet_summary`].
     recovery_nets_cache: std::sync::Mutex<Option<std::collections::HashMap<[u8; 16], i64>>>,
@@ -1211,7 +1211,7 @@ fn decide_summary_serving(
 /// an outgoing spend is `spent_note_count > 0` (mirrors librustzcash's spent-notes clause),
 /// unmined is `mined_height IS NULL`, and the view's own `expired_unmined` flag supplies
 /// tx-expiry (mirrors `tx_unexpired_condition`). The returned UUIDs match the account keys of
-/// `slipstream_v_recovery_balance`.
+/// `ext_slipstream_v_recovery_balance`.
 fn read_unmined_spend_accounts_conn(
     conn: &rusqlite::Connection,
 ) -> anyhow::Result<std::collections::HashSet<[u8; 16]>> {
@@ -1437,7 +1437,7 @@ pub(crate) fn serve_wallet_summary(
 /// - **Recovering** (the recent-first restore backfill; `snapshot.is_recovering == 1`) →
 ///   the upstream summary's per-account balances are REPLACED, because upstream balances
 ///   "may overestimate" mid-restore by documented design (a receipt is counted before its
-///   spend is scanned). The replacement is the engine-owned `slipstream_v_recovery_balance`
+///   spend is scanned). The replacement is the engine-owned `ext_slipstream_v_recovery_balance`
 ///   (Σ of FINAL, reconciled tx deltas — never over-shows, converges to the true total),
 ///   surfaced per the SDK's field-validated Direction-B mapping: the whole clamped net as
 ///   orchard spendable, everything else zero. Progress/heights fields pass through.

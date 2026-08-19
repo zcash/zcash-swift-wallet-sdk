@@ -333,6 +333,9 @@ if [[ "$ZODL_SLIPSTREAM" == "true" ]]; then
         # CONTENT, so a cached evaluation from the clean variant would silently
         # serve the wrong target graph.
         swift package purge-cache > /dev/null 2>&1 || true
+        # purge-cache alone leaves .build's resolved graph, which keeps serving
+        # the other variant's targets (observed). reset discards it.
+        swift package reset > /dev/null 2>&1 || true
     fi
 elif [[ -f .zodl-slipstream-variant ]]; then
     echo ""

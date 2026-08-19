@@ -329,11 +329,17 @@ if [[ "$ZODL_SLIPSTREAM" == "true" ]]; then
     if [[ ! -f .zodl-slipstream-variant ]]; then
         touch .zodl-slipstream-variant
         swift package purge-cache > /dev/null 2>&1 || true
+        # purge-cache alone leaves .build's resolved graph, which keeps serving
+        # the other variant's targets (observed). reset discards it.
+        swift package reset > /dev/null 2>&1 || true
     fi
 else
     if [[ -f .zodl-slipstream-variant ]]; then
         rm -f .zodl-slipstream-variant
         swift package purge-cache > /dev/null 2>&1 || true
+        # purge-cache alone leaves .build's resolved graph, which keeps serving
+        # the other variant's targets (observed). reset discards it.
+        swift package reset > /dev/null 2>&1 || true
     fi
 fi
 
