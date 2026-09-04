@@ -198,6 +198,11 @@ clean-rust: ## Clean the Cargo build artifacts (target/)
 ffi-macos: require-macos ## Build the macOS FFI and assemble the XCFramework
 	$(MAKE) -C $(BUILD_SUPPORT) macos
 	cd $(BUILD_SUPPORT) && mkdir -p products/libzcashlc.xcframework
+	# Clear the slice first: `cp -R src dst` copies *into* dst when it already
+	# exists, which would nest the framework a level down and leave the previous
+	# build's framework — the one Info.plist names — in place, so the Swift build
+	# would compile against a stale zcashlc.h.
+	cd $(BUILD_SUPPORT) && rm -rf products/libzcashlc.xcframework/macos-arm64_x86_64
 	cd $(BUILD_SUPPORT) && cp -R products/macos/frameworks \
 		products/libzcashlc.xcframework/macos-arm64_x86_64
 	cd $(BUILD_SUPPORT) && cp Info.plist products/libzcashlc.xcframework
@@ -219,6 +224,10 @@ verify-ffi: ## Check the XCFramework exists and show its contents
 .PHONY: configure-local-ffi
 configure-local-ffi: verify-ffi ## Point Package.swift at the locally built FFI
 	mkdir -p LocalPackages
+	# Replace rather than merge: `cp -R` into an existing xcframework leaves the
+	# previous build's slices behind, so a slice that is no longer produced keeps
+	# shadowing the current one.
+	rm -rf LocalPackages/$(notdir $(XCFRAMEWORK))
 	cp -R $(XCFRAMEWORK) LocalPackages/
 	cp $(BUILD_SUPPORT)/LocalPackages-Package.swift LocalPackages/Package.swift
 	@echo "LocalPackages created; Package.swift will use the local FFI"
