@@ -75,7 +75,7 @@ use std::slice;
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
 use orchard::keys::SpendingKey;
-use rand::rngs::OsRng;
+use rand::{rand_core::UnwrapErr, rngs::SysRng};
 use rusqlite::{Connection, OptionalExtension};
 use zcash_client_backend::data_api::wallet::{
     TargetHeight,
@@ -287,7 +287,7 @@ unsafe fn wallet_db_read_only(
     rusqlite::vtab::array::load_module(&conn)
         .map_err(|e| anyhow!("Error loading wallet database array module: {e}"))?;
     Ok(
-        MigrationWallet::from_connection(conn, network, SystemClock, OsRng)
+        MigrationWallet::from_connection(conn, network, SystemClock, UnwrapErr(SysRng))
             .with_anchor_retention_interval(crate::anchor_retention_interval(network)),
     )
 }
@@ -710,7 +710,7 @@ fn plan_and_cache(
 /// reviewing, failing its later commit with `MIGRATION_PLAN_STALE` for no user-visible reason.
 fn compute_plan(ctx: &mut CallCtx) -> anyhow::Result<Option<(MigrationPlan, BlockHeight)>> {
     let backend = account_migration(&ctx.wallet, ctx.account, &mut ctx.store_conn)?;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     match engine::plan_migration(&ctx.network, &backend, &mut rng) {
         Ok(plan) => {
             // `plan_migration` itself just resolved the tip internally (`chain_tip_height`) to
@@ -1083,7 +1083,7 @@ fn commit_or_resume(
         .map_err(|e| plan_stale(&e.to_string()))?;
 
     let target = ctx.target()?;
-    let mut rng = OsRng;
+    let mut rng = UnwrapErr(SysRng);
     let mut backend = account_migration(&ctx.wallet, ctx.account, &mut ctx.store_conn)?;
     let (state, unsigned) = if unsigned_out {
         let (state, unsigned) = engine::build_preparation_unsigned(
@@ -1184,7 +1184,7 @@ fn serve_for_broadcast(
         .ok_or_else(|| anyhow!("no migration transaction with id {}", u32::from(id)))?;
     let mut store = account_store(&ctx.wallet, ctx.account, &mut ctx.store_conn)?;
     let tx = store
-        .take_transaction_for_broadcast(state, id)
+        .take_transaction_for_broadcast(UnwrapErr(SysRng), state, id)
         .map_err(|e| broadcast_seam_error(id, e))?;
     let mut raw = Vec::new();
     tx.write(&mut raw)
@@ -1241,7 +1241,8 @@ fn prove_one(
                 .map_or_else(|| ctx.tip(), Ok)?;
             let network = ctx.network;
             let fvk = stored_orchard_fvk(&ctx.wallet, ctx.account)?;
-            let mut prover = WalletMigrationProver::new(&mut ctx.wallet, ctx.account, fvk);
+            let mut prover =
+                WalletMigrationProver::new(&mut ctx.wallet, UnwrapErr(SysRng), ctx.account, fvk);
             let Some(proved) = migration_finalize::prove_due_transaction(
                 &network,
                 &mut prover,
@@ -1249,7 +1250,7 @@ fn prove_one(
                 id,
                 preparation_anchor,
                 scanned_tip,
-                &mut OsRng,
+                &mut UnwrapErr(SysRng),
             )?
             else {
                 // Not scanned/retained yet — transient, retry on a later sweep.
@@ -2605,7 +2606,7 @@ fn drive_advance(
         )),
         // librustzcash #2910: re-spreading a missed broadcast schedule draws fresh
         // inter-broadcast gaps, so advancing needs entropy.
-        &mut OsRng,
+        &mut UnwrapErr(SysRng),
     )
     .map_err(|e| anyhow!("advancing the migration failed: {e}"))
 }
@@ -2775,7 +2776,7 @@ pub unsafe extern "C" fn zcashlc_migration_progress(
 
 /// The stored run's minimal sync/proving wake-up schedule, as of the SCANNED chain tip — a
 /// verbatim marshal of upstream `MigrationState::sync_wakeup_schedule(current_tip,
-/// &WakeupParams::DEFAULT, OsRng)`: each row is a height at which to wake, sync, and prove, plus
+/// &WakeupParams::DEFAULT, UnwrapErr(SysRng))`: each row is a height at which to wake, sync, and prove, plus
 /// the transfer ids it is responsible for proving. Wake-up heights are floored at the tip (a row
 /// at exactly the tip means "right now"); jitter is re-drawn on every call, so two calls may
 /// legitimately differ — recompute (and re-register with the OS) after any state change rather
@@ -2823,7 +2824,7 @@ pub unsafe extern "C" fn zcashlc_migration_sync_wakeups(
         // and expiry is judged at `tip + 1` internally.
         let tip = ctx.tip()?;
         let wakeups = state
-            .sync_wakeup_schedule(tip, &WakeupParams::DEFAULT, &mut OsRng)
+            .sync_wakeup_schedule(tip, &WakeupParams::DEFAULT, &mut UnwrapErr(SysRng))
             .map_err(|e| match e {
                 WakeupScheduleError::InfeasibleTransfer(id) => wakeup_infeasible(id),
             })?;
@@ -3499,7 +3500,7 @@ pub unsafe extern "C" fn zcashlc_migration_estimate_runs(
     let res = catch_panic(|| {
         let mut ctx = unsafe { open(db_data, db_data_len, account_uuid_bytes, network_id)? };
         let backend = account_migration(&ctx.wallet, ctx.account, &mut ctx.store_conn)?;
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let estimate = match engine::estimate_migration_runs(&ctx.network, &backend, &mut rng) {
             Ok(estimate) => Some(estimate),
             // The estimator answers a zero balance with the zero-run estimate rather than this
@@ -4079,7 +4080,7 @@ pub unsafe extern "C" fn zcashlc_migration_refresh_stale_transfers(
             return encode_schedule_from_state(&state, tip);
         }
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let mut backend = account_migration(&ctx.wallet, ctx.account, &mut ctx.store_conn)?;
         for id in &expired {
             if let Some(sk) = usk.as_ref().map(|usk| usk.orchard()) {
@@ -4776,7 +4777,7 @@ mod tests {
     /// account they query — exactly like a real caller, where the uuid always comes from a
     /// previously created account.
     fn create_fixture_account_with_usk(path: &std::path::Path) -> ([u8; 16], Vec<u8>) {
-        use secrecy::SecretVec;
+        use secrecy::{ExposeSecret, SecretVec};
         use zcash_client_backend::data_api::AccountBirthday;
         use zcash_client_backend::proto::service::TreeState;
         use zcash_client_sqlite::WalletDb;
@@ -4784,7 +4785,7 @@ mod tests {
         use zcash_keys::keys::Era;
         use zcash_protocol::consensus::MAIN_NETWORK;
 
-        let mut db = WalletDb::for_path(path, MAIN_NETWORK, SystemClock, OsRng)
+        let mut db = WalletDb::for_path(path, MAIN_NETWORK, SystemClock, UnwrapErr(SysRng))
             .expect("the wallet database must open");
         let seed = SecretVec::new(vec![7u8; 32]);
         let treestate = TreeState {
@@ -4802,7 +4803,7 @@ mod tests {
             .expect("account creation must succeed");
         (
             account.expose_uuid().into_bytes(),
-            usk.to_bytes(Era::Orchard),
+            usk.to_bytes(Era::Orchard).expose_secret().clone(),
         )
     }
 
@@ -5787,7 +5788,7 @@ mod tests {
         use orchard::note::{ExtractedNoteCommitment, Note, NoteVersion, RandomSeed, Rho};
         use orchard::note_encryption::{OrchardDomain, OrchardNoteEncryption};
         use orchard::value::NoteValue;
-        use rand::RngCore;
+        use rand::Rng;
         use zcash_client_backend::proto::compact_formats::CompactOrchardAction;
         use zcash_note_encryption::Domain;
 
@@ -5838,7 +5839,7 @@ mod tests {
             nullifier: nf_old.to_vec(),
             cmx: cmx.to_bytes().to_vec(),
             ephemeral_key: ephemeral_key.0.to_vec(),
-            ciphertext: enc_ciphertext[..52].to_vec(),
+            ciphertext: enc_ciphertext.as_ref()[..52].to_vec(),
         }
     }
 
@@ -5919,7 +5920,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut wallet = WalletDb::for_path(path, MAIN_NETWORK, SystemClock, OsRng)
+        let mut wallet = WalletDb::for_path(path, MAIN_NETWORK, SystemClock, UnwrapErr(SysRng))
             .expect("the fixture wallet database must reopen");
 
         // Height 0, empty frontier: the exact chain state `create_fixture_account_with_usk`'s
@@ -7312,7 +7313,7 @@ mod tests {
         use orchard::keys::{FullViewingKey, Scope, SpendingKey};
         use orchard::note::{Note, NoteVersion, RandomSeed, Rho};
         use orchard::value::NoteValue;
-        use rand::RngCore;
+        use rand::Rng;
         use zcash_primitives::transaction::fees::zip317::MARGINAL_FEE;
         use zcash_protocol::consensus::MAIN_NETWORK;
 
@@ -7732,7 +7733,7 @@ mod tests {
     }
 
     /// [`migration_finalize::prove_due_transaction`] with the re-draw inputs every dispatch test
-    /// shares: testnet parameters, a scanned tip far past every fixture height, and `OsRng`. No
+    /// shares: testnet parameters, a scanned tip far past every fixture height, and `UnwrapErr(SysRng)`. No
     /// fixture here triggers the proving-time boundary re-draw (every mined dependency mines at
     /// height 100, below each drawn boundary), so these remain pure dispatch tests — the re-draw
     /// itself is covered by the engine's own suite.
@@ -7758,7 +7759,7 @@ mod tests {
             id,
             preparation_anchor,
             h(5_000),
-            &mut OsRng,
+            &mut UnwrapErr(SysRng),
         )
         .map(|outcome| outcome.map(|proved| proved.apply(state)))
     }
@@ -10900,7 +10901,7 @@ mod tests {
         let mut store = account_store(&ctx.wallet, ctx.account, &mut ctx.store_conn)
             .expect("the fixture store opens");
         store
-            .take_transaction_for_broadcast(state, MigrationTransferId::new(id))
+            .take_transaction_for_broadcast(UnwrapErr(SysRng), state, MigrationTransferId::new(id))
             .map(|_| ())
     }
 

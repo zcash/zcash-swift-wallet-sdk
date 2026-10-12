@@ -774,21 +774,6 @@ impl BoxedSlice {
             len: 0,
         }))
     }
-
-    /// Borrow the slice contents. Intended for crate-internal use (notably tests).
-    ///
-    /// # Safety
-    ///
-    /// Same invariants as the [`BoxedSlice`] struct documentation: `ptr` must be valid
-    /// for reads of `len` bytes (or `len == 0`).
-    #[cfg(test)]
-    pub(crate) unsafe fn as_slice(&self) -> &[u8] {
-        if self.len == 0 || self.ptr.is_null() {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-        }
-    }
 }
 
 /// Frees a [`BoxedSlice`].

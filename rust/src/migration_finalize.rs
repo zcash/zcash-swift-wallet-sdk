@@ -154,7 +154,7 @@ where
     C: zcash_protocol::consensus::Parameters,
     P: MigrationProver,
     P::Error: ProveErrorClass + std::fmt::Display,
-    R: rand::RngCore + rand::CryptoRng,
+    R: rand::CryptoRng,
 {
     let kind = state
         .transactions()

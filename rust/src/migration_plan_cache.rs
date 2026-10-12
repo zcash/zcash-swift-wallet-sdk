@@ -31,8 +31,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-use rand::RngCore;
-use rand::rngs::OsRng;
+use rand::{Rng, rand_core::UnwrapErr, rngs::SysRng};
 use zcash_pool_migration::engine::MigrationPlan;
 
 /// Opaque identifier of one cached [`MigrationPlan`]. Drawn fresh (randomly, never zero) for
@@ -96,7 +95,7 @@ pub(crate) fn set(
     immediate: bool,
 ) -> PlanHandle {
     let handle = loop {
-        let candidate = OsRng.next_u64();
+        let candidate = UnwrapErr(SysRng).next_u64();
         if candidate != 0 {
             break candidate;
         }

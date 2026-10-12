@@ -76,6 +76,15 @@ Changes are relative to `2.8.0-rc.3`.
 
 ## Changed
 
+- The Rust core builds against the librustzcash NU7 pre-releases (`zcash_protocol` 0.11.0-pre.0).
+  Testnet transactions from block 4,465,026 on use consensus branch ID `0x77190ad9`; a build
+  without this change signs them with the NU6.3 ID, which lightwalletd rejects. Mainnet has no NU7
+  activation height and is unchanged.
+- The first open of a wallet database migrates it to the `zcash_client_sqlite` 0.23 schema. A build
+  without this change cannot open a migrated database.
+- Every `VotingRustBackend` call throws `VotingRustBackendError.rustError`, because `zcash_voting`
+  has no release for these crates.
+
 - Voting is pinned to `zcash_voting = "=3.0.0"` (exactly; a non-`=` requirement resolves to
   1.0.0). The 2.0 family made the PIR layout an explicit client/server handshake, so
   `VotingRustBackend.precomputeDelegationPir(...)` and `buildAndProveDelegation(...)` take a
