@@ -76,9 +76,9 @@ extension ValidateServerAction: Action {
             // the server's tip is the discriminating block-level signal: an Ironwood-capable server
             // always serves a non-empty `ironwoodTree` frontier once the pool exists.
             //
-            // A custom network reports a nonstandard branch id that can never equal the NU6.3 one, so
-            // this probe belongs with the other branch-id-derived checks it is gated behind.
-            if remoteBranchID == ZcashSDK.nu63ConsensusBranchID {
+            // Keyed on the activation height, not the NU6.3 branch id, which a later upgrade replaces.
+            if let ironwoodActivation = localNetwork.ironwoodActivationHeight,
+               BlockHeight(info.blockHeight) >= ironwoodActivation {
                 var tipBlock = BlockID()
                 tipBlock.height = info.blockHeight
                 let treeState = try await service.getTreeState(tipBlock, mode: await sdkFlags.ifTor(.defaultTor))

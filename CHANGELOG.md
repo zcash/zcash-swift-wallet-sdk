@@ -188,6 +188,10 @@ Changes are relative to `2.8.0-rc.3`.
 
 ## Fixed
 
+- Server validation checks that the server serves Ironwood data whenever Ironwood is active at the
+  server's tip, rather than only while the server reports the NU6.3 branch ID, so it keeps checking
+  testnet servers after NU7.
+
 - Transactions created from both ordinary proposals and finalized PCZTs are now returned for
   broadcast from the wallet store instead of being reconstructed from `v_transactions`. If that
   history view has not projected the stored row yet, sends and transparent-fund shielding continue
