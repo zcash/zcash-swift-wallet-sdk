@@ -8,6 +8,9 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Functions that parse a unified address or viewing key accept ZIP 316 Revision 2 encodings. Those
+  that return one still return its Revision 0 encoding.
+
 - `zcashlc_get_transaction`, `zcashlc_free_transaction_data`, and `FfiTransactionData` expose the
   serialized bytes and expiry height available for any wallet-store transaction without depending
   on the transaction-history projection.

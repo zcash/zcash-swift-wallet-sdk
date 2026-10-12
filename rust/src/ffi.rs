@@ -6,6 +6,7 @@ use std::ptr;
 use anyhow::{Context, anyhow};
 use bytes::Bytes;
 use transparent::address::TransparentAddress;
+use zcash_address::unified;
 use zcash_client_backend::{address::UnifiedAddress, data_api, encoding::AddressCodec as _};
 use zcash_client_sqlite::AccountUuid;
 use zcash_protocol::{consensus::Parameters, value::ZatBalance};
@@ -59,11 +60,13 @@ impl Account {
             seed_fingerprint: derivation.map_or([0u8; 32], |d| d.seed_fingerprint().to_bytes()),
             hd_account_index: derivation.map_or(u32::MAX, |d| d.account_index().into()),
             ufvk: account.ufvk().map_or(ptr::null_mut(), |ufvk| {
-                CString::new(ufvk.encode(params)).unwrap().into_raw()
+                let encoded = crate::encode_revision_0::<unified::Ufvk>(ufvk.encode(params));
+                CString::new(encoded).unwrap().into_raw()
             }),
             uivk: account.ufvk().map_or(ptr::null_mut(), |ufvk| {
                 let uivk = ufvk.to_unified_incoming_viewing_key();
-                CString::new(uivk.encode(params)).unwrap().into_raw()
+                let encoded = crate::encode_revision_0::<unified::Uivk>(uivk.encode(params));
+                CString::new(encoded).unwrap().into_raw()
             }),
         }
     }
@@ -1146,7 +1149,9 @@ impl Address {
         address: UnifiedAddress,
         diversifier_index: DiversifierIndex,
     ) -> Self {
-        let address_str = address.encode(network);
+        let address_str = crate::encode_revision_0::<unified::Address>(
+            address.encode_receiver_preserving(network),
+        );
         Self {
             address: CString::new(address_str).unwrap().into_raw(),
             diversifier_index_bytes: *diversifier_index.as_bytes(),

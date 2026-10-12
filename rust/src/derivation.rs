@@ -380,7 +380,8 @@ pub unsafe extern "C" fn zcashlc_spending_key_to_full_viewing_key(
         let network = parse_network(network_id)?;
         unsafe { decode_usk(usk_ptr, usk_len) }.map(|usk| {
             let ufvk = usk.to_unified_full_viewing_key();
-            CString::new(ufvk.encode(&network)).unwrap().into_raw()
+            let encoded = crate::encode_revision_0::<unified::Ufvk>(ufvk.encode(&network));
+            CString::new(encoded).unwrap().into_raw()
         })
     });
     unwrap_exc_or_null(res)

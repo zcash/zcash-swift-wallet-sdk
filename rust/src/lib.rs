@@ -35,7 +35,10 @@ use transparent::{
     bundle::{OutPoint, TxOut},
     keys::TransparentKeyScope,
 };
-use zcash_address::ZcashAddress;
+use zcash_address::{
+    ZcashAddress,
+    unified::{self, Encoding},
+};
 use zcash_client_backend::{
     address::Address,
     data_api::{
@@ -889,7 +892,8 @@ pub unsafe extern "C" fn zcashlc_get_current_address(
             UnifiedAddressRequest::AllAvailableKeys,
         ) {
             Ok(Some(ua)) => {
-                let address_str = ua.encode(&network);
+                let address_str =
+                    encode_revision_0::<unified::Address>(ua.encode_receiver_preserving(&network));
                 Ok(CString::new(address_str).unwrap().into_raw())
             }
             Ok(None) => Err(anyhow!(
@@ -1054,7 +1058,8 @@ pub unsafe extern "C" fn zcashlc_get_next_available_address(
 
         match db_data.get_next_available_address(account_uuid, address_request) {
             Ok(Some((ua, _))) => {
-                let address_str = ua.encode(&network);
+                let address_str =
+                    encode_revision_0::<unified::Address>(ua.encode_receiver_preserving(&network));
                 Ok(CString::new(address_str).unwrap().into_raw())
             }
             Ok(None) => Err(anyhow!(
@@ -4673,6 +4678,19 @@ pub(crate) fn parse_network(value: u32) -> anyhow::Result<NetworkParams> {
             NETWORK_ID_MAINNET,
             NETWORK_ID_REGTEST,
         )),
+    }
+}
+
+/// zcash_keys encodes unified addresses and viewing keys as ZIP 316 Revision 2, which earlier
+/// SDK releases cannot parse. Without metadata, the Revision 0 encoding holds the same items.
+pub(crate) fn encode_revision_0<T: Encoding>(encoded: String) -> String {
+    match T::decode(&encoded) {
+        Ok((net, _, container)) if container.metadata_items().is_empty() => {
+            T::try_from_items(unified::Revision::R0, container.items_as_parsed().to_vec())
+                .map(|container| container.encode(&net))
+                .unwrap_or(encoded)
+        }
+        _ => encoded,
     }
 }
 
