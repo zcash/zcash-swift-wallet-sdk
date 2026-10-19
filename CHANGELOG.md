@@ -97,6 +97,12 @@ persist the hotkey's stored secret and cannot recover it from the seed phrase.
   when that payload is a `RedactedRustError`, so the raw strings still carried by other `rust*`
   cases cannot reach a report. The unredacted text is logged on the device at `debug!` level.
 
+## Fixed
+
+- The package compiles with Xcode 15 (Swift 5.10). The Tor HTTP response handling called
+  `String(validatingCString:)`, which only exists in the Swift 6 standard library, so building the
+  SDK with Xcode 15 failed in `TorClient.swift`. No change is needed at call sites.
+
 # 3.0.0 - 2026-08-18
 
 ## Changed
