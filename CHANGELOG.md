@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+# 4.0.0 - 2026-10-19
+
 ## Added
 
 - `ZcashTransaction.Overview.ZIP318Kind.canonicalCrossingPayment`: a canonical pool crossing that
