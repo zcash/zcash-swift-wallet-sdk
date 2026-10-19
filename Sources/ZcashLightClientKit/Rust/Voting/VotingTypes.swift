@@ -204,7 +204,10 @@ public struct VotingWitnessData: Codable, Sendable {
 // MARK: - Share Delegation (JSON)
 
 /// Record of a share delegation sent to helper servers.
-public struct VotingShareDelegation: Codable, Equatable, Sendable {
+///
+/// Conforms to `Undescribable` because `nullifier` is the share nullifier:
+/// printing a record would put it into any log line that interpolates one.
+public struct VotingShareDelegation: Codable, Equatable, Sendable, Undescribable {
     public let roundId: String
     public let bundleIndex: UInt32
     public let proposalId: UInt32
@@ -329,7 +332,11 @@ public struct VotingDelegationSubmission: Codable, Sendable {
 /// shape of `zcash_voting::vote::VoteCommit` (crate `src/vote.rs`) minus its
 /// provisional `share_payloads`; the `CodingKeys` carry that JSON's field
 /// names (`r_vpk`, `enc_shares`) where the Swift names differ.
-public struct VotingVoteCommit: Codable, Sendable {
+///
+/// Conforms to `Undescribable` because `voteKeyRandomizer` and `voteAuthSig`
+/// authorize the cast vote and must not reach a log through `print`, string
+/// interpolation, or reflection.
+public struct VotingVoteCommit: Codable, Sendable, Undescribable {
     public let proposalId: UInt32
     public let vanNullifier: [UInt8]
     public let voteAuthorityNoteNew: [UInt8]
@@ -385,7 +392,10 @@ public struct VotingWireEncryptedShare: Codable, Sendable {
 // MARK: - Delegation Inputs (JSON)
 
 /// Inputs needed for delegation construction.
-public struct VotingDelegationInputs: Codable, Sendable {
+///
+/// Conforms to `Undescribable` because `fvkBytes` is the account's Orchard full
+/// viewing key, which reveals every note the account receives.
+public struct VotingDelegationInputs: Codable, Sendable, Undescribable {
     public let fvkBytes: [UInt8]
     public let gDNewX: [UInt8]
     public let pkDNewX: [UInt8]
@@ -562,7 +572,10 @@ public struct VotingPirProof: Sendable, Equatable {
 /// vote-commitment tree.
 ///
 /// Returned by `VotingRustBackend.getCommitmentBundle(...)`.
-public struct VotingStoredCommitmentBundle: Sendable, Equatable {
+///
+/// Conforms to `Undescribable` because `bundleJson` is the vote's recovery
+/// state, from which `zcash_voting` rebuilds the helper-share payloads.
+public struct VotingStoredCommitmentBundle: Sendable, Equatable, Undescribable {
     /// The recovery bundle JSON `zcash_voting` wrote when the vote was
     /// committed. It is opaque to the SDK: only `zcash_voting` produces and
     /// consumes it.

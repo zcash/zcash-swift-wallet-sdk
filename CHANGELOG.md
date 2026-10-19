@@ -64,9 +64,10 @@ persist the hotkey's stored secret and cannot recover it from the seed phrase.
   seed is borrowed for the call and never persisted, logged or handed to `zcash_voting`, and the
   signature is checked against the seed fingerprint the bundle was built for, so signing with the
   wrong seed fails instead of producing a rejected transaction.
-- Types carrying key material or note secrets — `VotingHotkey`, `VotingNoteInfo`, `VotingPczt`,
-  `VotingDelegationKeyInputs` — conform to `Undescribable`, so their contents cannot leak through
-  logging or reflection.
+- Types carrying key material, note secrets or vote recovery state — `VotingHotkey`,
+  `VotingNoteInfo`, `VotingPczt`, `VotingDelegationKeyInputs`, `VotingDelegationInputs`,
+  `VotingVoteCommit`, `VotingShareDelegation` and `VotingStoredCommitmentBundle` — conform to
+  `Undescribable`, so their contents cannot leak through logging or reflection.
 - Delegation reads the **Ironwood** note-commitment tree, not the Orchard one. Witness generation
   goes through `zcash_voting`'s own Ironwood-aware path, which additionally rejects a wallet
   database whose network differs from the round's and a snapshot height that is not NU6.3, and
