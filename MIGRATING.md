@@ -69,8 +69,11 @@ method that takes only a network, and returns a `VotingHotkey` carrying a
 `addressIndex`:
 
 ```swift
-let hotkey = try VotingRustBackend.generateHotkey(networkId: networkId)
-// Persist hotkey.storedSecret. Nothing else in VotingHotkey needs storing.
+let hotkey = try VotingRustBackend.generateHotkey(network: .mainnet)
+// Persist hotkey.storedSecret.bytes. Nothing else in VotingHotkey needs storing.
+
+// Later, for the rest of the round:
+let secret = try VotingHotkeySecret(bytes: persistedBytes)
 ```
 
 **The application must persist `storedSecret`.** It cannot be re-derived from
@@ -111,21 +114,64 @@ try backend.open(path: dbPath)
 try backend.initRound(roundId: roundId, networkId: networkId, snapshotHeight: h, ...)
 
 // After
-try backend.open(path: dbPath, networkId: networkId)
+try backend.open(path: dbPath, network: .mainnet)
 try backend.initRound(roundId: roundId, snapshotHeight: h, ...)
 ```
 
 `initRound`, `commitVote` and `precomputeDelegationPir` drop their `networkId`
 parameter, and `VotingDelegationKeyInputs` drops its `networkId` property — omit
 it from the initializer call. `generateHotkey`, `generateDelegationInputs`,
-`extractOrchardFvk` and `generateNoteWitnesses` are unaffected: the first three
-are type methods with no handle, and the last one's `networkId` selects the
-*wallet* database's consensus parameters, not the voting identity.
+`extractOrchardFvk` and `generateNoteWitnesses` still take a `network`: the
+first three are type methods with no handle, and the last one's `network`
+selects the *wallet* database's consensus parameters, not the voting identity.
 
-An unknown network id now throws from `open` rather than from each later call.
+The network is a `NetworkType`, so an unknown network can no longer be passed.
 A custom (regtest) network takes its voting identity from the registered base
 network, so a modified-mainnet chain votes with mainnet hotkeys and address
 HRPs; `open` throws if `zcashlc_set_custom_network` has not run yet.
+
+### Key material, accounts, heights and networks are typed
+
+Every voting parameter that carries a seed, key, account, height or network now
+takes a semantic type instead of `[UInt8]`, `String`, `UInt32` or `UInt64`, so
+one cannot be passed where another is expected. Wrap raw bytes once, where they
+enter the app; each wrapper throws `VotingRustBackendError.invalidData` on the
+wrong length.
+
+| Parameter | Was | Now |
+|---|---|---|
+| `seed`, `senderSeed` | `[UInt8]` | `VotingSeed(bytes:)` |
+| `hotkeyStoredSecret`, `VotingHotkey.storedSecret` | `[UInt8]` | `VotingHotkeySecret(bytes:)` |
+| `seedFingerprint` | `[UInt8]` | `VotingSeedFingerprint(bytes:)` |
+| `fvk`, `senderFvk`, `VotingDelegationInputs.fvkBytes` | `[UInt8]` | `VotingOrchardFullViewingKey` (`VotingDelegationInputs.fvk`) |
+| `extractOrchardFvk(ufvk:)` | `String` in, `[UInt8]` out | `UnifiedFullViewingKey` in, `VotingOrchardFullViewingKey` out |
+| `getWalletNotes(accountUuidBytes:)` | `[UInt8]` | `getWalletNotes(account:)`, an `AccountUUID` |
+| `accountIndex` | `UInt32` | `Zip32AccountIndex` |
+| `networkId` | `UInt32` | `network`, a `NetworkType` |
+| `snapshotHeight`, `expectedSnapshotHeight`, `VotingRoundState.snapshotHeight`, `VotingRoundSummary.snapshotHeight` | `UInt64` | `BlockHeight` |
+| `VotingBuildPcztParams.consensusBranchId` | `UInt32` | `ConsensusBranchID`, so `ZcashSDK.nu63ConsensusBranchID` passes as is |
+
+```swift
+// Before
+let inputs = try VotingRustBackend.generateDelegationInputs(
+    senderSeed: seedBytes,
+    hotkeyStoredSecret: secretBytes,
+    networkId: 1,
+    accountIndex: 0
+)
+
+// After
+let inputs = try VotingRustBackend.generateDelegationInputs(
+    senderSeed: try VotingSeed(bytes: seedBytes),
+    hotkeyStoredSecret: try VotingHotkeySecret(bytes: secretBytes),
+    network: .mainnet,
+    accountIndex: Zip32AccountIndex(0)
+)
+```
+
+`VotingSeed`, `VotingHotkeySecret` and `VotingOrchardFullViewingKey` conform to
+`Undescribable`. A height outside the FFI's range now throws `invalidData`
+instead of trapping.
 
 ### Other API changes
 
