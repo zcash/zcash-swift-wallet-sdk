@@ -14,7 +14,7 @@ private func hexRoundId(_ tag: UInt8) -> String {
 }
 
 private let confirmWalletId = "test-wallet"
-private let confirmNetworkId: UInt32 = 1
+private let confirmNetwork: NetworkType = .mainnet
 /// A well-formed round identifier that is never initialized, so the crate has no
 /// vote row to confirm against.
 private let confirmMissingRoundId = hexRoundId(0xfd)
@@ -93,7 +93,7 @@ final class VotingConfirmVoteSubmissionTests: XCTestCase {
 
     private func makeOpenBackend() throws -> VotingRustBackend {
         let backend = VotingRustBackend()
-        try backend.open(path: makeTempDbPath(), networkId: confirmNetworkId)
+        try backend.open(path: makeTempDbPath(), network: confirmNetwork)
         try backend.setWalletId(confirmWalletId)
         return backend
     }

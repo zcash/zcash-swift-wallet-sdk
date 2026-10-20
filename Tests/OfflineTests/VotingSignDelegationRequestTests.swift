@@ -14,7 +14,7 @@ private func signHexRoundId(_ tag: UInt8) -> String {
 }
 
 private let signWalletId = "test-wallet"
-private let signNetworkId: UInt32 = 1
+private let signNetwork: NetworkType = .mainnet
 /// A well-formed round identifier that is never initialized, so the crate has no
 /// stored signing request to answer with.
 private let signMissingRoundId = signHexRoundId(0xfc)
@@ -23,7 +23,7 @@ private let signMissingRoundId = signHexRoundId(0xfc)
 /// keys when loading a signing request.
 private let signFvk = [UInt8](repeating: 0, count: 96)
 private let signSeedFingerprint = [UInt8](repeating: 7, count: 32)
-private let signSeed = [UInt8](repeating: 9, count: 32)
+private let signSeedBytes = [UInt8](repeating: 9, count: 32)
 private let signRoundName = "chp-offline"
 
 final class VotingSignDelegationRequestTests: XCTestCase {
@@ -37,27 +37,6 @@ final class VotingSignDelegationRequestTests: XCTestCase {
         super.tearDown()
     }
 
-    func test_signDelegationRequest_shortSeed_throwsInvalidData() throws {
-        let backend = VotingRustBackend()
-
-        XCTAssertThrowsError(
-            try backend.signDelegationRequest(
-                roundId: signMissingRoundId,
-                bundleIndex: 0,
-                keys: try makeKeys(),
-                seed: [UInt8](repeating: 9, count: 31)
-            )
-        ) { error in
-            guard case VotingRustBackendError.invalidData(let message) = error else {
-                XCTFail("expected .invalidData, got \(error.localizedDescription)")
-                return
-            }
-            XCTAssertTrue(
-                message.contains("seed must be at least"),
-                "unexpected message: \(message)"
-            )
-        }
-    }
 
     func test_signDelegationRequest_beforeOpen_throwsDatabaseNotOpen() throws {
         let backend = VotingRustBackend()
@@ -67,7 +46,7 @@ final class VotingSignDelegationRequestTests: XCTestCase {
                 roundId: signMissingRoundId,
                 bundleIndex: 0,
                 keys: try makeKeys(),
-                seed: signSeed
+                seed: try VotingSeed(bytes: signSeedBytes)
             )
         ) { error in
             guard case VotingRustBackendError.databaseNotOpen = error else {
@@ -86,7 +65,7 @@ final class VotingSignDelegationRequestTests: XCTestCase {
                 roundId: signMissingRoundId,
                 bundleIndex: 0,
                 keys: try makeKeys(),
-                seed: signSeed
+                seed: try VotingSeed(bytes: signSeedBytes)
             )
         ) { error in
             guard case VotingRustBackendError.rustError(let message) = error else {
@@ -106,12 +85,12 @@ final class VotingSignDelegationRequestTests: XCTestCase {
     /// from it before it can build the delegation keys the signing request is
     /// loaded through. `generateHotkey` is static and needs no database.
     private func makeKeys() throws -> VotingDelegationKeyInputs {
-        let hotkey = try VotingRustBackend.generateHotkey(networkId: signNetworkId)
+        let hotkey = try VotingRustBackend.generateHotkey(network: signNetwork)
         return VotingDelegationKeyInputs(
-            fvk: signFvk,
+            fvk: try VotingOrchardFullViewingKey(bytes: signFvk),
             hotkeyStoredSecret: hotkey.storedSecret,
-            seedFingerprint: signSeedFingerprint,
-            accountIndex: 0,
+            seedFingerprint: try VotingSeedFingerprint(bytes: signSeedFingerprint),
+            accountIndex: Zip32AccountIndex(0),
             roundName: signRoundName
         )
     }
@@ -125,7 +104,7 @@ final class VotingSignDelegationRequestTests: XCTestCase {
 
     private func makeOpenBackend() throws -> VotingRustBackend {
         let backend = VotingRustBackend()
-        try backend.open(path: makeTempDbPath(), networkId: signNetworkId)
+        try backend.open(path: makeTempDbPath(), network: signNetwork)
         try backend.setWalletId(signWalletId)
         return backend
     }
