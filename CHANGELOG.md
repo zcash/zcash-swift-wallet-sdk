@@ -107,6 +107,12 @@ persist the hotkey's stored secret and cannot recover it from the seed phrase.
 
 ## Fixed
 
+- The Rust core's TLS dependencies are updated to `rustls-webpki` 0.103.16 and `webpki-roots`
+  1.0.10, the releases that stop trusting the eight compromised eMudhra intermediate CAs disclosed
+  on 2026-10-20 (https://emudhra.we-have-a-problem.com). TLS connections made from Rust, rather
+  than through `URLSession` and the system trust store, validate certificates with these crates.
+  No change is needed at call sites.
+
 - The package compiles with Xcode 15 (Swift 5.10). The Tor HTTP response handling called
   `String(validatingCString:)`, which only exists in the Swift 6 standard library, so building the
   SDK with Xcode 15 failed in `TorClient.swift`. No change is needed at call sites.
