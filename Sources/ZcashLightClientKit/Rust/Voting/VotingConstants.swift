@@ -8,6 +8,7 @@ let votingAccountUuidByteCount = 16
 let votingOrchardFvkByteCount = 96
 let votingMinSeedByteCount = 32
 let votingSeedFingerprintByteCount = 32
+let votingHotkeyStoredSecretByteCount = 64
 let votingShareNullifierByteCount = 32
 let votingShareNullifierHexCharacterCount = votingShareNullifierByteCount * 2
 let votingSpendAuthSignatureByteCount = 64

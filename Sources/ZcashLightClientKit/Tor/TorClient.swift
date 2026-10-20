@@ -511,6 +511,7 @@ extension FfiHttpResponseBytes {
             let headerPtr = headers_ptr.advanced(by: i).pointee
 
             let name = String(validatingUTF8: headerPtr.name)
+
             let value = String(validatingUTF8: headerPtr.value)
 
             guard let name, let value else {

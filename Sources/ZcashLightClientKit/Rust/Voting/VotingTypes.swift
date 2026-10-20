@@ -20,7 +20,7 @@ public enum VotingRoundPhase: UInt32, Codable, Sendable {
 public struct VotingRoundState: Sendable {
     public let roundId: String
     public let phase: VotingRoundPhase
-    public let snapshotHeight: UInt64
+    public let snapshotHeight: BlockHeight
     public let hotkeyAddress: String?
     public let delegatedWeight: UInt64?
     public let proofGenerated: Bool
@@ -30,7 +30,7 @@ public struct VotingRoundState: Sendable {
 public struct VotingRoundSummary: Sendable {
     public let roundId: String
     public let phase: VotingRoundPhase
-    public let snapshotHeight: UInt64
+    public let snapshotHeight: BlockHeight
     public let createdAt: UInt64
 }
 
@@ -48,8 +48,10 @@ public struct VotingRoundSummary: Sendable {
 /// Conforms to `Undescribable` so the secret cannot escape through
 /// `print`, string interpolation, or reflection.
 public struct VotingHotkey: Sendable, Undescribable {
-    /// The material to persist. Treat it as key material, not as an identifier.
-    public let storedSecret: [UInt8]
+    /// The material to persist: store ``VotingHotkeySecret/bytes`` and rebuild
+    /// it with ``VotingHotkeySecret/init(bytes:)``. Treat it as key material, not
+    /// as an identifier.
+    public let storedSecret: VotingHotkeySecret
     /// Raw Orchard address bytes for the hotkey, derived from `storedSecret`.
     public let rawOrchardAddress: [UInt8]
     /// Address index the hotkey's Orchard address was derived at.
@@ -393,17 +395,17 @@ public struct VotingWireEncryptedShare: Codable, Sendable {
 
 /// Inputs needed for delegation construction.
 ///
-/// Conforms to `Undescribable` because `fvkBytes` is the account's Orchard full
+/// Conforms to `Undescribable` because `fvk` is the account's Orchard full
 /// viewing key, which reveals every note the account receives.
 public struct VotingDelegationInputs: Codable, Sendable, Undescribable {
-    public let fvkBytes: [UInt8]
+    public let fvk: VotingOrchardFullViewingKey
     public let gDNewX: [UInt8]
     public let pkDNewX: [UInt8]
     public let hotkeyRawAddress: [UInt8]
-    public let seedFingerprint: [UInt8]
+    public let seedFingerprint: VotingSeedFingerprint
 
     enum CodingKeys: String, CodingKey {
-        case fvkBytes = "fvk_bytes"
+        case fvk = "fvk_bytes"
         case gDNewX = "g_d_new_x"
         case pkDNewX = "pk_d_new_x"
         case hotkeyRawAddress = "hotkey_raw_address"
@@ -470,17 +472,17 @@ public struct VotingKeystoneSignatureRecord: Codable, Sendable, Equatable {
 /// Conforms to `Undescribable` because `hotkeyStoredSecret` is the voting
 /// hotkey's key material.
 public struct VotingDelegationKeyInputs: Sendable, Undescribable {
-    public let fvk: [UInt8]
-    public let hotkeyStoredSecret: [UInt8]
-    public let seedFingerprint: [UInt8]
-    public let accountIndex: UInt32
+    public let fvk: VotingOrchardFullViewingKey
+    public let hotkeyStoredSecret: VotingHotkeySecret
+    public let seedFingerprint: VotingSeedFingerprint
+    public let accountIndex: Zip32AccountIndex
     public let roundName: String
 
     public init(
-        fvk: [UInt8],
-        hotkeyStoredSecret: [UInt8],
-        seedFingerprint: [UInt8],
-        accountIndex: UInt32,
+        fvk: VotingOrchardFullViewingKey,
+        hotkeyStoredSecret: VotingHotkeySecret,
+        seedFingerprint: VotingSeedFingerprint,
+        accountIndex: Zip32AccountIndex,
         roundName: String
     ) {
         self.fvk = fvk
@@ -499,14 +501,14 @@ public struct VotingBuildPcztParams: Sendable {
     public let bundleIndex: UInt32
     public let notes: [VotingNoteInfo]
     public let keys: VotingDelegationKeyInputs
-    public let consensusBranchId: UInt32
+    public let consensusBranchId: ConsensusBranchID
 
     public init(
         roundId: String,
         bundleIndex: UInt32,
         notes: [VotingNoteInfo],
         keys: VotingDelegationKeyInputs,
-        consensusBranchId: UInt32
+        consensusBranchId: ConsensusBranchID
     ) {
         self.roundId = roundId
         self.bundleIndex = bundleIndex

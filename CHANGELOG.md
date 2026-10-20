@@ -32,11 +32,10 @@ persist the hotkey's stored secret and cannot recover it from the seed phrase.
 - Voting is pinned to `zcash_voting = "=3.0.0"`. The `=` is required: a non-`=` requirement
   resolves to 1.0.0, which pins the pre-Ironwood librustzcash family and cannot build here.
 - The voting network is chosen once, when the database is opened.
-  `VotingRustBackend.open(path:networkId:)` takes it; `initRound(...)`, `commitVote(...)` and
-  `precomputeDelegationPir(...)` do not. An unknown network id is rejected by `open` rather than by
-  each later call, and a custom (regtest) network takes its voting identity from the registered
-  base network — a modified-mainnet chain votes with mainnet hotkeys and address HRPs — so `open`
-  fails if that network has not been configured yet.
+  `VotingRustBackend.open(path:network:)` takes it as a `NetworkType`; `initRound(...)`,
+  `commitVote(...)` and `precomputeDelegationPir(...)` do not. A custom (regtest) network takes its
+  voting identity from the registered base network — a modified-mainnet chain votes with mainnet
+  hotkeys and address HRPs — so `open` fails if that network has not been configured yet.
 - The PIR geometry is an explicit client/server handshake. `precomputeDelegationPir(...)` and
   `buildAndProveDelegation(...)` take a `pirLayout: VotingPirLayout` —
   `pirDepth`/`tier0Layers`/`tier1Layers`/`polyLen`, sourced from the round's resolved dynamic
@@ -66,6 +65,15 @@ persist the hotkey's stored secret and cannot recover it from the seed phrase.
   seed is borrowed for the call and never persisted, logged or handed to `zcash_voting`, and the
   signature is checked against the seed fingerprint the bundle was built for, so signing with the
   wrong seed fails instead of producing a rejected transaction.
+- Voting parameters that carry key material, accounts, heights or networks take semantic types
+  rather than `[UInt8]`, `String`, `UInt32` or `UInt64`: `VotingSeed`, `VotingHotkeySecret` (also
+  `VotingHotkey.storedSecret`), `VotingSeedFingerprint` and `VotingOrchardFullViewingKey`, each
+  checking its length once when it is built and throwing `VotingRustBackendError.invalidData`
+  otherwise, plus the SDK's `UnifiedFullViewingKey` (`extractOrchardFvk(ufvk:network:)`),
+  `AccountUUID` (`getWalletNotes(account:dataDbPath:snapshotHeight:network:)`), `Zip32AccountIndex`,
+  `NetworkType`, `BlockHeight` and `ConsensusBranchID`. A seed, hotkey secret or viewing key passed
+  in the wrong argument no longer compiles, and a snapshot height outside the FFI's range throws
+  instead of trapping. `MIGRATING.md` maps each parameter.
 - Types carrying key material, note secrets or vote recovery state — `VotingHotkey`,
   `VotingNoteInfo`, `VotingPczt`, `VotingDelegationKeyInputs`, `VotingDelegationInputs`,
   `VotingVoteCommit`, `VotingShareDelegation` and `VotingStoredCommitmentBundle` — conform to

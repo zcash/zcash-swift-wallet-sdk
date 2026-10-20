@@ -58,10 +58,10 @@ public final class VotingRustBackend: @unchecked Sendable {
 
     // MARK: - Database lifecycle
 
-    /// Open the voting database at `path` for `networkId`.
+    /// Open the voting database at `path` for `network`.
     ///
     /// The network is fixed for the lifetime of the handle: every
-    /// database-bound call takes its voting identity from `networkId` rather
+    /// database-bound call takes its voting identity from `network` rather
     /// than accepting one of its own, so no later call can disagree with the
     /// network the database was opened for. A custom (regtest) network takes
     /// its voting identity from the registered base network, and opening fails
@@ -69,7 +69,7 @@ public final class VotingRustBackend: @unchecked Sendable {
     ///
     /// Throws `VotingRustBackendError.databaseAlreadyOpen` if the backend
     /// already holds an open handle.
-    public func open(path: String, networkId: UInt32) throws {
+    public func open(path: String, network: NetworkType) throws {
         lock.lock()
         defer { lock.unlock() }
 
@@ -79,7 +79,7 @@ public final class VotingRustBackend: @unchecked Sendable {
 
         let pathBytes = [UInt8](path.utf8)
         guard let ptr = pathBytes.withUnsafeBufferPointer({ buf in
-            zcashlc_voting_db_open(buf.baseAddress, UInt(buf.count), networkId)
+            zcashlc_voting_db_open(buf.baseAddress, UInt(buf.count), network.networkId)
         }) else {
             throw VotingRustBackendError.rustError(
                 Self.staticLastErrorMessage(fallback: "`voting_db_open` failed")
@@ -107,7 +107,7 @@ public final class VotingRustBackend: @unchecked Sendable {
 extension VotingRustBackend {
     /// Set the wallet identifier for all subsequent voting operations.
     ///
-    /// Must be called after `open(path:)` and before any round operations.
+    /// Must be called after `open(path:network:)` and before any round operations.
     public func setWalletId(_ walletId: String) throws {
         let walletIdBytes = [UInt8](walletId.utf8)
 
@@ -144,18 +144,14 @@ extension VotingRustBackend {
         bundleIndex: UInt32,
         notes: [VotingNoteInfo],
         pirEndpoints: [String],
-        expectedSnapshotHeight: UInt64,
+        expectedSnapshotHeight: BlockHeight,
         pirLayout: VotingPirLayout = .unknown,
         pirResolver: PirSnapshotResolver = PirSnapshotResolver()
     ) async throws -> VotingDelegationPirPrecomputeResult {
         try requireOpenDatabase()
-
-        // PirSnapshotResolver expects `BlockHeight` (Int); voting snapshot
-        // heights are `UInt64` everywhere else in the voting types, so convert
-        // at the boundary. Snapshot heights well within Int.max in practice.
         let pirServerUrl = try await pirResolver.resolve(
             endpoints: pirEndpoints,
-            expectedSnapshotHeight: BlockHeight(expectedSnapshotHeight)
+            expectedSnapshotHeight: expectedSnapshotHeight
         )
 
         let roundIdBytes = [UInt8](roundId.utf8)
@@ -285,7 +281,7 @@ extension VotingRustBackend {
         bundleIndex: UInt32,
         walletDbPath: String,
         notes: [VotingNoteInfo],
-        networkId: UInt32
+        network: NetworkType
     ) throws -> [VotingWitnessData] {
         let roundIdBytes = [UInt8](roundId.utf8)
         let walletPathBytes = [UInt8](walletDbPath.utf8)
@@ -305,7 +301,7 @@ extension VotingRustBackend {
                             UInt(pathBuf.count),
                             notesBuf.baseAddress,
                             UInt(notesBuf.count),
-                            networkId
+                            network.networkId
                         )
                     }
                 }
@@ -339,9 +335,7 @@ extension VotingRustBackend {
     /// proposal returns the persisted recovery bundle rather than re-proving.
     ///
     /// `hotkeyStoredSecret` is the ``VotingHotkey/storedSecret`` the application
-    /// persisted, not wallet seed material. `networkId` must match the network
-    /// the round was initialized with, because the vote is signed for the
-    /// network the hotkey belongs to.
+    /// persisted, not wallet seed material.
     ///
     /// The proof callback may be invoked from Rust worker threads. Do not call
     /// back into this backend from `progress`: the database handle lock is held
@@ -353,7 +347,7 @@ extension VotingRustBackend {
     public func commitVote(
         roundId: String,
         bundleIndex: UInt32,
-        hotkeyStoredSecret: [UInt8],
+        hotkeyStoredSecret: VotingHotkeySecret,
         proposalId: UInt32,
         choice: UInt32,
         numOptions: UInt32,
@@ -612,31 +606,25 @@ extension VotingRustBackend {
     /// Generate the public delegation inputs for a sender seed + stored hotkey
     /// secret pair.
     ///
-    /// `senderSeed` must be ≥ 32 bytes. `hotkeyStoredSecret` is the app-owned
-    /// ``VotingHotkey/storedSecret``, not seed material; `zcash_voting` derives
-    /// the hotkey's Orchard address from it at a fixed account and address
-    /// index, and rejects a secret of the wrong length. `accountIndex` drives
-    /// only the sender's UFVK derivation.
+    /// `hotkeyStoredSecret` is the app-owned ``VotingHotkey/storedSecret``, not
+    /// seed material; `zcash_voting` derives the hotkey's Orchard address from
+    /// it at a fixed account and address index. `accountIndex` drives only the
+    /// sender's UFVK derivation.
     public static func generateDelegationInputs(
-        senderSeed: [UInt8],
-        hotkeyStoredSecret: [UInt8],
-        networkId: UInt32,
-        accountIndex: UInt32
+        senderSeed: VotingSeed,
+        hotkeyStoredSecret: VotingHotkeySecret,
+        network: NetworkType,
+        accountIndex: Zip32AccountIndex
     ) throws -> VotingDelegationInputs {
-        guard senderSeed.count >= votingMinSeedByteCount else {
-            throw VotingRustBackendError.invalidData(
-                "senderSeed must be at least \(votingMinSeedByteCount) bytes"
-            )
-        }
-        let ptr = senderSeed.withUnsafeBufferPointer { senderBuf in
-            hotkeyStoredSecret.withUnsafeBufferPointer { hotkeyBuf in
+        let ptr = senderSeed.bytes.withUnsafeBufferPointer { senderBuf in
+            hotkeyStoredSecret.bytes.withUnsafeBufferPointer { hotkeyBuf in
                 zcashlc_voting_generate_delegation_inputs(
                     senderBuf.baseAddress,
                     UInt(senderBuf.count),
                     hotkeyBuf.baseAddress,
                     UInt(hotkeyBuf.count),
-                    networkId,
-                    accountIndex
+                    network.networkId,
+                    accountIndex.index
                 )
             }
         }
@@ -652,30 +640,20 @@ extension VotingRustBackend {
     /// Generate delegation inputs from an explicit sender FVK + stored hotkey
     /// secret, bypassing sender-seed derivation.
     public static func generateDelegationInputs(
-        senderFvk: [UInt8],
-        hotkeyStoredSecret: [UInt8],
-        networkId: UInt32,
-        seedFingerprint: [UInt8]
+        senderFvk: VotingOrchardFullViewingKey,
+        hotkeyStoredSecret: VotingHotkeySecret,
+        network: NetworkType,
+        seedFingerprint: VotingSeedFingerprint
     ) throws -> VotingDelegationInputs {
-        guard senderFvk.count == votingOrchardFvkByteCount else {
-            throw VotingRustBackendError.invalidData(
-                "senderFvk must be exactly \(votingOrchardFvkByteCount) bytes"
-            )
-        }
-        guard seedFingerprint.count == votingSeedFingerprintByteCount else {
-            throw VotingRustBackendError.invalidData(
-                "seedFingerprint must be exactly \(votingSeedFingerprintByteCount) bytes"
-            )
-        }
-        let ptr = senderFvk.withUnsafeBufferPointer { fvkBuf in
-            hotkeyStoredSecret.withUnsafeBufferPointer { hotkeyBuf in
-                seedFingerprint.withUnsafeBufferPointer { fpBuf in
+        let ptr = senderFvk.bytes.withUnsafeBufferPointer { fvkBuf in
+            hotkeyStoredSecret.bytes.withUnsafeBufferPointer { hotkeyBuf in
+                seedFingerprint.bytes.withUnsafeBufferPointer { fpBuf in
                     zcashlc_voting_generate_delegation_inputs_with_fvk(
                         fvkBuf.baseAddress,
                         UInt(fvkBuf.count),
                         hotkeyBuf.baseAddress,
                         UInt(hotkeyBuf.count),
-                        networkId,
+                        network.networkId,
                         fpBuf.baseAddress,
                         UInt(fpBuf.count)
                     )
@@ -712,14 +690,18 @@ extension VotingRustBackend {
         }
     }
 
-    /// Extract the 96-byte Orchard FVK from a UFVK string.
-    public static func extractOrchardFvk(ufvk: String, networkId: UInt32) throws -> [UInt8] {
-        let bytes = [UInt8](ufvk.utf8)
-        return try staticBoxedSliceFFI(fallback: "`extract_orchard_fvk_from_ufvk` failed") {
+    /// Extract the 96-byte Orchard full viewing key from a unified full viewing key.
+    public static func extractOrchardFvk(
+        ufvk: UnifiedFullViewingKey,
+        network: NetworkType
+    ) throws -> VotingOrchardFullViewingKey {
+        let bytes = [UInt8](ufvk.stringEncoded.utf8)
+        let fvk = try staticBoxedSliceFFI(fallback: "`extract_orchard_fvk_from_ufvk` failed") {
             bytes.withUnsafeBufferPointer { buf in
-                zcashlc_voting_extract_orchard_fvk_from_ufvk(buf.baseAddress, UInt(buf.count), networkId)
+                zcashlc_voting_extract_orchard_fvk_from_ufvk(buf.baseAddress, UInt(buf.count), network.networkId)
             }
         }
+        return try VotingOrchardFullViewingKey(bytes: fvk)
     }
 
     /// Extract the 32-byte Ironwood note-commitment-tree root from a
@@ -770,7 +752,7 @@ extension VotingRustBackend {
     /// `sessionJson` is optional; pass `nil` to leave it unset.
     public func initRound(
         roundId: String,
-        snapshotHeight: UInt64,
+        snapshotHeight: BlockHeight,
         eaPublicKey: [UInt8],
         ncRoot: [UInt8],
         nullifierImtRoot: [UInt8],
@@ -778,6 +760,7 @@ extension VotingRustBackend {
     ) throws {
         let roundIdBytes = [UInt8](roundId.utf8)
         let sessionBytes = sessionJson.map { [UInt8]($0.utf8) }
+        let ffiSnapshotHeight = try snapshotHeight.votingFFIHeight()
 
         try withHandle { dbh in
             let result = roundIdBytes.withUnsafeBufferPointer { ridBuf in
@@ -789,7 +772,7 @@ extension VotingRustBackend {
                                     dbh,
                                     ridBuf.baseAddress,
                                     UInt(ridBuf.count),
-                                    snapshotHeight,
+                                    ffiSnapshotHeight,
                                     eaBuf.baseAddress,
                                     UInt(eaBuf.count),
                                     ncBuf.baseAddress,
@@ -839,7 +822,7 @@ extension VotingRustBackend {
         return VotingRoundState(
             roundId: storedRoundId,
             phase: phase,
-            snapshotHeight: raw.snapshot_height,
+            snapshotHeight: try .fromVotingFFI(raw.snapshot_height),
             hotkeyAddress: hotkeyAddress,
             delegatedWeight: delegatedWeight,
             proofGenerated: raw.proof_generated
@@ -872,7 +855,7 @@ extension VotingRustBackend {
                 VotingRoundSummary(
                     roundId: storedRoundId,
                     phase: phase,
-                    snapshotHeight: raw.snapshot_height,
+                    snapshotHeight: try .fromVotingFFI(raw.snapshot_height),
                     createdAt: raw.created_at
                 )
             )
@@ -952,30 +935,25 @@ extension VotingRustBackend {
 extension VotingRustBackend {
     /// Read the wallet notes eligible for voting at `snapshotHeight`.
     ///
-    /// `accountUuidBytes` must be exactly 16 bytes; the FFI scopes the query
-    /// to a specific account and rejects any other length.
+    /// The query is scoped to `account`.
     public func getWalletNotes(
-        accountUuidBytes: [UInt8],
+        account: AccountUUID,
         dataDbPath: String,
-        snapshotHeight: UInt64,
-        networkId: UInt32
+        snapshotHeight: BlockHeight,
+        network: NetworkType
     ) throws -> [VotingNoteInfo] {
-        guard accountUuidBytes.count == votingAccountUuidByteCount else {
-            throw VotingRustBackendError.invalidData(
-                "accountUuidBytes must be exactly \(votingAccountUuidByteCount) bytes"
-            )
-        }
+        let ffiSnapshotHeight = try snapshotHeight.votingFFIHeight()
         let pathBytes = [UInt8](dataDbPath.utf8)
 
         let ptr: UnsafeMutablePointer<FfiBoxedSlice> = try withHandle { dbh in
             let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = pathBytes.withUnsafeBufferPointer { pathBuf in
-                accountUuidBytes.withUnsafeBufferPointer { uuidBuf in
+                account.id.withUnsafeBufferPointer { uuidBuf in
                     zcashlc_voting_get_wallet_notes(
                         dbh,
                         pathBuf.baseAddress,
                         UInt(pathBuf.count),
-                        snapshotHeight,
-                        networkId,
+                        ffiSnapshotHeight,
+                        network.networkId,
                         uuidBuf.baseAddress,
                         UInt(uuidBuf.count)
                     )
@@ -1401,7 +1379,7 @@ extension VotingRustBackend {
 // MARK: - Delegation workflow
 
 extension VotingRustBackend {
-    /// Generate a new voting hotkey for `networkId`.
+    /// Generate a new voting hotkey for `network`.
     ///
     /// - Important: The application **must persist** the returned
     /// ``VotingHotkey/storedSecret``. A voting hotkey is an app-owned random
@@ -1417,8 +1395,8 @@ extension VotingRustBackend {
     /// The secret is owned by Swift after this call. The Rust allocation is
     /// zeroized and freed before this method returns; treat the returned bytes
     /// with the same care as any other key material.
-    public static func generateHotkey(networkId: UInt32) throws -> VotingHotkey {
-        guard let ptr = zcashlc_voting_generate_hotkey(networkId) else {
+    public static func generateHotkey(network: NetworkType) throws -> VotingHotkey {
+        guard let ptr = zcashlc_voting_generate_hotkey(network.networkId) else {
             throw VotingRustBackendError.rustError(
                 staticLastErrorMessage(fallback: "`generate_hotkey` failed")
             )
@@ -1427,7 +1405,9 @@ extension VotingRustBackend {
 
         let raw = ptr.pointee
         return VotingHotkey(
-            storedSecret: bytesFromRawPointer(raw.stored_secret, count: Int(raw.stored_secret_len)),
+            storedSecret: try VotingHotkeySecret(
+                bytes: bytesFromRawPointer(raw.stored_secret, count: Int(raw.stored_secret_len))
+            ),
             rawOrchardAddress: bytesFromRawPointer(
                 raw.raw_orchard_address,
                 count: Int(raw.raw_orchard_address_len)
@@ -1493,11 +1473,6 @@ extension VotingRustBackend {
     /// Build the voting PCZT for a bundle.
     public func buildPczt(_ params: VotingBuildPcztParams) throws -> VotingPczt {
         let keys = params.keys
-        guard keys.seedFingerprint.count == votingSeedFingerprintByteCount else {
-            throw VotingRustBackendError.invalidData(
-                "seedFingerprint must be exactly \(votingSeedFingerprintByteCount) bytes"
-            )
-        }
 
         let roundIdBytes = [UInt8](params.roundId.utf8)
         let notesJson = try JSONEncoder().encode(params.notes)
@@ -1507,9 +1482,9 @@ extension VotingRustBackend {
         let ptr: UnsafeMutablePointer<FfiBoxedSlice> = try withHandle { dbh in
             let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
                 notesBytes.withUnsafeBufferPointer { notesBuf in
-                    keys.fvk.withUnsafeBufferPointer { fvkBuf in
-                        keys.hotkeyStoredSecret.withUnsafeBufferPointer { secretBuf in
-                            keys.seedFingerprint.withUnsafeBufferPointer { fpBuf in
+                    keys.fvk.bytes.withUnsafeBufferPointer { fvkBuf in
+                        keys.hotkeyStoredSecret.bytes.withUnsafeBufferPointer { secretBuf in
+                            keys.seedFingerprint.bytes.withUnsafeBufferPointer { fpBuf in
                                 roundNameBytes.withUnsafeBufferPointer { nameBuf in
                                     zcashlc_voting_build_pczt(
                                         dbh,
@@ -1522,10 +1497,10 @@ extension VotingRustBackend {
                                         UInt(fvkBuf.count),
                                         secretBuf.baseAddress,
                                         UInt(secretBuf.count),
-                                        params.consensusBranchId,
+                                        UInt32(bitPattern: params.consensusBranchId),
                                         fpBuf.baseAddress,
                                         UInt(fpBuf.count),
-                                        keys.accountIndex,
+                                        keys.accountIndex.index,
                                         nameBuf.baseAddress,
                                         UInt(nameBuf.count)
                                     )
@@ -1589,7 +1564,7 @@ extension VotingRustBackend {
     ///     this bundle. The crate loads the signing request through them, so a
     ///     different account index, hotkey secret or seed fingerprint fails
     ///     instead of silently signing for the wrong account.
-    ///   - seed: the wallet's root seed, at least 32 bytes. It is borrowed for
+    ///   - seed: the wallet's root seed. It is borrowed for
     ///     the duration of this call, is never persisted or logged, and must be
     ///     the seed whose fingerprint is in `keys` — a mismatch throws rather
     ///     than producing a signature the chain would reject.
@@ -1597,37 +1572,26 @@ extension VotingRustBackend {
     ///   ZIP-244 sighash it covers. Pass both to `getDelegationSubmission`
     ///   unchanged.
     /// - Throws: ``VotingRustBackendError/databaseNotOpen`` if no database is
-    ///   open; ``VotingRustBackendError/invalidData`` if `seed` or the seed
-    ///   fingerprint is the wrong length; ``VotingRustBackendError/rustError``
-    ///   if the bundle has no stored signing request yet (its PCZT setup has not
-    ///   run), or the seed does not match the request.
+    ///   open; ``VotingRustBackendError/rustError`` if the bundle has no stored
+    ///   signing request yet (its PCZT setup has not run), or the seed does not
+    ///   match the request.
     public func signDelegationRequest(
         roundId: String,
         bundleIndex: UInt32,
         keys: VotingDelegationKeyInputs,
-        seed: [UInt8]
+        seed: VotingSeed
     ) throws -> VotingDelegationSignature {
-        guard keys.seedFingerprint.count == votingSeedFingerprintByteCount else {
-            throw VotingRustBackendError.invalidData(
-                "seedFingerprint must be exactly \(votingSeedFingerprintByteCount) bytes"
-            )
-        }
-        guard seed.count >= votingMinSeedByteCount else {
-            throw VotingRustBackendError.invalidData(
-                "seed must be at least \(votingMinSeedByteCount) bytes"
-            )
-        }
 
         let roundIdBytes = [UInt8](roundId.utf8)
         let roundNameBytes = [UInt8](keys.roundName.utf8)
 
         let ptr: UnsafeMutablePointer<FfiBoxedSlice> = try withHandle { dbh in
             let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
-                keys.fvk.withUnsafeBufferPointer { fvkBuf in
-                    keys.hotkeyStoredSecret.withUnsafeBufferPointer { secretBuf in
-                        keys.seedFingerprint.withUnsafeBufferPointer { fpBuf in
+                keys.fvk.bytes.withUnsafeBufferPointer { fvkBuf in
+                    keys.hotkeyStoredSecret.bytes.withUnsafeBufferPointer { secretBuf in
+                        keys.seedFingerprint.bytes.withUnsafeBufferPointer { fpBuf in
                             roundNameBytes.withUnsafeBufferPointer { nameBuf in
-                                seed.withUnsafeBufferPointer { seedBuf in
+                                seed.bytes.withUnsafeBufferPointer { seedBuf in
                                     zcashlc_voting_sign_delegation_request(
                                         dbh,
                                         ridBuf.baseAddress,
@@ -1639,7 +1603,7 @@ extension VotingRustBackend {
                                         UInt(secretBuf.count),
                                         fpBuf.baseAddress,
                                         UInt(fpBuf.count),
-                                        keys.accountIndex,
+                                        keys.accountIndex.index,
                                         nameBuf.baseAddress,
                                         UInt(nameBuf.count),
                                         seedBuf.baseAddress,
@@ -1757,22 +1721,16 @@ extension VotingRustBackend {
     public func buildAndProveDelegation(
         _ params: VotingDelegationProofParams,
         pirEndpoints: [String],
-        expectedSnapshotHeight: UInt64,
+        expectedSnapshotHeight: BlockHeight,
         pirLayout: VotingPirLayout = .unknown,
         pirResolver: PirSnapshotResolver = PirSnapshotResolver(),
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> VotingDelegationProofResult {
         try requireOpenDatabase()
 
-        guard params.keys.seedFingerprint.count == votingSeedFingerprintByteCount else {
-            throw VotingRustBackendError.invalidData(
-                "seedFingerprint must be exactly \(votingSeedFingerprintByteCount) bytes"
-            )
-        }
-
         let pirServerUrl = try await pirResolver.resolve(
             endpoints: pirEndpoints,
-            expectedSnapshotHeight: BlockHeight(expectedSnapshotHeight)
+            expectedSnapshotHeight: expectedSnapshotHeight
         )
 
         // The proving FFI can run for minutes; detach so we do not block the
@@ -1906,7 +1864,7 @@ private extension VotingRustBackend {
 
         let ptr: UnsafeMutablePointer<FfiBoxedSlice> = try withHandle { dbh in
             let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
-                draft.hotkeyStoredSecret.withUnsafeBufferPointer { secretBuf in
+                draft.hotkeyStoredSecret.bytes.withUnsafeBufferPointer { secretBuf in
                     authPathBytes.withUnsafeBufferPointer { pathBuf in
                         zcashlc_voting_commit_vote(
                             dbh,
@@ -2048,9 +2006,9 @@ private extension VotingRustBackend {
         let ptr: UnsafeMutablePointer<FfiBoxedSlice> = try withHandle { dbh in
             let ptr: UnsafeMutablePointer<FfiBoxedSlice>? = roundIdBytes.withUnsafeBufferPointer { ridBuf in
                 notesBytes.withUnsafeBufferPointer { notesBuf in
-                    keys.fvk.withUnsafeBufferPointer { fvkBuf in
-                        keys.hotkeyStoredSecret.withUnsafeBufferPointer { secretBuf in
-                            keys.seedFingerprint.withUnsafeBufferPointer { fpBuf in
+                    keys.fvk.bytes.withUnsafeBufferPointer { fvkBuf in
+                        keys.hotkeyStoredSecret.bytes.withUnsafeBufferPointer { secretBuf in
+                            keys.seedFingerprint.bytes.withUnsafeBufferPointer { fpBuf in
                                 roundNameBytes.withUnsafeBufferPointer { nameBuf in
                                     urlBytes.withUnsafeBufferPointer { urlBuf in
                                         zcashlc_voting_build_and_prove_delegation(
@@ -2066,7 +2024,7 @@ private extension VotingRustBackend {
                                             UInt(secretBuf.count),
                                             fpBuf.baseAddress,
                                             UInt(fpBuf.count),
-                                            keys.accountIndex,
+                                            keys.accountIndex.index,
                                             nameBuf.baseAddress,
                                             UInt(nameBuf.count),
                                             urlBuf.baseAddress,
@@ -2107,7 +2065,7 @@ private extension VotingRustBackend {
 private struct VoteCommitDraft: Sendable, Undescribable {
     let roundId: String
     let bundleIndex: UInt32
-    let hotkeyStoredSecret: [UInt8]
+    let hotkeyStoredSecret: VotingHotkeySecret
     let proposalId: UInt32
     let choice: UInt32
     let numOptions: UInt32
