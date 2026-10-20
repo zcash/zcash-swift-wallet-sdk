@@ -2,6 +2,7 @@ use std::panic::AssertUnwindSafe;
 
 use anyhow::anyhow;
 use ffi_helpers::panic::catch_panic;
+use zcash_voting as voting;
 
 use crate::{unwrap_exc_or, unwrap_exc_or_null};
 
@@ -109,12 +110,14 @@ pub unsafe extern "C" fn zcashlc_voting_store_vote_tx_hash(
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
         let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
         let tx_hash_str = unsafe { str_from_ptr(tx_hash, tx_hash_len) }?;
-        // zcash_voting 1.0 records vote tx hashes through the atomic,
-        // idempotent recovery writer (conflicting hashes are rejected).
-        handle
-            .db
-            .mark_vote_submitted(&round_id_str, bundle_index, proposal_id, &tx_hash_str)
-            .map_err(|e| anyhow!("store_vote_tx_hash failed: {}", e))?;
+        voting::vote::record_submission(
+            &handle.db,
+            &round_id_str,
+            bundle_index,
+            proposal_id,
+            &tx_hash_str,
+        )
+        .map_err(|e| anyhow!("record_submission failed: {}", e))?;
         Ok(0)
     });
     unwrap_exc_or(res, -1)
@@ -150,42 +153,43 @@ pub unsafe extern "C" fn zcashlc_voting_get_vote_tx_hash(
     unwrap_exc_or_null(res)
 }
 
-/// Persist a vote commitment bundle and vote-commitment-tree position.
+/// Record the on-chain vote-commitment-tree position of a confirmed vote.
+///
+/// This replaces the former `zcashlc_voting_store_commitment_bundle`, which also
+/// took the commitment bundle JSON. `zcash_voting` now owns that JSON: it is
+/// written when the vote is committed, so the caller has nothing left to supply
+/// beyond the confirmed tree position, and the `bundle_json` parameter pair is
+/// gone.
+///
+/// Returns 0 on success, -1 on error.
 ///
 /// # Safety
 ///
 /// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
-/// - `round_id` and `bundle_json` must be valid UTF-8 pointers with their stated lengths.
+/// - `round_id` must be a valid UTF-8 pointer with its stated length.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_voting_store_commitment_bundle(
+pub unsafe extern "C" fn zcashlc_voting_record_vc_position(
     db: *mut VotingDatabaseHandle,
     round_id: *const u8,
     round_id_len: usize,
     bundle_index: u32,
     proposal_id: u32,
-    bundle_json: *const u8,
-    bundle_json_len: usize,
     vc_tree_position: u64,
 ) -> i32 {
     let db = AssertUnwindSafe(db);
-    let res = catch_panic(|| -> anyhow::Result<i32> {
-        // Superseded: zcash_voting 1.0 persists commitment bundles itself as
-        // part of `vote::commit` (recovery JSON + positions ride the crate's
-        // own writers, e.g. `CommittedVote::record_vc_position`); externally
-        // injected bundles are no longer accepted.
-        let _ = (
-            &db,
-            round_id,
-            round_id_len,
+    let res = catch_panic(|| {
+        let handle =
+            unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
+        let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
+        voting::vote::record_vc_position(
+            &handle.db,
+            &round_id_str,
             bundle_index,
             proposal_id,
-            bundle_json,
-            bundle_json_len,
             vc_tree_position,
-        );
-        Err(anyhow!(
-            "voting: store_commitment_bundle is superseded — commitment bundles are persisted by the vote commit flow"
-        ))
+        )
+        .map_err(|e| anyhow!("record_vc_position failed: {}", e))?;
+        Ok(0)
     });
     unwrap_exc_or(res, -1)
 }
@@ -216,107 +220,6 @@ pub unsafe extern "C" fn zcashlc_voting_get_commitment_bundle(
             .get_commitment_bundle(&round_id_str, bundle_index, proposal_id)
             .map_err(|e| anyhow!("get_commitment_bundle failed: {}", e))?;
         json_to_boxed_slice(&result)
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// The enriched committed-vote JSON plus the currently stored
-/// vote-commitment tree position.
-#[derive(serde::Serialize)]
-struct JsonRecoveredCommittedVote {
-    #[serde(flatten)]
-    committed: super::vote::JsonCommittedVoteBundle,
-    vc_tree_position: u64,
-}
-
-/// Record the confirmed vote-commitment tree position for a committed vote.
-///
-/// Wraps `CommittedVote::recover` + `record_vc_position`: after the cast-vote
-/// transaction confirms with a `leaf_index`, record the VC position so
-/// recovered helper-share payloads carry it. Returns 0 on success, -1 on error.
-///
-/// # Safety
-///
-/// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
-/// - `round_id` must be a valid UTF-8 pointer with its stated length.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_voting_record_vc_position(
-    db: *mut VotingDatabaseHandle,
-    round_id: *const u8,
-    round_id_len: usize,
-    bundle_index: u32,
-    proposal_id: u32,
-    vc_tree_position: u64,
-) -> i32 {
-    let db = AssertUnwindSafe(db);
-    let res = catch_panic(|| {
-        let handle =
-            unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
-        let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
-        let committed = zcash_voting::vote::CommittedVote::recover(
-            &handle.db,
-            &round_id_str,
-            bundle_index,
-            proposal_id,
-        )
-        .map_err(|e| anyhow!("record_vc_position failed: {}", e))?;
-        committed
-            .record_vc_position(&handle.db, vc_tree_position)
-            .map_err(|e| anyhow!("record_vc_position failed: {}", e))?;
-        Ok(0)
-    });
-    unwrap_exc_or(res, -1)
-}
-
-/// Reconstruct a committed vote from crate recovery state.
-///
-/// Returns the same enriched JSON as `zcashlc_voting_build_vote_commitment`
-/// (bundle fields + `vote_auth_sig` + `share_payloads`, with payloads carrying
-/// the currently stored VC tree position) plus `vc_tree_position`. Call after
-/// `zcashlc_voting_record_vc_position` to obtain payloads at the confirmed
-/// position. Returns null (with the error retrievable) when no committed vote
-/// exists for the key.
-///
-/// # Safety
-///
-/// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
-/// - `round_id` must be a valid UTF-8 pointer with its stated length.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_voting_recover_committed_vote(
-    db: *mut VotingDatabaseHandle,
-    round_id: *const u8,
-    round_id_len: usize,
-    bundle_index: u32,
-    proposal_id: u32,
-) -> *mut crate::ffi::BoxedSlice {
-    let db = AssertUnwindSafe(db);
-    let res = catch_panic(|| {
-        let handle =
-            unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
-        let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
-        let committed = zcash_voting::vote::CommittedVote::recover(
-            &handle.db,
-            &round_id_str,
-            bundle_index,
-            proposal_id,
-        )
-        .map_err(|e| anyhow!("recover_committed_vote failed: {}", e))?;
-        let signed = committed
-            .signed_commitment(&handle.db)
-            .map_err(|e| anyhow!("failed to read committed vote: {}", e))?;
-        let vc_tree_position = zcash_voting::recovery::recoverable_commitment_bundle(
-            &handle.db,
-            &round_id_str,
-            bundle_index,
-            proposal_id,
-        )
-        .map_err(|e| anyhow!("recover_committed_vote failed: {}", e))?
-        .map(|bundle| bundle.vc_tree_position)
-        .unwrap_or(0);
-        json_to_boxed_slice(&JsonRecoveredCommittedVote {
-            committed: super::vote::committed_vote_json(&signed),
-            vc_tree_position,
-        })
     });
     unwrap_exc_or_null(res)
 }
@@ -415,7 +318,14 @@ pub unsafe extern "C" fn zcashlc_voting_get_keystone_signatures(
     unwrap_exc_or_null(res)
 }
 
-/// Remove all recovery-state rows for a round.
+/// Clear retryable recovery state for a round without erasing recorded
+/// confirmations.
+///
+/// Share-delegation rows and Keystone signatures are always removed. Since
+/// `zcash_voting` 3.0 the clear is conservative about confirmed state:
+/// delegation tx hashes survive on bundles with a recorded VAN leaf position
+/// (and on capability-imported bundles), and votes with a recorded
+/// `vc_tree_position` keep their tx hash, commitment bundle, and position.
 ///
 /// # Safety
 ///
@@ -439,4 +349,417 @@ pub unsafe extern "C" fn zcashlc_voting_clear_recovery_state(
         Ok(0)
     });
     unwrap_exc_or(res, -1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ffi::zcashlc_free_boxed_slice;
+    use crate::voting::db::zcashlc_voting_db_free;
+    use crate::voting::share_tracking::zcashlc_voting_get_share_delegations;
+    use crate::voting::test_helpers::{insert_round_and_bundle, open_memory_db};
+    use serde::de::DeserializeOwned;
+
+    fn decode_boxed_json<T: DeserializeOwned>(ptr: *mut crate::ffi::BoxedSlice) -> T {
+        assert!(!ptr.is_null());
+        let json = unsafe { (*ptr).as_slice() }.to_vec();
+        let value = serde_json::from_slice(&json).expect("decode boxed JSON");
+        unsafe { zcashlc_free_boxed_slice(ptr) };
+        value
+    }
+
+    /// Creates the vote row that the recovery-state rows hang off.
+    ///
+    /// `zcash_voting` only writes vote rows as a side effect of `vote::commit`,
+    /// which requires a full ZKP #2 proof, so tests seed the row through the
+    /// public storage query layer instead.
+    fn insert_vote(db: *mut VotingDatabaseHandle, round_id: &str) {
+        let handle = unsafe { db.as_ref() }.expect("voting db handle");
+        voting::storage::queries::store_vote(
+            &handle.db.conn(),
+            round_id,
+            &handle.db.wallet_id(),
+            0,
+            0,
+            0,
+            &[0xaa; 32],
+        )
+        .expect("insert vote");
+    }
+
+    #[test]
+    fn delegation_tx_hash_round_trips() {
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+        let tx_hash = b"delegation-tx";
+
+        let code = unsafe {
+            zcashlc_voting_store_delegation_tx_hash(
+                db,
+                round_id.as_ptr(),
+                round_id.len(),
+                0,
+                tx_hash.as_ptr(),
+                tx_hash.len(),
+            )
+        };
+        assert_eq!(code, 0);
+
+        let result = unsafe {
+            zcashlc_voting_get_delegation_tx_hash(db, round_id.as_ptr(), round_id.len(), 0)
+        };
+        let actual: Option<String> = decode_boxed_json(result);
+        assert_eq!(actual.as_deref(), Some("delegation-tx"));
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    #[test]
+    fn store_delegation_tx_hash_rejects_missing_bundle() {
+        let db = open_memory_db();
+        let round_id = b"missing";
+        let tx_hash = b"delegation-tx";
+
+        let code = unsafe {
+            zcashlc_voting_store_delegation_tx_hash(
+                db,
+                round_id.as_ptr(),
+                round_id.len(),
+                0,
+                tx_hash.as_ptr(),
+                tx_hash.len(),
+            )
+        };
+        assert_eq!(code, -1);
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    #[test]
+    fn vote_tx_hash_round_trips() {
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+        insert_vote(db, "round");
+        let tx_hash = b"vote-tx";
+
+        let code = unsafe {
+            zcashlc_voting_store_vote_tx_hash(
+                db,
+                round_id.as_ptr(),
+                round_id.len(),
+                0,
+                0,
+                tx_hash.as_ptr(),
+                tx_hash.len(),
+            )
+        };
+        assert_eq!(code, 0);
+
+        let result =
+            unsafe { zcashlc_voting_get_vote_tx_hash(db, round_id.as_ptr(), round_id.len(), 0, 0) };
+        let actual: Option<String> = decode_boxed_json(result);
+        assert_eq!(actual.as_deref(), Some("vote-tx"));
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    // The former `commitment_bundle_round_trips` test is gone: the caller can no
+    // longer supply the commitment bundle JSON, so an FFI-level round trip is no
+    // longer expressible. `zcash_voting` writes that JSON only from
+    // `vote::commit`, which needs a real ZKP #2 proof, and
+    // `zcashlc_voting_get_commitment_bundle` reports `None` until it is present.
+
+    #[test]
+    fn record_vc_position_accepts_existing_vote() {
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+        insert_vote(db, "round");
+
+        let code = unsafe {
+            zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 42)
+        };
+        assert_eq!(code, 0);
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    #[test]
+    fn record_vc_position_rejects_missing_vote() {
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+
+        let code = unsafe {
+            zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 42)
+        };
+        assert_eq!(code, -1);
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    #[test]
+    fn store_keystone_signature_round_trips_valid_signature() {
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+        let sig = [1u8; KEYSTONE_SIGNATURE_LEN];
+        let sighash = [2u8; PCZT_SIGHASH_LEN];
+        let rk = [3u8; RANDOMIZED_KEY_LEN];
+
+        let code = unsafe {
+            zcashlc_voting_store_keystone_signature(
+                db,
+                round_id.as_ptr(),
+                round_id.len(),
+                0,
+                sig.as_ptr(),
+                sig.len(),
+                sighash.as_ptr(),
+                sighash.len(),
+                rk.as_ptr(),
+                rk.len(),
+            )
+        };
+        assert_eq!(code, 0);
+
+        let result = unsafe {
+            zcashlc_voting_get_keystone_signatures(db, round_id.as_ptr(), round_id.len())
+        };
+        assert!(!result.is_null());
+        let json = unsafe { (*result).as_slice() }.to_vec();
+        let actual: serde_json::Value =
+            serde_json::from_slice(&json).expect("keystone signatures json");
+        assert_eq!(
+            actual,
+            serde_json::json!([
+                {
+                    "bundle_index": 0,
+                    "sig": sig.to_vec(),
+                    "sighash": sighash.to_vec(),
+                    "rk": rk.to_vec(),
+                }
+            ])
+        );
+
+        unsafe { zcashlc_free_boxed_slice(result) };
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    #[test]
+    fn store_keystone_signature_rejects_invalid_lengths() {
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+        let sig = [1u8; KEYSTONE_SIGNATURE_LEN];
+        let sighash = [2u8; PCZT_SIGHASH_LEN];
+        let rk = [3u8; RANDOMIZED_KEY_LEN];
+
+        let cases = [
+            (
+                KEYSTONE_SIGNATURE_LEN - 1,
+                PCZT_SIGHASH_LEN,
+                RANDOMIZED_KEY_LEN,
+            ),
+            (
+                KEYSTONE_SIGNATURE_LEN,
+                PCZT_SIGHASH_LEN - 1,
+                RANDOMIZED_KEY_LEN,
+            ),
+            (
+                KEYSTONE_SIGNATURE_LEN,
+                PCZT_SIGHASH_LEN,
+                RANDOMIZED_KEY_LEN - 1,
+            ),
+        ];
+
+        for (sig_len, sighash_len, rk_len) in cases {
+            let code = unsafe {
+                zcashlc_voting_store_keystone_signature(
+                    db,
+                    round_id.as_ptr(),
+                    round_id.len(),
+                    0,
+                    sig.as_ptr(),
+                    sig_len,
+                    sighash.as_ptr(),
+                    sighash_len,
+                    rk.as_ptr(),
+                    rk_len,
+                )
+            };
+            assert_eq!(code, -1);
+        }
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    /// Stores the delegation tx hash, vote tx hash, and a Keystone signature
+    /// that the clear-recovery tests start from.
+    fn store_recovery_fixture(db: *mut VotingDatabaseHandle, round_id: &[u8]) {
+        let delegation_tx = b"delegation-tx";
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_store_delegation_tx_hash(
+                    db,
+                    round_id.as_ptr(),
+                    round_id.len(),
+                    0,
+                    delegation_tx.as_ptr(),
+                    delegation_tx.len(),
+                )
+            },
+            0
+        );
+
+        let vote_tx = b"vote-tx";
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_store_vote_tx_hash(
+                    db,
+                    round_id.as_ptr(),
+                    round_id.len(),
+                    0,
+                    0,
+                    vote_tx.as_ptr(),
+                    vote_tx.len(),
+                )
+            },
+            0
+        );
+
+        let sig = [1u8; KEYSTONE_SIGNATURE_LEN];
+        let sighash = [2u8; PCZT_SIGHASH_LEN];
+        let rk = [3u8; RANDOMIZED_KEY_LEN];
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_store_keystone_signature(
+                    db,
+                    round_id.as_ptr(),
+                    round_id.len(),
+                    0,
+                    sig.as_ptr(),
+                    sig.len(),
+                    sighash.as_ptr(),
+                    sighash.len(),
+                    rk.as_ptr(),
+                    rk.len(),
+                )
+            },
+            0
+        );
+
+        // Share delegations are deliberately absent from this fixture:
+        // `zcashlc_voting_record_share_delegation` now derives the share
+        // nullifier from the persisted vote recovery bundle, which only a real
+        // `vote::commit` can write. The clear is still asserted to leave no
+        // share rows behind.
+    }
+
+    #[test]
+    fn clear_recovery_state_removes_unconfirmed_recovery_data() {
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+        insert_vote(db, "round");
+        store_recovery_fixture(db, round_id);
+
+        assert_eq!(
+            unsafe { zcashlc_voting_clear_recovery_state(db, round_id.as_ptr(), round_id.len()) },
+            0
+        );
+
+        let delegation_tx: Option<String> = decode_boxed_json(unsafe {
+            zcashlc_voting_get_delegation_tx_hash(db, round_id.as_ptr(), round_id.len(), 0)
+        });
+        assert_eq!(delegation_tx, None);
+
+        let vote_tx: Option<String> = decode_boxed_json(unsafe {
+            zcashlc_voting_get_vote_tx_hash(db, round_id.as_ptr(), round_id.len(), 0, 0)
+        });
+        assert_eq!(vote_tx, None);
+
+        // No position was recorded before the clear, so the vote row survives
+        // with its recovery columns reset and accepts a fresh recording.
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 43)
+            },
+            0
+        );
+
+        let keystone_sigs: Vec<serde_json::Value> = decode_boxed_json(unsafe {
+            zcashlc_voting_get_keystone_signatures(db, round_id.as_ptr(), round_id.len())
+        });
+        assert!(keystone_sigs.is_empty());
+
+        let share_delegations: Vec<serde_json::Value> = decode_boxed_json(unsafe {
+            zcashlc_voting_get_share_delegations(db, round_id.as_ptr(), round_id.len())
+        });
+        assert!(share_delegations.is_empty());
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    /// Pins the conservative `zcash_voting` 3.0 clear semantics: a vote whose
+    /// on-chain `vc_tree_position` is recorded is confirmed state, and the
+    /// recovery clear must preserve it (rc.5 nulled it unconditionally).
+    #[test]
+    fn clear_recovery_state_preserves_recorded_vc_position() {
+        let db = open_memory_db();
+        let round_id = b"round";
+        insert_round_and_bundle(db, "round");
+        insert_vote(db, "round");
+        store_recovery_fixture(db, round_id);
+
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 42)
+            },
+            0
+        );
+
+        assert_eq!(
+            unsafe { zcashlc_voting_clear_recovery_state(db, round_id.as_ptr(), round_id.len()) },
+            0
+        );
+
+        // The confirmed vote keeps its tx hash: the vote reset skips rows with
+        // a recorded position.
+        let vote_tx: Option<String> = decode_boxed_json(unsafe {
+            zcashlc_voting_get_vote_tx_hash(db, round_id.as_ptr(), round_id.len(), 0, 0)
+        });
+        assert_eq!(vote_tx.as_deref(), Some("vote-tx"));
+
+        // The recorded position survived: a conflicting recording is refused
+        // while re-recording the same position stays idempotent.
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 43)
+            },
+            -1
+        );
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_record_vc_position(db, round_id.as_ptr(), round_id.len(), 0, 0, 42)
+            },
+            0
+        );
+
+        // The unconfirmed delegation (no recorded VAN leaf position) is still
+        // cleared, and the unconditional lanes still empty out.
+        let delegation_tx: Option<String> = decode_boxed_json(unsafe {
+            zcashlc_voting_get_delegation_tx_hash(db, round_id.as_ptr(), round_id.len(), 0)
+        });
+        assert_eq!(delegation_tx, None);
+
+        let keystone_sigs: Vec<serde_json::Value> = decode_boxed_json(unsafe {
+            zcashlc_voting_get_keystone_signatures(db, round_id.as_ptr(), round_id.len())
+        });
+        assert!(keystone_sigs.is_empty());
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
 }

@@ -10,14 +10,14 @@
 	<string>libzcashlc</string>
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
-	<key>CFBundleVersion</key>
-	<string>0.8.1</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.8.1</string>
+	<string>3.0.0</string>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>iphonesimulator</string>
 	</array>
+	<key>CFBundleVersion</key>
+	<string>3.0.0</string>
 	<key>MinimumOSVersion</key>
 	<string>100.0</string>
 </dict>

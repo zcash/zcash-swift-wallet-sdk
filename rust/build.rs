@@ -68,6 +68,7 @@ fn main() {
             "Eip681TransactionRequestType",
             "FfiEip681TransactionRequestType",
         )
+        .rename_item("ErrorReport", "FfiErrorReport")
         .rename_item("Eip681NativeRequest", "FfiEip681NativeRequest")
         .rename_item("Eip681Erc20Request", "FfiEip681Erc20Request")
         .generate()

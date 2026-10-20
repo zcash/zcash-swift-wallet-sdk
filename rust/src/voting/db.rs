@@ -126,6 +126,15 @@ mod tests {
     }
 
     #[test]
+    fn db_open_rejects_invalid_network_id() {
+        // The network is validated once, here, so no database-bound call has to
+        // re-check it: the handle cannot exist for a network that does not.
+        let path = b":memory:";
+        let db = unsafe { zcashlc_voting_db_open(path.as_ptr(), path.len(), 99) };
+        assert!(db.is_null(), "unknown network id must not open a handle");
+    }
+
+    #[test]
     fn db_free_accepts_null() {
         unsafe { zcashlc_voting_db_free(std::ptr::null_mut()) };
     }

@@ -78,6 +78,10 @@ lib
 *.a
 env-vars.sh
 
+# ... but Scripts/lib holds shell sources, not build output. Without this the
+# bare `lib` pattern above swallows it, and files added there vanish silently.
+!Scripts/lib/
+
 .vscode/
 
 # Local FFI development (see Scripts/init-local-ffi.sh)
@@ -88,8 +92,14 @@ BuildSupport/products/
 
 # Claude code
 .claude/settings.local.json
-.plans/
 .remember/
-.worktrees/
+
+# Design docs, implementation plans, and other working notes. These are
+# conversation artifacts rather than repository history.
+.plans/
 
 **/*.pyc
+
+# Design and planning notes: working artifacts, not repository history
+.plans/
+.worktrees/

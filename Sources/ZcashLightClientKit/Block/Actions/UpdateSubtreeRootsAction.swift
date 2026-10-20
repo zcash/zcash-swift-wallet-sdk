@@ -1,5 +1,5 @@
 //
-//  Updatesubtreerootsaction.swift
+//  UpdateSubtreeRootsAction.swift
 //
 //
 //  Created by Lukas Korba on 01.08.2023.

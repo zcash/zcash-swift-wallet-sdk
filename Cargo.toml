@@ -101,13 +101,11 @@ rust_decimal = { version = "1", default-features = false, features = ["c-repr"] 
 # - The "static" feature is required for the "compression" default feature of arti-client.
 xz2 = { version = "0.1", features = ["static"] }
 
-# Zcash voting — off on this line; the `voting` module is gated behind `cfg(zcash_voting)`
-# (see rust/src/lib.rs). Uncomment together with the `voting` feature, the `[patch.crates-io]`
-# stanza below, and orchard's `unstable-voting-circuits` feature to reinstate it.
-# zcash_voting = { version = "2.0.0-rc.1", optional = true }
-# zeroize = "1"
+# Zcash voting
+zcash_voting = { version = "=3.0.0" }
+zeroize = "1"
 
-# Used by the pool-migration engine as well as (when enabled) voting, so these stay compiled.
+# Used by the pool-migration engine as well as by voting.
 zcash_keys = { version = "0.16.0", features = ["orchard"] }
 incrementalmerkletree = { version = "0.8", default-features = false }
 
@@ -122,11 +120,6 @@ cc = "1.0"
 
 [features]
 default = []
-
-#voting = ["dep:zcash_voting"]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_voting)'] }
 
 [lib]
 name = "zcashlc"
@@ -157,5 +150,3 @@ zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4
 zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
 zip321 = { git = "https://github.com/zcash/librustzcash", rev = "13ce6c4ef57a6c7e8837d797d85112ae16ac7455" }
 
-# Reinstate together with the voting dependencies above:
-# zcash_voting = { git = "https://github.com/valargroup/zcash_voting.git", rev = "e53e74487d31ad0f5713580fb2f0222b53ae9db8" }

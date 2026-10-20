@@ -4,11 +4,15 @@ use prost::Message;
 use zcash_client_backend::proto::service::TreeState;
 use zcash_keys::keys::UnifiedFullViewingKey;
 use zcash_voting as voting;
+use zip32::AccountId;
 
 use crate::{unwrap_exc_or, unwrap_exc_or_null};
 
-use super::helpers::{bytes_from_ptr, str_from_ptr};
-use super::json::JsonWitnessData;
+use super::constants::{ORCHARD_FVK_LEN, SEED_FINGERPRINT_LEN};
+use super::helpers::{
+    bytes_from_ptr, derive_hotkey_side_inputs, json_to_boxed_slice, str_from_ptr, usk_from_seed,
+};
+use super::json::{JsonDelegationInputs, JsonWitnessData};
 
 // =============================================================================
 // Free functions (no VotingDatabase needed)
@@ -26,78 +30,110 @@ pub unsafe extern "C" fn zcashlc_voting_warm_proving_caches() -> i32 {
     unwrap_exc_or(res, -1)
 }
 
-/// Decompose a weight into power-of-two components.
+/// Generate delegation inputs from a sender seed and a stored hotkey secret.
 ///
-/// Returns JSON-encoded `Vec<u64>` as `*mut FfiBoxedSlice`, or null on error.
-///
-/// # Safety
-///
-/// No pointer parameters.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_voting_decompose_weight(
-    weight: u64,
-) -> *mut crate::ffi::BoxedSlice {
-    let res = catch_panic(|| -> anyhow::Result<*mut crate::ffi::BoxedSlice> {
-        // Superseded: the share split is denomination-based, PRF-keyed, and
-        // shuffled inside the vote proof builder (voting-circuits 0.9
-        // SHARE_SPLITTING.md) — it depends on the spending key and round
-        // context, so a standalone weight decomposition can no longer describe
-        // the real split (and a binary decomposition would fingerprint voter
-        // balances).
-        let _ = weight;
-        Err(anyhow!(
-            "voting: decompose_weight is superseded — shares are split inside the vote commit flow"
-        ))
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// Superseded: zcash_voting 1.0 derives delegation inputs from the wallet database
-/// inside the delegation lanes (`build_pczt` / `build_and_prove_delegation` /
-/// `get_delegation_submission`); seed-derived side inputs no longer exist.
-/// Always returns null with a "superseded" error (C symbol preserved).
+/// Returns JSON-encoded `DelegationInputs` as `*mut FfiBoxedSlice`, or null on error.
 ///
 /// # Safety
 ///
-/// - The pointer arguments are not read.
+/// - `sender_seed` and `hotkey_stored_secret` must be valid for their stated lengths.
+/// - `hotkey_stored_secret` is the app-owned material returned as
+///   `FfiVotingHotkey::stored_secret`, not wallet seed material.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_generate_delegation_inputs(
-    _sender_seed: *const u8,
-    _sender_seed_len: usize,
-    _hotkey_seed: *const u8,
-    _hotkey_seed_len: usize,
-    _network_id: u32,
-    _account_index: u32,
+    sender_seed: *const u8,
+    sender_seed_len: usize,
+    hotkey_stored_secret: *const u8,
+    hotkey_stored_secret_len: usize,
+    network_id: u32,
+    account_index: u32,
 ) -> *mut crate::ffi::BoxedSlice {
     let res = catch_panic(|| {
-        Err(anyhow!(
-            "voting: generate_delegation_inputs is superseded — the delegation lanes derive inputs from the wallet database"
-        ))
+        let sender = unsafe { bytes_from_ptr(sender_seed, sender_seed_len) }?;
+        let hotkey = unsafe { bytes_from_ptr(hotkey_stored_secret, hotkey_stored_secret_len) }?;
+
+        let account = AccountId::try_from(account_index)
+            .map_err(|_| anyhow!("account_index must be < 2^31, got {}", account_index))?;
+
+        // Derive sender Orchard FVK
+        let sender_usk = usk_from_seed(network_id, sender, account)
+            .map_err(|e| anyhow!("failed to derive sender UnifiedSpendingKey: {}", e))?;
+
+        let sender_fvk = sender_usk
+            .to_unified_full_viewing_key()
+            .orchard()
+            .ok_or_else(|| anyhow!("sender UFVK is missing Orchard component"))?
+            .to_bytes()
+            .to_vec();
+
+        // `hotkey` is the stored hotkey secret, from which zcash_voting derives
+        // the hotkey's Orchard address at a fixed account and address index.
+        let hotkey_inputs = derive_hotkey_side_inputs(hotkey, network_id)?;
+
+        let seed_fp = zip32::fingerprint::SeedFingerprint::from_seed(sender)
+            .ok_or_else(|| anyhow!("failed to compute seed fingerprint (seed too short?)"))?;
+
+        let inputs = JsonDelegationInputs {
+            fvk_bytes: sender_fvk,
+            g_d_new_x: hotkey_inputs.g_d_new_x,
+            pk_d_new_x: hotkey_inputs.pk_d_new_x,
+            hotkey_raw_address: hotkey_inputs.hotkey_raw_address,
+            seed_fingerprint: seed_fp.to_bytes().to_vec(),
+        };
+        json_to_boxed_slice(&inputs)
     });
     unwrap_exc_or_null(res)
 }
 
-/// Superseded: zcash_voting 1.0 derives delegation inputs from the wallet database
-/// inside the delegation lanes; see `zcashlc_voting_generate_delegation_inputs`.
-/// Always returns null with a "superseded" error (C symbol preserved).
+/// Generate delegation inputs using an explicit FVK instead of deriving from sender seed.
+///
+/// Returns JSON-encoded `DelegationInputs` as `*mut FfiBoxedSlice`, or null on error.
 ///
 /// # Safety
 ///
-/// - The pointer arguments are not read.
+/// - All pointer/length pairs must be valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_generate_delegation_inputs_with_fvk(
-    _fvk_bytes: *const u8,
-    _fvk_bytes_len: usize,
-    _hotkey_seed: *const u8,
-    _hotkey_seed_len: usize,
-    _network_id: u32,
-    _seed_fingerprint: *const u8,
-    _seed_fingerprint_len: usize,
+    fvk_bytes: *const u8,
+    fvk_bytes_len: usize,
+    hotkey_stored_secret: *const u8,
+    hotkey_stored_secret_len: usize,
+    network_id: u32,
+    seed_fingerprint: *const u8,
+    seed_fingerprint_len: usize,
 ) -> *mut crate::ffi::BoxedSlice {
     let res = catch_panic(|| {
-        Err(anyhow!(
-            "voting: generate_delegation_inputs_with_fvk is superseded — the delegation lanes derive inputs from the wallet database"
-        ))
+        let fvk = unsafe { bytes_from_ptr(fvk_bytes, fvk_bytes_len) }?.to_vec();
+        let hotkey = unsafe { bytes_from_ptr(hotkey_stored_secret, hotkey_stored_secret_len) }?;
+        let seed_fp = unsafe { bytes_from_ptr(seed_fingerprint, seed_fingerprint_len) }?.to_vec();
+
+        if fvk.len() != ORCHARD_FVK_LEN {
+            return Err(anyhow!(
+                "fvk_bytes must be {} bytes, got {}",
+                ORCHARD_FVK_LEN,
+                fvk.len()
+            ));
+        }
+        if seed_fp.len() != SEED_FINGERPRINT_LEN {
+            return Err(anyhow!(
+                "seed_fingerprint must be {} bytes, got {}",
+                SEED_FINGERPRINT_LEN,
+                seed_fp.len()
+            ));
+        }
+
+        // `hotkey` is the stored hotkey secret, from which zcash_voting derives
+        // the hotkey's Orchard address at a fixed account and address index.
+        let hotkey_inputs = derive_hotkey_side_inputs(hotkey, network_id)?;
+
+        let inputs = JsonDelegationInputs {
+            fvk_bytes: fvk,
+            g_d_new_x: hotkey_inputs.g_d_new_x,
+            pk_d_new_x: hotkey_inputs.pk_d_new_x,
+            hotkey_raw_address: hotkey_inputs.hotkey_raw_address,
+            seed_fingerprint: seed_fp,
+        };
+        json_to_boxed_slice(&inputs)
     });
     unwrap_exc_or_null(res)
 }
@@ -177,9 +213,13 @@ pub unsafe extern "C" fn zcashlc_voting_extract_orchard_fvk_from_ufvk(
 
 /// Extract the Ironwood note commitment tree root from a protobuf-encoded TreeState.
 ///
-/// Voting rounds anchor to the Ironwood pool (zcash_voting 1.0), so the `nc_root`
-/// comes from the Ironwood tree, not Orchard. Returns the 32-byte nc_root as
-/// `*mut FfiBoxedSlice`, or null on error.
+/// Voting rounds anchor to the Ironwood pool — `zcash_voting 2.0` supports no
+/// other shielded protocol — so a round's `nc_root` is the root of the Ironwood
+/// tree, not the Orchard one. They are distinct pools with distinct trees whose
+/// roots never coincide on a live chain, so reading the wrong field does not
+/// degrade gracefully: it fails every round, always.
+///
+/// Returns the 32-byte nc_root as `*mut FfiBoxedSlice`, or null on error.
 ///
 /// # Safety
 ///
@@ -230,16 +270,15 @@ pub unsafe extern "C" fn zcashlc_voting_verify_witness(
 
 #[cfg(test)]
 mod tests {
-    use orchard::tree::Anchor;
+    use ff::PrimeField;
+    use incrementalmerkletree::frontier::{CommitmentTree, Frontier};
+    use orchard::tree::{Anchor, MerkleHashOrchard};
+    use pasta_curves::pallas;
     use prost::Message;
     use zcash_client_backend::proto::service::TreeState;
     use zcash_keys::keys::UnifiedSpendingKey;
+    use zcash_primitives::merkle_tree::write_commitment_tree;
     use zcash_protocol::consensus::Network;
-    use zip32::AccountId;
-    use zip32::Scope;
-
-    /// Raw Orchard FVK byte length — the extract lane's expected output size.
-    const ORCHARD_FVK_LEN: usize = 96;
 
     use super::*;
     use crate::{NETWORK_ID_MAINNET, NETWORK_ID_TESTNET};
@@ -275,15 +314,139 @@ mod tests {
             .to_vec()
     }
 
-    fn derive_hotkey_raw_address(network: Network, seed: &[u8], account_index: u32) -> Vec<u8> {
-        let account = AccountId::try_from(account_index).expect("account");
-        let usk = UnifiedSpendingKey::from_seed(&network, seed, account).expect("from_seed");
-        let ufvk = usk.to_unified_full_viewing_key();
-        let orchard_fvk = ufvk.orchard().expect("orchard fvk");
-        orchard_fvk
-            .address_at(0u32, Scope::External)
-            .to_raw_address_bytes()
+    /// A stored hotkey secret of the exact length `zcash_voting` requires.
+    ///
+    /// Voting hotkeys are app-owned random material rather than wallet-derived
+    /// keys, so tests fabricate a secret directly instead of deriving one.
+    fn hotkey_stored_secret(fill: u8) -> Vec<u8> {
+        vec![fill; voting::hotkey::VOTING_HOTKEY_STORED_SECRET_LEN]
+    }
+
+    /// The hotkey's Orchard address, derived the only way it can now be: from
+    /// the stored secret, via `zcash_voting`.
+    fn hotkey_raw_address_for(secret: &[u8], network: voting::Network) -> Vec<u8> {
+        voting::VotingHotkey::from_stored_secret(secret, network)
+            .expect("stored secret")
+            .raw_orchard_address()
             .to_vec()
+    }
+
+    fn delegation_inputs_from_ptr(ptr: *mut crate::ffi::BoxedSlice) -> JsonDelegationInputs {
+        let json = boxed_slice_to_vec(ptr);
+        serde_json::from_slice(&json).expect("delegation inputs json")
+    }
+
+    #[test]
+    fn generate_delegation_inputs_uses_sender_account_and_stored_hotkey_secret() {
+        let sender_seed = [1u8; 32];
+        let hotkey_secret = hotkey_stored_secret(2);
+        let result = unsafe {
+            zcashlc_voting_generate_delegation_inputs(
+                sender_seed.as_ptr(),
+                sender_seed.len(),
+                hotkey_secret.as_ptr(),
+                hotkey_secret.len(),
+                NETWORK_ID_MAINNET,
+                1,
+            )
+        };
+
+        let inputs = delegation_inputs_from_ptr(result);
+
+        assert_eq!(
+            inputs.fvk_bytes,
+            derive_orchard_fvk_bytes(Network::MainNetwork, &sender_seed, 1),
+            "sender FVK should use the caller's account_index"
+        );
+        assert_ne!(
+            inputs.fvk_bytes,
+            derive_orchard_fvk_bytes(Network::MainNetwork, &sender_seed, 0),
+            "sender FVK should not be forced to account 0"
+        );
+        assert_eq!(
+            inputs.hotkey_raw_address,
+            hotkey_raw_address_for(&hotkey_secret, voting::Network::Mainnet),
+            "hotkey address should come from the stored hotkey secret"
+        );
+    }
+
+    #[test]
+    fn generate_delegation_inputs_rejects_wrong_length_hotkey_secret() {
+        let sender_seed = [1u8; 32];
+        // A wallet-style 32-byte seed is no longer accepted: the hotkey secret
+        // has its own fixed length, and silently reinterpreting a seed as one
+        // would derive an address the caller never generated.
+        let too_short = [2u8; 32];
+        let result = unsafe {
+            zcashlc_voting_generate_delegation_inputs(
+                sender_seed.as_ptr(),
+                sender_seed.len(),
+                too_short.as_ptr(),
+                too_short.len(),
+                NETWORK_ID_MAINNET,
+                1,
+            )
+        };
+
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn generate_delegation_inputs_with_fvk_uses_stored_hotkey_secret() {
+        let sender_seed = [1u8; 32];
+        let hotkey_secret = hotkey_stored_secret(2);
+        let fvk = derive_orchard_fvk_bytes(Network::MainNetwork, &sender_seed, 1);
+        let seed_fp = zip32::fingerprint::SeedFingerprint::from_seed(&sender_seed)
+            .expect("seed fingerprint")
+            .to_bytes();
+        let result = unsafe {
+            zcashlc_voting_generate_delegation_inputs_with_fvk(
+                fvk.as_ptr(),
+                fvk.len(),
+                hotkey_secret.as_ptr(),
+                hotkey_secret.len(),
+                NETWORK_ID_MAINNET,
+                seed_fp.as_ptr(),
+                seed_fp.len(),
+            )
+        };
+
+        let inputs = delegation_inputs_from_ptr(result);
+
+        assert_eq!(
+            inputs.fvk_bytes, fvk,
+            "explicit sender FVK should pass through unchanged"
+        );
+        assert_eq!(
+            inputs.hotkey_raw_address,
+            hotkey_raw_address_for(&hotkey_secret, voting::Network::Mainnet),
+            "hotkey address should come from the stored hotkey secret"
+        );
+    }
+
+    #[test]
+    fn delegation_inputs_hotkey_address_is_independent_of_the_sender() {
+        // The hotkey address must depend only on the hotkey secret. If it ever
+        // tracked the sender's account, two accounts delegating to the same
+        // hotkey would produce different delegation targets.
+        let hotkey_secret = hotkey_stored_secret(2);
+        let expected = hotkey_raw_address_for(&hotkey_secret, voting::Network::Mainnet);
+
+        for (sender_fill, account_index) in [(1u8, 0u32), (3u8, 1u32), (4u8, 7u32)] {
+            let sender_seed = [sender_fill; 32];
+            let result = unsafe {
+                zcashlc_voting_generate_delegation_inputs(
+                    sender_seed.as_ptr(),
+                    sender_seed.len(),
+                    hotkey_secret.as_ptr(),
+                    hotkey_secret.len(),
+                    NETWORK_ID_MAINNET,
+                    account_index,
+                )
+            };
+            let inputs = delegation_inputs_from_ptr(result);
+            assert_eq!(inputs.hotkey_raw_address, expected);
+        }
     }
 
     #[test]
@@ -429,40 +592,39 @@ mod tests {
         assert_eq!(root, Anchor::empty_tree().to_bytes().to_vec());
     }
 
+    const TREE_DEPTH: u8 = orchard::NOTE_COMMITMENT_TREE_DEPTH as u8;
+
+    /// A distinguishable Orchard-tree leaf built from a small field element.
+    fn merkle_hash(tag: u64) -> MerkleHashOrchard {
+        let repr = pallas::Base::from(tag).to_repr();
+        MerkleHashOrchard::from_bytes(&repr).expect("small field element is canonical")
+    }
+
+    /// A commitment-tree frontier holding one leaf per tag.
+    fn frontier_with(tags: &[u64]) -> Frontier<MerkleHashOrchard, TREE_DEPTH> {
+        let mut frontier = Frontier::empty();
+        for tag in tags {
+            assert!(frontier.append(merkle_hash(*tag)));
+        }
+        frontier
+    }
+
+    /// The hex tree-state encoding `TreeState` carries for a frontier.
+    fn tree_hex(frontier: &Frontier<MerkleHashOrchard, TREE_DEPTH>) -> String {
+        let commitment_tree = CommitmentTree::from_frontier(frontier);
+        let mut tree_bytes = Vec::new();
+        write_commitment_tree(&commitment_tree, &mut tree_bytes)
+            .expect("serialize note commitment tree state");
+        hex::encode(tree_bytes)
+    }
+
     /// Voting rounds are anchored to the **Ironwood** note commitment tree, so
     /// when the cached `TreeState` carries both pools the extracted `nc_root`
-    /// must be the Ironwood root, not the Orchard one.
+    /// must be the Ironwood root, not the Orchard one. This is the second half
+    /// of the `8a40d1f9` fix that the `eea6cde8` merge lost; without it, nothing
+    /// in the suite notices which field this FFI reads.
     #[test]
     fn extract_nc_root_returns_ironwood_root_when_both_trees_present() {
-        use ff::PrimeField;
-        use incrementalmerkletree::frontier::{CommitmentTree, Frontier};
-        use orchard::tree::MerkleHashOrchard;
-        use pasta_curves::pallas;
-        use zcash_primitives::merkle_tree::write_commitment_tree;
-
-        const TREE_DEPTH: u8 = orchard::NOTE_COMMITMENT_TREE_DEPTH as u8;
-
-        fn merkle_hash(tag: u64) -> MerkleHashOrchard {
-            let repr = pallas::Base::from(tag).to_repr();
-            MerkleHashOrchard::from_bytes(&repr).expect("small field element is canonical")
-        }
-
-        fn frontier_with(tags: &[u64]) -> Frontier<MerkleHashOrchard, TREE_DEPTH> {
-            let mut frontier = Frontier::empty();
-            for tag in tags {
-                assert!(frontier.append(merkle_hash(*tag)));
-            }
-            frontier
-        }
-
-        fn tree_hex(frontier: &Frontier<MerkleHashOrchard, TREE_DEPTH>) -> String {
-            let commitment_tree = CommitmentTree::from_frontier(frontier);
-            let mut tree_bytes = Vec::new();
-            write_commitment_tree(&commitment_tree, &mut tree_bytes)
-                .expect("serialize note commitment tree state");
-            hex::encode(tree_bytes)
-        }
-
         let orchard_frontier = frontier_with(&[1, 2, 3]);
         let ironwood_frontier = frontier_with(&[7, 8]);
         assert_ne!(

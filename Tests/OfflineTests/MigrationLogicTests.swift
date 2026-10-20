@@ -956,7 +956,8 @@ final class MigrationLogicTests: ZcashTestCase {
     func testProposeImmediateMigrationRethrowsWhenSendMaxProposalFails() async throws {
         let welding = ZcashRustBackendWeldingMock()
         welding.getCurrentAddressAccountUUIDReturnValue = UnifiedAddress(validatedEncoding: Self.uaString, networkType: .testnet)
-        welding.proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyThrowableError = ZcashError.rustProposeSendMaxTransfer("boom")
+        welding.proposeSendMaxTransferAccountUUIDRecipientMemoOrchardOnlyThrowableError =
+            ZcashError.rustProposeSendMaxTransfer(RedactedRustError(kind: .unclassified, message: "boom"))
         let migration = makeMigration(welding: welding, account: accountA)
 
         do {

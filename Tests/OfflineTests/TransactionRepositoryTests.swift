@@ -10,6 +10,15 @@ import XCTest
 @testable import ZcashLightClientKit
 
 class TransactionRepositoryTests: XCTestCase {
+    func testZIP318KindDecodesEveryKnownClassification() {
+        XCTAssertEqual(ZcashTransaction.Overview.ZIP318Kind(rawValue: 0), .notClassified)
+        XCTAssertEqual(ZcashTransaction.Overview.ZIP318Kind(rawValue: 1), .nonconforming)
+        XCTAssertEqual(ZcashTransaction.Overview.ZIP318Kind(rawValue: 2), .preparation)
+        XCTAssertEqual(ZcashTransaction.Overview.ZIP318Kind(rawValue: 3), .transfer)
+        XCTAssertEqual(ZcashTransaction.Overview.ZIP318Kind(rawValue: 4), .canonicalCrossingPayment)
+        XCTAssertEqual(ZcashTransaction.Overview.ZIP318Kind(rawValue: 5), .notClassified)
+    }
+
     var transactionRepository: TransactionRepository!
 
     override func setUp() async throws {

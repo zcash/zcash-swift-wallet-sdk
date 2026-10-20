@@ -2,8 +2,18 @@
 
 [![Build Status](https://travis-ci.org/zcash/ZcashLightClientKit.svg?branch=master)](https://travis-ci.org/zcash/ZcashLightClientKit)
 
+# End of Support
+Version 4.0.0 is the final release of ZcashLightClientKit. Support for this SDK
+will end when [NU7 activates](https://zips.z.cash/zip-0259), currently expected
+in November 2026\.
 
-A Zcash Lightweight Client SDK for iOS
+Development will continue in the [ZODL Swift Wallet SDK](https://github.com/zodl-inc/zodl-swift-wallet-sdk), alongside [ZODL Slipstream](https://github.com/zodl-inc/slipstream). These
+projects are available under the GNU Affero General Public License (AGPLv3), with
+separate commercial licensing options for developers whose needs require different terms.
+
+We thank the Zcash community for seven years of support, contributions, and collaboration.
+
+# A Zcash Lightweight Client SDK for iOS
 This is an alpha build and is currently under active development. Please be advised of the following:
 
 - This code currently is not audited by an external security auditor, use it at your own risk

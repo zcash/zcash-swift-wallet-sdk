@@ -80,7 +80,7 @@ already running an older version without shipping them unrelated trunk work.
 | `main` | permanent | Development trunk. New feature work lands here. |
 | `maint/vX.Y.x` | permanent | One per supported release line. Fixes to released versions land here. |
 | `release/X.Y.Z` | one release | Cut from the previous release tag. The base of the release PR, and what gets tagged. |
-| `review/X.Y.Z` | one release | Release preparation: version bumps, CHANGELOG promotion, final review. |
+| `candidate/X.Y.Z` | one release | Cut from the revision being released. Carries the release preparation commits, and is the head of the release PR. |
 
 ### Basing a bug fix
 
@@ -113,38 +113,69 @@ main          ───●───────────────●──
 
 ### Cutting a release
 
-`./Scripts/start-release.sh <remote> <version>` performs steps 1 through 4:
-it works out which release this one follows, creates and pushes the release
-branch, creates the review branch, and promotes the CHANGELOG. Pass
-`--dry-run` first to see what it will do. It does not touch `Package.swift` --
-the binary target's URL and checksum are written later by
-`Scripts/release.sh`, once the xcframework exists. The steps below are what it
-automates, and what to do by hand if a release needs to deviate.
+A release happens in two phases, with a human reading the pull request in
+between. Both are driven by `./Scripts/prepare-release.sh`; pass `--dry-run` to
+either to see what it will do without changing anything.
+
+**Phase one** — `./Scripts/prepare-release.sh start --issue <N> <remote> <version>`:
 
 1. Create `release/X.Y.Z` **from the previous release tag** and push it to
    upstream. It starts out identical to the last release.
-2. Create `review/X.Y.Z` from the maintenance branch that contains all of the
-   changes to be released.
-3. Open a pull request **on the public repository** from `review/X.Y.Z` into
-   `release/X.Y.Z`.
-4. Make the release preparation commits on `review/X.Y.Z` — version bumps,
-   CHANGELOG promotion, and anything else the release needs. The review branch,
-   not the release branch, is where this work happens.
-5. Merge the pull request, then tag the result `X.Y.Z`.
+2. Create `candidate/X.Y.Z` from the maintenance branch that contains all of
+   the changes to be released.
+3. Promote the CHANGELOG's `Unreleased` section to `X.Y.Z`.
+4. Open a **draft** pull request **on the public repository** from
+   `candidate/X.Y.Z` into `release/X.Y.Z`.
 
-Basing the release branch on the previous release tag is what makes the pull
-request worth reviewing: its diff is exactly what users receive relative to the
-last release, rather than the intervening development history.
+Review that pull request. Its diff is exactly what users receive relative to
+the last release, rather than the intervening development history — which is
+the whole reason the release branch is based on the previous release tag.
+
+**Phase two** — `./Scripts/prepare-release.sh build <remote> <version>`:
+
+5. Bump the recorded version in `Cargo.toml`, `Cargo.lock` and
+   `BuildSupport/platform-Info.plist`.
+6. Build the XCFramework; verify the SDK builds and passes `OfflineTests`
+   against it; then upload it as a draft GitHub release. `--artifacts ci` does
+   all of that on a runner instead of locally; `--skip-verify` skips the
+   build-and-test check.
+7. Rewrite `Package.swift`'s binary target to point at that release.
+8. Extend `candidate/X.Y.Z` with both commits, comment on the pull request, and
+   mark it ready for review.
+
+Each step of phase two checks whether it has already run, so re-running it
+after a failure resumes rather than starting over.
+
+9. Merge the pull request, then run `./Scripts/release.sh <remote> X.Y.Z` from
+   `release/X.Y.Z`. It requires that branch to be identical to its counterpart
+   on `<remote>` — only what merged there may be tagged, and a pushed tag
+   cannot be recalled — then verifies the checksum in `Package.swift` against
+   the uploaded asset, signs the tag `X.Y.Z`, pushes it, and publishes the
+   release. The tag is the only thing pushed.
+
+A version carrying a pre-release suffix, such as `2.8.0-rc.1`, is marked as a
+pre-release on GitHub, both on the draft created in step 6 and on the published
+release in step 9. That bit is what keeps a release candidate from being served
+as `latest` to everyone who asks the API for the newest release.
+
+The artifact build alone is available as
+`./Scripts/prepare-release.sh artifacts <version>`. It touches no git or
+pull-request state, which is what lets `.github/workflows/build-ffi.yml` run it
+with only `contents: write`. Its
+`--force-overwrite-existing-release` replaces the assets of a *draft* release
+only: `Package.swift` pins the checksum of whatever a published release
+carries, and SwiftPM checks it on every fetch, so replacing that asset breaks
+the build of every consumer that has already resolved the version.
 
 ```
 tag X.Y.W  (previous release)
       │
       └──▶  release/X.Y.Z  ●──────────────────────────────●  tag X.Y.Z
                                                           ▲
-                                                          │  PR: review ──▶ release
+                                                          │  PR: candidate ──▶ release
                                                           │
-        review/X.Y.Z   ●────●────●────────────────────────┘
-                       ▲     version bumps, CHANGELOG promotion
+     candidate/X.Y.Z   ●────●────●────────────────────────┘
+                       ▲     CHANGELOG, version bump, XCFramework
                        │
                        │  branch from maint
 maint/vX.Y.x ──●────●──┴────────────────────────▶

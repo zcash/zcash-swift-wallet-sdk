@@ -71,6 +71,10 @@ public enum ZcashTransaction {
             /// A pool crossing paying the account's own internal address, so a
             /// migration transfer.
             case transfer
+            /// A canonical pool crossing that pays a third party. It has the
+            /// same on-chain shape as a migration transfer but is not a
+            /// migration this account made.
+            case canonicalCrossingPayment
 
             init(rawValue: Int) {
                 switch rawValue {
@@ -80,6 +84,8 @@ public enum ZcashTransaction {
                     self = .preparation
                 case 3:
                     self = .transfer
+                case 4:
+                    self = .canonicalCrossingPayment
                 default:
                     self = .notClassified
                 }

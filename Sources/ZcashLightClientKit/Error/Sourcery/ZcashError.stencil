@@ -25,6 +25,21 @@ public enum ZcashError: Equatable, Error {
         }
     }
 
+    /// The redacted detail carried by this error, if any.
+    ///
+    /// Only a `RedactedRustError` payload is rendered here. That is the whole point of the type:
+    /// a raw `String` from `lastErrorMessage(fallback:)` may still hold an amount or an address,
+    /// so it must not reach `errorDescription` and from there an error report. Widening this to
+    /// other payload types means redacting them at the rust boundary first.
+    public var detail: String? {
+        switch self {
+        {% for case in type.cases %}{% for value in case.associatedValues where value.typeName.name == "RedactedRustError" %}
+        case .{{ case.name }}({% for av in case.associatedValues %}{% if av.typeName.name == "RedactedRustError" %}let rustError{% else %}_{% endif %}{% if not forloop.last %}, {% endif %}{% endfor %}): return rustError.message
+        {% endfor %}{% endfor %}
+        default: return nil
+        }
+    }
+
     public var code: ZcashErrorCode {
         switch self {
             {% for case in type.cases %}

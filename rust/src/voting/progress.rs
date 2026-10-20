@@ -6,7 +6,14 @@ use zcash_voting as voting;
 pub type VotingProgressCallback =
     unsafe extern "C" fn(progress: f64, context: *mut std::ffi::c_void);
 
-/// Bridges a C function pointer to the `ProgressReporter` trait.
+/// Bridges a C function pointer to `zcash_voting`'s progress reporter traits.
+///
+/// Only `ProgressReporter` is implemented here. `zcash_voting` supplies a
+/// blanket `impl<T: ProgressReporter> DelegationProgressReporter for T`, so the
+/// entry points that demand the staged reporter are satisfied automatically;
+/// implementing it by hand would collide with that impl. The blanket version
+/// forwards clamped `ProofProgress` fractions and drops the non-proof stages,
+/// which matches this callback's contract of a proof-completion fraction.
 pub(super) struct ProgressBridge {
     pub(super) callback: VotingProgressCallback,
     pub(super) context: *mut std::ffi::c_void,

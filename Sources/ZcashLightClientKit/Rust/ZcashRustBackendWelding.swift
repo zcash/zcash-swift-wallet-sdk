@@ -256,7 +256,7 @@ protocol ZcashRustBackendWelding {
     /// - Parameter to: recipient address
     /// - Parameter value: transaction amount in Zatoshi
     /// - Parameter memo: the `MemoBytes` for this transaction. pass `nil` when sending to transparent receivers
-    /// - Throws: `rustCreateToAddress`.
+    /// - Throws: `rustProposeTransfer`, `rustProposalScanRequired`, or `rustProposalInsufficientFunds`.
     func proposeTransfer(
         accountUUID: AccountUUID,
         to address: String,
@@ -270,7 +270,7 @@ protocol ZcashRustBackendWelding {
     /// stranded when the Orchard turnstile closes at NU6.3. Fails unless NU6.3 is active.
     ///
     /// - Parameter accountUUID: the account whose Orchard balance is migrated.
-    /// - Throws: `rustCreateToAddress`.
+    /// - Throws: `rustProposeOrchardToIronwoodMigration`, `rustProposalScanRequired`, or `rustProposalInsufficientFunds`.
     func proposeOrchardToIronwoodMigration(accountUUID: AccountUUID) async throws -> FfiProposal
 
     /// Select transaction inputs, compute fees, and construct a proposal for a transaction
@@ -279,7 +279,7 @@ protocol ZcashRustBackendWelding {
     ///
     /// - parameter uri: the URI String that the proposal will be made from.
     /// - parameter account: index of the given account
-    /// - Throws: `rustCreateToAddress`.
+    /// - Throws: `rustProposeTransferFromURI`, `rustProposalScanRequired`, or `rustProposalInsufficientFunds`.
     func proposeTransferFromURI(
         _ uri: String,
         accountUUID: AccountUUID
@@ -310,7 +310,7 @@ protocol ZcashRustBackendWelding {
     /// - Parameter proposal: the transaction proposal.
     /// - Parameter usk: `UnifiedSpendingKey` for the account that controls the funds to be spent.
     /// - Returns: The ids of the created transactions.
-    /// - Throws: `rustCreateToAddress`.
+    /// - Throws: `rustCreateToAddress`, `rustProposalScanRequired`, or `rustProposalInsufficientFunds`.
     func createProposedTransactions(
         proposal: FfiProposal,
         usk: UnifiedSpendingKey
