@@ -93,6 +93,24 @@ test_release_unknown_option_fails() {
     assert_fails "release.sh with an unknown option" _release --frobnicate upstream 2.7.1
 }
 
+# A parser that stops at the first positional never sees an option placed after
+# the version, so `release.sh upstream X.Y.Z --dry-run` would tag and publish for
+# real. `--help` after the positionals only succeeds offline if it is parsed:
+# otherwise the run falls through to preflight and fails.
+test_release_parses_options_after_the_positionals() {
+    assert_succeeds "release.sh with --help after the positionals" \
+        _release upstream 2.7.1 --help
+}
+
+test_release_trailing_unknown_option_fails() {
+    assert_fails "release.sh with an unknown option after the positionals" \
+        _release upstream 2.7.1 --frobnicate
+}
+
+test_release_extra_positional_fails() {
+    assert_fails "release.sh with a third positional" _release upstream 2.7.1 extra
+}
+
 test_artifacts_documents_skip_verify() {
     assert_succeeds "artifacts --help documents --skip-verify" \
         sh -c "'$REPO_ROOT/Scripts/prepare-release.sh' artifacts --help | grep -q -- --skip-verify"
