@@ -144,7 +144,10 @@ the whole reason the release branch is based on the previous release tag.
    mark it ready for review.
 
 Each step of phase two checks whether it has already run, so re-running it
-after a failure resumes rather than starting over.
+after a failure resumes rather than starting over. A resumed run reuses an
+XCFramework already attached to the draft release without checking which commit
+built it, so if anything under `rust/` (or `Cargo.lock`) changed on the
+candidate since the first build, pass `--rebuild`.
 
 9. Merge the pull request, then run `./Scripts/release.sh <remote> X.Y.Z` from
    `release/X.Y.Z`. It requires that branch to be identical to its counterpart
