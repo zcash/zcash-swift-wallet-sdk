@@ -15,6 +15,11 @@ public enum VotingRustBackendError: LocalizedError, Equatable {
     /// The voting database is not open.
     case databaseNotOpen
     /// A Rust error occurred.
+    ///
+    /// The payload is `zcash_voting`'s raw error text, not redacted the way
+    /// ``RedactedRustError`` is: it can name note positions and other wallet
+    /// state. Keep it on the device; do not forward `localizedDescription` of
+    /// this case to crash reports or support tickets.
     case rustError(String)
     /// Invalid data was received.
     case invalidData(String)
@@ -44,6 +49,17 @@ public enum VotingRustBackendError: LocalizedError, Equatable {
 /// Thread safety: handle access is serialized by an `NSLock`. Database-bound
 /// FFI calls hold the lock for their full duration so `close()` cannot free the
 /// handle while Rust is using it.
+///
+/// Every database-bound call, synchronous or not, waits on that lock, so while
+/// `buildAndProveDelegation` or `commitVote` is proving — which can take
+/// minutes — `getRoundState`, `listRounds`, `close` and the rest block too.
+/// Call this type off the main thread. Proving cannot be cancelled: cancelling
+/// the calling `Task` does not stop it.
+///
+/// Network traffic made on behalf of voting — PIR snapshot probes, PIR
+/// queries and vote-tree sync — connects directly. It does not go through the
+/// SDK's Tor client, whatever `tor(enabled:)` says, so the servers involved see
+/// the device's IP address.
 public final class VotingRustBackend: @unchecked Sendable {
     private let lock = NSLock()
     private var handle: OpaquePointer?
@@ -66,6 +82,15 @@ public final class VotingRustBackend: @unchecked Sendable {
     /// network the database was opened for. A custom (regtest) network takes
     /// its voting identity from the registered base network, and opening fails
     /// if that network has not been configured yet.
+    ///
+    /// The database holds how the user voted (each vote's `choice`) next to
+    /// note secrets and vote recovery state. Keep it in the app's own container
+    /// with file protection enabled. It is recovery state the user needs until a
+    /// round ends, so do not exclude it from backup without weighing that.
+    ///
+    /// A database written by an SDK earlier than 4.0.0 (schema below version 13)
+    /// has its voting tables dropped and recreated on open: rounds in progress
+    /// under the old protocol are lost, and they could not continue on this one.
     ///
     /// Throws `VotingRustBackendError.databaseAlreadyOpen` if the backend
     /// already holds an open handle.
@@ -334,8 +359,13 @@ extension VotingRustBackend {
     /// returned ``VotingVoteCommit`` carries everything the caller previously
     /// assembled by hand.
     ///
-    /// The call is idempotent: repeating it for the same round, bundle and
-    /// proposal returns the persisted recovery bundle rather than re-proving.
+    /// Repeating the call with the same inputs returns the persisted commit
+    /// rather than re-proving. With different inputs — another `choice`,
+    /// `numOptions`, `singleShare` or tree position — a vote that has no
+    /// recorded transaction hash is re-proved and replaced, discarding the
+    /// earlier recovery bundle; one with a transaction hash or tree position is
+    /// never replaced. Record the transaction hash with `markVoteSubmitted`
+    /// before broadcasting, so a vote that lands on chain keeps its bundle.
     ///
     /// `hotkeyStoredSecret` is the ``VotingHotkey/storedSecret`` the application
     /// persisted, not wallet seed material.
@@ -529,6 +559,11 @@ extension VotingRustBackend {
     ///     `getCommitmentBundle(roundId:bundleIndex:proposalId:)`.
     ///   - voteCommitmentTreePosition: the confirmed position, from
     ///     ``VotingVoteConfirmation/voteCommitmentTreePosition``.
+    ///   - submitAt: Unix time, in seconds, at which the helper server should
+    ///     submit the share; `0` submits it immediately. `zcash_voting`'s
+    ///     share-timing policy, which spreads a vote's shares over a delay window
+    ///     to weaken timing linkage, is not exposed by the SDK, so a host that
+    ///     passes `0` for every share submits all of them at once.
     /// - Returns: the helper request body. POST it verbatim; do not decode,
     ///   re-shape or re-encode it.
     /// - Throws: `VotingRustBackendError.rustError` if the bundle JSON is
@@ -752,6 +787,12 @@ extension VotingRustBackend {
     ///
     /// Round-parameter byte arrays are validated by Rust; invalid lengths
     /// throw `.rustError` rather than persisting a partial round.
+    ///
+    /// Only lengths are checked. In particular `eaPublicKey` is not
+    /// authenticated: vote shares are encrypted to it and sent to helper
+    /// servers before the chain can reject anything, so take the round
+    /// parameters from an authenticated source, never from an unauthenticated
+    /// server response.
     /// `sessionJson` is optional; pass `nil` to leave it unset.
     public func initRound(
         roundId: String,
@@ -1234,7 +1275,14 @@ extension VotingRustBackend {
         return try decodeJSON(from: ptr)
     }
 
-    /// Remove all recovery-state rows for a round.
+    /// Clear a round's recovery state.
+    ///
+    /// Deletes the round's share-delegation records and Keystone signatures,
+    /// and clears the delegation transaction hash of bundles not yet confirmed
+    /// and the transaction hash and recovery bundle of votes not yet confirmed.
+    /// That includes votes already submitted: if one of those lands on chain,
+    /// its recovery bundle is gone. The four steps are not one transaction.
+    /// Call it only when abandoning a round's unconfirmed work.
     public func clearRecoveryState(roundId: String) throws {
         let roundIdBytes = [UInt8](roundId.utf8)
         try withHandle { dbh in
@@ -1259,6 +1307,10 @@ extension VotingRustBackend {
     /// derives it from the committed vote's recovery state, so a caller cannot
     /// record a nullifier that disagrees with the share it belongs to. This
     /// requires the vote to have been committed already.
+    ///
+    /// `submitAt` is the Unix time, in seconds, the share was scheduled for, the
+    /// same value passed to `recoverWireJson`; `0` means it was submitted
+    /// immediately. Crash recovery uses it as the share's base time.
     // swiftlint:disable:next function_parameter_count
     public func recordShareDelegation(
         roundId: String,
@@ -1474,6 +1526,15 @@ extension VotingRustBackend {
     }
 
     /// Build the voting PCZT for a bundle.
+    ///
+    /// Each build randomizes the spend-authorization key, and `zcash_voting`
+    /// refuses to replace the sighash it stores here, so a bundle can be built
+    /// only once. Persist the returned ``VotingPczt`` until
+    /// `storeKeystoneSignature` has succeeded: if the app loses it mid-signing,
+    /// the only way forward is `clearRound`, which discards the whole round.
+    ///
+    /// For a hardware signer, send only ``VotingPczt/pcztBytes`` to the device.
+    /// The other fields are host-only secrets.
     public func buildPczt(_ params: VotingBuildPcztParams) throws -> VotingPczt {
         let keys = params.keys
 
@@ -1564,13 +1625,14 @@ extension VotingRustBackend {
     ///
     /// - Parameters:
     ///   - keys: the same ``VotingDelegationKeyInputs`` used to build and prove
-    ///     this bundle. The crate loads the signing request through them, so a
-    ///     different account index, hotkey secret or seed fingerprint fails
-    ///     instead of silently signing for the wrong account.
-    ///   - seed: the wallet's root seed. It is borrowed for
-    ///     the duration of this call, is never persisted or logged, and must be
-    ///     the seed whose fingerprint is in `keys` — a mismatch throws rather
-    ///     than producing a signature the chain would reject.
+    ///     this bundle. The crate loads the signing request through them, but it
+    ///     takes `accountIndex` and `seedFingerprint` as given rather than
+    ///     checking them against the bundle.
+    ///   - seed: the wallet's root seed. It is borrowed for the duration of this
+    ///     call and is never persisted or logged. It must be the seed the bundle
+    ///     was built from: a different seed, or a different account index, is
+    ///     not caught here. It produces a signature, and the submission is
+    ///     rejected later when its randomized key fails to verify.
     /// - Returns: the detached 64-byte SpendAuth signature and the 32-byte
     ///   ZIP-244 sighash it covers. Pass both to `getDelegationSubmission`
     ///   unchanged.
