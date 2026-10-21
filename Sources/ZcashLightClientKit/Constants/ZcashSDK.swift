@@ -144,8 +144,8 @@ public enum ZcashSDK {
     /// the SDK instead of hardcoding the literal. The voting stack is the case
     /// that forced this: `zcash_voting` rejects a delegation built for any other
     /// branch, so a stale hardcoded era does not degrade — every delegation fails
-    /// at construction. A constant that moves with the SDK cannot go stale
-    /// silently at the next network upgrade the way a copied literal does.
+    /// at construction. This constant names NU6.3 only: a round whose snapshot
+    /// height falls after a later upgrade needs that upgrade's branch ID.
     public static let nu63ConsensusBranchID: ConsensusBranchID = 0x37a5_165b
 
     /// The number of zatoshi that equal 1 ZEC.

@@ -37,7 +37,7 @@ Test targets are grouped by external dependencies:
 |---|---|
 | `OfflineTests` | nothing |
 | `NetworkTests` | internet connection |
-| `DarksideTests` / `AliasDarksideTests` | a local `lightwalletd` (`Tests/lightwalletd/lightwalletd --no-tls-very-insecure --data-dir /tmp --darkside-very-insecure --log-file /dev/stdout`); optionally set `LIGHTWALLETD_ADDRESS` |
+| `DarksideTests` / `AliasDarksideTests` | a local `lightwalletd` (`Tests/lightwalletd/lightwalletd --no-tls-very-insecure --data-dir /tmp --darkside-very-insecure --log-file /dev/stdout`); optionally set `LIGHTWALLETD_ADDRESS`. `DarksideTests` is currently empty: its `.gitkeep` names the commit that removed the unmaintained suite, and the target is kept so the suite can be restored |
 | `PerformanceTests` | network, not run in CI |
 
 ## Rust FFI development

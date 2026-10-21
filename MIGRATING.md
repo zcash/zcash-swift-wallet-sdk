@@ -1,10 +1,12 @@
-# Migrating from previous versions to _Unreleased_
+# Migrating from previous versions to 4.0.0
 
 ## Proposal errors carry `RedactedRustError` instead of `String`
 
 `ZcashError.rustCreateToAddress`, `.rustProposeTransferFromURI`, and `.rustProposeSendMaxTransfer`
 now carry a `RedactedRustError` rather than a `String`. Pattern matches that bind the payload stop
-compiling; read `.message` for the text, or better, switch on `.kind`:
+compiling. Switch on `.kind`; `.message` is a fixed text per kind, not the upstream error text, so
+code that matched substrings of the old `String` (for example "Unable to compute anchor", which
+now reports `.proposalInvalid`) compiles but never matches again:
 
 ```swift
 // Before
@@ -21,7 +23,8 @@ catch ZcashError.rustCreateToAddress(let error) {
 The type change is what makes the message safe to display and to submit. `ZcashError.detail` (and
 therefore `errorDescription`) renders an associated value only when it is a `RedactedRustError`, so
 a raw rust string — which may still contain an amount or an address — cannot reach a user-visible
-description by accident.
+description by accident. `String(describing:)`, `"\(error)"` and `dump(_:)` still reflect every
+associated value, so log `localizedDescription`, never the error itself.
 
 Three things move at the same time:
 
@@ -44,6 +47,12 @@ Three things move at the same time:
   `available` is the SPENDABLE balance, which can be below the balance being displayed while notes
   await confirmations. That gap is the likeliest explanation for a wallet that says it holds more
   than it will send.
+
+  `proposeSendMaxTransfer` now throws these two cases instead of `.rustProposeSendMaxTransfer`,
+  so retry logic that caught `.rustProposeSendMaxTransfer` for "still syncing" must catch
+  `.rustProposalScanRequired`. `proposeOrchardToIronwoodMigration` is the exception: the Rust layer
+  does not classify migration-proposal failures yet, so all of them arrive as
+  `.rustProposeOrchardToIronwoodMigration` with kind `.unclassified`.
 - **`ZcashError` gains `detail: String?`**, appended to `errorDescription` in parentheses when
   present. Any snapshot test pinning the exact `localizedDescription` of one of the affected cases
   needs updating.
@@ -58,6 +67,30 @@ absorbed orchestration the SDK used to drive step by step, and made the
 intermediate steps private. Wallet developers upgrading from a pre-2.7.0
 version must make the changes below. Wallet developers coming from 2.7.0 or
 3.0.0, where voting was absent, can adopt the API as documented.
+
+### Old voting databases are reset
+
+Opening a voting database written by an earlier SDK (schema version below 13)
+drops and recreates its voting tables, so rounds in progress under the old
+protocol are lost. They could not continue on this one anyway. Delete or ignore
+old voting databases rather than expecting their state to carry over.
+
+### Where to keep the voting database, and what the SDK does not do for you
+
+- The database holds each vote's `choice` next to note secrets and recovery
+  state. Keep it in the app's own container with file protection enabled. It is
+  recovery state the user needs until a round ends, so weigh that before
+  excluding it from backup.
+- Round parameters given to `initRound` — above all `eaPublicKey`, the key vote
+  shares are encrypted to — and the `VotingPirLayout` are checked for length
+  only. Take them from an authenticated source: shares go to helper servers
+  before the chain can reject anything.
+- Voting traffic (PIR snapshot probes, PIR queries, vote-tree sync) connects
+  directly, not through the SDK's Tor client, even with `tor(enabled:)` on.
+- `VotingRustBackendError.rustError` carries the crate's raw text, which can name
+  note positions; keep it on the device.
+- Database-bound calls wait behind a running proof, and proving cannot be
+  cancelled. Call `VotingRustBackend` off the main thread.
 
 ### Voting hotkeys are no longer derived from the wallet seed
 
@@ -187,7 +220,31 @@ instead of trapping.
 - `recordShareDelegation` no longer accepts a nullifier. The voting crate derives
   it from the vote's recovery state, so a caller can no longer record a nullifier
   that disagrees with the share it belongs to.
-- `storeCommitmentBundle` is replaced by `recordVcPosition`.
+- The `getDelegationSubmission` overloads that took a `senderSeed`, or a
+  `keystoneSig` and `sighash`, are removed: `zcash_voting` no longer signs on the
+  caller's behalf, so every signer hands back a signature to
+  `getDelegationSubmission(roundId:bundleIndex:signature:sighash:)`.
+  - Software signing: `signDelegationRequest(roundId:bundleIndex:keys:seed:)`
+    returns the signature and the sighash it covers.
+  - Keystone: send only `VotingPczt.pcztBytes` to the device, take the signature
+    from the signed PCZT with
+    `extractSpendAuthSig(signedPczt:actionIndex:)` (passing
+    `VotingPczt.actionIndex`), and use `VotingPczt.pcztSighash` as the sighash.
+    Persist the result with `storeKeystoneSignature`. Keep the `VotingPczt`
+    until that succeeds: a bundle can be built only once, so losing it midway
+    leaves `clearRound` as the only way forward.
+- `storeCommitmentBundle` is removed: `commitVote` writes the recovery bundle
+  itself. Once the vote's transaction confirms, pass the chain's confirmation
+  events to `confirmVoteSubmission(roundId:bundleIndex:proposalId:txHash:eventsJson:)`.
+  It records the transaction hash, advances the vote-authority-note position and
+  records the vote-commitment tree position in one database transaction.
+  `recordVcPosition` records only the tree position and does not advance the
+  vote-authority note; prefer `confirmVoteSubmission`.
+- Record the cast-vote transaction hash with `markVoteSubmitted` before
+  broadcasting. Until a hash is recorded, calling `commitVote` again with
+  different inputs re-proves and replaces the vote, discarding the recovery
+  bundle of one that may already be on chain. `clearRecoveryState` likewise
+  clears the bundle of a submitted but unconfirmed vote.
 - `VotingBundleSetupResult` gained `droppedCount`, the number of notes the
   canonical bundling policy discarded. A non-zero value means the wallet holds
   voting notes that will not be voted with, which `eligibleWeight` alone does not
@@ -197,17 +254,21 @@ instead of trapping.
 - Round identifiers must be 64 lowercase hexadecimal characters encoding a
   canonical Pallas field element. Shorter or non-canonical identifiers are
   rejected by `initRound`.
-- Types that carry key material or note secrets — `VotingHotkey`,
-  `VotingNoteInfo`, `VotingPczt` and `VotingDelegationKeyInputs` — now conform to
-  `Undescribable`, so they render as `--redacted--` rather than exposing their
-  contents through logging, string interpolation or reflection.
+- Types that carry key material, note secrets, vote choices or recovery state —
+  `VotingHotkey`, `VotingNoteInfo`, `VotingPczt`, `VotingDelegationKeyInputs`,
+  `VotingDelegationInputs`, `VotingVoteCommit`, `VotingVoteRecord`,
+  `VotingWitnessData`, `VotingShareDelegation` and
+  `VotingStoredCommitmentBundle` — now conform to `Undescribable`, so they render
+  as `--redacted--` rather than exposing their contents through logging, string
+  interpolation or reflection.
 
 ### Voting rides `zcash_voting` 3.0 — `VotingPirLayout` carries `polyLen`
 
 `VotingPirLayout`'s memberwise initializer takes a required `polyLen: UInt32` — the YPIR RLWE
 polynomial degree (2048 or 4096), taken from the dynamic voting config's `pir_layout.poly_len` —
 and `precomputeDelegationPir(...)` / `buildAndProveDelegation(...)` consume it through the layout.
-`VotingPirLayout.unknown` (`polyLen` 0) fails closed before any private query. Treat a config
+`VotingPirLayout.unknown` (`polyLen` 0) throws `VotingRustBackendError.invalidData` before any
+PIR endpoint is probed. Treat a config
 without `poly_len` as a configuration error rather than defaulting: the server's dataset geometry
 is bound to the value, and 3.0 clients verify the advertised degree at connect.
 
@@ -221,6 +282,11 @@ There is no `VotingSharePayload` type, and `VotingVoteCommit` carries no share p
 Helper-server payloads are obtained after confirmation, one per share index:
 
 ```swift
+// After the cast-vote transaction confirms:
+let confirmation = try backend.confirmVoteSubmission(
+    roundId: roundId, bundleIndex: bundleIndex, proposalId: proposalId,
+    txHash: txHash, eventsJson: confirmationEventsJson
+)
 let bundle = try backend.getCommitmentBundle(
     roundId: roundId, bundleIndex: bundleIndex, proposalId: proposalId
 )
@@ -229,11 +295,18 @@ let payload = try VotingRustBackend.recoverWireJson(
     proposalId: proposalId,
     shareIndex: shareIndex,
     voteCommitmentTreePosition: confirmation.voteCommitmentTreePosition,
-    submitAt: submitAt
+    submitAt: submitAt  // Unix seconds; 0 submits immediately
 )
 ```
 
 `payload` is the helper request body verbatim — do not decode, re-shape or re-encode it.
+
+`submitAt` is the Unix time, in seconds, at which the helper server should submit
+the share, and `0` submits it at once. Pass the same value to
+`recordShareDelegation`. `zcash_voting` has a share-timing policy that spreads a
+vote's shares over a delay window to weaken timing linkage, but the SDK does not
+expose it: a host that passes `0` for every share submits all of a vote's shares
+at the same moment.
 
 `VotingDelegationSubmission` and `VotingWireEncryptedShare` are decoded from the crate's own
 wire structs, so their byte fields are base64 `String`s rather than `[UInt8]`, the delegation

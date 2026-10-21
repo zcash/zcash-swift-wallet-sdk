@@ -73,7 +73,10 @@ public struct VotingBundleSetupResult: Sendable {
 // MARK: - Vote Record
 
 /// Record of a vote for a specific proposal/bundle.
-public struct VotingVoteRecord: Sendable {
+///
+/// Conforms to `Undescribable` because `choice` is how the user voted, which
+/// the protocol exists to keep private; it must not reach a log.
+public struct VotingVoteRecord: Sendable, Undescribable {
     public let proposalId: UInt32
     public let bundleIndex: UInt32
     public let choice: UInt32
@@ -178,7 +181,10 @@ public struct VotingPczt: Codable, Sendable, Undescribable {
 // MARK: - Witness Data (JSON)
 
 /// Merkle witness data for a note.
-public struct VotingWitnessData: Codable, Sendable {
+///
+/// Conforms to `Undescribable` because the note commitment and tree position
+/// identify one of the wallet's notes on chain.
+public struct VotingWitnessData: Codable, Sendable, Undescribable {
     public let noteCommitment: [UInt8]
     public let position: UInt64
     public let root: [UInt8]
@@ -501,6 +507,9 @@ public struct VotingBuildPcztParams: Sendable {
     public let bundleIndex: UInt32
     public let notes: [VotingNoteInfo]
     public let keys: VotingDelegationKeyInputs
+    /// The consensus branch active at the round's snapshot height.
+    /// `zcash_voting` checks it against the branch it derives from the
+    /// database's network and that height, so a wrong value fails.
     public let consensusBranchId: ConsensusBranchID
 
     public init(
@@ -594,6 +603,10 @@ public struct VotingStoredCommitmentBundle: Sendable, Equatable, Undescribable {
 /// runs the config/server layout handshake with these values and fails closed
 /// before issuing any private query when the server disagrees, so they must come
 /// from a resolved dynamic config rather than being assumed or compiled in.
+///
+/// The SDK does not authenticate the config these values come from. Resolve it
+/// from an authenticated source, as for the round parameters given to
+/// `initRound`.
 public struct VotingPirLayout: Equatable, Sendable {
     public let pirDepth: UInt32
     public let tier0Layers: UInt32
@@ -607,9 +620,10 @@ public struct VotingPirLayout: Equatable, Sendable {
 
     /// The crate's `PirLayout::UNKNOWN` sentinel, and its `Default`.
     ///
-    /// `zcash_voting` rejects it — "pir_layout is unknown; resolve a current
-    /// dynamic voting config first" — so this is a fail-closed placeholder for
-    /// callers that have not resolved a config yet, never a usable layout.
+    /// A fail-closed placeholder for callers that have not resolved a config
+    /// yet, never a usable layout: `precomputeDelegationPir` and
+    /// `buildAndProveDelegation` throw `VotingRustBackendError.invalidData` for
+    /// it before probing any endpoint.
     public static let unknown = VotingPirLayout(
         pirDepth: 0,
         tier0Layers: 0,

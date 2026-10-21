@@ -88,6 +88,9 @@ public protocol PirSnapshotProbing: Sendable {
 }
 
 /// Selects a PIR endpoint whose served snapshot height equals `expectedSnapshotHeight` exactly.
+///
+/// Probes go out over `URLSession`, not the SDK's Tor client, so each PIR
+/// server sees the device's IP address even when `tor(enabled:)` is on.
 public struct PirSnapshotResolver: Sendable {
     private let probe: PirSnapshotProbing
     private let matchingEndpointSelector: @Sendable ([PirSnapshotProbeOutcome]) -> PirSnapshotProbeOutcome?
