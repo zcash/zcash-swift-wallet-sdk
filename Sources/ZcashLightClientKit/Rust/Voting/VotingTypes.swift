@@ -73,7 +73,10 @@ public struct VotingBundleSetupResult: Sendable {
 // MARK: - Vote Record
 
 /// Record of a vote for a specific proposal/bundle.
-public struct VotingVoteRecord: Sendable {
+///
+/// Conforms to `Undescribable` because `choice` is how the user voted, which
+/// the protocol exists to keep private; it must not reach a log.
+public struct VotingVoteRecord: Sendable, Undescribable {
     public let proposalId: UInt32
     public let bundleIndex: UInt32
     public let choice: UInt32
@@ -178,7 +181,10 @@ public struct VotingPczt: Codable, Sendable, Undescribable {
 // MARK: - Witness Data (JSON)
 
 /// Merkle witness data for a note.
-public struct VotingWitnessData: Codable, Sendable {
+///
+/// Conforms to `Undescribable` because the note commitment and tree position
+/// identify one of the wallet's notes on chain.
+public struct VotingWitnessData: Codable, Sendable, Undescribable {
     public let noteCommitment: [UInt8]
     public let position: UInt64
     public let root: [UInt8]

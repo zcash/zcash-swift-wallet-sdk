@@ -132,13 +132,15 @@ extension VotingRustBackend {
     /// This performs the network PIR lookup only, proof construction happens
     ///  elsewhere.
     ///
-    /// `pirEndpoints` are probed in parallel via `pirResolver`. The first
-    /// endpoint whose served snapshot height equals `expectedSnapshotHeight`
-    /// exactly is used. See `PirSnapshotResolver` for the failure semantics.
+    /// `pirEndpoints` are probed in parallel via `pirResolver`, on every call.
+    /// One endpoint whose served snapshot height equals `expectedSnapshotHeight`
+    /// exactly is chosen at random. See `PirSnapshotResolver` for the failure
+    /// semantics.
     ///
     /// `pirLayout` must come from the round's resolved dynamic voting config.
-    /// `zcash_voting` fails the config/server layout handshake closed before any
-    /// private query, and rejects the `.unknown` default outright.
+    /// The `.unknown` default throws ``VotingRustBackendError/invalidData``
+    /// before any endpoint is probed; `zcash_voting` then fails the
+    /// config/server layout handshake closed before any private query.
     public func precomputeDelegationPir(
         roundId: String,
         bundleIndex: UInt32,
@@ -149,6 +151,7 @@ extension VotingRustBackend {
         pirResolver: PirSnapshotResolver = PirSnapshotResolver()
     ) async throws -> VotingDelegationPirPrecomputeResult {
         try requireOpenDatabase()
+        try Self.requireResolvedPirLayout(pirLayout)
         let pirServerUrl = try await pirResolver.resolve(
             endpoints: pirEndpoints,
             expectedSnapshotHeight: expectedSnapshotHeight
@@ -1718,6 +1721,11 @@ extension VotingRustBackend {
     /// Do not call back into this `VotingRustBackend` from `progress`. Rust may
     /// invoke the callback while the database-handle lock is held, so re-entering
     /// this backend can deadlock.
+    ///
+    /// `pirLayout` must come from the round's resolved dynamic voting config;
+    /// the `.unknown` default throws ``VotingRustBackendError/invalidData``
+    /// before any endpoint is probed. Endpoint selection is as for
+    /// ``precomputeDelegationPir(roundId:bundleIndex:notes:pirEndpoints:expectedSnapshotHeight:pirLayout:pirResolver:)``.
     public func buildAndProveDelegation(
         _ params: VotingDelegationProofParams,
         pirEndpoints: [String],
@@ -1727,6 +1735,7 @@ extension VotingRustBackend {
         progress: (@Sendable (Double) -> Void)? = nil
     ) async throws -> VotingDelegationProofResult {
         try requireOpenDatabase()
+        try Self.requireResolvedPirLayout(pirLayout)
 
         let pirServerUrl = try await pirResolver.resolve(
             endpoints: pirEndpoints,
@@ -1823,6 +1832,18 @@ private extension VotingRustBackend {
             throw VotingRustBackendError.databaseNotOpen
         }
         return try operation(dbh)
+    }
+
+    /// Rejects the `.unknown` placeholder before any PIR endpoint is probed.
+    ///
+    /// `zcash_voting` would reject it too, but only after the resolver had
+    /// already sent a snapshot probe to every configured endpoint.
+    static func requireResolvedPirLayout(_ layout: VotingPirLayout) throws {
+        guard layout != .unknown else {
+            throw VotingRustBackendError.invalidData(
+                "pirLayout is .unknown; pass the layout from the round's resolved voting config"
+            )
+        }
     }
 
     func requireOpenDatabase() throws {
