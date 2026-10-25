@@ -63,7 +63,9 @@ public struct RedactedRustError: Equatable, CustomStringConvertible {
     /// ``RustErrorKind/insufficientFunds``.
     public let required: Zatoshi?
 
-    public init(kind: RustErrorKind, message: String, available: Zatoshi? = nil, required: Zatoshi? = nil) {
+    // Internal on purpose: a public initializer would let any caller wrap raw text that
+    // `errorDescription` then renders, so the redaction guarantee would hold only by review.
+    init(kind: RustErrorKind, message: String, available: Zatoshi? = nil, required: Zatoshi? = nil) {
         self.kind = kind
         self.message = message
         self.available = available

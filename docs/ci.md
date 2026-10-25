@@ -26,6 +26,9 @@ It touches no git or pull-request state, which is why it needs only
 `./Scripts/prepare-release.sh build --artifacts ci <remote> <version>` from a
 checkout on the candidate branch: that dispatches the workflow, waits for it,
 and writes the resulting URL and checksum into `Package.swift`.
+If the draft release already carries an XCFramework, `build` reuses it
+without checking which commit built it; pass `--rebuild` whenever the Rust code
+or `Cargo.lock` changed on the candidate after that build.
 
 ## Manual Deployment
 
