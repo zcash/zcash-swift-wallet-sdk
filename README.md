@@ -14,11 +14,10 @@ separate commercial licensing options for developers whose needs require differe
 We thank the Zcash community for seven years of support, contributions, and collaboration.
 
 # A Zcash Lightweight Client SDK for iOS
-This is an alpha build and is currently under active development. Please be advised of the following:
+This SDK is no longer under active development; see "End of Support" above. Please be advised of the following:
 
 - This code currently is not audited by an external security auditor, use it at your own risk
 - The code **has not been subjected to thorough review** by engineers at the Electric Coin Company
-- We **are actively changing** the codebase and adding features where/when needed
 
 🔒 Security Warnings
 
