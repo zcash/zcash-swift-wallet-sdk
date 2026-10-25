@@ -6,6 +6,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # Unreleased
 
+# 4.0.0 - 2026-10-19
+
 This is the final release of ZcashLightClientKit. Support ends when NU7 activates; development
 continues in the ZODL Swift Wallet SDK. See the "End of Support" section of `README.md`.
 
