@@ -8,6 +8,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `zcashlc_take_last_error_report` returns the most recent error as an `ErrorReport` (an
+  `ErrorKind` discriminant, a redacted message that carries no amount, address, note identifier
+  or txid, and the available and required amounts in zatoshis for insufficient funds, `-1`
+  otherwise), clearing it as `zcashlc_clear_last_error` would. It returns null when there is no
+  error. Free the result with `zcashlc_free_error_report`.
+- Voting: `zcashlc_voting_confirm_vote_submission` records a cast vote's confirmation from the
+  chain's events (transaction hash, vote-authority-note position and vote-commitment tree position,
+  in one database transaction); `zcashlc_voting_recover_wire_json` rebuilds one helper-server
+  payload from the persisted recovery bundle; `zcashlc_voting_recoverable_share_indices` lists the
+  share indices a bundle can rebuild; `zcashlc_voting_sign_delegation_request` produces the
+  SpendAuth signature and sighash for a delegation from the wallet seed.
+- `zcashlc_voting_precompute_delegation_pir` and `zcashlc_voting_build_and_prove_delegation` take
+  the PIR layout's `poly_len` (2048 or 4096) after `pir_depth`, `tier0_layers` and `tier1_layers`.
 - `zcashlc_get_transaction`, `zcashlc_free_transaction_data`, and `FfiTransactionData` expose the
   serialized bytes and expiry height available for any wallet-store transaction without depending
   on the transaction-history projection.
@@ -205,6 +218,58 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   itself never touches.
 
 ### Changed
+- The `zcashlc_voting_*` FFI is compiled again, against the Ironwood (NU6.3)
+  dependency stack. It had been gated behind `#[cfg(zcash_voting)]` on the
+  grounds that `zcash_voting` could not resolve against the Ironwood `orchard`
+  release; that held for `zcash_voting 1.0.0`, which pins the pre-Ironwood
+  librustzcash family, but not for `zcash_voting 3.0.0`, which this crate now
+  depends on directly from crates.io, pinned with `=3.0.0`.
+
+  Voting is compiled unconditionally rather than behind a Cargo feature. The
+  Swift package cannot gate voting for its consumers, so a Rust-only feature
+  would gate nothing reachable while leaving a bare `cargo build` producing a
+  library the Swift layer could not link against.
+
+  The FFI surface changed substantially, because `zcash_voting` absorbed
+  orchestration this crate used to hand-roll and made the intermediate steps
+  private:
+
+  - Removed: `zcashlc_voting_build_vote_commitment`,
+    `zcashlc_voting_sign_cast_vote`, `zcashlc_voting_build_share_payloads` and
+    `zcashlc_voting_encrypt_shares`, all four superseded by the new
+    `zcashlc_voting_commit_vote`; `zcashlc_voting_decompose_weight`, which has no
+    upstream equivalent; `zcashlc_voting_get_delegation_submission` and
+    `zcashlc_voting_get_delegation_submission_with_keystone_sig`, superseded by
+    `zcashlc_voting_get_delegation_submission_with_signature`; and
+    `zcashlc_voting_store_commitment_bundle`, superseded by
+    `zcashlc_voting_record_vc_position`.
+  - Added: `zcashlc_voting_commit_vote`,
+    `zcashlc_voting_get_delegation_submission_with_signature`, and
+    `zcashlc_voting_record_vc_position`.
+  - Changed: `zcashlc_voting_db_open` takes a network id, fixing the voting
+    network for the lifetime of the returned handle. A custom (regtest) network
+    derives its voting identity from the registered base network, so a
+    modified-mainnet chain votes with mainnet hotkeys and HRPs, and opening
+    fails if that network was never configured. Because the handle carries it,
+    `zcashlc_voting_init_round`, `zcashlc_voting_build_pczt`,
+    `zcashlc_voting_commit_vote`, `zcashlc_voting_precompute_delegation_pir`
+    and `zcashlc_voting_build_and_prove_delegation` no longer take a network
+    id, and an unknown one is rejected once at open rather than by each call.
+    `zcashlc_voting_init_round` still persists the round's network, so
+    governance PCZT branch identifiers can be validated against it.
+    `zcashlc_voting_generate_hotkey` drops its database and seed parameters and
+    takes a network, because voting hotkeys are now app-owned random values
+    rather than wallet-seed derivations; the caller must persist the returned
+    stored secret. `zcashlc_voting_build_pczt` and
+    `zcashlc_voting_build_and_prove_delegation` take a hotkey stored secret in
+    place of a raw hotkey address, since delegation keys can only be
+    constructed from a reconstructed hotkey. `zcashlc_voting_mark_vote_submitted`
+    requires the cast-vote transaction hash.
+    `zcashlc_voting_record_share_delegation` no longer accepts a nullifier,
+    which the crate derives from the vote's recovery state so a caller cannot
+    record one that disagrees with its share.
+  - `FfiVotingHotkey` and `FfiBundleSetupResult` changed shape; the latter gained
+    `dropped_count`, exposing notes the canonical bundling policy discarded.
 - Migrated to `zcash_protocol 0.10.4`, `zcash_client_backend 0.24.0-rc.7`,
   `zcash_client_sqlite 0.22.0-rc.7`, `pczt 0.9.2`.
 - The migration engine's wallet adapter is UPSTREAM's (`zcash_pool_migration::wallet::WalletMigration`

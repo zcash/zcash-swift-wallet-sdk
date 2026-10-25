@@ -189,7 +189,7 @@ public enum ZcashErrorCode: String {
     case rustScanProgressOutOfRange = "ZRUST0055"
     /// Error from rust layer when calling ZcashRustBackend.getWalletSummary
     case rustGetWalletSummary = "ZRUST0056"
-    /// Error from rust layer when calling ZcashRustBackend.
+    /// Error from rust layer when calling ZcashRustBackend.proposeTransferFromURI
     case rustProposeTransferFromURI = "ZRUST0057"
     /// Error from rust layer when calling ZcashRustBackend.
     case rustListAccounts = "ZRUST0058"
@@ -205,6 +205,14 @@ public enum ZcashErrorCode: String {
     case rustPutIronwoodSubtreeRoots = "ZRUST0110"
     /// Error from rust layer when calling ZcashRustBackend.getTransaction
     case rustGetTransaction = "ZRUST0150"
+    /// Error from rust layer when calling ZcashRustBackend.proposeTransfer
+    case rustProposeTransfer = "ZRUST0151"
+    /// Error from rust layer when calling ZcashRustBackend.proposeOrchardToIronwoodMigration
+    case rustProposeOrchardToIronwoodMigration = "ZRUST0152"
+    /// The wallet must finish scanning the blockchain before this payment can be prepared.
+    case rustProposalScanRequired = "ZRUST0153"
+    /// The spendable balance does not cover this payment and its fee.
+    case rustProposalInsufficientFunds = "ZRUST0154"
     /// Error from rust layer when calling TorClient.init
     case rustTorClientInit = "ZRUST0062"
     /// Error from rust layer when calling TorClient.get

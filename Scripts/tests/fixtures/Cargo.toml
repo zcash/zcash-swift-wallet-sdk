@@ -1,0 +1,13 @@
+[package]
+name = "libzcashlc"
+version = "2.7.0-rc.3"
+edition = "2024"
+rust-version = "1.90"
+
+[dependencies]
+orchard = { version = "0.15" }
+pasta_curves = "0.5"
+ff = "0.13"
+
+[build-dependencies]
+version_check = "0.9"

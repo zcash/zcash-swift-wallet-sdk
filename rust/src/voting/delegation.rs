@@ -1,5 +1,5 @@
-use std::ffi::CString;
 use std::panic::AssertUnwindSafe;
+use std::sync::Arc;
 
 use anyhow::anyhow;
 use ff::PrimeField;
@@ -11,167 +11,53 @@ use crate::{unwrap_exc_or, unwrap_exc_or_null};
 
 use super::constants::{
     CANONICAL_FIELD_LEN, PIR_NULLIFIER_BOUNDS_LEN, PIR_NULLIFIER_LEN, PIR_PATH_ELEMENT_COUNT,
-    PIR_PATH_LEN, PIR_ROOT_LEN,
+    PIR_PATH_LEN, PIR_ROOT_LEN, SEED_FINGERPRINT_LEN,
 };
 use super::db::VotingDatabaseHandle;
 use super::ffi_types::{FfiBundleSetupResult, FfiVotingHotkey};
-use super::helpers::{bytes_from_ptr, json_to_boxed_slice, open_wallet_db, str_from_ptr};
+use super::helpers::{
+    bytes_from_ptr, json_to_boxed_slice, open_wallet_db, str_from_ptr, voting_hotkey_to_ffi,
+    voting_network,
+};
 use super::json::{
-    JsonDelegationPirPrecomputeResult, JsonDelegationProofResult, JsonDelegationSubmission,
-    JsonNoteInfo, JsonWitnessData,
+    JsonDelegationPirPrecomputeResult, JsonDelegationProofResult, JsonNoteInfo, JsonVotingPczt,
+    JsonWitnessData,
 };
 use super::progress::ProgressBridge;
-
-/// Wallet-derived delegation inputs assembled for one FFI call.
-///
-/// zcash_voting 2.0 derives delegation keys and selects snapshot-eligible
-/// notes from the wallet database itself (the crate owns note selection and
-/// key material shaping), so the delegation lanes take the wallet DB path and
-/// account UUID instead of caller-supplied note/key blobs.
-unsafe fn gather_ffi_delegation_inputs(
-    handle: &VotingDatabaseHandle,
-    round_id: &str,
-    wallet_db_data: *const u8,
-    wallet_db_data_len: usize,
-    account_uuid: *const u8,
-    account_uuid_len: usize,
-    hotkey_secret: *const u8,
-    hotkey_secret_len: usize,
-    round_name: &str,
-) -> anyhow::Result<voting::selection::DelegationWalletInputs> {
-    let account_uuid_str = unsafe { str_from_ptr(account_uuid, account_uuid_len) }?;
-    let secret = unsafe { bytes_from_ptr(hotkey_secret, hotkey_secret_len) }?;
-    let hotkey = voting::types::VotingHotkey::from_stored_secret(secret, handle.network)
-        .map_err(|e| anyhow!("invalid voting hotkey material: {}", e))?;
-
-    let state = handle
-        .db
-        .get_round_state(round_id)
-        .map_err(|e| anyhow!("round not found: {}", e))?;
-    let anchor_tree_state_bytes = voting::storage::queries::load_tree_state(
-        &handle.db.conn(),
-        round_id,
-        &handle.db.wallet_id(),
-    )
-    .map_err(|e| {
-        anyhow!("no tree state stored for round {round_id} — call store_tree_state first ({e})")
-    })?;
-
-    use zcash_client_backend::data_api::WalletRead as _;
-    let network_params = crate::parse_network(handle.network_id)?;
-    let wallet_db =
-        unsafe { crate::wallet_db(wallet_db_data, wallet_db_data_len, network_params) }?;
-    let scanned_height = match wallet_db
-        .get_wallet_summary(zcash_client_backend::data_api::wallet::ConfirmationsPolicy::default())
-        .map_err(|e| anyhow!("wallet summary lookup failed: {}", e))?
-    {
-        Some(summary) => u32::from(summary.fully_scanned_height()) as u64,
-        None => 0,
-    };
-
-    voting::selection::gather_delegation_wallet_inputs(
-        voting::selection::GatherDelegationWalletParams {
-            wallet_db: &wallet_db,
-            account_uuid: &account_uuid_str,
-            voting_hotkey: &hotkey,
-            snapshot_height: state.snapshot_height,
-            scanned_height,
-            anchor_tree_state_bytes,
-            resolved_round_name: round_name.to_string(),
-        },
-    )
-    .map_err(|e| anyhow!("failed to gather delegation wallet inputs: {}", e))
-}
-
-/// JSON shape for the delegation PCZT setup result (zcash_voting 2.0).
-#[derive(serde::Serialize)]
-struct JsonDelegationSetup {
-    pczt_bytes: Vec<u8>,
-    pczt_sighash: Vec<u8>,
-    rk: Vec<u8>,
-    action_index: u32,
-    action_bytes: Vec<u8>,
-}
-
-/// Address-encoding constants for a voting network (regtest reuses testnet
-/// HRPs, matching the wallet-side custom-network convention).
-fn hotkey_network_params(network: voting::types::Network) -> zcash_protocol::consensus::Network {
-    match network {
-        voting::types::Network::Mainnet => zcash_protocol::consensus::Network::MainNetwork,
-        voting::types::Network::Testnet | voting::types::Network::Regtest => {
-            zcash_protocol::consensus::Network::TestNetwork
-        }
-    }
-}
 
 // =============================================================================
 // VotingDatabase methods — Delegation proof
 // =============================================================================
 
-/// Generate or reconstruct an app-owned voting hotkey.
+/// Generate a new voting hotkey for `network_id`.
 ///
-/// zcash_voting 2.0 uses app-owned hotkeys. Pass an empty `stored_secret` to
-/// generate a fresh random hotkey, or a previously stored 64-byte secret to
-/// deterministically reconstruct the same hotkey; any other length is an
-/// error. The caller must persist `secret_key` (the stored secret) — it is
-/// the only way to reconstruct the hotkey.
+/// Voting hotkeys are app-owned random values, not wallet-seed derivations, so
+/// the caller must persist the returned `stored_secret`. It cannot be recovered
+/// from the wallet seed, and losing it forfeits the voting ability delegated to
+/// that hotkey. Every other field is derived from the secret and need not be
+/// stored.
 ///
 /// Returns a pointer to `FfiVotingHotkey` on success, or null on error.
 /// Call `zcashlc_voting_free_hotkey` to free the returned pointer.
 ///
 /// # Safety
 ///
-/// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
+/// No pointer parameters.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_voting_generate_hotkey(
-    db: *mut VotingDatabaseHandle,
-    stored_secret: *const u8,
-    stored_secret_len: usize,
-) -> *mut FfiVotingHotkey {
-    let db = AssertUnwindSafe(db);
+pub unsafe extern "C" fn zcashlc_voting_generate_hotkey(network_id: u32) -> *mut FfiVotingHotkey {
     let res = catch_panic(|| {
-        let handle =
-            unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
-        let stored_secret = unsafe { bytes_from_ptr(stored_secret, stored_secret_len) }?;
+        let network = voting_network(network_id)?;
+        let hotkey = voting::hotkey::generate_random_voting_hotkey(network)
+            .map_err(|e| anyhow!("generate_random_voting_hotkey failed: {}", e))?;
 
-        let hotkey = if stored_secret.is_empty() {
-            voting::hotkey::generate_random_voting_hotkey(handle.network)
-                .map_err(|e| anyhow!("generate_hotkey failed: {}", e))?
-        } else {
-            voting::types::VotingHotkey::from_stored_secret(stored_secret, handle.network)
-                .map_err(|e| anyhow!("invalid voting hotkey material: {}", e))?
-        };
-
-        let orchard_addr = orchard::Address::from_raw_address_bytes(hotkey.raw_orchard_address());
-        let orchard_addr = Option::from(orchard_addr)
-            .ok_or_else(|| anyhow!("generated hotkey address bytes are invalid"))?;
-        let ua =
-            zcash_keys::address::UnifiedAddress::from_receivers(Some(orchard_addr), None, None)
-                .ok_or_else(|| anyhow!("failed to assemble hotkey unified address"))?;
-        let encoded =
-            zcash_keys::address::Address::from(ua).encode(&hotkey_network_params(handle.network));
-
-        let (sk_ptr, sk_len) = crate::ptr_from_vec(hotkey.stored_secret().to_vec());
-        let (pk_ptr, pk_len) = crate::ptr_from_vec(hotkey.raw_orchard_address().to_vec());
-        let address = CString::new(encoded)
-            .map_err(|e| anyhow!("invalid hotkey address string: {}", e))?
-            .into_raw();
-        Ok(Box::into_raw(Box::new(FfiVotingHotkey {
-            secret_key: sk_ptr,
-            secret_key_len: sk_len,
-            public_key: pk_ptr,
-            public_key_len: pk_len,
-            address,
-        })))
+        Ok(Box::into_raw(Box::new(voting_hotkey_to_ffi(hotkey)?)))
     });
     unwrap_exc_or_null(res)
 }
 
 /// Set up note bundles for a voting round.
 ///
-/// `notes_json` is a JSON-encoded `Vec<NoteInfo>`. Bundle packing follows the
-/// crate-owned policy (denomination-aware thresholds), and re-running with the
-/// same notes is idempotent.
+/// `notes_json` is a JSON-encoded `Vec<NoteInfo>`.
 ///
 /// Returns a pointer to `FfiBundleSetupResult` on success, or null on error.
 /// Call `zcashlc_voting_free_bundle_setup_result` to free the returned pointer.
@@ -198,16 +84,13 @@ pub unsafe extern "C" fn zcashlc_voting_setup_bundles(
 
         let layout = handle
             .db
-            .ensure_bundles_with_skipped_suffix_with_policy(
-                &round_id_str,
-                &core_notes,
-                voting::BundlePolicy::default(),
-            )
-            .map_err(|e| anyhow!("setup_bundles failed: {}", e))?;
+            .ensure_bundles(&round_id_str, &core_notes)
+            .map_err(|e| anyhow!("ensure_bundles failed: {}", e))?;
 
         Ok(Box::into_raw(Box::new(FfiBundleSetupResult {
             bundle_count: layout.bundle_count,
             eligible_weight: layout.eligible_weight,
+            dropped_count: layout.dropped_count,
         })))
     });
     unwrap_exc_or_null(res)
@@ -241,31 +124,38 @@ pub unsafe extern "C" fn zcashlc_voting_get_bundle_count(
     unwrap_exc_or(res, -1)
 }
 
-/// Build the governance PCZT for one delegation bundle.
+/// Build a voting PCZT for a bundle.
 ///
-/// zcash_voting 2.0 selects snapshot-eligible notes and shapes key material
-/// from the wallet database itself, so this takes the wallet DB path and
-/// account UUID plus the app-owned hotkey stored secret.
+/// `notes_json` is a JSON-encoded `Vec<NoteInfo>`.
 ///
-/// Returns JSON-encoded `JsonDelegationSetup` as `*mut FfiBoxedSlice`, or null on error.
+/// `hotkey_stored_secret` is the material returned as
+/// `FfiVotingHotkey::stored_secret`. The hotkey's Orchard address, address index
+/// and network are derived from it: `zcash_voting` only exposes a
+/// `VotingHotkey`-based constructor for delegation keys, so a raw hotkey address
+/// cannot be supplied directly.
+///
+/// Returns JSON-encoded `VotingPczt` as `*mut FfiBoxedSlice`, or null on error.
 ///
 /// # Safety
 ///
 /// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
-/// - For every `(ptr, len)` byte argument, if `len > 0` then `ptr` must be
-///   non-null and valid for reads for `len` bytes; if `len == 0`, `ptr` is ignored.
+/// - All pointer/length pairs must be valid.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_build_pczt(
     db: *mut VotingDatabaseHandle,
     round_id: *const u8,
     round_id_len: usize,
     bundle_index: u32,
-    wallet_db_data: *const u8,
-    wallet_db_data_len: usize,
-    account_uuid: *const u8,
-    account_uuid_len: usize,
-    hotkey_secret: *const u8,
-    hotkey_secret_len: usize,
+    notes_json: *const u8,
+    notes_json_len: usize,
+    fvk_bytes: *const u8,
+    fvk_bytes_len: usize,
+    hotkey_stored_secret: *const u8,
+    hotkey_stored_secret_len: usize,
+    consensus_branch_id: u32,
+    seed_fingerprint: *const u8,
+    seed_fingerprint_len: usize,
+    account_index: u32,
     round_name: *const u8,
     round_name_len: usize,
 ) -> *mut crate::ffi::BoxedSlice {
@@ -274,49 +164,46 @@ pub unsafe extern "C" fn zcashlc_voting_build_pczt(
         let handle =
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
         let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
+        let notes_bytes = unsafe { bytes_from_ptr(notes_json, notes_json_len) }?;
+        let json_notes: Vec<JsonNoteInfo> = serde_json::from_slice(notes_bytes)?;
+        let core_notes: Vec<voting::NoteInfo> = json_notes.into_iter().map(Into::into).collect();
+        let fvk = unsafe { bytes_from_ptr(fvk_bytes, fvk_bytes_len) }?;
+        let hotkey_secret =
+            unsafe { bytes_from_ptr(hotkey_stored_secret, hotkey_stored_secret_len) }?;
+        let seed_fp_bytes = unsafe { bytes_from_ptr(seed_fingerprint, seed_fingerprint_len) }?;
+        let seed_fp_32: [u8; SEED_FINGERPRINT_LEN] = seed_fp_bytes.try_into().map_err(|_| {
+            anyhow!(
+                "seed_fingerprint must be {} bytes, got {}",
+                SEED_FINGERPRINT_LEN,
+                seed_fp_bytes.len()
+            )
+        })?;
         let round_name_str = unsafe { str_from_ptr(round_name, round_name_len) }?;
 
-        let inputs = unsafe {
-            gather_ffi_delegation_inputs(
-                handle,
-                &round_id_str,
-                wallet_db_data,
-                wallet_db_data_len,
-                account_uuid,
-                account_uuid_len,
-                hotkey_secret,
-                hotkey_secret_len,
-                &round_name_str,
-            )
-        }?;
-        let state = handle
+        let hotkey = voting::VotingHotkey::from_stored_secret(hotkey_secret, handle.network)
+            .map_err(|e| anyhow!("failed to reconstruct voting hotkey: {}", e))?;
+        let keys = voting::delegate::DelegationKeys::with_voting_hotkey(
+            fvk.to_vec(),
+            &hotkey,
+            seed_fp_32,
+            account_index,
+            round_name_str,
+        )
+        .map_err(|e| anyhow!("failed to build delegation keys: {}", e))?;
+
+        let pczt = handle
             .db
-            .get_round_state(&round_id_str)
-            .map_err(|e| anyhow!("round not found: {}", e))?;
-        let branch_ids = voting::delegate::LightwalletdBranchIdProvider::for_height(
-            handle.network,
-            state.snapshot_height,
-        )
-        .map_err(|e| anyhow!("failed to resolve consensus branch id: {}", e))?;
+            .build_governance_pczt(
+                &round_id_str,
+                bundle_index,
+                &core_notes,
+                &keys,
+                consensus_branch_id,
+            )
+            .map_err(|e| anyhow!("build_voting_pczt failed: {}", e))?;
 
-        let setup = voting::delegate::setup(
-            &handle.db,
-            &round_id_str,
-            bundle_index,
-            &inputs.round_note_infos,
-            &inputs.delegation_keys,
-            &branch_ids,
-            &voting::NoopProgressReporter,
-        )
-        .map_err(|e| anyhow!("build_pczt failed: {}", e))?;
-
-        json_to_boxed_slice(&JsonDelegationSetup {
-            pczt_bytes: setup.pczt_bytes,
-            pczt_sighash: setup.pczt_sighash.to_vec(),
-            rk: setup.rk.to_vec(),
-            action_index: setup.action_index as u32,
-            action_bytes: setup.action_bytes,
-        })
+        let json_pczt: JsonVotingPczt = pczt.into();
+        json_to_boxed_slice(&json_pczt)
     });
     unwrap_exc_or_null(res)
 }
@@ -354,6 +241,12 @@ pub unsafe extern "C" fn zcashlc_voting_store_tree_state(
 
 /// Generate Merkle inclusion witnesses for the notes in a bundle and cache
 /// them in the voting DB.
+///
+/// The witnesses come from the **Ironwood** note-commitment tree. Voting notes
+/// live in the Ironwood pool and a round's `nc_root` is that tree's root at the
+/// snapshot height; `zcash_voting` picks the pool, validates the cached
+/// `TreeState` against the round, and generates the paths. This function only
+/// marshals.
 ///
 /// `notes_json` is a JSON-encoded `Vec<NoteInfo>`.
 ///
@@ -397,12 +290,22 @@ pub unsafe extern "C" fn zcashlc_voting_generate_note_witnesses(
         };
         let core_notes: Vec<voting::NoteInfo> = json_notes.into_iter().map(Into::into).collect();
 
-        // zcash_voting 2.0 owns shielded-protocol-aware witness generation: it
-        // loads the cached round snapshot tree state, resolves the Ironwood
-        // pool at the round height, reads the Ironwood note-commitment tree
-        // (not Orchard), generates historical Ironwood witnesses, and validates
-        // the frontier root against the round `nc_root`. Persist the result for
-        // the delegation proof.
+        // `zcash_voting` owns shielded-protocol-aware witness generation and has
+        // since 2.0. It loads this round's cached `TreeState` and stored params,
+        // checks the wallet DB's network against the round's, resolves the
+        // shielded protocol for the snapshot height (Ironwood — the crate
+        // supports no other, and rejects a pre-NU6.3 snapshot outright), reads
+        // the **Ironwood** note-commitment tree out of the cached `TreeState`,
+        // binds that frontier to the round (same height, same `nc_root` — the
+        // check this SDK used to hand-roll), and generates the historical
+        // Ironwood Merkle paths from the wallet's own shard data.
+        //
+        // Do not re-hand-roll this against the Orchard tree. Voting notes live
+        // in the Ironwood pool — `notes.rs` already selects them with
+        // `get_unspent_ironwood_notes_at_historical_height` — so an Orchard root
+        // can never equal a round's `nc_root`, on any chain, against any server.
+        // That hand-rolled version is what `8a40d1f9` deleted and what the
+        // `eea6cde8` merge silently brought back.
         let witnesses = voting::witness::generate_note_witnesses(
             &handle.db,
             &round_id_str,
@@ -411,6 +314,7 @@ pub unsafe extern "C" fn zcashlc_voting_generate_note_witnesses(
         )
         .map_err(|e| anyhow!("failed to generate voting note witnesses: {}", e))?;
 
+        // Verify and cache in voting DB
         handle
             .db
             .store_witnesses(&round_id_str, bundle_index, &witnesses)
@@ -422,16 +326,38 @@ pub unsafe extern "C" fn zcashlc_voting_generate_note_witnesses(
     unwrap_exc_or_null(res)
 }
 
-/// Precompute PIR-backed nullifier data for one delegation bundle.
+// Keep PIR client construction at the SDK boundary so zcash_voting can accept
+// an injected transport. Today we use direct Hyper/Rustls. In the future this will be the
+// single place to add a Tor-backed transport based on SDK configuration.
+//
+// The layout comes from the round's resolved dynamic config and is passed through
+// unchanged: `connect_pir_blocking` performs the config/server layout handshake and
+// fails closed before any private query when the server disagrees.
+fn connect_pir_client(
+    pir_url: &str,
+    pir_layout: voting::config::PirLayout,
+) -> anyhow::Result<voting::PirClientBlocking> {
+    voting::connect_pir_blocking(pir_layout, pir_url, Arc::new(voting::HyperTransport::new()))
+        .map_err(|e| anyhow!("connect to PIR server failed: {}", e))
+}
+
+/// Precompute and cache delegation PIR IMT proofs for the delegation ZKP.
 ///
-/// Witnesses must already be stored (generate_note_witnesses). Returns
-/// JSON-encoded `JsonDelegationPirPrecomputeResult`, or null on error.
+/// `pir_depth`, `tier0_layers`, `tier1_layers`, and `poly_len` describe the round's
+/// PIR layout from the resolved dynamic voting config. `poly_len` is the YPIR RLWE
+/// polynomial degree and must be 2048 or 4096; any other value (including the
+/// 0 sentinel of an unknown layout) fails closed before any network I/O.
+///
+/// Returns JSON-encoded `DelegationPirPrecomputeResult` as `*mut FfiBoxedSlice`,
+/// or null on error.
 ///
 /// # Safety
 ///
 /// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
-/// - For every `(ptr, len)` byte argument, if `len > 0` then `ptr` must be
-///   non-null and valid for reads for `len` bytes; if `len == 0`, `ptr` is ignored.
+/// - For every `(ptr, len)` byte argument (`round_id`, `notes_json`, `pir_server_url`):
+///   if `len > 0` then `ptr` must be non-null and valid for reads for `len` bytes; if
+///   `len == 0`, `ptr` is ignored. An empty `notes_json` is treated as the empty notes
+///   list (JSON is not parsed).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_precompute_delegation_pir(
     db: *mut VotingDatabaseHandle,
@@ -442,13 +368,16 @@ pub unsafe extern "C" fn zcashlc_voting_precompute_delegation_pir(
     notes_json_len: usize,
     pir_server_url: *const u8,
     pir_server_url_len: usize,
-    network_id: u32,
+    pir_depth: u32,
+    tier0_layers: u32,
+    tier1_layers: u32,
+    poly_len: u32,
 ) -> *mut crate::ffi::BoxedSlice {
     let db = AssertUnwindSafe(db);
     let res = catch_panic(|| {
         let handle =
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
-        let _ = network_id;
+        crate::parse_network(handle.network_id)?;
         let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
         let notes_bytes = unsafe { bytes_from_ptr(notes_json, notes_json_len) }?;
         let json_notes: Vec<JsonNoteInfo> = if notes_bytes.is_empty() {
@@ -458,66 +387,76 @@ pub unsafe extern "C" fn zcashlc_voting_precompute_delegation_pir(
         };
         let core_notes: Vec<voting::NoteInfo> = json_notes.into_iter().map(Into::into).collect();
         let pir_url = unsafe { str_from_ptr(pir_server_url, pir_server_url_len) }?;
+        let pir_layout = voting::config::PirLayout {
+            pir_depth,
+            tier0_layers,
+            tier1_layers,
+            poly_len,
+        };
+        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
 
-        let pir_client = voting::PirClientBlocking::with_transport(
-            &pir_url,
-            std::sync::Arc::new(voting::HyperTransport::new()),
-        )
-        .map_err(|e| anyhow!("failed to connect to PIR server: {}", e))?;
-
-        handle
+        let result = handle
             .db
-            .ensure_padded_secrets(&round_id_str, bundle_index, &core_notes)
-            .map_err(|e| anyhow!("failed to initialize padded-note secrets: {}", e))?;
-        let report = voting::precompute::delegation_pir(
-            &handle.db,
-            &round_id_str,
-            bundle_index,
-            &core_notes,
-            &pir_client,
-            handle.network,
-        )
-        .map_err(|e| anyhow!("precompute_delegation_pir failed: {}", e))?;
+            .precompute_delegation_pir(
+                &round_id_str,
+                bundle_index,
+                &core_notes,
+                &pir_client,
+                handle.network,
+            )
+            .map_err(|e| anyhow!("precompute_delegation_pir failed: {}", e))?;
 
-        json_to_boxed_slice(&JsonDelegationPirPrecomputeResult {
-            cached_count: report.cached,
-            fetched_count: report.fetched,
-        })
+        let json_result: JsonDelegationPirPrecomputeResult = result.into();
+        json_to_boxed_slice(&json_result)
     });
     unwrap_exc_or_null(res)
 }
 
-/// Generate and persist the delegation proof for one bundle.
+/// Build and prove the real delegation ZKP. Long-running.
 ///
-/// Witnesses and PIR precompute data must already be present. zcash_voting
-/// 2.0 shapes key material from the wallet database, so this takes the wallet
-/// DB path, account UUID, and app-owned hotkey stored secret.
+/// `pir_depth`, `tier0_layers`, `tier1_layers`, and `poly_len` describe the round's
+/// PIR layout from the resolved dynamic voting config. `poly_len` is the YPIR RLWE
+/// polynomial degree and must be 2048 or 4096; any other value (including the
+/// 0 sentinel of an unknown layout) fails closed before any network I/O.
 ///
-/// Returns JSON-encoded `JsonDelegationProofResult`, or null on error.
+/// Returns JSON-encoded `DelegationProofResult` as `*mut FfiBoxedSlice`, or null on error.
 ///
 /// # Safety
 ///
 /// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
-/// - For every `(ptr, len)` byte argument, if `len > 0` then `ptr` must be
-///   non-null and valid for reads for `len` bytes; if `len == 0`, `ptr` is ignored.
-/// - `progress_callback`/`progress_context` follow the same contract as
-///   `zcashlc_voting_build_vote_commitment`.
+/// - `progress_callback` must be a valid function pointer, or null to skip progress.
+///   If provided, it must remain callable until this function returns. It must be
+///   thread-safe and reentrant; callers must not assume it runs on the main thread,
+///   because progress may be reported from proving worker threads.
+/// - `progress_context` is passed to `progress_callback` unchanged. If non-null,
+///   it must point to state that remains valid until this function returns. The
+///   callback must not store `progress_context` or use it after this function
+///   has returned.
+/// - The callback must not call back into this voting database handle or perform
+///   work that can deadlock or reenter the active proof operation.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
     db: *mut VotingDatabaseHandle,
     round_id: *const u8,
     round_id_len: usize,
     bundle_index: u32,
-    wallet_db_data: *const u8,
-    wallet_db_data_len: usize,
-    account_uuid: *const u8,
-    account_uuid_len: usize,
-    hotkey_secret: *const u8,
-    hotkey_secret_len: usize,
+    notes_json: *const u8,
+    notes_json_len: usize,
+    fvk_bytes: *const u8,
+    fvk_bytes_len: usize,
+    hotkey_stored_secret: *const u8,
+    hotkey_stored_secret_len: usize,
+    seed_fingerprint: *const u8,
+    seed_fingerprint_len: usize,
+    account_index: u32,
     round_name: *const u8,
     round_name_len: usize,
     pir_server_url: *const u8,
     pir_server_url_len: usize,
+    pir_depth: u32,
+    tier0_layers: u32,
+    tier1_layers: u32,
+    poly_len: u32,
     progress_callback: Option<unsafe extern "C" fn(f64, *mut std::ffi::c_void)>,
     progress_context: *mut std::ffi::c_void,
 ) -> *mut crate::ffi::BoxedSlice {
@@ -526,30 +465,49 @@ pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
     let res = catch_panic(|| {
         let handle =
             unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
+        crate::parse_network(handle.network_id)?;
         let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
+        let notes_bytes = unsafe { bytes_from_ptr(notes_json, notes_json_len) }?;
+        let json_notes: Vec<JsonNoteInfo> = serde_json::from_slice(notes_bytes)?;
+        let core_notes: Vec<voting::NoteInfo> = json_notes.into_iter().map(Into::into).collect();
+        let fvk = unsafe { bytes_from_ptr(fvk_bytes, fvk_bytes_len) }?;
+        let hotkey_secret =
+            unsafe { bytes_from_ptr(hotkey_stored_secret, hotkey_stored_secret_len) }?;
+        let seed_fp_bytes = unsafe { bytes_from_ptr(seed_fingerprint, seed_fingerprint_len) }?;
+        let seed_fp_32: [u8; SEED_FINGERPRINT_LEN] = seed_fp_bytes.try_into().map_err(|_| {
+            anyhow!(
+                "seed_fingerprint must be {} bytes, got {}",
+                SEED_FINGERPRINT_LEN,
+                seed_fp_bytes.len()
+            )
+        })?;
         let round_name_str = unsafe { str_from_ptr(round_name, round_name_len) }?;
         let pir_url = unsafe { str_from_ptr(pir_server_url, pir_server_url_len) }?;
+        let pir_layout = voting::config::PirLayout {
+            pir_depth,
+            tier0_layers,
+            tier1_layers,
+            poly_len,
+        };
+        let pir_client = connect_pir_client(&pir_url, pir_layout)?;
 
-        let inputs = unsafe {
-            gather_ffi_delegation_inputs(
-                handle,
-                &round_id_str,
-                wallet_db_data,
-                wallet_db_data_len,
-                account_uuid,
-                account_uuid_len,
-                hotkey_secret,
-                hotkey_secret_len,
-                &round_name_str,
-            )
-        }?;
-        let pir_client = voting::PirClientBlocking::with_transport(
-            &pir_url,
-            std::sync::Arc::new(voting::HyperTransport::new()),
+        let hotkey = voting::VotingHotkey::from_stored_secret(hotkey_secret, handle.network)
+            .map_err(|e| anyhow!("failed to reconstruct voting hotkey: {}", e))?;
+        let keys = voting::delegate::DelegationKeys::with_voting_hotkey(
+            fvk.to_vec(),
+            &hotkey,
+            seed_fp_32,
+            account_index,
+            round_name_str,
         )
-        .map_err(|e| anyhow!("failed to connect to PIR server: {}", e))?;
+        .map_err(|e| anyhow!("failed to build delegation keys: {}", e))?;
 
-        let reporter: Box<dyn voting::types::DelegationProgressReporter> = match progress_callback {
+        // Boxed as the staged reporter that `build_and_prove_delegation` takes.
+        // `ProgressBridge` and `NoopProgressReporter` both satisfy it through
+        // `zcash_voting`'s blanket impl over `ProgressReporter`; a
+        // `dyn ProgressReporter` object would not, since trait objects do not
+        // coerce to one another.
+        let stages: Box<dyn voting::DelegationProgressReporter> = match progress_callback {
             Some(cb) => Box::new(ProgressBridge {
                 callback: cb,
                 context: *progress_context,
@@ -557,131 +515,44 @@ pub unsafe extern "C" fn zcashlc_voting_build_and_prove_delegation(
             None => Box::new(voting::NoopProgressReporter),
         };
 
-        let proof = handle
+        let result = handle
             .db
             .build_and_prove_delegation(
                 &round_id_str,
                 bundle_index,
-                &inputs.round_note_infos,
-                &inputs.delegation_keys,
+                &core_notes,
+                &keys,
                 &pir_client,
-                reporter.as_ref(),
+                stages.as_ref(),
             )
             .map_err(|e| anyhow!("build_and_prove_delegation failed: {}", e))?;
 
-        let json_proof: JsonDelegationProofResult = proof.into();
-        json_to_boxed_slice(&json_proof)
+        let json_result: JsonDelegationProofResult = result.into();
+        json_to_boxed_slice(&json_result)
     });
     unwrap_exc_or_null(res)
 }
 
-/// Assemble chain-ready delegation submission fields, signing locally.
+/// Get the delegation submission payload using an externally produced signature.
 ///
-/// The wallet seed never enters zcash_voting: the crate returns a signing
-/// request (sighash + alpha + routing fingerprint), the SpendAuth signature is
-/// produced here from the seed, and the signed submission is assembled from
-/// stored proof state.
+/// This replaces both `zcashlc_voting_get_delegation_submission_with_keystone_sig`
+/// and the seed-derived `zcashlc_voting_get_delegation_submission`. `zcash_voting`
+/// no longer derives account keys or signs on the caller's behalf, so the only
+/// remaining path takes the SpendAuth signature and the ZIP-244 sighash that the
+/// wallet signer produced — whether that signer is a Keystone device or the
+/// wallet itself. The dropped seed-derived entry point therefore has no
+/// replacement, and `sender_seed`, `network_id` and `account_index` are gone.
 ///
-/// Returns JSON-encoded `JsonDelegationSubmission`, or null on error.
-///
-/// # Safety
-///
-/// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
-/// - For every `(ptr, len)` byte argument, if `len > 0` then `ptr` must be
-///   non-null and valid for reads for `len` bytes; if `len == 0`, `ptr` is ignored.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_voting_get_delegation_submission(
-    db: *mut VotingDatabaseHandle,
-    round_id: *const u8,
-    round_id_len: usize,
-    bundle_index: u32,
-    wallet_db_data: *const u8,
-    wallet_db_data_len: usize,
-    account_uuid: *const u8,
-    account_uuid_len: usize,
-    hotkey_secret: *const u8,
-    hotkey_secret_len: usize,
-    round_name: *const u8,
-    round_name_len: usize,
-    sender_seed: *const u8,
-    sender_seed_len: usize,
-) -> *mut crate::ffi::BoxedSlice {
-    let db = AssertUnwindSafe(db);
-    let res = catch_panic(|| {
-        let handle =
-            unsafe { db.as_ref() }.ok_or_else(|| anyhow!("VotingDatabaseHandle is null"))?;
-        let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
-        let round_name_str = unsafe { str_from_ptr(round_name, round_name_len) }?;
-        let seed = unsafe { bytes_from_ptr(sender_seed, sender_seed_len) }?;
-        if seed.len() < 32 {
-            return Err(anyhow!("sender_seed must be at least 32 bytes"));
-        }
-
-        let inputs = unsafe {
-            gather_ffi_delegation_inputs(
-                handle,
-                &round_id_str,
-                wallet_db_data,
-                wallet_db_data_len,
-                account_uuid,
-                account_uuid_len,
-                hotkey_secret,
-                hotkey_secret_len,
-                &round_name_str,
-            )
-        }?;
-        let request = voting::delegate::signing_request(
-            &handle.db,
-            &round_id_str,
-            bundle_index,
-            &inputs.delegation_keys,
-        )
-        .map_err(|e| anyhow!("failed to load delegation signing request: {}", e))?;
-
-        let fingerprint = zip32::fingerprint::SeedFingerprint::from_seed(seed)
-            .ok_or_else(|| anyhow!("sender seed length is not valid for ZIP-32"))?;
-        if fingerprint.to_bytes() != request.seed_fingerprint {
-            return Err(anyhow!(
-                "sender seed fingerprint does not match the delegation signing request"
-            ));
-        }
-        let account = zip32::AccountId::try_from(request.account_index)
-            .map_err(|_| anyhow!("invalid account_index {}", request.account_index))?;
-        let usk = zcash_keys::keys::UnifiedSpendingKey::from_seed(&request.network, seed, account)
-            .map_err(|e| anyhow!("failed to derive account spending key: {}", e))?;
-        let ask = orchard::keys::SpendAuthorizingKey::from(usk.orchard());
-        let alpha = Option::<pasta_curves::pallas::Scalar>::from(
-            pasta_curves::pallas::Scalar::from_repr(request.alpha),
-        )
-        .ok_or_else(|| anyhow!("delegation alpha is not a valid Pallas scalar"))?;
-        let rsk = ask.randomize(&alpha);
-        let sig: [u8; 64] = (&rsk.sign(rand::rngs::OsRng, &request.sighash)).into();
-
-        let data = handle
-            .db
-            .get_delegation_submission_with_signature(
-                &round_id_str,
-                bundle_index,
-                &sig,
-                &request.sighash,
-            )
-            .map_err(|e| anyhow!("get_delegation_submission failed: {}", e))?;
-
-        let json_sub: JsonDelegationSubmission = data.into();
-        json_to_boxed_slice(&json_sub)
-    });
-    unwrap_exc_or_null(res)
-}
-
-/// Get the delegation submission payload using a Keystone-provided signature.
-///
-/// Returns JSON-encoded `DelegationSubmission` as `*mut FfiBoxedSlice`, or null on error.
+/// Returns `zcash_voting`'s own `wire::DelegationSubmissionWire` JSON as
+/// `*mut FfiBoxedSlice`, or null on error. The crate serializes it, so the
+/// field names, the base64 encoding and the Ironwood `tx1_effects` blob are
+/// the crate's and are never reshaped here.
 ///
 /// # Safety
 ///
 /// - `db` must be a valid, non-null `VotingDatabaseHandle` pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zcashlc_voting_get_delegation_submission_with_keystone_sig(
+pub unsafe extern "C" fn zcashlc_voting_get_delegation_submission_with_signature(
     db: *mut VotingDatabaseHandle,
     round_id: *const u8,
     round_id_len: usize,
@@ -698,25 +569,18 @@ pub unsafe extern "C" fn zcashlc_voting_get_delegation_submission_with_keystone_
         let round_id_str = unsafe { str_from_ptr(round_id, round_id_len) }?;
         let sig_bytes = unsafe { bytes_from_ptr(sig, sig_len) }?;
         let sighash_bytes = unsafe { bytes_from_ptr(sighash, sighash_len) }?;
-        let sig_arr: [u8; 64] = sig_bytes
-            .try_into()
-            .map_err(|_| anyhow!("sig must be exactly 64 bytes"))?;
-        let sighash_arr: [u8; 32] = sighash_bytes
-            .try_into()
-            .map_err(|_| anyhow!("sighash must be exactly 32 bytes"))?;
 
-        let data = handle
-            .db
-            .get_delegation_submission_with_signature(
-                &round_id_str,
-                bundle_index,
-                &sig_arr,
-                &sighash_arr,
-            )
-            .map_err(|e| anyhow!("get_delegation_submission_with_keystone_sig failed: {}", e))?;
+        let signer =
+            voting::delegate::DelegationSigner::signature_from_bytes(sig_bytes, sighash_bytes)
+                .map_err(|e| anyhow!("invalid delegation signature material: {}", e))?;
+        let submission =
+            voting::delegate::submission(&handle.db, &round_id_str, bundle_index, signer)
+                .map_err(|e| anyhow!("delegate::submission failed: {}", e))?;
 
-        let json_sub: JsonDelegationSubmission = data.into();
-        json_to_boxed_slice(&json_sub)
+        let wire_json = submission
+            .to_wire_json()
+            .map_err(|e| anyhow!("serialize delegation submission wire JSON failed: {}", e))?;
+        Ok(crate::ffi::BoxedSlice::some(wire_json.into_bytes()))
     });
     unwrap_exc_or_null(res)
 }
@@ -846,31 +710,161 @@ fn parse_path(bytes: &[u8]) -> anyhow::Result<[pallas::Base; PIR_PATH_ELEMENT_CO
 mod tests {
     use super::*;
 
-    use incrementalmerkletree::Position;
-    use incrementalmerkletree::Retention;
+    /// The PIR geometry the live dynamic voting config serves today. These
+    /// tests never reach the PIR handshake — they assert null-handle and
+    /// input-validation rejections — so the values only need to be a
+    /// well-formed layout rather than the sentinel `PirLayout::UNKNOWN`.
+    const PIR_DEPTH: u32 = 19;
+    const TIER0_LAYERS: u32 = 12;
+    const TIER1_LAYERS: u32 = 7;
+    const POLY_LEN: u32 = 4096;
+
+    use super::super::constants::HOTKEY_RAW_ADDRESS_LEN;
+
     use incrementalmerkletree::frontier::{CommitmentTree, Frontier};
+    use incrementalmerkletree::{Position, Retention};
     use orchard::tree::MerkleHashOrchard;
     use prost::Message;
     use zcash_client_backend::data_api::WalletCommitmentTrees;
     use zcash_client_backend::proto::service::TreeState;
-    use zcash_client_sqlite::WalletDb;
-    use zcash_client_sqlite::util::SystemClock;
     use zcash_client_sqlite::wallet::init::WalletMigrator;
+    use zcash_client_sqlite::{WalletDb, util::SystemClock};
     use zcash_primitives::merkle_tree::write_commitment_tree;
-    use zcash_protocol::consensus::BlockHeight;
+    use zcash_protocol::consensus::{BlockHeight, Network};
+    use zcash_voting::storage::queries;
 
     use crate::NETWORK_ID_TESTNET;
-    use crate::voting::db::{VotingDatabaseHandle, zcashlc_voting_db_free, zcashlc_voting_db_open};
+    use crate::ffi::zcashlc_free_boxed_slice;
+    use crate::voting::db::{
+        zcashlc_voting_db_free, zcashlc_voting_db_open, zcashlc_voting_set_wallet_id,
+    };
+    use crate::voting::ffi_types::{
+        zcashlc_voting_free_bundle_setup_result, zcashlc_voting_free_hotkey,
+    };
 
-    /// Testnet NU6.3 activation height — the first height at which the voting
-    /// crate resolves the Ironwood shielded protocol on standard testnet params.
+    // Golden proof generated from zcash_voting's test-only TestImt helper:
+    // https://github.com/valargroup/zcash_voting/blob/zcash_voting-v0.5.3/zcash_voting/src/zkp1.rs#L573-L708
+    // Keeping the fixture as bytes preserves FFI coverage without direct SDK
+    // dev-dependencies on halo2_gadgets or voting-circuits internals.
+    const ROOT: &str = "8a9fa2daeb635fbb006af674259cea05e59d71b9a4773e7433942a14ab031801";
+    const NF_BOUNDS: &str = "000000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002";
+    const LEAF_POS: u32 = 0;
+    const PATH: &str = "f74380b8dc56b22c3d19c3340538fc374793eb8e87708f41ab73175bf12cca36277c1d54340089c6663e1ffa57fb1c4a097e43952509c9386a6522193cdefb2f6b8c704532a36bb22740da9f2831ff31e0645d22787f5c0bce77e3b8d75eaf2843f92cf5b9836a092e0765640c492a4bc84a830621031e28a7857fca2149e833086e0db15e3d4ba38490e912c1fdbe267fedf4a707ccb28d621647ab77e29c307c790e41edc9df0f750fe03799eb7b5ede2c9d833569df4bd43a6b46e2214510f3e160b7b9a3d21fadd88d9316cb35f61fb07404e79b6b019d2fe570d57a8335c17184fa579ec144ca5b7093e61550dd9b9fabfaf9822815509d7df99846d402421cd5367dca2ceaa6610949b3cc3365c8e24eff6b7a430d51f79a42e55be52db6b3d188445aff0456047f951714a26920a0a0d0d02eaef1f802a0ea1394fd1b6c4edd9a05510f352bf6e35450e42c71abba35f1d0853a5c4faaba2861384d1538c031808c91140538602e8454283e9c5cfd47564c267f0815aae2d1dac4842d52f55784572f5a4ddbde392035bbe5619a86ec2db7dbca75ee6081b6dd6ab726f8254dd893ec76266b8b7dc66c70011f958767558a461a6143f0eb100693423819863eeddc19d02343311d5073ce3e931fdb19b745755a7e925818201c6346015827f3a7c07a65bd137df252fbd4379f6ef59601cd19d9c7d89d85634263cc04689b97d136dfa9f2457502788d5407d53d9a04c6d8d8732e7283f9f7b0a3531a728584a001839fc736a82d711de75d4d97b60a1432aa06873dbfada599a73a027fd25eefa6e305a354af3002c07fd283b5bdf1dc00502f0957ef3150ce9e020dfade15e2bfe919f9867c69c69b17c3aae833bf3f71fa6044748daab6779b020535813867047cdf120108e15fcc1257e42709fe6bfdcba82cb43c7be467562211564f02b6c295c7ee794a223f832c9aea620c634cd447c91a102497d1cf7b8a31e97207509990c7253c37300480fd747489cf99cf23d5ab7c7991d1a725714a092f0f453af80b9d7d6828742f9fad934eefea1cd3a281b396e40b3b804e27de3b6fc3b07e82930f463606951a5b0ddcf8b63e4cebf88387f4be2cca1446dd7f3715076183e96f5e260b2008e52fa71f57dbfb958ceaf42d99d54fdf6da7bd343b7ff965aeb8d2753f923ea9d1bf6df39de61763c145550f3748f049ba5a1bb42160420d736b7e3a9f172e40d98e3decff6a759ca472043254f7c639b9fcae001353d53603c500bc474aef03cde95a101a7dde4fccadb8379407e3f479044ef316";
+    const NULLIFIER: &str = "0100000000000000000000000000000000000000000000000000000000000000";
+    const EXPECTED_ROOT: &str = "8a9fa2daeb635fbb006af674259cea05e59d71b9a4773e7433942a14ab031801";
+    const TEST_ROUND_ID: &str = "round1";
+    const TEST_WALLET_ID: &str = "wallet-id";
+
+    /// Testnet NU6.3 activation (`zcash_protocol` TEST_NETWORK: `Nu6_3 =>
+    /// 4_134_000`). `zcash_voting` resolves the shielded protocol from the
+    /// round's snapshot height and rejects anything that is not NU6.3, so these
+    /// fixtures cannot use the pre-Ironwood height-100 rounds they used to.
     const SNAPSHOT_HEIGHT: u64 = 4_134_000;
-    const WALLET_ID: &str = "wallet1";
+    /// A later wallet checkpoint, so witness generation has to use the cached
+    /// historical frontier rather than the wallet's current tree.
+    const LATER_HEIGHT: u32 = 4_134_100;
 
-    const TREE_DEPTH: u8 = orchard::NOTE_COMMITMENT_TREE_DEPTH as u8;
+    /// The Orchard-shaped commitment-tree frontier both pools use. Ironwood is
+    /// Orchard-*shaped* — same hash, same depth — while being a separate pool
+    /// with a separate tree, which is exactly why reading the wrong one compiles
+    /// cleanly and fails only against a live round.
+    type VotingFrontier =
+        Frontier<MerkleHashOrchard, { orchard::NOTE_COMMITMENT_TREE_DEPTH as u8 }>;
 
-    fn round_id() -> String {
-        "42".repeat(32)
+    fn decode_hex<const N: usize>(s: &str) -> [u8; N] {
+        assert_eq!(s.len(), N * 2);
+        let mut out = [0u8; N];
+        for i in 0..N {
+            out[i] = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        out
+    }
+
+    fn validate(
+        proof_root: &[u8; 32],
+        nf_bounds: &[u8; 96],
+        leaf_pos: u32,
+        path: &[u8; PIR_PATH_LEN],
+        nullifier: &[u8; 32],
+        expected_root: &[u8; 32],
+    ) -> i32 {
+        unsafe {
+            zcashlc_voting_validate_pir_proof(
+                proof_root.as_ptr(),
+                nf_bounds.as_ptr(),
+                leaf_pos,
+                path.as_ptr(),
+                nullifier.as_ptr(),
+                expected_root.as_ptr(),
+            )
+        }
+    }
+
+    fn round_params(snapshot_height: u64, nc_root: Vec<u8>) -> voting::VotingRoundParams {
+        voting::VotingRoundParams {
+            vote_round_id: TEST_ROUND_ID.to_string(),
+            snapshot_height,
+            ea_pk: vec![0; 32],
+            nc_root,
+            nullifier_imt_root: vec![0; 32],
+        }
+    }
+
+    fn bytes_to_hex(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        out
+    }
+
+    fn temp_sqlite_path(tag: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "zcashlc_voting_{tag}_{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    fn open_memory_voting_db() -> *mut VotingDatabaseHandle {
+        let path = b":memory:";
+        let db =
+            unsafe { zcashlc_voting_db_open(path.as_ptr(), path.len(), crate::NETWORK_ID_MAINNET) };
+        assert!(!db.is_null(), "open in-memory voting db");
+
+        let wallet = TEST_WALLET_ID.as_bytes();
+        assert_eq!(0, unsafe {
+            zcashlc_voting_set_wallet_id(db, wallet.as_ptr(), wallet.len())
+        });
+
+        db
+    }
+
+    fn init_test_round(db: *mut VotingDatabaseHandle) {
+        let handle = unsafe { db.as_ref() }.expect("db handle");
+        handle
+            .db
+            .init_round(
+                voting::Network::Mainnet,
+                &round_params(100, vec![7; 32]),
+                None,
+            )
+            .expect("insert round");
+    }
+
+    fn insert_test_bundle(db: *mut VotingDatabaseHandle, bundle_index: u32) {
+        let handle = unsafe { db.as_ref() }.expect("db handle");
+        let wallet_id = handle.db.wallet_id();
+        let conn = handle.db.conn();
+        conn.execute(
+            "INSERT INTO bundles (round_id, wallet_id, bundle_index) VALUES (?1, ?2, ?3)",
+            rusqlite::params![TEST_ROUND_ID, wallet_id, i64::from(bundle_index)],
+        )
+        .expect("insert bundle");
     }
 
     fn merkle_hash(tag: u64) -> MerkleHashOrchard {
@@ -878,78 +872,54 @@ mod tests {
         MerkleHashOrchard::from_bytes(&repr).expect("small field element is canonical")
     }
 
-    fn commitment_tree_hex(frontier: &Frontier<MerkleHashOrchard, TREE_DEPTH>) -> String {
+    fn commitment_tree_hex(frontier: &VotingFrontier) -> String {
         let commitment_tree = CommitmentTree::from_frontier(frontier);
         let mut tree_bytes = Vec::new();
         write_commitment_tree(&commitment_tree, &mut tree_bytes)
             .expect("serialize note commitment tree state");
-        hex::encode(tree_bytes)
+        bytes_to_hex(&tree_bytes)
     }
 
-    /// A small frontier distinct from the seeded Ironwood tree, used as the
-    /// orchard side of the cached `TreeState` so the test can prove which pool
-    /// the witness lane reads.
-    fn orchard_decoy_frontier() -> Frontier<MerkleHashOrchard, TREE_DEPTH> {
-        let mut frontier = Frontier::empty();
+    /// A frontier deliberately unlike any Ironwood frontier these tests seed.
+    fn orchard_decoy_frontier() -> VotingFrontier {
+        let mut frontier = VotingFrontier::empty();
         assert!(frontier.append(merkle_hash(77)));
         assert!(frontier.append(merkle_hash(78)));
         frontier
     }
 
-    fn tree_state_from_frontiers(
-        height: u64,
-        orchard_frontier: Option<&Frontier<MerkleHashOrchard, TREE_DEPTH>>,
-        ironwood_frontier: Option<&Frontier<MerkleHashOrchard, TREE_DEPTH>>,
-    ) -> TreeState {
+    /// Build the cached round `TreeState` the FFI will read.
+    ///
+    /// The Ironwood slot carries the voting frontier; the Orchard slot carries a
+    /// **different** decoy tree, on purpose. Voting rounds anchor `nc_root` to
+    /// the Ironwood pool, so any code path that reads the Orchard tree instead
+    /// computes a root that cannot match the round, and every witness test in
+    /// this module fails closed. That is precisely the regression `8a40d1f9`
+    /// fixed and the `eea6cde8` merge lost — keep the decoy.
+    fn tree_state_from_frontier(height: u64, ironwood_frontier: &VotingFrontier) -> TreeState {
         TreeState {
             network: "test".to_string(),
             height,
             hash: String::new(),
             time: 0,
             sapling_tree: String::new(),
-            orchard_tree: orchard_frontier
-                .map(commitment_tree_hex)
-                .unwrap_or_default(),
-            ironwood_tree: ironwood_frontier
-                .map(commitment_tree_hex)
-                .unwrap_or_default(),
+            orchard_tree: commitment_tree_hex(&orchard_decoy_frontier()),
+            ironwood_tree: commitment_tree_hex(ironwood_frontier),
         }
     }
 
-    fn round_params(snapshot_height: u64, nc_root: Vec<u8>) -> voting::VotingRoundParams {
-        voting::VotingRoundParams {
-            vote_round_id: round_id(),
-            snapshot_height,
-            ea_pk: vec![0; 32],
-            nc_root,
-            nullifier_imt_root: vec![1; 32],
-        }
+    fn free(ptr: *mut crate::ffi::BoxedSlice) {
+        unsafe { zcashlc_free_boxed_slice(ptr) };
     }
 
-    fn note(position: u64) -> voting::NoteInfo {
-        voting::NoteInfo {
-            commitment: merkle_hash(position + 1).to_bytes().to_vec(),
-            nullifier: vec![0; 32],
-            value: 1,
-            position,
-            diversifier: vec![0; 11],
-            rho: vec![0; 32],
-            rseed: vec![0; 32],
-            scope: 0,
-            ufvk_str: "ufvk".to_string(),
-        }
-    }
-
-    /// Seed a file-backed wallet DB whose **Ironwood** commitment tree contains
-    /// marked leaves at `marked_positions`, checkpointed at the snapshot height,
-    /// and return the resulting frontier. The connection is dropped before the
-    /// FFI reopens the file.
-    fn seed_ironwood_wallet_db(
-        path: &std::path::Path,
+    /// Seed the wallet's **Ironwood** commitment tree — the pool voting notes
+    /// live in, and the pool `zcash_voting` generates historical witnesses from.
+    fn seed_wallet_ironwood_tree(
+        wallet_path: &std::path::Path,
         snapshot_height: u64,
         later_height: u32,
         marked_positions: &[Position],
-    ) -> Frontier<MerkleHashOrchard, TREE_DEPTH> {
+    ) -> (VotingFrontier, Vec<MerkleHashOrchard>) {
         let max_position = marked_positions
             .iter()
             .map(|position| u64::from(*position))
@@ -957,17 +927,19 @@ mod tests {
             .unwrap_or(2);
         let leaf_count = max_position + 3;
         let leaves = (1u64..=leaf_count).map(merkle_hash).collect::<Vec<_>>();
-        let mut frontier = Frontier::empty();
-        let mut wallet_db = WalletDb::from_connection(
-            rusqlite::Connection::open(path).expect("open wallet db file"),
-            zcash_protocol::consensus::Network::TestNetwork,
+        let mut frontier_tree: VotingFrontier = Frontier::empty();
+
+        let mut wallet_db = WalletDb::for_path(
+            wallet_path,
+            Network::TestNetwork,
             SystemClock,
             rand::rngs::OsRng,
-        );
-
+        )
+        .expect("open wallet db");
         WalletMigrator::new()
             .init_or_migrate(&mut wallet_db)
             .expect("initialize wallet db");
+
         wallet_db
             .with_ironwood_tree_mut(|tree| {
                 for (i, leaf) in leaves.iter().enumerate() {
@@ -980,10 +952,13 @@ mod tests {
                         Retention::Ephemeral
                     };
                     tree.append(*leaf, retention)?;
-                    frontier.append(*leaf);
+                    frontier_tree.append(*leaf);
                 }
+
                 tree.checkpoint(BlockHeight::from_u32(snapshot_height as u32))?;
 
+                // Advance the wallet past the snapshot so witness generation
+                // has to use the cached historical frontier.
                 for tag in (leaf_count + 1)..=(leaf_count + 5) {
                     tree.append(merkle_hash(tag), Retention::Ephemeral)?;
                 }
@@ -993,166 +968,873 @@ mod tests {
             })
             .expect("seed wallet Ironwood tree");
 
-        frontier
+        (frontier_tree, leaves)
     }
 
-    fn temp_path(tag: &str, suffix: &str) -> std::path::PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "zcashlc_voting_witness_{}_{}_{}.sqlite",
-            tag,
-            suffix,
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        path
-    }
-
-    /// Open a voting DB via the FFI, register the wallet id, init the round,
-    /// and store the cached tree state — the exact preparation sequence the SDK
-    /// runs before asking for witnesses.
-    fn prepared_voting_db(
-        tag: &str,
-        params: &voting::VotingRoundParams,
+    fn store_round_bundle_and_tree_state(
+        db: *mut VotingDatabaseHandle,
+        snapshot_height: u64,
+        bundle_index: u32,
+        bundle_positions: &[Position],
+        nc_root: Vec<u8>,
         tree_state: &TreeState,
-        positions: &[Position],
-    ) -> (*mut VotingDatabaseHandle, std::path::PathBuf) {
-        let path = temp_path(tag, "voting");
-        let path_bytes = path.to_string_lossy().as_bytes().to_vec();
-        let db = unsafe {
-            zcashlc_voting_db_open(path_bytes.as_ptr(), path_bytes.len(), NETWORK_ID_TESTNET)
-        };
-        assert!(!db.is_null(), "open voting db at {:?}", path);
-        let handle = unsafe { &*db };
-        handle.db.set_wallet_id(WALLET_ID);
-        handle
-            .db
-            .init_round(voting::types::Network::Testnet, params, None)
-            .expect("init round");
-        // Bundle 0 must exist before witnesses can be cached against it.
-        voting::storage::queries::insert_bundle(
-            &handle.db.conn(),
-            &round_id(),
-            WALLET_ID,
-            0,
-            &positions.iter().map(|p| u64::from(*p)).collect::<Vec<_>>(),
+    ) {
+        let tree_state_bytes = tree_state.encode_to_vec();
+        let handle = unsafe { db.as_ref() }.expect("voting db handle");
+        let conn = handle.db.conn();
+        let params = round_params(snapshot_height, nc_root);
+        let note_positions = bundle_positions
+            .iter()
+            .map(|position| u64::from(*position))
+            .collect::<Vec<_>>();
+
+        // Testnet, to match the wallet DB these tests open and the
+        // `NETWORK_ID_TESTNET` the FFI is called with: `zcash_voting` rejects a
+        // wallet whose network differs from the round's, and resolves the
+        // Ironwood protocol from the stored network's NU6.3 activation height.
+        queries::insert_round(
+            &conn,
+            TEST_WALLET_ID,
+            voting::Network::Testnet,
+            &params,
+            None,
+        )
+        .expect("insert round");
+        queries::insert_bundle(
+            &conn,
+            TEST_ROUND_ID,
+            TEST_WALLET_ID,
+            bundle_index,
+            &note_positions,
         )
         .expect("insert bundle");
-        handle
-            .db
-            .store_tree_state(&round_id(), &tree_state.encode_to_vec())
-            .expect("store tree state");
-        (db, path)
+        queries::store_tree_state(
+            &conn,
+            TEST_ROUND_ID,
+            TEST_WALLET_ID,
+            snapshot_height,
+            &tree_state_bytes,
+        )
+        .expect("store tree state");
     }
 
-    fn generate_witnesses_ffi(
+    fn note_json_for(position: Position, commitment: MerkleHashOrchard) -> JsonNoteInfo {
+        JsonNoteInfo {
+            commitment: commitment.to_bytes().to_vec(),
+            nullifier: vec![0; 32],
+            value: 50_000,
+            position: u64::from(position),
+            diversifier: vec![0; 11],
+            rho: vec![0; 32],
+            rseed: vec![0; 32],
+            scope: 0,
+            ufvk_str: "ufvk-test-fixture".to_string(),
+        }
+    }
+
+    fn notes_json_for_positions(leaves: &[MerkleHashOrchard], positions: &[Position]) -> Vec<u8> {
+        let notes = positions
+            .iter()
+            .map(|position| note_json_for(*position, leaves[u64::from(*position) as usize]))
+            .collect::<Vec<_>>();
+        serde_json::to_vec(&notes).expect("serialize notes")
+    }
+
+    fn call_generate_note_witnesses(
         db: *mut VotingDatabaseHandle,
-        wallet_path: &std::path::Path,
-        notes: &[voting::NoteInfo],
+        bundle_index: u32,
+        wallet_path_bytes: &[u8],
+        notes_json_ptr: *const u8,
+        notes_json_len: usize,
     ) -> *mut crate::ffi::BoxedSlice {
-        let round = round_id();
-        let wallet_path_bytes = wallet_path.to_string_lossy().as_bytes().to_vec();
-        let json_notes: Vec<JsonNoteInfo> = notes.iter().cloned().map(JsonNoteInfo::from).collect();
-        let notes_json = serde_json::to_vec(&json_notes).expect("serialize notes");
         unsafe {
             zcashlc_voting_generate_note_witnesses(
                 db,
-                round.as_ptr(),
-                round.len(),
-                0,
+                TEST_ROUND_ID.as_ptr(),
+                TEST_ROUND_ID.len(),
+                bundle_index,
                 wallet_path_bytes.as_ptr(),
                 wallet_path_bytes.len(),
-                notes_json.as_ptr(),
-                notes_json.len(),
+                notes_json_ptr,
+                notes_json_len,
                 NETWORK_ID_TESTNET,
             )
         }
     }
 
-    fn cleanup(db: *mut VotingDatabaseHandle, paths: &[std::path::PathBuf]) {
-        unsafe { zcashlc_voting_db_free(db) };
-        for path in paths {
-            let _ = std::fs::remove_file(path);
+    fn decode_witnesses(ptr: *mut crate::ffi::BoxedSlice) -> Vec<JsonWitnessData> {
+        let witnesses =
+            serde_json::from_slice(unsafe { (*ptr).as_slice() }).expect("decode witnesses");
+        free(ptr);
+        witnesses
+    }
+
+    fn assert_witnesses_match_positions(
+        witnesses: &[JsonWitnessData],
+        leaves: &[MerkleHashOrchard],
+        positions: &[Position],
+        expected_root: &[u8],
+    ) {
+        assert_eq!(witnesses.len(), positions.len());
+
+        for (witness, position) in witnesses.iter().zip(positions.iter()) {
+            let note_leaf = leaves[u64::from(*position) as usize];
+            assert_eq!(witness.note_commitment, note_leaf.to_bytes().to_vec());
+            assert_eq!(witness.position, u64::from(*position));
+            assert_eq!(witness.root, expected_root);
+            assert_eq!(witness.auth_path.len(), orchard::NOTE_COMMITMENT_TREE_DEPTH);
+
+            let path = incrementalmerkletree::MerklePath::<
+                MerkleHashOrchard,
+                { orchard::NOTE_COMMITMENT_TREE_DEPTH as u8 },
+            >::from_parts(
+                witness
+                    .auth_path
+                    .iter()
+                    .map(|bytes| {
+                        let arr: [u8; 32] = bytes.as_slice().try_into().expect("path element size");
+                        MerkleHashOrchard::from_bytes(&arr).expect("canonical path element")
+                    })
+                    .collect(),
+                *position,
+            )
+            .expect("rebuild returned Merkle path");
+            assert_eq!(path.root(note_leaf).to_bytes().to_vec(), expected_root);
         }
     }
 
-    /// The load-bearing Ironwood-era behavior: voting notes live in the
-    /// Ironwood pool, so witnesses must come from the Ironwood commitment tree
-    /// and verify against the round's Ironwood `nc_root` — even when the cached
-    /// `TreeState` also carries a (different) Orchard tree.
+    fn assert_cached_witnesses_match(
+        db: *mut VotingDatabaseHandle,
+        bundle_index: u32,
+        witnesses: &[JsonWitnessData],
+    ) {
+        let handle = unsafe { db.as_ref() }.expect("voting db handle");
+        let conn = handle.db.conn();
+        let cached = queries::load_witnesses(&conn, TEST_ROUND_ID, TEST_WALLET_ID, bundle_index)
+            .expect("load cached witnesses");
+
+        assert_eq!(cached.len(), witnesses.len());
+        for (cached, returned) in cached.iter().zip(witnesses.iter()) {
+            assert_eq!(cached.note_commitment, returned.note_commitment);
+            assert_eq!(cached.position, returned.position);
+            assert_eq!(cached.root, returned.root);
+            assert_eq!(cached.auth_path, returned.auth_path);
+        }
+    }
+
+    #[test]
+    fn delegation_workflow_ffi_rejects_null_db() {
+        let round = TEST_ROUND_ID.as_bytes();
+        let json = b"[]";
+        let bytes = [0u8; 32];
+
+        assert!(
+            unsafe {
+                zcashlc_voting_setup_bundles(
+                    std::ptr::null_mut(),
+                    round.as_ptr(),
+                    round.len(),
+                    json.as_ptr(),
+                    json.len(),
+                )
+            }
+            .is_null()
+        );
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_get_bundle_count(std::ptr::null_mut(), round.as_ptr(), round.len())
+            },
+            -1
+        );
+        assert!(
+            unsafe {
+                zcashlc_voting_build_pczt(
+                    std::ptr::null_mut(),
+                    round.as_ptr(),
+                    round.len(),
+                    0,
+                    json.as_ptr(),
+                    json.len(),
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    0,
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    0,
+                    round.as_ptr(),
+                    round.len(),
+                )
+            }
+            .is_null()
+        );
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_store_tree_state(
+                    std::ptr::null_mut(),
+                    round.as_ptr(),
+                    round.len(),
+                    bytes.as_ptr(),
+                    bytes.len(),
+                )
+            },
+            -1
+        );
+        assert!(
+            unsafe {
+                zcashlc_voting_build_and_prove_delegation(
+                    std::ptr::null_mut(),
+                    round.as_ptr(),
+                    round.len(),
+                    0,
+                    json.as_ptr(),
+                    json.len(),
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    0,
+                    round.as_ptr(),
+                    round.len(),
+                    round.as_ptr(),
+                    round.len(),
+                    PIR_DEPTH,
+                    TIER0_LAYERS,
+                    TIER1_LAYERS,
+                    POLY_LEN,
+                    None,
+                    std::ptr::null_mut(),
+                )
+            }
+            .is_null()
+        );
+        assert!(
+            unsafe {
+                zcashlc_voting_get_delegation_submission_with_signature(
+                    std::ptr::null_mut(),
+                    round.as_ptr(),
+                    round.len(),
+                    0,
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    bytes.as_ptr(),
+                    bytes.len(),
+                )
+            }
+            .is_null()
+        );
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_store_van_position(
+                    std::ptr::null_mut(),
+                    round.as_ptr(),
+                    round.len(),
+                    0,
+                    0,
+                )
+            },
+            -1
+        );
+    }
+
+    #[test]
+    fn generate_hotkey_returns_freeable_ffi_value() {
+        let hotkey = unsafe { zcashlc_voting_generate_hotkey(crate::NETWORK_ID_MAINNET) };
+
+        assert!(!hotkey.is_null());
+        let hotkey_ref = unsafe { hotkey.as_ref() }.expect("hotkey");
+        assert_eq!(
+            hotkey_ref.stored_secret_len,
+            voting::hotkey::VOTING_HOTKEY_STORED_SECRET_LEN
+        );
+        assert_eq!(hotkey_ref.raw_orchard_address_len, HOTKEY_RAW_ADDRESS_LEN);
+        assert!(!hotkey_ref.stored_secret.is_null());
+        assert!(!hotkey_ref.raw_orchard_address.is_null());
+
+        unsafe { zcashlc_voting_free_hotkey(hotkey) };
+    }
+
+    #[test]
+    fn generate_hotkey_rejects_unknown_network_id() {
+        assert!(unsafe { zcashlc_voting_generate_hotkey(99) }.is_null());
+    }
+
+    #[test]
+    fn generated_hotkeys_are_random_and_reconstructible() {
+        let first = unsafe { zcashlc_voting_generate_hotkey(crate::NETWORK_ID_MAINNET) };
+        let second = unsafe { zcashlc_voting_generate_hotkey(crate::NETWORK_ID_MAINNET) };
+        let first_ref = unsafe { first.as_ref() }.expect("hotkey");
+        let second_ref = unsafe { second.as_ref() }.expect("hotkey");
+
+        let first_secret = unsafe {
+            std::slice::from_raw_parts(first_ref.stored_secret, first_ref.stored_secret_len)
+        };
+        let second_secret = unsafe {
+            std::slice::from_raw_parts(second_ref.stored_secret, second_ref.stored_secret_len)
+        };
+        assert_ne!(
+            first_secret, second_secret,
+            "hotkeys must be independently random"
+        );
+
+        // The stored secret is the only material the caller needs to keep: the
+        // address must be recoverable from it alone.
+        let recovered =
+            voting::VotingHotkey::from_stored_secret(first_secret, voting::Network::Mainnet)
+                .expect("stored secret round-trips");
+        let first_address = unsafe {
+            std::slice::from_raw_parts(
+                first_ref.raw_orchard_address,
+                first_ref.raw_orchard_address_len,
+            )
+        };
+        assert_eq!(recovered.raw_orchard_address(), first_address);
+
+        unsafe {
+            zcashlc_voting_free_hotkey(first);
+            zcashlc_voting_free_hotkey(second);
+        }
+    }
+
+    #[test]
+    fn setup_bundles_and_count_return_freeable_ffi_value() {
+        let db = open_memory_voting_db();
+        init_test_round(db);
+        let round = TEST_ROUND_ID.as_bytes();
+        // `zcash_voting` rejects an empty note set outright, so the round must be
+        // seeded with a note whose value clears the ballot-weight threshold for
+        // the bundle to survive planning.
+        let mut note = note_json_for(Position::from(0), merkle_hash(1));
+        note.value = 13_000_000;
+        let notes_json = serde_json::to_vec(&[note]).expect("serialize notes");
+
+        let result = unsafe {
+            zcashlc_voting_setup_bundles(
+                db,
+                round.as_ptr(),
+                round.len(),
+                notes_json.as_ptr(),
+                notes_json.len(),
+            )
+        };
+
+        assert!(!result.is_null());
+        let result_ref = unsafe { result.as_ref() }.expect("bundle setup result");
+        assert_eq!(result_ref.bundle_count, 1);
+        // The exact quantization of eligible weight is upstream bundle policy;
+        // this test only asserts that a surviving bundle carries weight.
+        assert!(result_ref.eligible_weight > 0);
+        assert_eq!(
+            unsafe { zcashlc_voting_get_bundle_count(db, round.as_ptr(), round.len()) },
+            1
+        );
+
+        unsafe {
+            zcashlc_voting_free_bundle_setup_result(result);
+            zcashlc_voting_db_free(db);
+        }
+    }
+
+    #[test]
+    fn store_tree_state_and_van_position_accept_existing_round_bundle() {
+        let db = open_memory_voting_db();
+        init_test_round(db);
+        insert_test_bundle(db, 0);
+        let round = TEST_ROUND_ID.as_bytes();
+        let tree_state = [1u8, 2, 3];
+
+        assert_eq!(
+            unsafe {
+                zcashlc_voting_store_tree_state(
+                    db,
+                    round.as_ptr(),
+                    round.len(),
+                    tree_state.as_ptr(),
+                    tree_state.len(),
+                )
+            },
+            0
+        );
+        assert_eq!(
+            unsafe { zcashlc_voting_store_van_position(db, round.as_ptr(), round.len(), 0, 42) },
+            0
+        );
+
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    #[test]
+    fn validate_pir_proof_accepts_valid() {
+        let root = decode_hex::<32>(ROOT);
+        let nf_bounds = decode_hex::<96>(NF_BOUNDS);
+        let path = decode_hex::<PIR_PATH_LEN>(PATH);
+        let nullifier = decode_hex::<32>(NULLIFIER);
+        let expected_root = decode_hex::<32>(EXPECTED_ROOT);
+
+        assert_eq!(
+            validate(
+                &root,
+                &nf_bounds,
+                LEAF_POS,
+                &path,
+                &nullifier,
+                &expected_root
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn validate_pir_proof_rejects_root_mismatch() {
+        let root = decode_hex::<32>(ROOT);
+        let nf_bounds = decode_hex::<96>(NF_BOUNDS);
+        let path = decode_hex::<PIR_PATH_LEN>(PATH);
+        let nullifier = decode_hex::<32>(NULLIFIER);
+        let mut expected_root = decode_hex::<32>(EXPECTED_ROOT);
+        expected_root[0] ^= 1;
+
+        assert_eq!(
+            validate(
+                &root,
+                &nf_bounds,
+                LEAF_POS,
+                &path,
+                &nullifier,
+                &expected_root
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn validate_pir_proof_rejects_corrupted_path() {
+        let root = decode_hex::<32>(ROOT);
+        let nf_bounds = decode_hex::<96>(NF_BOUNDS);
+        let mut path = decode_hex::<PIR_PATH_LEN>(PATH);
+        let nullifier = decode_hex::<32>(NULLIFIER);
+        let expected_root = decode_hex::<32>(EXPECTED_ROOT);
+        path[0] ^= 1;
+
+        assert_eq!(
+            validate(
+                &root,
+                &nf_bounds,
+                LEAF_POS,
+                &path,
+                &nullifier,
+                &expected_root
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn validate_pir_proof_rejects_non_canonical_field_encoding() {
+        let nf_bounds = decode_hex::<96>(NF_BOUNDS);
+        let path = decode_hex::<PIR_PATH_LEN>(PATH);
+        let non_canonical_root = [0xff; 32];
+        let nullifier = decode_hex::<32>(NULLIFIER);
+        let expected_root = decode_hex::<32>(EXPECTED_ROOT);
+
+        assert_eq!(
+            validate(
+                &non_canonical_root,
+                &nf_bounds,
+                LEAF_POS,
+                &path,
+                &nullifier,
+                &expected_root
+            ),
+            -1
+        );
+    }
+
+    #[test]
+    fn precompute_delegation_pir_rejects_null_db() {
+        let result = unsafe {
+            zcashlc_voting_precompute_delegation_pir(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                0,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                PIR_DEPTH,
+                TIER0_LAYERS,
+                TIER1_LAYERS,
+                POLY_LEN,
+            )
+        };
+
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn generate_note_witnesses_rejects_null_db() {
+        let result = unsafe {
+            zcashlc_voting_generate_note_witnesses(
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                0,
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                1,
+            )
+        };
+
+        assert!(result.is_null());
+    }
+
+    #[test]
+    fn generate_note_witnesses_rejects_invalid_network_id() {
+        let db = open_memory_voting_db();
+        // Network id 99 is invalid; the call must reject it before touching
+        // the wallet DB at the (non-existent) path.
+        let wallet_db_path = b"/nonexistent/wallet.sqlite";
+        let result = unsafe {
+            zcashlc_voting_generate_note_witnesses(
+                db,
+                b"round1".as_ptr(),
+                6,
+                0,
+                wallet_db_path.as_ptr(),
+                wallet_db_path.len(),
+                b"[]".as_ptr(),
+                2,
+                99,
+            )
+        };
+        assert!(result.is_null());
+        unsafe { zcashlc_voting_db_free(db) };
+    }
+
+    #[test]
+    fn generate_note_witnesses_returns_and_caches_valid_witnesses() {
+        const BUNDLE_INDEX: u32 = 7;
+
+        let wallet_path = temp_sqlite_path("generate_witnesses_success_wallet");
+        let wallet_path_bytes = wallet_path.to_string_lossy().as_bytes().to_vec();
+        let note_positions = vec![Position::from(2)];
+
+        let (frontier_tree, leaves) =
+            seed_wallet_ironwood_tree(&wallet_path, SNAPSHOT_HEIGHT, LATER_HEIGHT, &note_positions);
+        let expected_root = frontier_tree.root().to_bytes().to_vec();
+        let tree_state = tree_state_from_frontier(SNAPSHOT_HEIGHT, &frontier_tree);
+
+        let db = open_memory_voting_db();
+        store_round_bundle_and_tree_state(
+            db,
+            SNAPSHOT_HEIGHT,
+            BUNDLE_INDEX,
+            &note_positions,
+            expected_root.clone(),
+            &tree_state,
+        );
+
+        let notes_json = notes_json_for_positions(&leaves, &note_positions);
+        let result = call_generate_note_witnesses(
+            db,
+            BUNDLE_INDEX,
+            &wallet_path_bytes,
+            notes_json.as_ptr(),
+            notes_json.len(),
+        );
+        assert!(!result.is_null(), "witness generation succeeds");
+
+        let returned = decode_witnesses(result);
+        assert_witnesses_match_positions(&returned, &leaves, &note_positions, &expected_root);
+        assert_cached_witnesses_match(db, BUNDLE_INDEX, &returned);
+
+        unsafe { zcashlc_voting_db_free(db) };
+        let _ = std::fs::remove_file(&wallet_path);
+    }
+
+    #[test]
+    fn generate_note_witnesses_returns_and_caches_multiple_valid_witnesses() {
+        const BUNDLE_INDEX: u32 = 8;
+
+        let wallet_path = temp_sqlite_path("generate_witnesses_multi_wallet");
+        let wallet_path_bytes = wallet_path.to_string_lossy().as_bytes().to_vec();
+        let note_positions = vec![Position::from(1), Position::from(2), Position::from(4)];
+
+        let (frontier_tree, leaves) =
+            seed_wallet_ironwood_tree(&wallet_path, SNAPSHOT_HEIGHT, LATER_HEIGHT, &note_positions);
+        let expected_root = frontier_tree.root().to_bytes().to_vec();
+        let tree_state = tree_state_from_frontier(SNAPSHOT_HEIGHT, &frontier_tree);
+
+        let db = open_memory_voting_db();
+        store_round_bundle_and_tree_state(
+            db,
+            SNAPSHOT_HEIGHT,
+            BUNDLE_INDEX,
+            &note_positions,
+            expected_root.clone(),
+            &tree_state,
+        );
+
+        let notes_json = notes_json_for_positions(&leaves, &note_positions);
+        let result = call_generate_note_witnesses(
+            db,
+            BUNDLE_INDEX,
+            &wallet_path_bytes,
+            notes_json.as_ptr(),
+            notes_json.len(),
+        );
+        assert!(!result.is_null(), "multi-note witness generation succeeds");
+
+        let returned = decode_witnesses(result);
+        assert_witnesses_match_positions(&returned, &leaves, &note_positions, &expected_root);
+        assert_cached_witnesses_match(db, BUNDLE_INDEX, &returned);
+
+        unsafe { zcashlc_voting_db_free(db) };
+        let _ = std::fs::remove_file(&wallet_path);
+    }
+
+    #[test]
+    fn generate_note_witnesses_rejects_stale_tree_state_height_through_ffi() {
+        const BUNDLE_INDEX: u32 = 9;
+
+        let wallet_path = temp_sqlite_path("generate_witnesses_stale_height_wallet");
+        let wallet_path_bytes = wallet_path.to_string_lossy().as_bytes().to_vec();
+        let note_positions = vec![Position::from(2)];
+
+        let (frontier_tree, leaves) =
+            seed_wallet_ironwood_tree(&wallet_path, SNAPSHOT_HEIGHT, LATER_HEIGHT, &note_positions);
+        let expected_root = frontier_tree.root().to_bytes().to_vec();
+        let stale_tree_state = tree_state_from_frontier(SNAPSHOT_HEIGHT - 1, &frontier_tree);
+
+        let db = open_memory_voting_db();
+        store_round_bundle_and_tree_state(
+            db,
+            SNAPSHOT_HEIGHT,
+            BUNDLE_INDEX,
+            &note_positions,
+            expected_root,
+            &stale_tree_state,
+        );
+
+        let notes_json = notes_json_for_positions(&leaves, &note_positions);
+        let result = call_generate_note_witnesses(
+            db,
+            BUNDLE_INDEX,
+            &wallet_path_bytes,
+            notes_json.as_ptr(),
+            notes_json.len(),
+        );
+
+        assert!(result.is_null());
+        assert_cached_witnesses_match(db, BUNDLE_INDEX, &[]);
+
+        unsafe { zcashlc_voting_db_free(db) };
+        let _ = std::fs::remove_file(&wallet_path);
+    }
+
+    #[test]
+    fn generate_note_witnesses_rejects_stale_tree_state_root_through_ffi() {
+        const BUNDLE_INDEX: u32 = 10;
+
+        let wallet_path = temp_sqlite_path("generate_witnesses_stale_root_wallet");
+        let wallet_path_bytes = wallet_path.to_string_lossy().as_bytes().to_vec();
+        let note_positions = vec![Position::from(2)];
+
+        let (frontier_tree, leaves) =
+            seed_wallet_ironwood_tree(&wallet_path, SNAPSHOT_HEIGHT, LATER_HEIGHT, &note_positions);
+        let mut mismatched_root = frontier_tree.root().to_bytes().to_vec();
+        mismatched_root[0] ^= 1;
+        let tree_state = tree_state_from_frontier(SNAPSHOT_HEIGHT, &frontier_tree);
+
+        let db = open_memory_voting_db();
+        store_round_bundle_and_tree_state(
+            db,
+            SNAPSHOT_HEIGHT,
+            BUNDLE_INDEX,
+            &note_positions,
+            mismatched_root,
+            &tree_state,
+        );
+
+        let notes_json = notes_json_for_positions(&leaves, &note_positions);
+        let result = call_generate_note_witnesses(
+            db,
+            BUNDLE_INDEX,
+            &wallet_path_bytes,
+            notes_json.as_ptr(),
+            notes_json.len(),
+        );
+
+        assert!(result.is_null());
+        assert_cached_witnesses_match(db, BUNDLE_INDEX, &[]);
+
+        unsafe { zcashlc_voting_db_free(db) };
+        let _ = std::fs::remove_file(&wallet_path);
+    }
+
+    #[test]
+    fn generate_note_witnesses_rejects_empty_ironwood_frontier() {
+        const BUNDLE_INDEX: u32 = 11;
+
+        let wallet_path = temp_sqlite_path("generate_witnesses_empty_frontier_wallet");
+        let wallet_path_bytes = wallet_path.to_string_lossy().as_bytes().to_vec();
+        {
+            let mut wallet_db = WalletDb::for_path(
+                &wallet_path,
+                Network::TestNetwork,
+                SystemClock,
+                rand::rngs::OsRng,
+            )
+            .expect("open wallet db");
+            WalletMigrator::new()
+                .init_or_migrate(&mut wallet_db)
+                .expect("initialize wallet db");
+        }
+
+        let empty_frontier: VotingFrontier = Frontier::empty();
+        let expected_root = empty_frontier.root().to_bytes().to_vec();
+        let tree_state = tree_state_from_frontier(SNAPSHOT_HEIGHT, &empty_frontier);
+        let note_positions = vec![Position::from(0)];
+
+        let db = open_memory_voting_db();
+        store_round_bundle_and_tree_state(
+            db,
+            SNAPSHOT_HEIGHT,
+            BUNDLE_INDEX,
+            &note_positions,
+            expected_root,
+            &tree_state,
+        );
+
+        let notes = vec![note_json_for(Position::from(0), merkle_hash(1))];
+        let notes_json = serde_json::to_vec(&notes).expect("serialize notes");
+        let result = call_generate_note_witnesses(
+            db,
+            BUNDLE_INDEX,
+            &wallet_path_bytes,
+            notes_json.as_ptr(),
+            notes_json.len(),
+        );
+
+        assert!(result.is_null());
+        assert_cached_witnesses_match(db, BUNDLE_INDEX, &[]);
+
+        unsafe { zcashlc_voting_db_free(db) };
+        let _ = std::fs::remove_file(&wallet_path);
+    }
+
+    #[test]
+    fn generate_note_witnesses_accepts_zero_len_notes_json() {
+        const BUNDLE_INDEX: u32 = 12;
+
+        let wallet_path = temp_sqlite_path("generate_witnesses_empty_notes_wallet");
+        let wallet_path_bytes = wallet_path.to_string_lossy().as_bytes().to_vec();
+        let note_positions = Vec::new();
+
+        let (frontier_tree, _leaves) =
+            seed_wallet_ironwood_tree(&wallet_path, SNAPSHOT_HEIGHT, LATER_HEIGHT, &note_positions);
+        let expected_root = frontier_tree.root().to_bytes().to_vec();
+        let tree_state = tree_state_from_frontier(SNAPSHOT_HEIGHT, &frontier_tree);
+
+        let db = open_memory_voting_db();
+        store_round_bundle_and_tree_state(
+            db,
+            SNAPSHOT_HEIGHT,
+            BUNDLE_INDEX,
+            &note_positions,
+            expected_root,
+            &tree_state,
+        );
+
+        let result =
+            call_generate_note_witnesses(db, BUNDLE_INDEX, &wallet_path_bytes, std::ptr::null(), 0);
+        assert!(!result.is_null(), "empty notes list succeeds");
+
+        let returned = decode_witnesses(result);
+        assert!(returned.is_empty());
+        assert_cached_witnesses_match(db, BUNDLE_INDEX, &returned);
+
+        unsafe { zcashlc_voting_db_free(db) };
+        let _ = std::fs::remove_file(&wallet_path);
+    }
+
+    /// The load-bearing Ironwood-era behaviour, and the regression `8a40d1f9`
+    /// fixed before the `eea6cde8` merge silently reverted it: voting notes live
+    /// in the Ironwood pool, so witnesses must come from the Ironwood commitment
+    /// tree and verify against the round's Ironwood `nc_root` — even though the
+    /// cached `TreeState` also carries a different Orchard tree. Reading the
+    /// Orchard tree yields a root that can never equal a round's `nc_root`,
+    /// which is what shipped against live testnet round `0199de7a…9723` at
+    /// snapshot 4179680 and failed every delegation attempt.
+    ///
+    /// If this test is ever deleted or weakened by a merge, the wrong-pool bug
+    /// comes back silently. It is the guard, not decoration.
     #[test]
     fn generate_note_witnesses_uses_ironwood_tree() {
-        let positions = vec![Position::from(1), Position::from(2)];
-        let notes = positions
-            .iter()
-            .map(|position| note(u64::from(*position)))
-            .collect::<Vec<_>>();
-        let wallet_path = temp_path("ironwood", "wallet");
-        let ironwood_frontier =
-            seed_ironwood_wallet_db(&wallet_path, SNAPSHOT_HEIGHT, 4_134_100, &positions);
-        let orchard_frontier = orchard_decoy_frontier();
-        let nc_root = ironwood_frontier.root().to_bytes().to_vec();
-        let params = round_params(SNAPSHOT_HEIGHT, nc_root.clone());
-        let tree_state = tree_state_from_frontiers(
-            SNAPSHOT_HEIGHT,
-            Some(&orchard_frontier),
-            Some(&ironwood_frontier),
+        const BUNDLE_INDEX: u32 = 13;
+
+        let wallet_path = temp_sqlite_path("generate_witnesses_uses_ironwood_wallet");
+        let wallet_path_bytes = wallet_path.to_string_lossy().as_bytes().to_vec();
+        let note_positions = vec![Position::from(1), Position::from(2)];
+
+        let (frontier_tree, leaves) =
+            seed_wallet_ironwood_tree(&wallet_path, SNAPSHOT_HEIGHT, LATER_HEIGHT, &note_positions);
+        let ironwood_root = frontier_tree.root().to_bytes().to_vec();
+        let orchard_root = orchard_decoy_frontier().root().to_bytes().to_vec();
+        assert_ne!(
+            ironwood_root, orchard_root,
+            "the fixture needs distinguishable pools"
         );
-        let (db, voting_path) =
-            prepared_voting_db("uses_ironwood", &params, &tree_state, &positions);
 
-        let result = generate_witnesses_ffi(db, &wallet_path, &notes);
+        let tree_state = tree_state_from_frontier(SNAPSHOT_HEIGHT, &frontier_tree);
+        assert!(
+            !tree_state.orchard_tree.is_empty(),
+            "the cached TreeState must carry the decoy Orchard tree"
+        );
 
+        let db = open_memory_voting_db();
+        store_round_bundle_and_tree_state(
+            db,
+            SNAPSHOT_HEIGHT,
+            BUNDLE_INDEX,
+            &note_positions,
+            ironwood_root.clone(),
+            &tree_state,
+        );
+
+        let notes_json = notes_json_for_positions(&leaves, &note_positions);
+        let result = call_generate_note_witnesses(
+            db,
+            BUNDLE_INDEX,
+            &wallet_path_bytes,
+            notes_json.as_ptr(),
+            notes_json.len(),
+        );
         assert!(
             !result.is_null(),
             "witness generation must succeed against the Ironwood tree"
         );
-        let bytes = unsafe { (*result).as_slice() }.to_vec();
-        unsafe { crate::ffi::zcashlc_free_boxed_slice(result) };
-        let witnesses: Vec<JsonWitnessData> = serde_json::from_slice(&bytes).expect("witness json");
-        assert_eq!(witnesses.len(), notes.len());
-        for (witness, note) in witnesses.iter().zip(notes.iter()) {
-            assert_eq!(witness.note_commitment, note.commitment);
-            assert_eq!(witness.position, note.position);
+
+        let returned = decode_witnesses(result);
+        assert_witnesses_match_positions(&returned, &leaves, &note_positions, &ironwood_root);
+        for witness in &returned {
             assert_eq!(
-                witness.root, nc_root,
-                "witness root must be the Ironwood nc_root"
+                witness.root, ironwood_root,
+                "witness root must be the round's Ironwood nc_root"
             );
-            assert_eq!(witness.auth_path.len(), orchard::NOTE_COMMITMENT_TREE_DEPTH);
+            assert_ne!(
+                witness.root, orchard_root,
+                "witness root must not come from the Orchard tree"
+            );
         }
+        assert_cached_witnesses_match(db, BUNDLE_INDEX, &returned);
 
-        let handle = unsafe { &*db };
-        let stored =
-            voting::storage::queries::load_witnesses(&handle.db.conn(), &round_id(), WALLET_ID, 0)
-                .expect("load stored witnesses");
-        assert_eq!(stored.len(), witnesses.len(), "witnesses must be cached");
-
-        cleanup(db, &[voting_path, wallet_path]);
-    }
-
-    /// The frontier root must be bound to the round: a tree state whose
-    /// Ironwood root differs from the round's `nc_root` is rejected.
-    #[test]
-    fn generate_note_witnesses_rejects_mismatched_round_root() {
-        let positions = vec![Position::from(1)];
-        let notes = positions
-            .iter()
-            .map(|position| note(u64::from(*position)))
-            .collect::<Vec<_>>();
-        let wallet_path = temp_path("wrong_root", "wallet");
-        let ironwood_frontier =
-            seed_ironwood_wallet_db(&wallet_path, SNAPSHOT_HEIGHT, 4_134_100, &positions);
-        let params = round_params(SNAPSHOT_HEIGHT, vec![9; 32]);
-        let tree_state = tree_state_from_frontiers(SNAPSHOT_HEIGHT, None, Some(&ironwood_frontier));
-        let (db, voting_path) = prepared_voting_db("wrong_root", &params, &tree_state, &positions);
-
-        let result = generate_witnesses_ffi(db, &wallet_path, &notes);
-
-        assert!(
-            result.is_null(),
-            "a mismatched Ironwood root must be rejected"
-        );
-
-        cleanup(db, &[voting_path, wallet_path]);
+        unsafe { zcashlc_voting_db_free(db) };
+        let _ = std::fs::remove_file(&wallet_path);
     }
 }

@@ -510,8 +510,9 @@ extension FfiHttpResponseBytes {
         for i in (0 ..< Int(headers_len)) {
             let headerPtr = headers_ptr.advanced(by: i).pointee
 
-            let name = String(validatingCString: headerPtr.name)
-            let value = String(validatingCString: headerPtr.value)
+            let name = String(validatingUTF8: headerPtr.name)
+
+            let value = String(validatingUTF8: headerPtr.value)
 
             guard let name, let value else {
                 return nil
@@ -529,7 +530,7 @@ extension FfiHttpResponseBytes {
         let response = HTTPURLResponse(
             url: url,
             statusCode: Int(status),
-            httpVersion: String(validatingCString: version),
+            httpVersion: String(validatingUTF8: version),
             headerFields: headerFields
         )
 

@@ -490,17 +490,11 @@ public class SDKSynchronizer: Synchronizer {
         _ uri: String,
         accountUUID: AccountUUID
     ) async throws -> Proposal {
-        do {
-            try throwIfUnprepared()
-            return try await transactionEncoder.proposeFulfillingPaymentFromURI(
-                uri,
-                accountUUID: accountUUID
-            )
-        } catch ZcashError.rustCreateToAddress(let error) {
-            throw ZcashError.rustProposeTransferFromURI(error)
-        } catch {
-            throw error
-        }
+        try throwIfUnprepared()
+        return try await transactionEncoder.proposeFulfillingPaymentFromURI(
+            uri,
+            accountUUID: accountUUID
+        )
     }
 
     public func createProposedTransactions(

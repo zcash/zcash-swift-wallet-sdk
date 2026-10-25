@@ -138,6 +138,16 @@ class ZcashRegtest: ZcashNetwork {
 Constants of ZcashLightClientKit. this constants don't
 */
 public enum ZcashSDK {
+    /// The consensus branch ID of NU6.3 ("Ironwood").
+    ///
+    /// Published so hosts that must name the active consensus era read it from
+    /// the SDK instead of hardcoding the literal. The voting stack is the case
+    /// that forced this: `zcash_voting` rejects a delegation built for any other
+    /// branch, so a stale hardcoded era does not degrade — every delegation fails
+    /// at construction. This constant names NU6.3 only: a round whose snapshot
+    /// height falls after a later upgrade needs that upgrade's branch ID.
+    public static let nu63ConsensusBranchID: ConsensusBranchID = 0x37a5_165b
+
     /// The number of zatoshi that equal 1 ZEC.
     public static let zatoshiPerZEC: BlockHeight = 100_000_000
 

@@ -369,7 +369,10 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         )
 
         guard let proposal else {
-            throw ZcashError.rustCreateToAddress(lastErrorMessage(fallback: "`proposeTransfer` failed with unknown error"))
+            throw proposalError(
+                fallback: "`proposeTransfer` failed with unknown error",
+                wrap: ZcashError.rustProposeTransfer
+            )
         }
 
         defer { zcashlc_free_boxed_slice(proposal) }
@@ -397,8 +400,9 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         )
 
         guard let proposal else {
-            throw ZcashError.rustCreateToAddress(
-                lastErrorMessage(fallback: "`proposeOrchardToIronwoodMigration` failed with unknown error")
+            throw proposalError(
+                fallback: "`proposeOrchardToIronwoodMigration` failed with unknown error",
+                wrap: ZcashError.rustProposeOrchardToIronwoodMigration
             )
         }
 
@@ -426,7 +430,10 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         )
 
         guard let proposal else {
-            throw ZcashError.rustCreateToAddress(lastErrorMessage(fallback: "`proposeTransfer` failed with unknown error"))
+            throw proposalError(
+                fallback: "`proposeTransferFromURI` failed with unknown error",
+                wrap: ZcashError.rustProposeTransferFromURI
+            )
         }
 
         defer { zcashlc_free_boxed_slice(proposal) }
@@ -1293,7 +1300,10 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         }
 
         guard let txIdsPtr else {
-            throw ZcashError.rustCreateToAddress(lastErrorMessage(fallback: "`createToAddress` failed with unknown error"))
+            throw proposalError(
+                fallback: "`createToAddress` failed with unknown error",
+                wrap: ZcashError.rustCreateToAddress
+            )
         }
 
         defer { zcashlc_free_txids(txIdsPtr) }
@@ -2019,7 +2029,10 @@ struct ZcashRustBackend: ZcashRustBackendWelding {
         )
 
         guard let proposal else {
-            throw ZcashError.rustProposeSendMaxTransfer(lastErrorMessage(fallback: "`proposeSendMaxTransfer` failed with unknown error"))
+            throw proposalError(
+                fallback: "`proposeSendMaxTransfer` failed with unknown error",
+                wrap: ZcashError.rustProposeSendMaxTransfer
+            )
         }
 
         defer { zcashlc_free_boxed_slice(proposal) }
@@ -2700,6 +2713,62 @@ nonisolated func lastErrorMessage(fallback: String) -> String {
         }
     } else {
         return fallback
+    }
+}
+
+/// Takes the last Rust error as a classified, redacted report, clearing it exactly as
+/// `lastErrorMessage(fallback:)` does.
+///
+/// Use this instead of `lastErrorMessage(fallback:)` wherever the resulting `ZcashError` may be
+/// shown to a user or submitted in an error report. The two must not be combined for one
+/// failure: whichever runs first consumes the error.
+nonisolated func lastErrorReport(fallback: String) -> RedactedRustError {
+    guard let report = zcashlc_take_last_error_report() else {
+        return RedactedRustError(kind: .unclassified, message: fallback)
+    }
+
+    defer { zcashlc_free_error_report(report) }
+
+    let kind = RustErrorKind(ffiValue: report.pointee.kind)
+    let message = report.pointee.message.map { String(cString: $0) } ?? fallback
+
+    guard kind == .insufficientFunds, report.pointee.available >= 0, report.pointee.required >= 0 else {
+        return RedactedRustError(kind: kind, message: message)
+    }
+
+    return RedactedRustError(
+        kind: kind,
+        message: message,
+        available: Zatoshi(report.pointee.available),
+        required: Zatoshi(report.pointee.required)
+    )
+}
+
+/// Maps a failed proposal or transaction-creation call to the `ZcashError` the wallet should act
+/// on: a dedicated case for the two conditions a wallet is expected to render itself, and
+/// otherwise the per-call-site case supplied by `wrap`.
+///
+/// `wrap` is what keeps the call sites distinguishable. Before this existed all four of them
+/// threw `rustCreateToAddress`, so a user's error report could not say whether the failure
+/// happened while building the proposal or while signing it after confirmation.
+nonisolated func proposalError(
+    fallback: String,
+    wrap: (RedactedRustError) -> ZcashError
+) -> ZcashError {
+    let report = lastErrorReport(fallback: fallback)
+
+    switch report.kind {
+    case .scanRequired:
+        return .rustProposalScanRequired
+
+    case .insufficientFunds:
+        guard let available = report.available, let required = report.required else {
+            return wrap(report)
+        }
+        return .rustProposalInsufficientFunds(available, required)
+
+    default:
+        return wrap(report)
     }
 }
 

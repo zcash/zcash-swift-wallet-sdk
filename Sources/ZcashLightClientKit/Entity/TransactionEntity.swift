@@ -68,9 +68,17 @@ public enum ZcashTransaction {
             /// A note-preparation self-send that a migration run makes before it
             /// crosses.
             case preparation
-            /// A pool crossing paying the account's own internal address, so a
-            /// migration transfer.
+            /// A canonical pool crossing: a canonical denomination carried
+            /// across the turnstile by a transaction of the canonical shape.
+            /// This is conformance, not provenance. It includes crossings that
+            /// pay a third party, so it does not establish that the transfer
+            /// was this account's own migration.
             case transfer
+            /// Legacy only. Raw value 4, written by an earlier SDK whose
+            /// librustzcash told third-party canonical crossings apart. The
+            /// classifier this SDK uses never produces it; such crossings now
+            /// classify as ``transfer``.
+            case canonicalCrossingPayment
 
             init(rawValue: Int) {
                 switch rawValue {
@@ -80,6 +88,8 @@ public enum ZcashTransaction {
                     self = .preparation
                 case 3:
                     self = .transfer
+                case 4:
+                    self = .canonicalCrossingPayment
                 default:
                     self = .notClassified
                 }

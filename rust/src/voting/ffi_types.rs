@@ -23,13 +23,19 @@ pub struct FfiRoundState {
 }
 
 /// Voting hotkey returned by `zcashlc_voting_generate_hotkey`.
+///
+/// Voting hotkeys are app-owned random values rather than wallet-seed
+/// derivations. The caller is responsible for persisting `stored_secret`; a
+/// hotkey that is not stored cannot be reconstructed, and the voting ability it
+/// represents is lost. Everything else in this struct is derived from
+/// `stored_secret` and need not be stored.
 #[repr(C)]
 pub struct FfiVotingHotkey {
-    pub(super) secret_key: *mut u8,
-    pub(super) secret_key_len: usize,
-    pub(super) public_key: *mut u8,
-    pub(super) public_key_len: usize,
-    pub(super) address: *mut c_char,
+    pub(super) stored_secret: *mut u8,
+    pub(super) stored_secret_len: usize,
+    pub(super) raw_orchard_address: *mut u8,
+    pub(super) raw_orchard_address_len: usize,
+    pub(super) address_index: u32,
 }
 
 /// Bundle setup result returned by `zcashlc_voting_setup_bundles`.
@@ -37,6 +43,9 @@ pub struct FfiVotingHotkey {
 pub struct FfiBundleSetupResult {
     pub(super) bundle_count: u32,
     pub(super) eligible_weight: u64,
+    /// Notes discarded by the canonical bundling policy, and so not represented
+    /// in `eligible_weight`.
+    pub(super) dropped_count: u32,
 }
 
 /// Round summary for list display.
@@ -120,14 +129,11 @@ pub unsafe extern "C" fn zcashlc_voting_free_round_state(ptr: *mut FfiRoundState
 pub unsafe extern "C" fn zcashlc_voting_free_hotkey(ptr: *mut FfiVotingHotkey) {
     if !ptr.is_null() {
         let s: Box<FfiVotingHotkey> = unsafe { Box::from_raw(ptr) };
-        if !s.secret_key.is_null() {
-            zeroize_free_u8(s.secret_key, s.secret_key_len);
+        if !s.stored_secret.is_null() {
+            zeroize_free_u8(s.stored_secret, s.stored_secret_len);
         }
-        if !s.public_key.is_null() {
-            crate::free_ptr_from_vec(s.public_key, s.public_key_len);
-        }
-        if !s.address.is_null() {
-            drop(unsafe { CString::from_raw(s.address) });
+        if !s.raw_orchard_address.is_null() {
+            crate::free_ptr_from_vec(s.raw_orchard_address, s.raw_orchard_address_len);
         }
         drop(s);
     }

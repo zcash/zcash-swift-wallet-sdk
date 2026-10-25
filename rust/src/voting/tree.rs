@@ -7,13 +7,19 @@ use crate::{unwrap_exc_or, unwrap_exc_or_null};
 
 use super::db::VotingDatabaseHandle;
 use super::helpers::{json_to_boxed_slice, str_from_ptr};
-use super::json::JsonVanWitness;
 
 // =============================================================================
 // VotingDatabase methods — Tree sync
 // =============================================================================
 
 /// Sync the vote commitment tree from a chain node.
+///
+/// Since `zcash_voting` 3.0 the sync also validates confirmed VAN entries
+/// against the synced tree, so two new failure shapes surface here as error
+/// messages: a confirmed delegation bundle that does not match its synced
+/// vote-tree leaf (the crate resets the round's tree client; witnesses cannot
+/// be generated from unverified data), and a confirmed position still absent
+/// from the synced tree (incremental state is kept; the next sync resumes).
 ///
 /// Returns the latest synced block height on success (>= 0), or -1 on error.
 ///
@@ -70,8 +76,7 @@ pub unsafe extern "C" fn zcashlc_voting_generate_van_witness(
             .generate_van_witness(&handle.db, &round_id_str, bundle_index, anchor_height)
             .map_err(|e| anyhow!("generate_van_witness failed: {}", e))?;
 
-        let json_witness: JsonVanWitness = witness.into();
-        json_to_boxed_slice(&json_witness)
+        json_to_boxed_slice(&witness)
     });
     unwrap_exc_or_null(res)
 }
