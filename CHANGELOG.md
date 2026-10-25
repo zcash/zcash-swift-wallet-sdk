@@ -8,12 +8,10 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # 4.0.0 - 2026-10-19
 
-## Added
+This is the final release of ZcashLightClientKit. Support ends when NU7 activates; development
+continues in the ZODL Swift Wallet SDK. See the "End of Support" section of `README.md`.
 
-- `ZcashTransaction.Overview.ZIP318Kind.canonicalCrossingPayment`: a canonical pool crossing that
-  pays a third party. It has the same on-chain shape as a migration transfer but is not a migration
-  this account made; a raw value of 4 previously decoded as `notClassified`. A `switch` over
-  `ZIP318Kind` with no `default` stops compiling until the case is handled.
+## Added
 
 - `ZcashSDK.nu63ConsensusBranchID` publishes the NU6.3 ("Ironwood") consensus branch ID,
   `0x37a5_165b`, so a host that must name the era — a voting delegation is rejected outright when
@@ -29,8 +27,7 @@ carried the old surface must read `MIGRATING.md`. The most consequential differe
 hotkeys are app-owned random values rather than wallet-seed derivations, so the application must
 persist the hotkey's stored secret and cannot recover it from the seed phrase.
 
-- Voting is pinned to `zcash_voting = "=3.0.0"`. The `=` is required: a non-`=` requirement
-  resolves to 1.0.0, which pins the pre-Ironwood librustzcash family and cannot build here.
+- Voting is pinned to `zcash_voting = "=3.0.0"`.
 - The voting network is chosen once, when the database is opened.
   `VotingRustBackend.open(path:network:)` takes it as a `NetworkType`; `initRound(...)`,
   `commitVote(...)` and `precomputeDelegationPir(...)` do not. A custom (regtest) network takes its
@@ -40,9 +37,22 @@ persist the hotkey's stored secret and cannot recover it from the seed phrase.
   `buildAndProveDelegation(...)` take a `pirLayout: VotingPirLayout` —
   `pirDepth`/`tier0Layers`/`tier1Layers`/`polyLen`, sourced from the round's resolved dynamic
   voting config, where `polyLen` is the YPIR RLWE polynomial degree and is 2048 or 4096. The
-  default is `VotingPirLayout.unknown`, the crate's own `PirLayout::UNKNOWN` sentinel, which
-  `zcash_voting` rejects: a caller that does not pass a resolved layout fails closed before any
-  private query rather than querying with a guessed geometry.
+  default is `VotingPirLayout.unknown`, the crate's own `PirLayout::UNKNOWN` sentinel: a caller
+  that does not pass a resolved layout gets `VotingRustBackendError.invalidData` before any PIR
+  endpoint is probed, rather than querying with a guessed geometry.
+- Round parameters passed to `initRound(...)`, including the election authority's public key, and
+  the PIR layout are checked for length only. Vote shares are encrypted to that key and sent to
+  helper servers before the chain can reject anything, so take them from an authenticated source.
+- Voting network traffic — PIR snapshot probes, PIR queries and vote-tree sync — connects directly,
+  not through the SDK's Tor client, even when `tor(enabled:)` is on. The PIR and vote-chain servers
+  see the device's IP address.
+- The voting database holds each vote's `choice` next to note secrets and recovery state. Keep it
+  in the app's container with file protection. A database written by an earlier SDK has its voting
+  tables dropped and recreated on `open`.
+- `VotingRustBackendError.rustError` carries `zcash_voting`'s raw text, which can name note
+  positions. Keep it on the device.
+- Database-bound voting calls wait behind a running proof, which can take minutes, and proving
+  cannot be cancelled. Call `VotingRustBackend` off the main thread.
 - Payloads bound for the vote chain and the helper servers are serialized by `zcash_voting` and
   handed across the FFI verbatim, so `VotingDelegationSubmission`'s byte fields and
   `VotingWireEncryptedShare`'s `ciphertext1`/`ciphertext2` are base64 `String`s in the crate's
@@ -58,13 +68,15 @@ persist the hotkey's stored secret and cannot recover it from the seed phrase.
   request body verbatim.
   `VotingRustBackend.recoverableShareIndices(commitmentBundleJson:)` lists the share indices that
   bundle can actually rebuild, so crash recovery resubmits the shares that exist rather than
-  guessing a count from the proposal's option count.
+  guessing a count from the proposal's option count. `submitAt` is the Unix time, in seconds, at
+  which the helper should submit the share; `0` submits it immediately. The crate's share-timing
+  policy is not exposed, so passing `0` for every share submits all of a vote's shares at once.
 - `signDelegationRequest(roundId:bundleIndex:keys:seed:)` produces the SpendAuth signature a
   delegation submission needs, so a software wallet reaches
   `getDelegationSubmission(roundId:bundleIndex:signature:sighash:)` without a hardware signer. The
-  seed is borrowed for the call and never persisted, logged or handed to `zcash_voting`, and the
-  signature is checked against the seed fingerprint the bundle was built for, so signing with the
-  wrong seed fails instead of producing a rejected transaction.
+  seed is borrowed for the call and never persisted or logged. It must be the seed the bundle was
+  built from: a different seed or account index is not caught while signing, and the submission
+  is rejected later when its randomized key fails to verify.
 - Voting parameters that carry key material, accounts, heights or networks take semantic types
   rather than `[UInt8]`, `String`, `UInt32` or `UInt64`: `VotingSeed`, `VotingHotkeySecret` (also
   `VotingHotkey.storedSecret`), `VotingSeedFingerprint` and `VotingOrchardFullViewingKey`, each
@@ -74,10 +86,11 @@ persist the hotkey's stored secret and cannot recover it from the seed phrase.
   `NetworkType`, `BlockHeight` and `ConsensusBranchID`. A seed, hotkey secret or viewing key passed
   in the wrong argument no longer compiles, and a snapshot height outside the FFI's range throws
   instead of trapping. `MIGRATING.md` maps each parameter.
-- Types carrying key material, note secrets or vote recovery state — `VotingHotkey`,
+- Types carrying key material, note secrets, vote choices or vote recovery state — `VotingHotkey`,
   `VotingNoteInfo`, `VotingPczt`, `VotingDelegationKeyInputs`, `VotingDelegationInputs`,
-  `VotingVoteCommit`, `VotingShareDelegation` and `VotingStoredCommitmentBundle` — conform to
-  `Undescribable`, so their contents cannot leak through logging or reflection.
+  `VotingVoteCommit`, `VotingVoteRecord`, `VotingWitnessData`, `VotingShareDelegation` and
+  `VotingStoredCommitmentBundle` — conform to `Undescribable`, so their contents cannot leak
+  through logging or reflection.
 - Delegation reads the **Ironwood** note-commitment tree, not the Orchard one. Witness generation
   goes through `zcash_voting`'s own Ironwood-aware path, which additionally rejects a wallet
   database whose network differs from the round's and a snapshot height that is not NU6.3, and
@@ -91,8 +104,13 @@ persist the hotkey's stored secret and cannot recover it from the seed phrase.
   `rustProposeOrchardToIronwoodMigration` (`ZRUST0152`), and `rustCreateToAddress` (`ZRUST0002`),
   which now covers only the signing step. Two conditions a wallet should render itself rather than
   show as an error get dedicated cases: `rustProposalScanRequired` (`ZRUST0153`) and
-  `rustProposalInsufficientFunds(available:required:)` (`ZRUST0154`), the latter carrying both
-  amounts as `Zatoshi`.
+  `rustProposalInsufficientFunds(_:_:)` (`ZRUST0154`), whose two unlabeled `Zatoshi` values are the
+  available and the required amount, in that order. `proposeSendMaxTransfer` throws both, so a
+  `catch .rustProposeSendMaxTransfer` written for an earlier SDK no longer sees those conditions.
+  `proposeOrchardToIronwoodMigration` throws neither: the Rust layer does not classify
+  migration-proposal failures yet, so every one, including insufficient funds and a wallet that
+  still needs scanning, arrives as `rustProposeOrchardToIronwoodMigration` with kind
+  `.unclassified`.
 
   The associated value of `rustCreateToAddress`, `rustProposeTransferFromURI` and
   `rustProposeSendMaxTransfer` changes from `String` to `RedactedRustError`, which carries a
@@ -103,7 +121,29 @@ persist the hotkey's stored secret and cannot recover it from the seed phrase.
   The rendered detail is redacted at the rust boundary: it never contains an amount, address, note
   identifier or txid, so it is safe to submit in a support ticket. `detail` renders a payload only
   when that payload is a `RedactedRustError`, so the raw strings still carried by other `rust*`
-  cases cannot reach a report. The unredacted text is logged on the device at `debug!` level.
+  cases cannot reach `errorDescription` or `localizedDescription`. They do still reach
+  `String(describing:)`, `"\(error)"` and `dump(_:)`, which reflect every associated value, so log
+  `localizedDescription` instead. `RedactedRustError` has no public initializer: the SDK is its
+  only producer.
+
+  `RedactedRustError.message` is a fixed text per `RustErrorKind`, not the upstream error text. A
+  host that matched substrings of the old `String` payload, for example to spot "Unable to compute
+  anchor", no longer matches; switch on `kind` instead. A missing anchor currently reports
+  `.proposalInvalid`.
+
+  The unredacted text is logged on the device at `debug!` level. Rust log lines go to `os_log`
+  marked `%{public}`, and `Initializer`'s default `loggingPolicy` is `.default(.debug)`, so anyone
+  who can read the device log (Console, a debug profile) can see them. Pass a higher log level in
+  production if that matters.
+
+- `ZcashTransaction.Overview.ZIP318Kind.transfer` means a canonical pool crossing: conformance, not
+  provenance. It includes crossings that pay a third party, so it does not establish that the
+  transfer was this account's own migration, and 3.0.0's note that only `preparation` and
+  `transfer` are a migration this account made overstated it. A new case,
+  `canonicalCrossingPayment` (raw value 4), is legacy-only: it decodes rows an earlier SDK wrote
+  when its classifier told third-party crossings apart, and the classifier this SDK pins never
+  produces it. A `switch` over `ZIP318Kind` with no `default` stops compiling until the case is
+  handled.
 
 ## Fixed
 

@@ -28,6 +28,12 @@ private let roundTripBundleIndex: UInt32 = 0
 private let roundTripProposalId: UInt32 = 1
 private let roundTripShareIndex: UInt32 = 0
 private let roundTripSnapshotHeight: BlockHeight = 1
+/// Any layout other than `.unknown` passes the Swift-side check; these values
+/// are never sent to a PIR server.
+private let resolvedPirLayout = VotingPirLayout(pirDepth: 26, tier0Layers: 11, tier1Layers: 7, polyLen: 2048)
+/// Not `.unknown`, so it reaches the crate, but `polyLen` is neither 2048 nor
+/// 4096, so `zcash_voting` rejects it before any private query.
+private let unusablePirLayout = VotingPirLayout(pirDepth: 26, tier0Layers: 11, tier1Layers: 7, polyLen: 1234)
 private let roundTripVoteCommitmentTreePosition: UInt64 = 42
 private let roundTripDelegationTxHash = "delegation-tx-hash"
 private let roundTripVoteTxHash = "vote-tx-hash"
@@ -1139,7 +1145,8 @@ final class VotingRustBackendTests: XCTestCase {
                 bundleIndex: 0,
                 notes: [],
                 pirEndpoints: [],
-                expectedSnapshotHeight: 0
+                expectedSnapshotHeight: 0,
+                pirLayout: resolvedPirLayout
             )
             XCTFail("expected PirSnapshotResolverError.noEndpointsConfigured")
         } catch PirSnapshotResolverError.noEndpointsConfigured {
@@ -1151,12 +1158,10 @@ final class VotingRustBackendTests: XCTestCase {
 
     // MARK: - precomputeDelegationPir layout gating
 
-    /// Pins that the `.unknown` sentinel layout (`polyLen` 0) fails closed
-    /// inside `zcash_voting` at the FFI boundary: the crate rejects the layout
-    /// locally, before issuing any network request. The probe stub satisfies
-    /// snapshot resolution offline, so the failure can only be the layout
-    /// rejection, not a resolver or transport error.
-    func test_precomputeDelegationPir_unknownLayout_failsClosedThroughFFI() async throws {
+    /// Pins that the `.unknown` sentinel layout is rejected in Swift before any
+    /// endpoint is probed: `NeverCalledProbe` fails the test if the resolver
+    /// runs at all.
+    func test_precomputeDelegationPir_unknownLayout_isRejectedBeforeProbing() async throws {
         let backend = VotingRustBackend()
         try backend.open(path: makeTempDbPath(), network: roundTripNetwork)
         defer { backend.close() }
@@ -1169,18 +1174,45 @@ final class VotingRustBackendTests: XCTestCase {
                 pirEndpoints: ["https://stub"],
                 expectedSnapshotHeight: 0,
                 pirLayout: .unknown,
+                pirResolver: PirSnapshotResolver(probe: NeverCalledProbe())
+            )
+            XCTFail("expected .invalidData for the unknown PIR layout")
+        } catch let error as VotingRustBackendError {
+            guard case .invalidData = error else {
+                XCTFail("expected .invalidData, got \(error.localizedDescription)")
+                return
+            }
+        } catch {
+            XCTFail("unexpected error: \(error.localizedDescription)")
+        }
+    }
+
+    /// Pins that a layout the crate cannot use still fails closed inside
+    /// `zcash_voting` at the FFI boundary, before any private query. The probe
+    /// stub satisfies snapshot resolution offline, so the failure can only be
+    /// the crate's layout rejection, not a resolver or transport error.
+    func test_precomputeDelegationPir_unusableLayout_failsClosedThroughFFI() async throws {
+        let backend = VotingRustBackend()
+        try backend.open(path: makeTempDbPath(), network: roundTripNetwork)
+        defer { backend.close() }
+
+        do {
+            _ = try await backend.precomputeDelegationPir(
+                roundId: hexRoundId(0x11),
+                bundleIndex: 0,
+                notes: [],
+                pirEndpoints: ["https://stub"],
+                expectedSnapshotHeight: 0,
+                pirLayout: unusablePirLayout,
                 pirResolver: PirSnapshotResolver(probe: MatchingProbe())
             )
-            XCTFail("expected .rustError for the unknown PIR layout")
+            XCTFail("expected .rustError for an unusable PIR layout")
         } catch let error as VotingRustBackendError {
             guard case .rustError(let message) = error else {
                 XCTFail("expected .rustError, got \(error.localizedDescription)")
                 return
             }
-            XCTAssertTrue(
-                message.contains("pir_layout is unknown"),
-                "expected the crate's unknown-layout rejection, got: \(message)"
-            )
+            XCTAssertFalse(message.isEmpty)
         } catch {
             XCTFail("unexpected error: \(error.localizedDescription)")
         }
@@ -1381,6 +1413,14 @@ final class VotingRustBackendTests: XCTestCase {
 private struct FailingProbe: PirSnapshotProbing {
     func probe(url: String, expectedSnapshotHeight: BlockHeight) async -> PirSnapshotProbeOutcome {
         XCTFail("closed voting backend should fail before probing PIR endpoints")
+        return PirSnapshotProbeOutcome(url: url, status: .matching(height: expectedSnapshotHeight))
+    }
+}
+
+/// Probe stub for tests that must fail before any endpoint is probed.
+private struct NeverCalledProbe: PirSnapshotProbing {
+    func probe(url: String, expectedSnapshotHeight: BlockHeight) async -> PirSnapshotProbeOutcome {
+        XCTFail("no PIR endpoint should be probed")
         return PirSnapshotProbeOutcome(url: url, status: .matching(height: expectedSnapshotHeight))
     }
 }

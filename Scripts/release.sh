@@ -44,19 +44,28 @@ main() {
     local remote version release_branch declared_version declared_checksum
     local asset_checksum dir is_draft prerelease
     local local_sha remote_sha ahead behind
+    local -a positional=()
 
+    # Options may appear anywhere, including after the positionals. Stopping at
+    # the first positional would let `release.sh upstream X.Y.Z --dry-run` skip
+    # the flag and tag, push and publish for real.
     while [ $# -gt 0 ]; do
         case "$1" in
             --dry-run) DRY_RUN=true; shift ;;
             -h|--help) usage; return 0 ;;
             --*)       usage >&2; die "unknown option '$1'" ;;
-            *)         break ;;
+            *)         positional+=("$1"); shift ;;
         esac
     done
+    set -- ${positional[@]+"${positional[@]}"}
 
     if [ $# -lt 2 ]; then
         usage >&2
         die "release.sh needs a remote and a version."
+    fi
+    if [ $# -gt 2 ]; then
+        usage >&2
+        die "release.sh takes a remote and a version, not '$*'."
     fi
     remote="$1"
     version="${2#v}"

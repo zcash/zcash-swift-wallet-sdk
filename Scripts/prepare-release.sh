@@ -447,7 +447,8 @@ produce_artifacts() {
     if gh release view "$version" --repo "$GH_REPO" >/dev/null 2>&1; then
         if [ "$force" != "true" ]; then
             die "release ${version} already exists." \
-                "Use --force-overwrite-existing-release to replace its assets."
+                "Replace its assets with 'artifacts --force-overwrite-existing-release'," \
+                "or 'build --rebuild' when running the build phase."
         fi
         # Only a draft may be overwritten. Package.swift pins the checksum of
         # whatever asset a published release carries, and SwiftPM checks it at
@@ -626,7 +627,13 @@ build_artifacts_in_ci() {
     done
 
     echo "  watching run ${run_id}" >&2
-    gh run watch "$run_id" --repo "$GH_REPO" --exit-status >&2
+    # This function runs inside `checksum="$(...)"`, where bash drops errexit,
+    # so a failed run would otherwise fall through to the download below and
+    # return the checksum of whatever older asset the draft still carries.
+    if ! gh run watch "$run_id" --repo "$GH_REPO" --exit-status >&2; then
+        echo "error: build-ffi.yml run ${run_id} did not succeed." >&2
+        return 1
+    fi
     checksum_of_release_asset "$version"
 }
 
@@ -806,7 +813,10 @@ EOF
         echo "  draft release ${version} already carries ${ZIP_FILE}; reusing it"
         checksum="$(checksum_of_release_asset "$version")"
     elif [ "$artifacts" = "ci" ]; then
-        checksum="$(build_artifacts_in_ci "$version" "$candidate_branch" "$rebuild")"
+        checksum="$(build_artifacts_in_ci "$version" "$candidate_branch" "$rebuild")" \
+            || die "the CI build of ${version} did not produce an artifact." \
+                "Package.swift is unchanged. Fix the failing build-ffi.yml run and re-run" \
+                "'prepare-release.sh build --artifacts ci --rebuild'."
     else
         produce_artifacts "$version" "$rebuild" "$verify"
         checksum="$(checksum_of_release_asset "$version")"
@@ -882,4 +892,8 @@ main() {
     esac
 }
 
-main "$@"
+# Scripts/tests load this file to exercise its functions with a stubbed `gh`;
+# they set PREPARE_RELEASE_NO_MAIN so loading it runs nothing.
+if [ "${PREPARE_RELEASE_NO_MAIN:-}" != "1" ]; then
+    main "$@"
+fi

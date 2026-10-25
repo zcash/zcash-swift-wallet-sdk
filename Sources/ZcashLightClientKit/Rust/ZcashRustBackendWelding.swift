@@ -270,7 +270,11 @@ protocol ZcashRustBackendWelding {
     /// stranded when the Orchard turnstile closes at NU6.3. Fails unless NU6.3 is active.
     ///
     /// - Parameter accountUUID: the account whose Orchard balance is migrated.
-    /// - Throws: `rustProposeOrchardToIronwoodMigration`, `rustProposalScanRequired`, or `rustProposalInsufficientFunds`.
+    /// - Throws: `rustProposeOrchardToIronwoodMigration`. The Rust layer does not classify
+    ///   migration-proposal failures yet, so every one of them, including a wallet that still needs
+    ///   scanning, an inactive NU6.3 and insufficient funds, arrives as this case with
+    ///   ``RustErrorKind/unclassified``, never as `rustProposalScanRequired` or
+    ///   `rustProposalInsufficientFunds`.
     func proposeOrchardToIronwoodMigration(accountUUID: AccountUUID) async throws -> FfiProposal
 
     /// Select transaction inputs, compute fees, and construct a proposal for a transaction
@@ -603,7 +607,8 @@ protocol ZcashRustBackendWelding {
     /// - Parameter orchardOnly: when `true`, restricts spendable notes to the Orchard pool alone (the
     ///   immediate migration sweep, which must not draw on Sapling funds); when `false`, spends from
     ///   both Sapling and Orchard (pre-existing behavior).
-    /// - Throws: `rustProposeSendMaxTransfer` if the rust layer returns an error.
+    /// - Throws: `rustProposeSendMaxTransfer`, `rustProposalScanRequired`, or `rustProposalInsufficientFunds`.
+    ///   A `catch .rustProposeSendMaxTransfer` written for an earlier SDK no longer sees the last two.
     func proposeSendMaxTransfer(
         accountUUID: AccountUUID,
         recipient: String,

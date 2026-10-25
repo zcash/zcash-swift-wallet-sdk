@@ -8,6 +8,19 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `zcashlc_take_last_error_report` returns the most recent error as an `ErrorReport` (an
+  `ErrorKind` discriminant, a redacted message that carries no amount, address, note identifier
+  or txid, and the available and required amounts in zatoshis for insufficient funds, `-1`
+  otherwise), clearing it as `zcashlc_clear_last_error` would. It returns null when there is no
+  error. Free the result with `zcashlc_free_error_report`.
+- Voting: `zcashlc_voting_confirm_vote_submission` records a cast vote's confirmation from the
+  chain's events (transaction hash, vote-authority-note position and vote-commitment tree position,
+  in one database transaction); `zcashlc_voting_recover_wire_json` rebuilds one helper-server
+  payload from the persisted recovery bundle; `zcashlc_voting_recoverable_share_indices` lists the
+  share indices a bundle can rebuild; `zcashlc_voting_sign_delegation_request` produces the
+  SpendAuth signature and sighash for a delegation from the wallet seed.
+- `zcashlc_voting_precompute_delegation_pir` and `zcashlc_voting_build_and_prove_delegation` take
+  the PIR layout's `poly_len` (2048 or 4096) after `pir_depth`, `tier0_layers` and `tier1_layers`.
 - `zcashlc_get_transaction`, `zcashlc_free_transaction_data`, and `FfiTransactionData` expose the
   serialized bytes and expiry height available for any wallet-store transaction without depending
   on the transaction-history projection.
@@ -209,8 +222,8 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependency stack. It had been gated behind `#[cfg(zcash_voting)]` on the
   grounds that `zcash_voting` could not resolve against the Ironwood `orchard`
   release; that held for `zcash_voting 1.0.0`, which pins the pre-Ironwood
-  librustzcash family, but not for `zcash_voting 2.0.0-rc.3`, which this crate
-  now depends on directly from crates.io.
+  librustzcash family, but not for `zcash_voting 3.0.0`, which this crate now
+  depends on directly from crates.io, pinned with `=3.0.0`.
 
   Voting is compiled unconditionally rather than behind a Cargo feature. The
   Swift package cannot gate voting for its consumers, so a Rust-only feature

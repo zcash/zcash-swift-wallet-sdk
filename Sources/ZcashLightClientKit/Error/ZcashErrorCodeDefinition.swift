@@ -413,8 +413,9 @@ enum ZcashErrorDefinition {
     // sourcery: code="ZRUST0152"
     case rustProposeOrchardToIronwoodMigration(_ rustError: RedactedRustError)
     /// The wallet must finish scanning the blockchain before this payment can be prepared.
-    /// Raised while building a proposal, not while signing one. It is a normal state of a wallet
-    /// that is still catching up, so present it as such rather than as a failure.
+    /// Raised while building a proposal, and can also be raised while creating transactions from
+    /// one. It is a normal state of a wallet that is still catching up, so present it as such
+    /// rather than as a failure.
     // sourcery: code="ZRUST0153"
     case rustProposalScanRequired
     /// The spendable balance does not cover this payment and its fee.
